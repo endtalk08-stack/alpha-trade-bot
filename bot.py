@@ -15,9 +15,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28T
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 
 genai.configure(api_key=GEMINI_API_KEY)
-ticker_model = genai.GenerativeModel('gemini-3.6-flash')
 
-# 9단계 정밀 퀀트 트레이딩 프롬프트 (텔레그램 텍스트 최적화)
+# 9단계 정밀 퀀트 트레이딩 프롬프트
 SYSTEM_PROMPT = """
 당신은 대한민국 최고의 실전 퀀트 트레이더이자 리스크 관리 전문가입니다.
 사용자가 요청한 종목과 실시간 가격을 바탕으로, 아래의 [9단계 정밀 퀀트 분석 양식]에 맞춰 명확하고 실전적인 수치 위주로 분석을 제공하세요.
@@ -62,59 +61,76 @@ SYSTEM_PROMPT = """
 """
 report_model = genai.GenerativeModel('gemini-3.6-flash', system_instruction=SYSTEM_PROMPT)
 
+# 주요 종목 빠른 조회용 맵 (API 호출 없이 즉시 파싱)
+QUICK_MAP = {
+    "삼성전자": "005930.KS", "삼전": "005930.KS",
+    "sk하이닉스": "000660.KS", "하이닉스": "000660.KS",
+    "sk증권": "001510.KS",
+    "현대차": "005380.KS", "기아": "000270.KS",
+    "카카오": "035720.KS", "네이버": "035420.KS",
+    "비트코인": "BTCUSDT", "btc": "BTCUSDT",
+    "이더리움": "ETHUSDT", "eth": "ETHUSDT",
+    "리플": "XRPUSDT", "xrp": "XRPUSDT",
+    "솔라나": "SOLUSDT", "sol": "SOLUSDT",
+    "도지코인": "DOGEUSDT", "doge": "DOGEUSDT",
+    "테슬라": "TSLA", "엔비디아": "NVDA", "애플": "AAPL", "마이크로소프트": "MSFT"
+}
+
 def fetch_realtime_price_universal(user_query):
-    prompt = f"""
-    사용자가 입력한 검색어: '{user_query}'
-    이 자산의 성격과 시세 조회를 위한 심볼을 JSON 형태로만 답해줘.
-    - 한국 주식이면: {{"type": "stock", "symbol": "6자리종목코드.KS 또는 .KQ"}} (예: 삼성전자는 "005930.KS")
-    - 해외 주식이면: {{"type": "stock", "symbol": "티커"}} (예: 테슬라는 "TSLA")
-    - 암호화폐이면: {{"type": "crypto", "symbol": "바이낸스페어"}} (예: 비트코인은 "BTCUSDT", 도지코인은 "DOGEUSDT")
-    - 판별 불가면: {{"type": "unknown", "symbol": ""}}
-    오직 JSON 포맷만 출력해.
-    """
-    try:
-        res = ticker_model.generate_content(prompt).text
-        clean_json = re.search(r"\{.*\}", res, re.DOTALL).group()
-        info = json.loads(clean_json)
+    query_clean = user_query.strip().lower()
+    symbol = QUICK_MAP.get(query_clean, None)
 
-        asset_type = info.get("type")
-        symbol = info.get("symbol")
-
-        if asset_type == "crypto":
+    # 1. 코인 직접 조회
+    if symbol and symbol.endswith("USDT"):
+        try:
             url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-            r = requests.get(url, timeout=5).json()
+            r = requests.get(url, timeout=4).json()
             return f"${float(r['price']):,.2f}", symbol
-        elif asset_type == "stock":
+        except:
+            pass
+
+    # 2. 주식 직접 조회
+    if symbol:
+        try:
             stock = yf.Ticker(symbol)
             price = stock.history(period="1d")['Close'].iloc[-1]
             if symbol.endswith(".KS") or symbol.endswith(".KQ"):
                 return f"{int(price):,}원", symbol
-            else:
-                return f"${price:,.2f}", symbol
-        else:
-            return "시세 조회 불가", "UNKNOWN"
-    except Exception:
-        return "실시간 시세 조회 지연", user_query
+            return f"${price:,.2f}", symbol
+        except:
+            pass
+
+    # 3. 맵에 없는 경우 일반 티커로 yfinance 시도
+    try:
+        stock = yf.Ticker(user_query.strip())
+        price = stock.history(period="1d")['Close'].iloc[-1]
+        return f"{price:,.2f}", user_query
+    except:
+        return "최신 거래소 시세", user_query
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "[Alpha Trade Bot] 실전 퀀트 9단계 분석 가동\n"
-        "종목명을 입력하시면 실시간 가격 기반 정밀 분석을 제공합니다.\n"
-        "(예: 삼성전자, SK증권, 테슬라, 비트코인)"
+        "[Alpha Trade Bot] 가동 중\n"
+        "종목명을 입력하시면 실시간 시세 기반 9단계 정밀 분석을 제공합니다.\n"
+        "(예: 삼성전자, SK증권, SK하이닉스, 테슬라, 비트코인)"
     )
     await update.message.reply_text(welcome_text)
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = update.message.text
-    status_msg = await update.message.reply_text(f"🔍 '{user_query}' 실시간 시세 수집 및 9단계 퀀트 분석 중...")
+    status_msg = await update.message.reply_text(f"🔍 '{user_query}' 실시간 데이터 수집 및 9단계 분석 중...")
 
     try:
         current_price, identified_symbol = fetch_realtime_price_universal(user_query)
-        prompt = f"종목명: {user_query} ({identified_symbol})\n현재 실시간 가격: {current_price}\n\n위 가격을 바탕으로 9단계 정밀 리포트를 작성해줘."
+        prompt = f"종목명: {user_query} ({identified_symbol})\n현재 실시간 가격: {current_price}\n\n위 실시간 가격을 기준으로 9단계 정밀 리포트를 작성해줘."
         response = report_model.generate_content(prompt)
         await status_msg.edit_text(response.text)
     except Exception as e:
-        await status_msg.edit_text(f"분석 오류: {str(e)}")
+        err_msg = str(e)
+        if "429" in err_msg:
+            await status_msg.edit_text("⏳ 무료 API 호출 한도에 잠시 도달했습니다. 약 20초 뒤에 다시 시도해 주세요.")
+        else:
+            await status_msg.edit_text(f"분석 오류: {err_msg}")
 
 class SimpleServer(BaseHTTPRequestHandler):
     def do_GET(self):

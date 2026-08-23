@@ -81,7 +81,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_price, identified_symbol = fetch_realtime_price_universal(user_query)
         prompt = f"종목명/심볼: {user_query} ({identified_symbol})\n현재 실시간 가격: {current_price}\n\n위 실시간 가격을 바탕으로 실전 매매 리포트를 작성해줘."
         response = report_model.generate_content(prompt)
-        await status_msg.edit_text(response.text)
+        await status_msg.edit_text(response.text, parse_mode="Markdown")
     except Exception as e:
         await status_msg.edit_text(f"❌ 분석 오류: {str(e)}")
 

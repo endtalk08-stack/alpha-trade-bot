@@ -14,8 +14,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 
-genai.configure(api_key=GEMINI_API_KEY)
-ticker_model = genai.GenerativeModel('gemini-3.6-flash')
+# Pro 버전으로 변경 시
+ticker_model = genai.GenerativeModel('gemini-2.5-flash')  # 단순 티커 변환은 빠른 Flash 추천
+report_model = genai.GenerativeModel('gemini-2.5-pro', system_instruction=SYSTEM_PROMPT)  # 리포트 생성만 Pro로 격상
 
 # 엄격하게 고정된 무특수문자/무소제목 9대 레이어 트레이딩 리포트 템플릿
 SYSTEM_PROMPT = """

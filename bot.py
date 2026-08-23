@@ -15,25 +15,29 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28T
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 
 genai.configure(api_key=GEMINI_API_KEY)
-ticker_model = genai.GenerativeModel('gemini-3.6-flash')
+ticker_model = genai.GenerativeModel('gemini-2.5-flash')
 
-# 모바일 가독성 최적화: 줄글/표/구분선 금지, 핵심 5줄 요약 양식 강제
+# 사용자 지정 초깔끔 텍스트 포맷 강제
 SYSTEM_PROMPT = """
 당신은 대한민국 최고의 실전 퀀트 트레이더입니다.
-텔레그램 모바일 사용자를 위해 불필요한 서론/결론, 표, 구분선(---, |)을 완전히 배제하고, 
-오직 아래의 5줄 초간결 양식으로만 답변하세요.
+이모티콘, 별표(★), 마크다운 기호(**, ---, | 등), 대괄호([]), 불릿 기호(-, • 등)를 절대 사용하지 마세요.
+오직 아래의 줄바꿈 양식과 텍스트로만 정확히 답변하세요.
 
-[답변 양식]
-📊 [종목명] 실전 타점 브리핑
-현재가: [실시간가격] | 적합도: [별점 ★1~5개] ([포지션방향/전략타입])
+[출력 양식]
+[종목명] 실전 타점 브리핑
+현재가: [실시간가격]
+포지션: [스윙 매수/단타 매수/관망/매도] (적합도: X.X / 5.0)
 
-🎯 진입 타점: [1차 진입가] ~ [2차 진입가]
-🚀 목표가: 1차 [1차 목표가](수익률%) / 2차 [2차 목표가]
-🛑 칼손절: [손절가] 이탈 시 전량 정리
+매매 기준가
+진입 타점: [1차 진입가] ~ [2차 진입가]
+1차 목표가: [1차 목표가] ([수익률]%)
+2차 목표가: [2차 목표가] ([수익률]%)
+칼손절 기준: [손절가] 이탈 시 정리
 
-💡 핵심 코멘트: [차트/수급 핵심 및 진입 타이밍 조건 1~2문장 요약]
+핵심 코멘트
+[차트, 수급 핵심 요약 및 진입 타이밍 조건 1~2문장]
 """
-report_model = genai.GenerativeModel('gemini-3.6-flash', system_instruction=SYSTEM_PROMPT)
+report_model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=SYSTEM_PROMPT)
 
 def fetch_realtime_price_universal(user_query):
     prompt = f"""
@@ -71,23 +75,22 @@ def fetch_realtime_price_universal(user_query):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "🚀 Alpha Trade Bot\n"
-        "국내/미국 주식, 암호화폐 종목명을 입력하세요.\n"
-        "(예: 삼전, SK증권, 테슬라, 비트코인)"
+        "Alpha Trade Bot 가동 중\n"
+        "종목명을 입력하세요. (예: 삼성전자, SK증권, 테슬라, 비트코인)"
     )
     await update.message.reply_text(welcome_text)
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_query = update.message.text
-    status_msg = await update.message.reply_text(f"🔍 '{user_query}' 분석 중...")
+    status_msg = await update.message.reply_text(f"{user_query} 분석 중...")
 
     try:
         current_price, identified_symbol = fetch_realtime_price_universal(user_query)
-        prompt = f"종목명: {user_query} ({identified_symbol})\n현재 실시간 가격: {current_price}\n\n위 가격을 바탕으로 5줄 초간결 양식에 맞춰 작성해줘."
+        prompt = f"종목명: {user_query}\n현재 실시간 가격: {current_price}\n\n위 가격을 바탕으로 지정된 출력 양식에 맞춰 작성해줘. 대괄호나 불릿 기호 없이 깔끔하게 써줘."
         response = report_model.generate_content(prompt)
         await status_msg.edit_text(response.text)
     except Exception as e:
-        await status_msg.edit_text(f"❌ 분석 오류: {str(e)}")
+        await status_msg.edit_text(f"분석 오류: {str(e)}")
 
 class SimpleServer(BaseHTTPRequestHandler):
     def do_GET(self):

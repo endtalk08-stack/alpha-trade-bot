@@ -34,37 +34,38 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJY
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-2.5-flash')
+ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 REPORT_CACHE = {}
 DB_FILE = "trades.db"
 
-# 2. SQLite 데이터베이스 초기화 (타점 자동 기록용)
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            name TEXT,
-            asset_type TEXT,
-            direction TEXT,
-            entry_price REAL,
-            target_price REAL,
-            stop_loss REAL,
-            status TEXT DEFAULT 'PENDING',
-            ret REAL DEFAULT 0.0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            closed_at TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT,
+                name TEXT,
+                asset_type TEXT,
+                direction TEXT,
+                entry_price REAL,
+                target_price REAL,
+                stop_loss REAL,
+                status TEXT DEFAULT 'PENDING',
+                ret REAL DEFAULT 0.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                closed_at TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 init_db()
 
-# 종목 매핑 사전
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
     "ETH": "ETHUSDT", "이더리움": "ETHUSDT", "이더": "ETHUSDT",
@@ -168,7 +169,6 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
 def get_us_stock_fmp_data(symbol):
     clean_sym = symbol.upper().strip()
 
-    # 1. Stooq
     try:
         stooq_url = f"https://stooq.com/q/d/l/?s={clean_sym.lower()}.us&i=d"
         stooq_res = requests.get(stooq_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5)
@@ -184,10 +184,9 @@ def get_us_stock_fmp_data(symbol):
     except Exception:
         pass
 
-    # 2. Yahoo Finance Chart
     try:
         y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?range=1mo&interval=1d"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         y_res = requests.get(y_url, headers=headers, timeout=2.5).json()
         result = y_res.get("chart", {}).get("result", [])
         if result:
@@ -217,7 +216,6 @@ def get_us_stock_fmp_data(symbol):
     except Exception:
         pass
 
-    # 3. FMP Quote
     try:
         url = f"https://financialmodelingprep.com/api/v3/quote/{clean_sym}?apikey={FMP_API_KEY}"
         res = requests.get(url, timeout=2.5).json()
@@ -391,86 +389,82 @@ def fetch_technical_quant_data(symbol, asset_type):
         return None
 
 def record_trade_signal(symbol, name, asset_type, an):
-    """발행된 ICT 타점을 데이터베이스에 자동 기록"""
     try:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
         c.execute('''
             INSERT INTO trades (symbol, name, asset_type, direction, entry_price, target_price, stop_loss, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')
-        ''', (symbol, name, asset_type, 'LONG', an['entry_p'], an['target_p'], an['stop_p']))
+        ''', (symbol, name, asset_type, 'LONG', an.get('entry_p', 0), an.get('target_p', 0), an.get('stop_p', 0)))
         conn.commit()
         conn.close()
     except Exception:
         pass
 
 def update_and_calculate_performance():
-    """기록된 타점들의 승패 및 수익률을 현재 시세와 대조하여 자동 판정"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT id, symbol, asset_type, entry_price, target_price, stop_loss FROM trades WHERE status = 'PENDING'")
-    pending_rows = c.fetchall()
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT id, symbol, asset_type, entry_price, target_price, stop_loss FROM trades WHERE status = 'PENDING'")
+        pending_rows = c.fetchall()
 
-    for row in pending_rows:
-        tid, sym, atype, entry_p, target_p, stop_p = row
-        curr_p = None
+        for row in pending_rows:
+            tid, sym, atype, entry_p, target_p, stop_p = row
+            curr_p = None
 
-        if atype == "crypto":
-            curr_p, _, _ = get_crypto_bybit_data(sym)
-        elif atype == "overseas_stock":
-            curr_p, _, _ = get_us_stock_fmp_data(sym)
-        elif atype == "domestic_stock":
-            curr_p, _ = get_naver_realtime_price(sym)
+            if atype == "crypto":
+                curr_p, _, _ = get_crypto_bybit_data(sym)
+            elif atype == "overseas_stock":
+                curr_p, _, _ = get_us_stock_fmp_data(sym)
+            elif atype == "domestic_stock":
+                curr_p, _ = get_naver_realtime_price(sym)
 
-        if curr_p is not None:
-            # 1. 1차 목표가 도달 시 -> 익절 (WIN)
-            if curr_p >= target_p:
-                ret = ((target_p - entry_p) / entry_p) * 100
-                c.execute("UPDATE trades SET status = 'WIN', ret = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?", (round(ret, 2), tid))
-            # 2. 칼손절가 이탈 시 -> 손절 (LOSS)
-            elif curr_p <= stop_p:
-                ret = ((stop_p - entry_p) / entry_p) * 100
-                c.execute("UPDATE trades SET status = 'LOSS', ret = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?", (round(ret, 2), tid))
+            if curr_p is not None and entry_p > 0:
+                if curr_p >= target_p:
+                    ret = ((target_p - entry_p) / entry_p) * 100
+                    c.execute("UPDATE trades SET status = 'WIN', ret = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?", (round(ret, 2), tid))
+                elif curr_p <= stop_p:
+                    ret = ((stop_p - entry_p) / entry_p) * 100
+                    c.execute("UPDATE trades SET status = 'LOSS', ret = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?", (round(ret, 2), tid))
 
-    conn.commit()
+        conn.commit()
 
-    # 통계 계산
-    c.execute("SELECT COUNT(*) FROM trades")
-    total_trades = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM trades")
+        total_trades = c.fetchone()[0]
 
-    c.execute("SELECT COUNT(*), SUM(ret) FROM trades WHERE status = 'WIN'")
-    win_row = c.fetchone()
-    win_count = win_row[0] or 0
-    win_return = win_row[1] or 0.0
+        c.execute("SELECT COUNT(*), SUM(ret) FROM trades WHERE status = 'WIN'")
+        win_row = c.fetchone()
+        win_count = win_row[0] or 0
+        win_return = win_row[1] or 0.0
 
-    c.execute("SELECT COUNT(*), SUM(ret) FROM trades WHERE status = 'LOSS'")
-    loss_row = c.fetchone()
-    loss_count = loss_row[0] or 0
-    loss_return = loss_row[1] or 0.0
+        c.execute("SELECT COUNT(*), SUM(ret) FROM trades WHERE status = 'LOSS'")
+        loss_row = c.fetchone()
+        loss_count = loss_row[0] or 0
+        loss_return = loss_row[1] or 0.0
 
-    c.execute("SELECT COUNT(*) FROM trades WHERE status = 'PENDING'")
-    pending_count = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM trades WHERE status = 'PENDING'")
+        pending_count = c.fetchone()[0]
 
-    # 최근 5건 내역 조회
-    c.execute("SELECT name, entry_price, target_price, status, ret, created_at FROM trades ORDER BY id DESC LIMIT 5")
-    recent_history = c.fetchall()
+        c.execute("SELECT name, entry_price, target_price, status, ret, created_at FROM trades ORDER BY id DESC LIMIT 5")
+        recent_history = c.fetchall()
+        conn.close()
 
-    conn.close()
+        finished = win_count + loss_count
+        win_rate = (win_count / finished * 100) if finished > 0 else 0.0
+        cum_ret = win_return + loss_return
 
-    finished = win_count + loss_count
-    win_rate = (win_count / finished * 100) if finished > 0 else 0.0
-    cum_ret = win_return + loss_return
-
-    return {
-        "total": total_trades,
-        "finished": finished,
-        "win": win_count,
-        "loss": loss_count,
-        "pending": pending_count,
-        "win_rate": win_rate,
-        "cum_ret": cum_ret,
-        "history": recent_history
-    }
+        return {
+            "total": total_trades,
+            "finished": finished,
+            "win": win_count,
+            "loss": loss_count,
+            "pending": pending_count,
+            "win_rate": win_rate,
+            "cum_ret": cum_ret,
+            "history": recent_history
+        }
+    except Exception:
+        return {"total": 0, "finished": 0, "win": 0, "loss": 0, "pending": 0, "win_rate": 0.0, "cum_ret": 0.0, "history": []}
 
 def generate_full_quant_report(stock_name, symbol, price, quant_data):
     an = quant_data.get('analysis', {}) if quant_data else {}
@@ -478,9 +472,9 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     [ICT & 퀀트 정밀 연산치]
     - 현재가: {price}
     - ICT 마켓 프레임: {an.get('ict_zone', 'Equilibrium')}
-    - 진입 기준가: {an.get('entry_p', 0):,}
-    - 1차 BSL 목표가: {an.get('target_p', 0):,}
-    - SSL 칼손절가: {an.get('stop_p', 0):,}
+    - 진입 기준가: {an.get('entry_p', 0)}
+    - 1차 BSL 목표가: {an.get('target_p', 0)}
+    - SSL 칼손절가: {an.get('stop_p', 0)}
     - 이평선 구조: {an.get('ma20_status', '산출중')}
     - RSI 강도: {an.get('rsi', 50.0)}
     - ATR 변동폭: {an.get('atr', '산출중')}
@@ -502,11 +496,11 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     ICT Alpha Action Plan
 
     방향성 롱 (Bullish Order Block 되돌림)
-    1차 진입 {an.get('entry_p', 0):,} (FVG 지지 확인 진입권)
-    2차 진입 {round(an.get('entry_p', 0) * 0.985, 2):,} (오더블록 하단 2차 분할)
-    1차 목표 {an.get('target_p', 0):,} (단기 Buy-side Liquidity 1차 분할 익절)
-    2차 목표 {round(an.get('target_p', 0) * 1.03, 2):,} (상단 주요 유동성 풀 최종 익절)
-    칼손절 {an.get('stop_p', 0):,} (Sell-side Liquidity 이탈 무효화)
+    1차 진입 {an.get('entry_p', 0)} (FVG 지지 확인 진입권)
+    2차 진입 {round(float(an.get('entry_p', 0)) * 0.985, 2)} (오더블록 하단 2차 분할)
+    1차 목표 {an.get('target_p', 0)} (단기 Buy-side Liquidity 1차 분할 익절)
+    2차 목표 {round(float(an.get('target_p', 0)) * 1.03, 2)} (상단 주요 유동성 풀 최종 익절)
+    칼손절 {an.get('stop_p', 0)} (Sell-side Liquidity 이탈 무효화)
 
     트리거 조건 및 행동 요령
     킬존 시간대 체결 강도 및 분할 매수 대응 전략 서술
@@ -534,7 +528,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def show_performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """봇 실전 성적표 조회 핸들러"""
     status_msg = await update.message.reply_text("📊 실시간 시세를 대조하여 타점 승률을 계산 중입니다...")
     stats = update_and_calculate_performance()
 
@@ -567,7 +560,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     chat_id = update.effective_chat.id
 
-    # 성적표 키워드 감지
     if query in ["성적표", "/성적표", "승률", "수익률", "검증", "/검증"]:
         await show_performance(update, context)
         return
@@ -613,7 +605,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_price = quant_data['current_price']
         summary_text, detail_text = generate_full_quant_report(formal_name, symbol, current_price, quant_data)
 
-        # 🎯 타점 자동 DB 저장
         record_trade_signal(symbol, formal_name, asset_type, quant_data['analysis'])
 
         report_id = str(uuid.uuid4())[:8]
@@ -641,7 +632,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent_msg = await context.bot.send_message(chat_id=chat_id, text=summary_text, reply_markup=reply_markup)
         new_msg_ids.append(sent_msg.message_id)
 
-        # 15분 후 자동 삭제
         if new_msg_ids:
             asyncio.create_task(delete_messages_later(context.bot, chat_id, new_msg_ids, delay=900))
 
@@ -691,4 +681,6 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("검증", show_performance))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(handle_button))
-    app.run_polling()
+    
+    # 중복 실행 충돌 방지 drop_pending_updates 적용
+    app.run_polling(drop_pending_updates=True)

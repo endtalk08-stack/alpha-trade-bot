@@ -26,7 +26,7 @@ TOSS_API_SECRET = os.getenv("TOSS_API_SECRET", "tssk_live_5U9SuuC4pLY2DpYYObXRH1
 TOSS_API_BASE_URL = "https://open-api.tossinvest.com"
 
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-2.5-flash')
+ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 

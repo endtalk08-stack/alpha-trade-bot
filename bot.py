@@ -62,7 +62,6 @@ def get_stock_code_by_name(query):
     """네이버 / 다음 실시간 검색으로 6자리 종목코드 추출"""
     clean_q = query.strip()
     
-    # 1. 네이버 자동완성 API
     try:
         url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(clean_q)}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -78,7 +77,6 @@ def get_stock_code_by_name(query):
     except Exception:
         pass
 
-    # 2. 다음 금융 검색 백업
     try:
         d_url = f"https://suggest-baro.daum.net/suggest?id=stock&v=4&code=utf-8&q={requests.utils.quote(clean_q)}"
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.daum.net"}
@@ -134,19 +132,20 @@ def fetch_naver_stock_candles(code):
         pass
     return None
 
-def generate_candlestick_chart(df, stock_name):
-    """트레이딩뷰 다크테마 캔들 차트 이미지 생성"""
+def generate_candlestick_chart(df, symbol_name):
+    """트레이딩뷰 다크테마 캔들 차트 이미지 버퍼 생성 (텔레그램 전송 안정화)"""
     try:
-        chart_df = df.tail(45).copy()
+        chart_df = df.tail(40).copy()
         chart_df.index = pd.to_datetime(chart_df.index)
         
+        # 다크 테마 컬러 설정
         mc = mpf.make_marketcolors(
             up='#ef5350', down='#26a69a',
             wick={'up':'#ef5350', 'down':'#26a69a'},
             edge={'up':'#ef5350', 'down':'#26a69a'},
             volume={'up':'#ef5350', 'down':'#26a69a'}
         )
-        s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', gridcolor='#333333', facecolor='#131722', figcolor='#131722')
+        s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', gridcolor='#2b2b36', facecolor='#131722', figcolor='#131722')
         
         buf = io.BytesIO()
         mpf.plot(
@@ -155,13 +154,14 @@ def generate_candlestick_chart(df, stock_name):
             mav=(20, 60),
             volume=True,
             style=s,
-            title=f"\n[ {stock_name} Alpha Quant Technical Structure ]",
-            figsize=(9, 5),
+            figsize=(8, 4.5),
             savefig=dict(fname=buf, format='png', bbox_inches='tight', facecolor='#131722')
         )
         buf.seek(0)
+        buf.name = "chart.png"  # 텔레그램 전송용 가상 파일명 부여
         return buf
-    except Exception:
+    except Exception as e:
+        print(f"Chart Render Error: {e}")
         return None
 
 def fetch_orderbook_and_sentiment(symbol, asset_type):
@@ -239,9 +239,7 @@ def fetch_technical_quant_data(symbol, asset_type):
             curr_price_str = f"{curr_p:,.2f} 달러"
 
         elif asset_type == "domestic_stock":
-            # 1. 네이버 실시간 가격 최우선 확보
             curr_price_str = get_naver_realtime_price(symbol)
-            # 2. 네이버 캔들 수집
             df = fetch_naver_stock_candles(symbol)
             if df is None or len(df) < 10:
                 try:
@@ -255,7 +253,6 @@ def fetch_technical_quant_data(symbol, asset_type):
                 curr_price_str = f"{int(c_val):,} 원"
 
         else:
-            # 미국 주식
             stock = yf.Ticker(symbol)
             df = stock.history(period="60d")
             if not df.empty:
@@ -265,7 +262,6 @@ def fetch_technical_quant_data(symbol, asset_type):
         if not curr_price_str:
             return None
 
-        # 기본 퀀트 구조체 세팅
         quant_info['current_price'] = curr_price_str
         quant_info['sentiment'] = fetch_orderbook_and_sentiment(symbol, asset_type)
         quant_info['earnings_status'] = "정상 범위"
@@ -341,7 +337,6 @@ def fetch_realtime_price_fallback(user_query):
         elif any(c.isupper() for c in cleaned_query) and not any('\uac00' <= char <= '\ud7a3' for char in cleaned_query):
             asset_type, symbol = "overseas_stock", cleaned_query
         else:
-            # 6자리 종목코드 자동 검색
             if not (cleaned_query.isdigit() and len(cleaned_query) == 6):
                 searched_code, formal_name = get_stock_code_by_name(user_query.strip())
                 symbol = searched_code if searched_code else cleaned_query
@@ -440,6 +435,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
+    chat_id = update.effective_chat.id
     status_msg = await update.message.reply_text(f"{query} 실시간 차트 렌더링 및 퀀트 연산 중입니다")
 
     try:
@@ -460,18 +456,28 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("심층 분석 근거 보기", callback_data=f"show_detail:{report_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # 차트 이미지 생성
+        # 1. 차트 이미지 생성
         chart_buffer = None
-        if quant_data and quant_data.get('chart_df') is not None:
+        if quant_data and quant_data.get('chart_df') is not None and not quant_data['chart_df'].empty:
             chart_buffer = generate_candlestick_chart(quant_data['chart_df'], formal_name)
 
+        # 2. 로딩 메시지 삭제
         await status_msg.delete()
 
-        # 차트 먼저 전송 후 요약 카드 전송
-        if chart_buffer:
-            await update.message.reply_photo(photo=chart_buffer)
-        
-        await update.message.reply_text(
+        # 3. 차트 사진 전송
+        if chart_buffer is not None:
+            try:
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=chart_buffer.getvalue(),
+                    filename="chart.png"
+                )
+            except Exception as pe:
+                print(f"Photo send error: {pe}")
+
+        # 4. 타점 요약 카드 전송
+        await context.bot.send_message(
+            chat_id=chat_id,
             text=summary_text,
             reply_markup=reply_markup
         )

@@ -30,25 +30,23 @@ from telegram.ext import (
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 
-TOSS_API_KEY = os.getenv("TOSS_API_KEY", "tsck_live_5pxz8W5tFlbn07w63YxJfE")
-TOSS_API_SECRET = os.getenv("TOSS_API_SECRET", "tssk_live_5U9SuuC4pLY2DpYYObXRH1C1BWMGnGKz5NNEZDe8Sse")
-TOSS_API_BASE_URL = "https://open-api.tossinvest.com"
-
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 
-# 주요 종목 마스터 사전 (영문 대소문자 무관 탐색)
+# 주요 종목 마스터 사전 (해외 코인은 USDT 기준)
 COMMON_SYMBOLS = {
     "BTC": ("crypto", "BTCUSDT"),
     "ETH": ("crypto", "ETHUSDT"),
     "XRP": ("crypto", "XRPUSDT"),
     "DOGE": ("crypto", "DOGEUSDT"),
+    "SOL": ("crypto", "SOLUSDT"),
     "비트코인": ("crypto", "BTCUSDT"),
     "이더리움": ("crypto", "ETHUSDT"),
     "리플": ("crypto", "XRPUSDT"),
     "도지코인": ("crypto", "DOGEUSDT"),
+    "솔라나": ("crypto", "SOLUSDT"),
     "삼성전자": ("domestic_stock", "005930"),
     "삼성전기": ("domestic_stock", "009150"),
     "SK하이닉스": ("domestic_stock", "000660"),
@@ -78,20 +76,74 @@ COMMON_SYMBOLS = {
     "QQQ": ("overseas_stock", "QQQ")
 }
 
+def get_crypto_bybit_data(symbol="BTCUSDT"):
+    """바이비트(Bybit) 공식 V5 Public API 연동 (해외 서버 차단 0%, 달러/USDT 기준)"""
+    clean_sym = symbol.replace("KRW-", "").replace("-", "").upper()
+    if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
+        clean_sym = f"{clean_sym}USDT"
+
+    # 1. Bybit V5 일봉 캔들 API 호출
+    try:
+        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={clean_sym}&interval=D&limit=60"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=3).json()
+        candle_list = res.get("result", {}).get("list", [])
+        
+        if candle_list:
+            records = []
+            for item in candle_list:
+                # [startTime, openPrice, highPrice, lowPrice, closePrice, volume, turnover]
+                records.append({
+                    "Date": pd.to_datetime(int(item[0]), unit='ms'),
+                    "Open": float(item[1]),
+                    "High": float(item[2]),
+                    "Low": float(item[3]),
+                    "Close": float(item[4]),
+                    "Volume": float(item[5])
+                })
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            curr_price = float(df['Close'].iloc[-1])
+            curr_price_str = f"{curr_price:,.2f} 달러 (USDT)"
+            return curr_price_str, df
+    except Exception:
+        pass
+
+    # 2. OKX V5 백업 엔진
+    try:
+        okx_sym = clean_sym.replace("USDT", "-USDT")
+        url = f"https://www.okx.com/api/v5/market/candles?instId={okx_sym}&bar=1D&limit=60"
+        res = requests.get(url, timeout=3).json()
+        data = res.get("data", [])
+        if data:
+            records = []
+            for item in data:
+                records.append({
+                    "Date": pd.to_datetime(int(item[0]), unit='ms'),
+                    "Open": float(item[1]),
+                    "High": float(item[2]),
+                    "Low": float(item[3]),
+                    "Close": float(item[4]),
+                    "Volume": float(item[5])
+                })
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            curr_price = float(df['Close'].iloc[-1])
+            return f"{curr_price:,.2f} 달러 (USDT)", df
+    except Exception:
+        pass
+
+    return None, None
+
 def get_stock_code_by_name(query):
-    """대소문자/특수문자 무관 100% 종목코드 추출기"""
     clean_q = query.strip()
     target_comp = clean_q.replace(" ", "").upper()
 
-    # 1. 마스터 사전 매칭 (대소문자 무시)
     for k, v in COMMON_SYMBOLS.items():
         if k.replace(" ", "").upper() == target_comp:
             return v[1], k
 
-    # 2. 다음 금융 검색 (코스피/코스닥 대소문자 무관 매칭)
     try:
         d_url = f"https://suggest-baro.daum.net/suggest?id=stock&v=4&code=utf-8&q={requests.utils.quote(clean_q)}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://finance.daum.net"}
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.daum.net"}
         res = requests.get(d_url, headers=headers, timeout=2).json()
         sub_items = res.get("sub", [])
         if sub_items:
@@ -100,12 +152,10 @@ def get_stock_code_by_name(query):
                 name = str(item[1]).strip()
                 if name.replace(" ", "").upper() == target_comp:
                     return raw_code, name
-            # 정확 일치가 없어도 1순위 반환
             return str(sub_items[0][0]).replace("A", "").strip(), str(sub_items[0][1]).strip()
     except Exception:
         pass
 
-    # 3. 네이버 모바일 통합 검색
     try:
         url = f"https://m.stock.naver.com/api/search/autoComplete?keyword={requests.utils.quote(clean_q)}"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -127,27 +177,10 @@ def get_stock_code_by_name(query):
     except Exception:
         pass
 
-    # 4. 네이버 PC 검색
-    try:
-        url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(clean_q)}&target=stock"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=2).json()
-        items_list = res.get("items", [])
-        if items_list and isinstance(items_list[0], list) and len(items_list[0]) > 0:
-            for item in items_list[0]:
-                c = str(item[0]).strip()
-                n = str(item[1]).strip()
-                if n.replace(" ", "").upper() == target_comp:
-                    return c, n
-            return str(items_list[0][0][0]).strip(), str(items_list[0][0][1]).strip()
-    except Exception:
-        pass
-
     return None, clean_q
 
 def get_naver_realtime_price(code):
-    """실시간 현재가 추출 (모바일 API + 실시간 폴링)"""
-    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/basic"
         res = requests.get(url, headers=headers, timeout=2).json()
@@ -170,7 +203,6 @@ def get_naver_realtime_price(code):
     return None
 
 def fetch_domestic_stock_candles(code):
-    """일봉 데이터 수집 (네이버 모바일 JSON + XML 2중 파싱)"""
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = f"https://api.stock.naver.com/chart/domestic/market/stock/{code}?periodType=dayCandle&range=60"
@@ -191,32 +223,9 @@ def fetch_domestic_stock_candles(code):
                 return pd.DataFrame(records).set_index("Date").sort_index()
     except Exception:
         pass
-
-    try:
-        url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
-        res = requests.get(url, headers=headers, timeout=3)
-        matches = re.findall(r'<item data="([^"]+)"', res.text)
-        records = []
-        for m in matches:
-            parts = m.split("|")
-            if len(parts) >= 6:
-                records.append({
-                    "Date": pd.to_datetime(parts[0], format="%Y%m%d"),
-                    "Open": float(parts[1]),
-                    "High": float(parts[2]),
-                    "Low": float(parts[3]),
-                    "Close": float(parts[4]),
-                    "Volume": float(parts[5])
-                })
-        if records:
-            return pd.DataFrame(records).set_index("Date").sort_index()
-    except Exception:
-        pass
-
     return None
 
 def generate_candlestick_chart(df, symbol_name):
-    """트레이딩뷰 다크 테마 캔들 차트 생성"""
     try:
         if df is None or len(df) < 5:
             return None
@@ -255,18 +264,20 @@ def fetch_orderbook_and_sentiment(symbol, asset_type):
     }
     if asset_type == "crypto":
         try:
-            url = f"https://api.binance.com/api/v3/depth?symbol={symbol}&limit=10"
-            ob = requests.get(url, timeout=2).json()
-            bids = sum([float(x[1]) for x in ob.get("bids", [])])
-            asks = sum([float(x[1]) for x in ob.get("asks", [])])
+            clean_sym = symbol.replace("KRW-", "").replace("-", "").upper()
+            if not clean_sym.endswith("USDT"):
+                clean_sym = f"{clean_sym}USDT"
+            url = f"https://api.bybit.com/v5/market/orderbook?category=linear&symbol={clean_sym}&limit=10"
+            res = requests.get(url, timeout=2).json()
+            result = res.get("result", {})
+            bids = sum([float(b[1]) for b in result.get("b", [])])
+            asks = sum([float(a[1]) for a in result.get("a", [])])
             if asks > 0:
                 ratio = bids / asks
                 if ratio > 1.8:
-                    sentiment_data["orderbook_ratio"] = f"매수잔량 우세 ({ratio:.2f}배)"
+                    sentiment_data["orderbook_ratio"] = f"선물 매수벽 우세 ({ratio:.2f}배)"
                 elif ratio < 0.6:
-                    sentiment_data["orderbook_ratio"] = f"매도잔량 우세 ({1/ratio:.2f}배)"
-                else:
-                    sentiment_data["orderbook_ratio"] = f"균형 오더북 ({ratio:.2f})"
+                    sentiment_data["orderbook_ratio"] = f"선물 매도벽 우세 ({1/ratio:.2f}배)"
         except Exception:
             pass
     elif asset_type == "domestic_stock":
@@ -300,7 +311,7 @@ def fetch_realtime_news(symbol, asset_type):
                 return " / ".join(titles)
     except Exception:
         pass
-    return "시장 전반의 수급 모멘텀에 의해 등락 중"
+    return "글로벌 매크로 유동성 및 선물 시장 롱/숏 수급에 의해 등락 중"
 
 def fetch_technical_quant_data(symbol, asset_type):
     quant_info = {}
@@ -309,17 +320,7 @@ def fetch_technical_quant_data(symbol, asset_type):
 
     try:
         if asset_type == "crypto":
-            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit=60"
-            data = requests.get(url, timeout=3).json()
-            df = pd.DataFrame(data, columns=['time', 'open', 'high', 'low', 'close', 'vol', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
-            df['close'] = df['close'].astype(float)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
-            df['open'] = df['open'].astype(float)
-            df['vol'] = df['vol'].astype(float)
-            df.index = pd.to_datetime(df['time'], unit='ms')
-            curr_p = float(df['close'].iloc[-1])
-            curr_price_str = f"{curr_p:,.2f} 달러"
+            curr_price_str, df = get_crypto_bybit_data(symbol)
 
         elif asset_type == "domestic_stock":
             curr_price_str = get_naver_realtime_price(symbol)
@@ -398,7 +399,6 @@ def fetch_realtime_price_fallback(user_query):
     cleaned_query = user_query.strip().replace(" ", "").upper()
     display_name = user_query.strip()
     
-    # 1. 고정 마스터 매핑
     matched_key = None
     for key in COMMON_SYMBOLS:
         if key.replace(" ", "").upper() == cleaned_query:
@@ -409,12 +409,11 @@ def fetch_realtime_price_fallback(user_query):
         asset_type, symbol = COMMON_SYMBOLS[matched_key]
         display_name = matched_key
     else:
-        if any(c in cleaned_query for c in ["코인", "USDT", "BTC", "ETH"]):
-            asset_type, symbol = "crypto", cleaned_query
+        if any(c in cleaned_query for c in ["코인", "USDT", "BTC", "ETH", "BITCOIN", "비트"]):
+            asset_type, symbol = "crypto", cleaned_query.replace("코인", "").replace("BITCOIN", "BTC")
         elif any(c.isupper() for c in cleaned_query) and not any('\uac00' <= char <= '\ud7a3' for char in cleaned_query):
             asset_type, symbol = "overseas_stock", cleaned_query
         else:
-            # 6자리 종목코드 자동 검색 (대소문자 완전 무시)
             if not (cleaned_query.isdigit() and len(cleaned_query) == 6):
                 searched_code, formal_name = get_stock_code_by_name(user_query.strip())
                 symbol = searched_code if searched_code else cleaned_query
@@ -429,22 +428,6 @@ def fetch_realtime_price_fallback(user_query):
     if quant_data and quant_data.get('current_price'):
         quant_data['news'] = news_brief
         return quant_data['current_price'], symbol, display_name, quant_data
-
-    # 실시간 시세 단독 백업
-    if asset_type == "domestic_stock":
-        p = get_naver_realtime_price(symbol)
-        if p:
-            sent = fetch_orderbook_and_sentiment(symbol, asset_type)
-            fallback_quant = {
-                "current_price": p,
-                "news": news_brief,
-                "earnings_status": "정상",
-                "sentiment": sent,
-                "vol_status": "정상",
-                "chart_df": None,
-                "rsi": 50.0
-            }
-            return p, symbol, display_name, fallback_quant
 
     return None, symbol, display_name, None
 
@@ -466,9 +449,9 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
         """
 
     prompt = f"""
-    당신은 여의도 최고의 프랍트레이딩 데스크 수석 퀀트 트레이더입니다.
+    당신은 대한민국 최고의 실전 퀀트 트레이더입니다.
     두루뭉술하거나 뻔한 말(예: '세력이 받아먹는다', '수급이 좋다') 같은 영혼 없는 템플릿형 문장은 엄격히 금지합니다.
-    제공된 실제 팩터 데이터와 해당 기업의 실제 최근 이슈/업황을 직접 결합하여, 이 종목만의 독보적이고 날카로운 실전 매매 전략을 작성하세요.
+    제공된 실제 팩터 데이터와 해당 자산의 실제 최근 이슈/업황을 직접 결합하여, 이 종목만의 독보적이고 날카로운 실전 매매 전략을 작성하세요.
 
     대상 종목: {stock_name} ({symbol})
     {tech_context}
@@ -502,7 +485,7 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 
     이 종목의 오늘 등락을 만든 실제 핵심 재료와 테마 모멘텀을 팩트 위주로 구체적 서술
 
-    환율 금리 시장 매크로 환경이 이 종목의 실적 및 주가에 미치는 구체적 영향 분석
+    환율 금리 시장 매크로 환경이 이 종목의 실적 및 가격에 미치는 구체적 영향 분석
 
     동일 섹터 내 타 종목 대비 수급 강도와 주도주 여부를 시장 상대강도 기반으로 날카롭게 서술
 
@@ -520,7 +503,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
         "종목명을 입력하시면 실시간 차트 렌더링 및 퀀트 액션 플랜을 함께 전송합니다\n"
-        "예시 sk증권 솔트룩스 알테오젠 에코프로 삼성전자 비트코인 TSLA"
+        "예시 BTC 비트코인 ETH sk증권 삼성전기 알테오젠 TSLA"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -546,7 +529,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # 차트 이미지 생성 (독립 try-except로 안정성 100% 보장)
         chart_buffer = None
         if quant_data and quant_data.get('chart_df') is not None and not quant_data['chart_df'].empty:
             try:
@@ -554,7 +536,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 chart_buffer = None
 
-        # 로딩 메시지 삭제
         try:
             await status_msg.delete()
         except Exception:
@@ -570,7 +551,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as pe:
                 print(f"Photo send error: {pe}")
 
-        # 2. 타점 요약 카드 전송 (무조건 보장)
+        # 2. 타점 요약 카드 전송
         await context.bot.send_message(
             chat_id=chat_id,
             text=summary_text,
@@ -582,7 +563,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "429" in err_msg or "quota" in err_msg.lower():
             await context.bot.send_message(chat_id=chat_id, text="일일 API 할당량이 소진되었습니다 잠시 후 다시 시도해 주세요")
         else:
-            await context.bot.send_message(chat_id=chat_id, text=f"분석 처리 중 일시적 지연이 발생했습니다. 다시 입력해 주세요.")
+            await context.bot.send_message(chat_id=chat_id, text=f"분석 처리 중 일시적 지연이 발생했습니다 다시 입력해 주세요")
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

@@ -115,7 +115,6 @@ def find_stock_code(query):
     return None, query.strip()
 
 def fetch_events_and_catalysts(symbol, stock_name, asset_type):
-    """실시간 뉴스 헤드라인, 실적 발표 D-Day, 매크로 경제 일정 조회 모듈"""
     cache_key = f"{asset_type}_{symbol}"
     curr_time = time.time()
     if cache_key in EVENT_CACHE:
@@ -126,8 +125,8 @@ def fetch_events_and_catalysts(symbol, stock_name, asset_type):
     news_text = "업황 사이클 및 기관 수급 유입 모멘텀 지속"
     earnings_text = "분기 실적 시즌 변동성 안정권"
     macro_text = "FOMC 금리 및 매크로 물가지표 경계감 소화 중"
+    catalyst_score = 0.8  # 기본 0.8점
 
-    # 1. 뉴스 및 공시 수집
     try:
         if asset_type == "domestic_stock":
             url = f"https://finance.naver.com/item/news_news.naver?code={symbol}&page=1"
@@ -138,6 +137,7 @@ def fetch_events_and_catalysts(symbol, stock_name, asset_type):
                 news_text = matches[0].strip().replace("&quot;", '"').replace("&amp;", '&')
             earnings_text = "정기 실적 공시 및 실적 컨센서스 추적 중"
             macro_text = "외국인/기관 선물 포지션 및 환율 변동성 연동"
+            catalyst_score = 0.9
         elif asset_type == "overseas_stock":
             if FMP_API_KEY:
                 fmp_url = f"https://financialmodelingprep.com/api/v3/stock_news?tickers={symbol}&limit=1&apikey={FMP_API_KEY}"
@@ -146,19 +146,22 @@ def fetch_events_and_catalysts(symbol, stock_name, asset_type):
                     news_text = f_res[0].get("title", news_text)
             earnings_text = "차기 실적 발표 캘린더 대기 및 가이던스 추적"
             macro_text = "미국 연준(Fed) 금리 정책 및 국채 금리 모니터링"
+            catalyst_score = 0.9
         elif asset_type == "crypto":
             news_text = "비트코인 도미넌스 및 글로벌 가상자산 현물 ETF 순유입 지속"
             earnings_text = "온체인 유동성 공급 및 선물 미결제약정(OI) 안정화"
             macro_text = "글로벌 매크로 유동성 및 미 달러화 지수(DXY) 추종"
+            catalyst_score = 0.85
     except Exception:
-        pass
+        catalyst_score = 0.7
 
     event_info = {
         "news": news_text[:65] + ("..." if len(news_text) > 65 else ""),
         "earnings": earnings_text,
-        "macro": macro_text
+        "macro": macro_text,
+        "catalyst_score": catalyst_score
     }
-    EVENT_CACHE[cache_key] = (event_info, curr_time + 900) # 15분 캐싱
+    EVENT_CACHE[cache_key] = (event_info, curr_time + 900)
     return event_info
 
 def get_market_regime(asset_type):
@@ -169,7 +172,7 @@ def get_market_regime(asset_type):
             return cached_data
 
     regime_name = "횡보 박스권 📦 (Range)"
-    score_adj = 0.0
+    regime_score = 0.5
     action_note = "종합지수 수렴 구간으로 1차 목표가 도달 시 빠른 분할 익절 대응"
     index_name = "KOSPI 200" if asset_type == "domestic_stock" else ("NASDAQ" if asset_type == "overseas_stock" else "비트코인(BTC)")
 
@@ -194,19 +197,19 @@ def get_market_regime(asset_type):
 
             if curr_p >= ma20 * 1.01 and slope > 0:
                 regime_name = "강한 상승장 🚀 (Bull)"
-                score_adj = 0.4
+                regime_score = 1.0
                 action_note = f"{index_name} 20일선 위 우상향 안착 중. 적극 돌파 및 스윙 목표가 홀딩 유리"
             elif curr_p >= ma20 * 0.985 and curr_p < ma20 * 1.01:
                 regime_name = "건전한 조정장 ☕ (Pullback)"
-                score_adj = 0.2
+                regime_score = 0.8
                 action_note = f"{index_name} 20일선 지지 수렴 중. 최적의 Discount Zone 분할 매수 적기"
             elif curr_p < ma20 * 0.985 and slope < 0:
                 regime_name = "위험 하락장 ⚠️ (Bear)"
-                score_adj = -0.6
+                regime_score = 0.2
                 action_note = f"{index_name} 역배열 하향세. 휩쏘 주의, 진입 비중 30% 이하 축소 및 칼손절 엄수"
             else:
                 regime_name = "횡보 박스권 📦 (Range)"
-                score_adj = 0.0
+                regime_score = 0.5
                 action_note = f"{index_name} 방향성 탐색 구간. 짧은 손익비 박스권 단타 대응"
     except Exception:
         pass
@@ -214,7 +217,7 @@ def get_market_regime(asset_type):
     result = {
         "index_name": index_name,
         "regime_name": regime_name,
-        "score_adj": score_adj,
+        "regime_score": regime_score,
         "action_note": action_note
     }
     MARKET_REGIME_CACHE[asset_type] = (result, curr_time + 600)
@@ -550,13 +553,15 @@ def generate_candlestick_chart(df, symbol_name):
         plt.close('all')
         gc.collect()
 
-def perform_ict_quant_analysis(raw_price, df, regime_info=None):
-    score_adj = regime_info.get("score_adj", 0.0) if regime_info else 0.0
+def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None):
+    """5대 독립 퀀트 팩터(각 1.0점 만점 / 총 5.0점) 정밀 채점 엔진"""
+    f1_regime_score = regime_info.get("regime_score", 0.5) if regime_info else 0.5
+    f5_catalyst_score = event_info.get("catalyst_score", 0.8) if event_info else 0.8
 
     if df is None or len(df) < 10:
         atr = round(raw_price * 0.03, 2)
-        base_s = 4.3 + score_adj
-        base_s = min(5.0, max(2.5, base_s))
+        total_score = round(f1_regime_score + 0.7 + 0.7 + 0.6 + f5_catalyst_score, 1)
+        total_score = min(5.0, max(1.5, total_score))
         return {
             "trend_status": "중립 레인지",
             "rsi": 50.0,
@@ -566,8 +571,9 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None):
             "atr": atr,
             "ict_zone": "Discount Zone",
             "raw_price": raw_price,
-            "score": f"{base_s:.1f}",
-            "stars": "★★★★★" if base_s >= 4.4 else ("★★★★☆" if base_s >= 3.9 else "★★★☆☆"),
+            "score": f"{total_score:.1f}",
+            "grade": "A급 (스윙 분할)" if total_score >= 4.0 else "B급 (단기 대응)",
+            "stars": "★★★★★" if total_score >= 4.5 else ("★★★★☆" if total_score >= 4.0 else ("★★★☆☆" if total_score >= 3.5 else "★★☆☆☆")),
             "entry1_low": round(raw_price * 0.985, 2),
             "entry1_high": round(raw_price, 2),
             "entry2_low": round(raw_price * 0.965, 2),
@@ -590,8 +596,20 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None):
     ict_zone = "Discount Zone (할인 / 롱 OTE 유리)" if curr_p <= eq else "Premium Zone (할증 / 숏 유리)"
 
     ma20 = float(closes.rolling(20, min_periods=5).mean().iloc[-1])
+    ma20_prev = float(closes.rolling(20, min_periods=5).mean().iloc[-5]) if len(closes) >= 25 else ma20
+    ma_slope_positive = (ma20 - ma20_prev) >= 0
     disparity = ((curr_p - ma20) / ma20) * 100
     ma20_status = f"20일선({ma20:,.1f}) 대비 {disparity:+.1f}%"
+
+    # 팩터 2: 이평선 추세 배열 (1.0점 만점)
+    if curr_p >= ma20 and ma_slope_positive:
+        f2_trend_score = 1.0
+    elif curr_p >= ma20 * 0.975:
+        f2_trend_score = 0.7
+    elif curr_p >= ma20 * 0.94:
+        f2_trend_score = 0.4
+    else:
+        f2_trend_score = 0.2
 
     delta = closes.diff()
     gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=5).mean()
@@ -611,6 +629,7 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None):
     if atr_val <= 0 or np.isnan(atr_val):
         atr_val = round(curr_p * 0.03, 2)
 
+    # FVG 불균형 매물대 및 Sweep 탐색
     fvg_top, fvg_bot = None, None
     for k in range(max(2, len(df_c)-5), len(df_c)):
         if float(lows.iloc[k]) > float(highs.iloc[k-2]):
@@ -618,6 +637,47 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None):
             fvg_bot = float(highs.iloc[k-2])
 
     sweep_low = float(lows.tail(5).min())
+
+    # 팩터 3: ICT Discount & FVG 가격 메리트 (1.0점 만점)
+    if (curr_p <= eq) and fvg_top and (fvg_top <= curr_p):
+        f3_price_score = 1.0
+    elif curr_p <= eq:
+        f3_price_score = 0.8
+    elif fvg_top:
+        f3_price_score = 0.6
+    else:
+        f3_price_score = 0.3
+
+    # 팩터 4: RSI & 수급 모멘텀 (1.0점 만점)
+    if (40.0 <= rsi_val <= 55.0) and (70.0 <= vol_ratio <= 140.0):
+        f4_momentum_score = 1.0
+    elif (35.0 <= rsi_val <= 65.0):
+        f4_momentum_score = 0.7
+    elif rsi_val > 70.0:
+        f4_momentum_score = 0.3
+    else:
+        f4_momentum_score = 0.4
+
+    # 5대 팩터 합산 (총 5.0점 만점)
+    total_raw_score = f1_regime_score + f2_trend_score + f3_price_score + f4_momentum_score + f5_catalyst_score
+    total_score = round(min(5.0, max(1.5, total_raw_score)), 1)
+
+    # 5단계 등급 및 별점 부여
+    if total_score >= 4.5:
+        stars_str = "★★★★★"
+        grade_str = "S급 (최우수 타점 / 적극 진입)"
+    elif total_score >= 4.0:
+        stars_str = "★★★★☆"
+        grade_str = "A급 (우수 타점 / 1·2차 분할)"
+    elif total_score >= 3.5:
+        stars_str = "★★★☆☆"
+        grade_str = "B급 (중립 / 짧은 단타 대응)"
+    elif total_score >= 3.0:
+        stars_str = "★★☆☆☆"
+        grade_str = "C급 (주의 / 관망 권고)"
+    else:
+        stars_str = "★☆☆☆☆"
+        grade_str = "D급 (고위험 / 진입 금지)"
 
     if fvg_top and fvg_top <= curr_p:
         e1_high = round(curr_p, 2)
@@ -634,16 +694,6 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None):
     max_allowed_stop = round(curr_p - (atr_val * 1.3), 2)
     final_stop = max(calc_stop, max_allowed_stop)
 
-    base_score = 4.3 if curr_p >= ma20 else 3.8
-    if curr_p <= eq:
-        base_score += 0.2
-    if 40.0 <= rsi_val <= 60.0:
-        base_score += 0.2
-    base_score += score_adj
-    base_score = round(min(5.0, max(2.5, base_score)), 1)
-
-    stars_str = "★★★★★" if base_score >= 4.4 else ("★★★★☆" if base_score >= 3.9 else "★★★☆☆")
-
     return {
         "trend_status": "상승 모멘텀 가속" if curr_p >= ma20 else "단기 매물 소화 조정",
         "rsi": round(rsi_val, 1),
@@ -653,7 +703,8 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None):
         "atr": atr_val,
         "ict_zone": ict_zone,
         "raw_price": curr_p,
-        "score": f"{base_score:.1f}",
+        "score": f"{total_score:.1f}",
+        "grade": grade_str,
         "stars": stars_str,
         "entry1_low": e1_low,
         "entry1_high": e1_high,
@@ -690,7 +741,7 @@ def fetch_technical_quant_data(symbol, asset_type, stock_name=""):
 
         quant_info['raw_price'] = curr_price_num
         quant_info['current_price'] = curr_price_str
-        quant_info['analysis'] = perform_ict_quant_analysis(curr_price_num, df, regime_info)
+        quant_info['analysis'] = perform_ict_quant_analysis(curr_price_num, df, regime_info, event_info)
         quant_info['chart_df'] = df
         quant_info['regime_info'] = regime_info
         quant_info['event_info'] = event_info
@@ -730,7 +781,7 @@ def generate_reliable_report(stock_name, symbol, price, an, regime_info, event_i
 
 현재가 {price}
 종합지수 국면 {regime_tag}
-현재 트레이딩 적합도 {an['stars']} (점수 {an['score']})
+트레이딩 적합도 {an['stars']} {an['score']}점 [{an['grade']}]
 
 주요 재료 및 일정 캘린더
 • 실시간 핵심 재료: {event_info['news']}

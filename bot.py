@@ -34,8 +34,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJY
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
 genai.configure(api_key=GEMINI_API_KEY)
-# 가장 안정적이고 빠른 플래시 모델 지정
-ai_model = genai.GenerativeModel('gemini-2.5-flash')
+ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 REPORT_CACHE = {}
 DB_FILE = "trades.db"
@@ -92,14 +91,15 @@ US_STOCK_MAP = {
 }
 
 DOMESTIC_FAST_MAP = {
-    "삼성중공업": "010140", "삼성전자": "005930", "삼성전기": "009150",
-    "SK하이닉스": "000660", "SK스퀘어": "402340", "SK증권": "001510",
-    "솔트룩스": "304100", "알테오젠": "196170", "에코프로": "086520",
-    "에코프로비엠": "247540", "레인보우로보틱스": "277810", "카카오": "035720",
-    "네이버": "035420", "NAVER": "035420", "현대차": "005380",
-    "기아": "000270", "포스코홀딩스": "005490", "POSCO홀딩스": "005490",
-    "LG에너지솔루션": "373220", "한화오션": "042660", "두산에너빌리티": "034020",
-    "한화에어로스페이스": "012450", "현대모비스": "012330", "셀트리온": "068270"
+    "SK하이닉스": "000660", "하이닉스": "000660",
+    "삼성전자": "005930", "삼성전기": "009150", "삼성중공업": "010140",
+    "SK증권": "001510", "SK스퀘어": "402340", "솔트룩스": "304100",
+    "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
+    "레인보우로보틱스": "277810", "카카오": "035720", "네이버": "035420",
+    "NAVER": "035420", "현대차": "005380", "기아": "000270",
+    "포스코홀딩스": "005490", "POSCO홀딩스": "005490", "LG에너지솔루션": "373220",
+    "한화오션": "042660", "두산에너빌리티": "034020", "한화에어로스페이스": "012450",
+    "현대모비스": "012330", "셀트리온": "068270"
 }
 
 async def delete_messages_later(bot, chat_id, message_ids, delay=900):
@@ -331,7 +331,7 @@ def perform_ict_quant_analysis(raw_price, df):
     ma20 = closes.rolling(20, min_periods=5).mean().iloc[-1]
     ma60 = closes.rolling(60, min_periods=10).mean().iloc[-1] if len(df_c) >= 10 else ma20
     disparity = ((curr_p - ma20) / ma20) * 100
-    ma20_status = f"20일선 대비 {disparity:+.1f}%"
+    ma20_status = f"20일선({ma20:,.1f}) 대비 {disparity:+.1f}% / 60일선({ma60:,.1f})"
 
     delta = closes.diff()
     gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=5).mean()
@@ -345,7 +345,7 @@ def perform_ict_quant_analysis(raw_price, df):
     curr_v = df_c[v_col].iloc[-1]
     avg_v5 = df_c[v_col].iloc[-6:-1].mean() if len(df_c) >= 6 else curr_v
     vol_ratio = (curr_v / (avg_v5 + 1e-9)) * 100
-    vol_status = f"5일 평균 대비 {vol_ratio:.0f}%"
+    vol_status = f"5일 평균 대비 {vol_ratio:.0f}% 수준"
 
     atr_val = round(float((highs - lows).tail(14).mean()), 2)
     if atr_val <= 0:
@@ -391,6 +391,69 @@ def fetch_technical_quant_data(symbol, asset_type):
         return quant_info
     except Exception:
         return None
+
+def generate_full_quant_report(stock_name, symbol, price, quant_data):
+    an = quant_data.get('analysis', {}) if quant_data else {}
+    tech_context = f"""
+    [다중 팩터 정밀 기술적 연산 데이터]
+    - 현재가: {price}
+    - ICT 존: {an.get('ict_zone', 'Discount Zone')}
+    - 이평선 구조: {an.get('ma20_status', '산출중')}
+    - RSI 강도: {an.get('rsi', 50.0)}
+    - 거래량 흐름: {an.get('vol_status', '보통')}
+    - 일일 평균 변동폭(ATR): {an.get('atr', '산출중')}
+    """
+
+    prompt = f"""
+    당신은 대한민국 최고의 실전 퀀트 및 ICT 스마트머니 트레이더입니다.
+    제공된 정밀 기술적 데이터와 일봉 차트를 기반으로 풍부하고 객관적인 실전 타점 카드와 심층 해설을 작성하세요.
+
+    종목: {stock_name} ({symbol})
+    {tech_context}
+
+    [★ 작성 지침 ★]
+    1. 콜론(:), 하이픈(-), 번호매기기, 마크다운 볼드(**) 없이 정갈하게 작성하세요.
+    2. 영문 대문자 SPLIT 으로 1부 타점 카드와 2부 심층 해설을 반드시 나누세요.
+    3. 트레이딩 적합도는 점수(예: 4.2)와 별점(★★★★☆)으로 명시하세요.
+    4. 1차 및 2차 진입가는 과거 매물대와 ATR을 고려해 현실적인 '구간(범위)'으로 제시하세요.
+    5. 2부 심층 분석은 (1)과거 시계열 및 캔들 매물대 흐름, (2)매크로 및 업종 수급 집중도, (3)손익비 및 트레이딩 총평을 매우 풍부하고 전문적으로 작성하세요.
+
+    [★ 출력 형식 예시 ★]
+    {stock_name} ({symbol})
+
+    현재가 {price}
+
+    현재 트레이딩 적합도 ★★★★☆ (점수 4.2)
+
+    Alpha Signal 액션 플랜
+
+    방향성 롱 (단기 눌림목 매수)
+    1차 진입 OOO원에서 OOO원 (단기 매물 소화 및 지지 확인 구간 1차 분할)
+    2차 진입 OOO원에서 OOO원 (주요 구조적 지지대 및 하단 반등 마지노선 2차 분할)
+    1차 목표 OOO원 (직전 단기 매물벽 도달 시 50퍼센트 분할 익절)
+    2차 목표 OOO원 (상단 저항 밴드 돌파 시 최종 전량 익절)
+    칼손절 OOO원 (지지선 붕괴 및 시나리오 무효화 기준가)
+
+    트리거 조건 및 행동 요령
+    당일 체결강도 및 호가창 수급 비대칭성을 확인하며 진입하는 행동 요령 서술
+
+    SPLIT
+
+    최근 주가 흐름과 일봉 캔들 매물대 소화 과정 및 과거 시계열 지표(20일선, RSI, 거래량) 정밀 진단
+
+    미국 연준 금리 등 매크로 환경 및 해당 섹터로의 외국인/기관 수급 유입 모멘텀 심층 분석
+
+    예상 진입가 대비 목표가 도달 시 수익률과 손절 시 리스크를 비교한 손익비 분석 및 최종 매매 코멘트
+    """
+    response = ai_model.generate_content(prompt).text
+    if "SPLIT" in response:
+        parts = response.split("SPLIT")
+        summary = parts[0].strip()
+        detail = parts[1].strip()
+    else:
+        summary = response.strip()
+        detail = "심층 분석 데이터를 불러오는 중입니다"
+    return summary, detail
 
 def record_trade_signal_from_ai(symbol, name, asset_type, raw_price, summary_text):
     try:
@@ -482,69 +545,10 @@ def update_and_calculate_performance():
     except Exception:
         return {"total": 0, "finished": 0, "win": 0, "loss": 0, "pending": 0, "win_rate": 0.0, "cum_ret": 0.0, "history": []}
 
-def generate_full_quant_report(stock_name, symbol, price, quant_data):
-    an = quant_data.get('analysis', {}) if quant_data else {}
-    tech_context = f"""
-    [다중 팩터 정밀 기술적 연산 데이터]
-    - 현재가: {price}
-    - ICT 존: {an.get('ict_zone', 'Discount Zone')}
-    - 이평선 구조: {an.get('ma20_status', '산출중')}
-    - RSI 강도: {an.get('rsi', 50.0)}
-    - 거래량 흐름: {an.get('vol_status', '보통')}
-    - 일일 평균 변동폭(ATR): {an.get('atr', '산출중')}
-    """
-
-    prompt = f"""
-    당신은 대한민국 최고의 실전 퀀트 및 ICT 스마트머니 트레이더입니다.
-    제공된 정밀 기술적 데이터와 일봉 차트를 기반으로 풍부하고 객관적인 실전 타점 카드와 심층 해설을 작성하세요.
-
-    종목: {stock_name} ({symbol})
-    {tech_context}
-
-    [★ 작성 지침 ★]
-    1. 콜론(:), 하이픈(-), 번호매기기, 마크다운 볼드(**) 없이 정갈하게 작성하세요.
-    2. 영문 대문자 SPLIT 으로 1부 타점 카드와 2부 심층 해설을 반드시 나누세요.
-    3. 트레이딩 적합도는 점수(예: 4.2)와 별점(★★★★☆)으로 명시하세요.
-    4. 1차 및 2차 진입가는 과거 매물대와 ATR을 고려해 현실적인 '구간(범위)'으로 제시하세요.
-    5. 2부 심층 분석은 (1)과거 시계열 및 캔들 매물대 흐름, (2)매크로 및 업종 수급 집중도, (3)손익비 및 트레이딩 총평을 매우 풍부하고 전문적으로 작성하세요.
-
-    [★ 출력 형식 예시 ★]
-    {stock_name} ({symbol})
-
-    현재가 {price}
-
-    현재 트레이딩 적합도 ★★★★☆ (점수 4.2)
-
-    Alpha Signal 액션 플랜
-
-    방향성 롱 (단기 눌림목 매수)
-    1차 진입 OOO원에서 OOO원 (단기 매물 소화 및 지지 확인 구간 1차 분할)
-    2차 진입 OOO원에서 OOO원 (주요 구조적 지지대 및 하단 반등 마지노선 2차 분할)
-    1차 목표 OOO원 (직전 단기 매물벽 도달 시 50퍼센트 분할 익절)
-    2차 목표 OOO원 (상단 저항 밴드 돌파 시 최종 전량 익절)
-    칼손절 OOO원 (지지선 붕괴 및 시나리오 무효화 기준가)
-
-    트리거 조건 및 행동 요령
-    당일 체결강도 및 호가창 수급 비대칭성을 확인하며 진입하는 행동 요령 서술
-
-    SPLIT
-
-    최근 주가 흐름과 일봉 캔들 매물대 소화 과정 및 과거 시계열 지표(20일선, RSI, 거래량) 정밀 진단
-
-    미국 연준 금리 등 매크로 환경 및 해당 섹터로의 외국인/기관 수급 유입 모멘텀 심층 분석
-
-    예상 진입가 대비 목표가 도달 시 수익률과 손절 시 리스크를 비교한 손익비 분석 및 최종 매매 코멘트
-    """
-    response = ai_model.generate_content(prompt).text
-    parts = response.split("SPLIT")
-    summary = parts[0].strip()
-    detail = parts[1].strip() if len(parts) > 1 else "심층 분석 데이터를 불러올 수 없습니다"
-    return summary, detail
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
-        "• 종목 분석: 종목명 입력 (예: SK하이닉스, 엔비디아, 테슬라, 비트코인)\n"
+        "• 종목 분석: 종목명 입력 (예: SK증권, SK하이닉스, 엔비디아, 비트코인)\n"
         "• 실전 성적표 조회: /성적표 또는 '승률' 입력\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
@@ -626,11 +630,10 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         current_price = quant_data['current_price']
         
-        # AI 분석을 별도 스레드에서 안전하게 실행 (타임아웃 방지)
-        summary_text, detail_text = await asyncio.to_thread(
-            generate_full_quant_report, formal_name, symbol, current_price, quant_data
-        )
+        # 어제 성공했던 방식 그대로 동기 호출
+        summary_text, detail_text = generate_full_quant_report(formal_name, symbol, current_price, quant_data)
 
+        # 타점 DB 자동 저장
         record_trade_signal_from_ai(symbol, formal_name, asset_type, quant_data['raw_price'], summary_text)
 
         report_id = str(uuid.uuid4())[:8]
@@ -663,7 +666,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         try:
-            await status_msg.edit_text(f"일시적 처리 지연이 발생했습니다: {str(e)[:40]}")
+            await status_msg.edit_text("일시적 처리 지연이 발생했습니다. 다시 입력해 주세요.")
         except Exception:
             pass
     finally:

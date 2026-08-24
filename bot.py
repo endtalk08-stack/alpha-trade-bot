@@ -17,13 +17,17 @@ from telegram.ext import (
     ContextTypes
 )
 
+# 1. 통합 인증 키 설정
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "여기에_GEMINI_API_KEY_입력")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
+
+TOSS_API_KEY = os.getenv("TOSS_API_KEY", "tsck_live_5pxz8W5tFlbn07w63YxJfE")
+TOSS_API_SECRET = os.getenv("TOSS_API_SECRET", "tssk_live_5U9SuuC4pLY2DpYYObXRH1C1BWMGnGKz5NNEZDe8Sse")
+TOSS_API_BASE_URL = "https://open-api.tossinvest.com"
 
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-2.5-flash')
 
-# 1회 호출 데이터 임시 저장소 (버튼 클릭 시 추가 요금 0원 보장)
 REPORT_CACHE = {}
 
 COMMON_SYMBOLS = {
@@ -31,34 +35,75 @@ COMMON_SYMBOLS = {
     "이더리움": ("crypto", "ETHUSDT"),
     "리플": ("crypto", "XRPUSDT"),
     "도지코인": ("crypto", "DOGEUSDT"),
-    "삼성전자": ("stock", "005930.KS"),
-    "SK하이닉스": ("stock", "000660.KS"),
-    "테슬라": ("stock", "TSLA"),
-    "엔비디아": ("stock", "NVDA"),
-    "애플": ("stock", "AAPL")
+    "삼성전자": ("domestic_stock", "005930"),
+    "SK하이닉스": ("domestic_stock", "000660"),
+    "금호전기": ("domestic_stock", "001210"),
+    "테슬라": ("overseas_stock", "TSLA"),
+    "엔비디아": ("overseas_stock", "NVDA"),
+    "애플": ("overseas_stock", "AAPL"),
+    "QQQ": ("overseas_stock", "QQQ")
 }
+
+def get_toss_stock_price(symbol, market_type="domestic"):
+    """토스증권 공식 Open API 실시간 시세 조회"""
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {TOSS_API_KEY}",
+            "X-Toss-Secret": TOSS_API_SECRET
+        }
+        endpoint = f"{TOSS_API_BASE_URL}/v1/market/quote?symbol={symbol}&market={market_type}"
+        response = requests.get(endpoint, headers=headers, timeout=3)
+        
+        if response.status_code == 200:
+            data = response.json()
+            price = float(data.get("price", 0))
+            if market_type == "domestic":
+                return f"{int(price):,} 원"
+            return f"{price:,.2f} 달러"
+    except Exception:
+        pass
+    return None
 
 def fetch_realtime_price(user_query):
     query = user_query.strip()
+    
     if query in COMMON_SYMBOLS:
         asset_type, symbol = COMMON_SYMBOLS[query]
     else:
         if any(c in query for c in ["코인", "USDT", "BTC", "ETH"]):
             asset_type, symbol = "crypto", query.upper()
+        elif any(c.isupper() for c in query) and not query.endswith(".KS"):
+            asset_type, symbol = "overseas_stock", query.upper()
         else:
-            asset_type, symbol = "stock", query
+            asset_type, symbol = "domestic_stock", query
 
-    try:
-        if asset_type == "crypto":
+    # 가상자산 시세 (바이낸스 실시간)
+    if asset_type == "crypto":
+        try:
             url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
             r = requests.get(url, timeout=5).json()
             return f"{float(r['price']):,.2f} 달러", symbol
-        else:
-            stock = yf.Ticker(symbol)
-            price = stock.history(period="1d")['Close'].iloc[-1]
-            if symbol.endswith(".KS") or symbol.endswith(".KQ"):
-                return f"{int(price):,} 원", symbol
-            return f"{price:,.2f} 달러", symbol
+        except Exception:
+            return "실시간 호가 집계중", symbol
+
+    # 국내/미국 주식 시세 (토스증권 Open API)
+    market = "domestic" if asset_type == "domestic_stock" else "overseas"
+    toss_price = get_toss_stock_price(symbol, market)
+    if toss_price:
+        return toss_price, symbol
+
+    # 통신 지연 시 yfinance 백업
+    try:
+        yf_symbol = symbol
+        if asset_type == "domestic_stock" and not symbol.endswith((".KS", ".KQ")):
+            yf_symbol = f"{symbol}.KS"
+        
+        stock = yf.Ticker(yf_symbol)
+        price = stock.history(period="1d")['Close'].iloc[-1]
+        if yf_symbol.endswith((".KS", ".KQ")):
+            return f"{int(price):,} 원", symbol
+        return f"{price:,.2f} 달러", symbol
     except Exception:
         return "실시간 호가 집계중", symbol
 
@@ -75,11 +120,11 @@ def generate_full_quant_report(stock_name, symbol, price):
     2 ICT 스마트머니 오더블럭 공정가치갭 유동성 스윕
     3 향후 일정 및 과거 실적 패턴 통계
     4 가격대별 유동성 밀집 구역(Volume Profile)과 누적 수급 델타(CVD) 분석 및 매도 압력 흡수(Absorption) 패턴 포착
-    5 기업 밸류업 프로그램 및 주주환원(배당 확대, 자사주 매입 및 전량 소각, FCF 환원율) 공시와 과거 이벤트 스터디 통계 데이터(공시 직후 단기 반응률, 평균 되돌림 지지 구간, 중장기 밸류에이션 리레이팅 하방 경직성)를 분석하여 타점에 정밀 반영
+    5 기업 밸류업 프로그램 및 주주환원(배당 확대, 자사주 매입 및 전량 소각, FCF 환원율) 공시와 과거 이벤트 스터디 통계 데이터를 분석하여 타점에 정밀 반영
 
     [출력 양식 및 보안 규칙 - 글자 하나 어김없이 엄격 준수]
     첫째 사용자에게 출력되는 최종 결과물에는 ICT 오더블럭 FVG 공정가치갭 유동성 스윕 RSI 이동평균선 프랙탈 매물대 흡수 CVD 거래량 프로파일 자사주매입 소각 배당 같은 구체적인 기법이나 일반 공시 명칭을 직접 노출하지 마십시오
-    둘째 타인이 로직을 유추할 수 없도록 위 단어들을 알파 시그널 자체 산출 구간, 기관 유동성 밴드, 알고리즘 교차 검증선, 과거 딥러닝 패턴 매칭, 자체 델타 수급 모델, 누적 유동성 밀집 노드, 스마트 머니 체결 압력 흡수, 자체 잉여 유동성 환원 모델, 주당 내재가치 제고 프로그램, 기업 거버넌스 밸류에이션 리레이팅 지수 등 추상적이고 전문적인 자체 브랜드 용어로 치환하십시오
+    둘째 타인이 로직을 유추할 수 없도록 위 단어들을 알파 시그널 자체 산출 구간, 기관 유동성 밴드, 알고리즘 교차 검증선, 과거 딥러닝 패턴 매칭, 자체 델타 수급 모델, 누적 유동성 밀집 노드, 스마트 머니 체결 압력 흡수, 자체 잉여 유동성 환원 모델, 주당 내재가치 제고 프로그램 등 추상적이고 전문적인 자체 브랜드 용어로 치환하십시오
     셋째 콜론 대괄호 슬래시 하이픈 번호매기기 이모티콘을 일체 사용하지 마세요 (단 적합도 별표 및 괄호는 허용)
     넷째 중간 소제목을 절대 쓰지 말고 오직 줄바꿈과 공백으로만 문단을 구분하세요
     다섯째 Alpha Signal 액션 플랜과 아래 방향성 내용 사이에는 반드시 빈 줄 1줄을 넣으세요
@@ -128,7 +173,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
         "종목명을 입력하시면 실시간 시세와 교차 검증 알고리즘을 반영한 분석을 시작합니다\n"
-        "예시 비트코인 삼성전자 테슬라"
+        "예시 비트코인 삼성전자 SK하이닉스 QQQ"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):

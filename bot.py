@@ -811,17 +811,17 @@ def generate_reliable_report(stock_name, symbol, price, an, regime_info, event_i
 트레이딩 적합도 {an['stars']} {an['score']}점 {an['grade']}
 
 📰 주요 재료 및 일정
-• 핵심 재료: {event_info['news']}
-• 실적/공시: {event_info['earnings']}
-• 매크로 지표: {event_info['macro']}
+핵심 재료: {event_info['news']}
+실적/공시: {event_info['earnings']}
+매크로 지표: {event_info['macro']}
 
 🎯 Alpha Signal 액션 플랜
-• 방향성: 롱 (단기 눌림목 매수)
-• 1차 진입: {e1_l} ~ {e1_h} (FVG 갭 상단 지지 확인 1차 분할)
-• 2차 진입: {e2_l} ~ {e2_h} (구조적 매물대 하단 지지 2차 분할)
-• 1차 목표: {t1} (50% 분할 익절 + 본전 스탑 상향)
-• 2차 목표: {t2} (상단 저항 돌파 시 전량 익절)
-• 칼손절: {st} (Sweep 저점 이탈 방어 기준가)
+방향성: 롱 (단기 눌림목 매수)
+1차 진입: {e1_l} ~ {e1_h} (FVG 갭 상단 지지 확인 1차 분할)
+2차 진입: {e2_l} ~ {e2_h} (구조적 매물대 하단 지지 2차 분할)
+1차 목표: {t1} (50% 분할 익절 + 본전 스탑 상향)
+2차 목표: {t2} (상단 저항 돌파 시 전량 익절)
+칼손절: {st} (Sweep 저점 이탈 방어 기준가)
 
 💡 시장 가이드 및 행동 요령
 {regime_note}

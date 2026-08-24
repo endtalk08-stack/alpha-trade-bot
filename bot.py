@@ -1,12 +1,3 @@
-사업화 및 상용 사이트 런칭 시 챙겨야 할 핵심 인프라 체크리스트(유료 API 전환, 캐싱/서버리스 아키텍처)를 기록해 두었습니다. 향후 본격적으로 비즈니스를 전개하실 때 먼저 리마인드해 드리겠습니다.
-
----
-
-### 🛠️ `gaemiGTP` 최종 통합 전체 코드 (`bot.py`)
-
-기존의 고품질 5문단 서술형 리포트(거시경제·피어 비교·호가창·손익비)와 3중 안전망(1시간 캐싱 + 2.5초 타임아웃 + Fallback)이 모두 반영된 전체 코드입니다. GitHub의 `bot.py` 파일 내용을 전체 선택 후 교체해 주시면 됩니다.
-
-```python
 import os
 import re
 import io
@@ -594,7 +585,6 @@ def perform_ict_quant_analysis(raw_price, df):
     }
 
 def generate_deep_report_gemini(stock_name, symbol, price, an):
-    """스크린샷 원본 그대로의 5문단 서술형 심층 리포트 생성 엔진 (1시간 캐싱)"""
     cache_key = f"detail_{symbol}"
     curr_t = time.time()
     if cache_key in DETAIL_REPORT_CACHE:
@@ -705,6 +695,7 @@ def generate_reliable_report(stock_name, symbol, price, an):
         st = f"{an['stop']:,.2f}{unit}"
         atr_str = f"{an['atr']:,.2f}{unit}"
 
+    # 요청하신 최종 완성형 레이아웃 (👉 포인트 + 여백 띄어쓰기)
     summary = f"""
 {stock_name} ({symbol})
 
@@ -714,15 +705,25 @@ def generate_reliable_report(stock_name, symbol, price, an):
 
 gaemiGTP 액션 플랜
 
-방향성 롱 (단기 눌림목 매수)
-1차 진입 {e1_l}에서 {e1_h} (단기 매물 소화 및 지지 확인 구간 1차 분할)
-2차 진입 {e2_l}에서 {e2_h} (주요 구조적 지지대 및 하단 반등 마지노선 2차 분할)
-1차 목표 {t1} (직전 단기 매물벽 도달 시 50퍼센트 분할 익절)
-2차 목표 {t2} (상단 저항 밴드 돌파 시 최종 전량 익절)
-칼손절 {st} (지지선 붕괴 및 시나리오 무효화 기준가)
+방향성: 롱 (단기 눌림목 매수)
+
+1차 진입: 단기 매물 소화 및 지지 확인 1차 분할
+👉 {e1_l} ~ {e1_h}
+
+2차 진입: 구조적 지지대 및 하단 반등 마지노선
+👉 {e2_l} ~ {e2_h}
+
+1차 목표: 직전 단기 매물벽 도달 시 50% 분할 익절
+👉 {t1}
+
+2차 목표: 상단 저항 밴드 돌파 시 전량 익절
+👉 {t2}
+
+칼손절: 지지선 붕괴 및 시나리오 무효화 기준가
+👉 {st}
 
 트리거 조건 및 행동 요령
-당일 체결강도 110퍼센트 이상 유지 시 1차 구간 분할 착수하며 장중 변동폭 {atr_str} 내외의 단기 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행
+당일 체결강도 110퍼센트 이상 유지 시 1차 구간 착수하며 장중 변동폭 {atr_str} 내외의 단기 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행
 """.strip()
 
     detail = generate_deep_report_gemini(stock_name, symbol, price, an)
@@ -965,5 +966,3 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handle_button))
     
     app.run_polling(drop_pending_updates=True)
-
-```

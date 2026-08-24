@@ -4,8 +4,6 @@ import io
 import gc
 import json
 import uuid
-import asyncio
-import sqlite3
 import datetime
 import threading
 import urllib.parse
@@ -34,37 +32,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJY
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-2.5-flash')
+ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
-DB_FILE = "trades.db"
+LAST_MESSAGES = {}  # {chat_id: [message_id_list]} - 직전 분석 메시지 정리용
 
-# 2. SQLite 데이터베이스 초기화 (타점 자동 기록용)
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            name TEXT,
-            asset_type TEXT,
-            direction TEXT,
-            entry_price REAL,
-            target_price REAL,
-            stop_loss REAL,
-            status TEXT DEFAULT 'PENDING',
-            ret REAL DEFAULT 0.0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            closed_at TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# 종목 매핑 사전
+# 1. 암호화폐 맵 (Bybit 연동)
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
     "ETH": "ETHUSDT", "이더리움": "ETHUSDT", "이더": "ETHUSDT",
@@ -75,6 +48,7 @@ CRYPTO_MAP = {
     "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT"
 }
 
+# 2. 미국 주식 한글-티커 매핑
 US_STOCK_MAP = {
     "엔비디아": "NVDA", "NVDA": "NVDA",
     "테슬라": "TSLA", "TSLA": "TSLA",
@@ -89,6 +63,7 @@ US_STOCK_MAP = {
     "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
 }
 
+# 3. 국내 대형주 빠른 매핑
 DOMESTIC_FAST_MAP = {
     "삼성중공업": "010140", "삼성전자": "005930", "삼성전기": "009150",
     "SK하이닉스": "000660", "SK스퀘어": "402340", "SK증권": "001510",
@@ -99,17 +74,6 @@ DOMESTIC_FAST_MAP = {
     "LG에너지솔루션": "373220", "한화오션": "042660", "두산에너빌리티": "034020",
     "한화에어로스페이스": "012450", "현대모비스": "012330", "셀트리온": "068270"
 }
-
-async def delete_messages_later(bot, chat_id, message_ids, delay=900):
-    try:
-        await asyncio.sleep(delay)
-        for msg_id in message_ids:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
-    except Exception:
-        pass
 
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -160,12 +124,13 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
                 })
             df = pd.DataFrame(records).set_index("Date").sort_index()
             curr_price = float(df['Close'].iloc[-1])
-            return curr_price, f"{curr_price:,.2f} 달러 (USDT)", df
+            return f"{curr_price:,.2f} 달러 (USDT)", df
     except Exception:
         pass
-    return None, None, None
+    return None, None
 
 def get_us_stock_fmp_data(symbol):
+    """미국 주식 시세 (Stooq + Yahoo v8 + FMP)"""
     clean_sym = symbol.upper().strip()
 
     # 1. Stooq
@@ -180,7 +145,7 @@ def get_us_stock_fmp_data(symbol):
                 df = df.set_index('Date').sort_index()
                 df = df.tail(40)
                 curr_p = float(df['Close'].iloc[-1])
-                return curr_p, f"{curr_p:,.2f} 달러", df
+                return f"{curr_p:,.2f} 달러", df
     except Exception:
         pass
 
@@ -213,7 +178,7 @@ def get_us_stock_fmp_data(symbol):
             if records:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 curr_p = float(df['Close'].iloc[-1])
-                return curr_p, f"{curr_p:,.2f} 달러", df
+                return f"{curr_p:,.2f} 달러", df
     except Exception:
         pass
 
@@ -224,11 +189,11 @@ def get_us_stock_fmp_data(symbol):
         if isinstance(res, list) and len(res) > 0:
             curr_p = float(res[0].get("price", 0))
             if curr_p > 0:
-                return curr_p, f"{curr_p:,.2f} 달러", None
+                return f"{curr_p:,.2f} 달러", None
     except Exception:
         pass
 
-    return None, None, None
+    return None, None
 
 def get_naver_realtime_price(code):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -237,10 +202,10 @@ def get_naver_realtime_price(code):
         res = requests.get(url, headers=headers, timeout=2.0).json()
         p = str(res.get("closePrice", "")).replace(",", "").strip()
         if p and p.isdigit():
-            return float(p), f"{int(p):,} 원"
+            return f"{int(p):,} 원"
     except Exception:
         pass
-    return None, None
+    return None
 
 def fetch_domestic_stock_candles(code):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -303,36 +268,32 @@ def generate_candlestick_chart(df, symbol_name):
         plt.close('all')
         gc.collect()
 
-def perform_ict_quant_analysis(raw_price, df):
+def perform_comprehensive_quant_analysis(df):
     if df is None or len(df) < 15:
-        atr = round(raw_price * 0.03, 2)
         return {
-            "trend_status": "중립 레인지",
+            "trend_status": "중립 추세",
             "rsi": 50.0,
             "ma20_status": "20일선 수렴",
-            "atr": atr,
-            "ict_zone": "Equilibrium",
-            "entry_p": raw_price,
-            "target_p": round(raw_price + atr * 2.0, 2),
-            "stop_p": round(raw_price - atr * 1.2, 2)
+            "vol_status": "평균 수준",
+            "atr": "산출중"
         }
 
     col_map = {c: c.capitalize() for c in df.columns}
     df_c = df.rename(columns=col_map)
     closes = df_c['Close']
-    highs = df_c['High']
-    lows = df_c['Low']
     curr_p = closes.iloc[-1]
 
-    recent_high = highs.tail(20).max()
-    recent_low = lows.tail(20).min()
-    eq = (recent_high + recent_low) / 2.0
-    ict_zone = "Discount Zone (할인 / 롱 유리)" if curr_p <= eq else "Premium Zone (할증 / 숏 유리)"
-
+    # 1. 20일선 추세 이격도
     ma20 = closes.rolling(20, min_periods=5).mean().iloc[-1]
     disparity = ((curr_p - ma20) / ma20) * 100
-    ma20_status = f"20일선 대비 {disparity:+.1f}%"
+    if disparity > 3.0:
+        ma20_status = f"20일선 상회 (+{disparity:.1f}% 이격 / 단기 상승 우세)"
+    elif disparity < -3.0:
+        ma20_status = f"20일선 하회 ({disparity:.1f}% 이격 / 단기 저항 구간)"
+    else:
+        ma20_status = f"20일선 밀착 지지 테스트 ({disparity:.1f}%)"
 
+    # 2. RSI (14)
     delta = closes.diff()
     gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=5).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14, min_periods=5).mean()
@@ -341,183 +302,120 @@ def perform_ict_quant_analysis(raw_price, df):
     if np.isnan(rsi_val):
         rsi_val = 50.0
 
-    atr_val = round(float((highs - lows).tail(14).mean()), 2)
-    if atr_val <= 0:
-        atr_val = round(curr_p * 0.03, 2)
+    # 3. 거래량 모멘텀
+    v_col = 'Volume' if 'Volume' in df_c.columns else 'Vol'
+    curr_v = df_c[v_col].iloc[-1]
+    avg_v5 = df_c[v_col].iloc[-6:-1].mean() if len(df_c) >= 6 else curr_v
+    vol_ratio = (curr_v / (avg_v5 + 1e-9)) * 100
+    if vol_ratio >= 150:
+        vol_status = f"5일 평균 대비 {vol_ratio:.0f}% 급증 (유의미한 수급 유입)"
+    elif vol_ratio <= 70:
+        vol_status = f"5일 평균 대비 {vol_ratio:.0f}% 감소 (거래량 마름/관망세)"
+    else:
+        vol_status = f"5일 평균 대비 {vol_ratio:.0f}% (정상 거래 범위)"
 
-    entry_p = curr_p
-    target_p = round(curr_p + (atr_val * 2.0), 2)
-    stop_p = round(curr_p - (atr_val * 1.2), 2)
+    # 4. 일일 변동폭 ATR (14)
+    high_low = df_c['High'] - df_c['Low']
+    atr_val = round(float(high_low.tail(14).mean()), 2)
+
+    # 5. 종합 시장 국면 판정
+    if curr_p >= ma20 and rsi_val >= 55 and vol_ratio >= 120:
+        trend_status = "상승 모멘텀 가속 국면 (추세 추종 및 돌파 유효)"
+    elif curr_p < ma20 and rsi_val <= 40:
+        trend_status = "하락 추세 및 과매도 국면 (단기 낙폭과대 반등 탐색)"
+    elif curr_p >= ma20 and (45 <= rsi_val <= 55):
+        trend_status = "20일선 눌림목 지지 국면 (손익비 우수 분할 진입권)"
+    else:
+        trend_status = "박스권 횡보 및 매물 소화 국면 (변동성 축소)"
 
     return {
-        "trend_status": "상승 모멘텀" if curr_p >= ma20 else "조정 국면",
+        "trend_status": trend_status,
         "rsi": round(rsi_val, 1),
         "ma20_status": ma20_status,
-        "atr": atr_val,
-        "ict_zone": ict_zone,
-        "entry_p": entry_p,
-        "target_p": target_p,
-        "stop_p": stop_p
+        "vol_status": vol_status,
+        "atr": atr_val
     }
 
 def fetch_technical_quant_data(symbol, asset_type):
     quant_info = {}
-    curr_price_num = None
     curr_price_str = None
     df = None
 
     try:
         if asset_type == "crypto":
-            curr_price_num, curr_price_str, df = get_crypto_bybit_data(symbol)
+            curr_price_str, df = get_crypto_bybit_data(symbol)
         elif asset_type == "overseas_stock":
-            curr_price_num, curr_price_str, df = get_us_stock_fmp_data(symbol)
+            curr_price_str, df = get_us_stock_fmp_data(symbol)
         elif asset_type == "domestic_stock":
-            curr_price_num, curr_price_str = get_naver_realtime_price(symbol)
+            curr_price_str = get_naver_realtime_price(symbol)
             df = fetch_domestic_stock_candles(symbol)
-            if curr_price_num is None and df is not None and not df.empty:
-                curr_price_num = float(df['Close'].iloc[-1])
-                curr_price_str = f"{int(curr_price_num):,} 원"
+            if not curr_price_str and df is not None and not df.empty:
+                c_val = float(df['Close'].iloc[-1])
+                curr_price_str = f"{int(c_val):,} 원"
 
-        if curr_price_num is None:
+        if not curr_price_str:
             return None
 
-        quant_info['raw_price'] = curr_price_num
         quant_info['current_price'] = curr_price_str
-        quant_info['analysis'] = perform_ict_quant_analysis(curr_price_num, df)
+        quant_info['analysis'] = perform_comprehensive_quant_analysis(df)
         quant_info['chart_df'] = df
 
         return quant_info
     except Exception:
         return None
 
-def record_trade_signal(symbol, name, asset_type, an):
-    """발행된 ICT 타점을 데이터베이스에 자동 기록"""
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO trades (symbol, name, asset_type, direction, entry_price, target_price, stop_loss, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')
-        ''', (symbol, name, asset_type, 'LONG', an['entry_p'], an['target_p'], an['stop_p']))
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
-
-def update_and_calculate_performance():
-    """기록된 타점들의 승패 및 수익률을 현재 시세와 대조하여 자동 판정"""
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT id, symbol, asset_type, entry_price, target_price, stop_loss FROM trades WHERE status = 'PENDING'")
-    pending_rows = c.fetchall()
-
-    for row in pending_rows:
-        tid, sym, atype, entry_p, target_p, stop_p = row
-        curr_p = None
-
-        if atype == "crypto":
-            curr_p, _, _ = get_crypto_bybit_data(sym)
-        elif atype == "overseas_stock":
-            curr_p, _, _ = get_us_stock_fmp_data(sym)
-        elif atype == "domestic_stock":
-            curr_p, _ = get_naver_realtime_price(sym)
-
-        if curr_p is not None:
-            # 1. 1차 목표가 도달 시 -> 익절 (WIN)
-            if curr_p >= target_p:
-                ret = ((target_p - entry_p) / entry_p) * 100
-                c.execute("UPDATE trades SET status = 'WIN', ret = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?", (round(ret, 2), tid))
-            # 2. 칼손절가 이탈 시 -> 손절 (LOSS)
-            elif curr_p <= stop_p:
-                ret = ((stop_p - entry_p) / entry_p) * 100
-                c.execute("UPDATE trades SET status = 'LOSS', ret = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?", (round(ret, 2), tid))
-
-    conn.commit()
-
-    # 통계 계산
-    c.execute("SELECT COUNT(*) FROM trades")
-    total_trades = c.fetchone()[0]
-
-    c.execute("SELECT COUNT(*), SUM(ret) FROM trades WHERE status = 'WIN'")
-    win_row = c.fetchone()
-    win_count = win_row[0] or 0
-    win_return = win_row[1] or 0.0
-
-    c.execute("SELECT COUNT(*), SUM(ret) FROM trades WHERE status = 'LOSS'")
-    loss_row = c.fetchone()
-    loss_count = loss_row[0] or 0
-    loss_return = loss_row[1] or 0.0
-
-    c.execute("SELECT COUNT(*) FROM trades WHERE status = 'PENDING'")
-    pending_count = c.fetchone()[0]
-
-    # 최근 5건 내역 조회
-    c.execute("SELECT name, entry_price, target_price, status, ret, created_at FROM trades ORDER BY id DESC LIMIT 5")
-    recent_history = c.fetchall()
-
-    conn.close()
-
-    finished = win_count + loss_count
-    win_rate = (win_count / finished * 100) if finished > 0 else 0.0
-    cum_ret = win_return + loss_return
-
-    return {
-        "total": total_trades,
-        "finished": finished,
-        "win": win_count,
-        "loss": loss_count,
-        "pending": pending_count,
-        "win_rate": win_rate,
-        "cum_ret": cum_ret,
-        "history": recent_history
-    }
-
 def generate_full_quant_report(stock_name, symbol, price, quant_data):
     an = quant_data.get('analysis', {}) if quant_data else {}
     tech_context = f"""
-    [ICT & 퀀트 정밀 연산치]
+    [과거 시계열 기반 다중 팩터 정밀 연산치]
     - 현재가: {price}
-    - ICT 마켓 프레임: {an.get('ict_zone', 'Equilibrium')}
-    - 진입 기준가: {an.get('entry_p', 0):,}
-    - 1차 BSL 목표가: {an.get('target_p', 0):,}
-    - SSL 칼손절가: {an.get('stop_p', 0):,}
-    - 이평선 구조: {an.get('ma20_status', '산출중')}
+    - 종합 시장 국면: {an.get('trend_status', '중립 추세')}
+    - 이동평균선 위치: {an.get('ma20_status', '산출중')}
     - RSI 강도: {an.get('rsi', 50.0)}
-    - ATR 변동폭: {an.get('atr', '산출중')}
+    - 거래량 흐름: {an.get('vol_status', '보통')}
+    - 일일 평균 변동폭(ATR): {an.get('atr', '산출중')}
     """
 
     prompt = f"""
-    당신은 ICT(Inner Circle Trader) 전문 퀀트 트레이더입니다.
-    제공된 ICT 타점 수치를 바탕으로 명확한 타점 전략 카드를 작성하세요.
+    당신은 대한민국 최고의 실전 퀀트 트레이더입니다.
+    제공된 과거 시계열 종합 연산 팩터(추세, RSI, 거래량, 변동폭)를 바탕으로 객관적인 트레이딩 적합도 점수와 정밀 타점 전략을 작성하세요.
 
     대상 종목: {stock_name} ({symbol})
     {tech_context}
 
-    [★ 필수 출력 포맷 (특수기호, 하이픈, 번호매기기 없이 작성) ★]
-    
+    [★ 다중 팩터 기반 트레이딩 평가 규칙 ★]
+    1. 이평선 추세, RSI, 거래량의 종합 상태를 따져 트레이딩 적합도(1.0 ~ 5.0)를 산정하세요.
+       - 역배열/거래량 없는 하락: 2.0점 이하 (숏/관망 권고)
+       - 박스권 횡보: 3점대 (박스권 하단 분할 대응)
+       - 20일선 눌림목 지지/거래량 폭발 돌파: 4.5점 이상 (롱 적극 대응)
+    2. 타점(진입가, 목표가, 손절가)은 제공된 ATR(일일 변동폭)과 지지·저항대를 계산하여 손익비 1:2 이상의 현실적 가격을 제시하세요.
+    3. 콜론, 하이픈, 번호매기기, 특수기호 없이 작성하고 영문 SPLIT 으로 1부 타점 카드와 2부 해설을 나누세요.
+
     {stock_name} ({symbol})
+    
     현재가 {price}
-    ICT 마켓 프레임 {an.get('ict_zone', 'Equilibrium')}
 
-    ICT Alpha Action Plan
+    현재 트레이딩 적합도 ★★★★☆ (점수 4.5)
 
-    방향성 롱 (Bullish Order Block 되돌림)
-    1차 진입 {an.get('entry_p', 0):,} (FVG 지지 확인 진입권)
-    2차 진입 {round(an.get('entry_p', 0) * 0.985, 2):,} (오더블록 하단 2차 분할)
-    1차 목표 {an.get('target_p', 0):,} (단기 Buy-side Liquidity 1차 분할 익절)
-    2차 목표 {round(an.get('target_p', 0) * 1.03, 2):,} (상단 주요 유동성 풀 최종 익절)
-    칼손절 {an.get('stop_p', 0):,} (Sell-side Liquidity 이탈 무효화)
+    Alpha Signal 액션 플랜
+
+    방향성 롱 또는 숏
+    1차 진입 1차진입가구간 (과거 지지대 확인 1차 분할)
+    2차 진입 2차진입가구간 (하단 마지노선 2차 분할)
+    1차 목표 1차목표가 (직전 매물벽 도달 시 50퍼센트 분할 익절)
+    2차 목표 2차목표가 (상단 목표 밴드 최종 익절)
+    칼손절 칼손절가 (구조적 지지선 이탈 시 손익비 기준가)
 
     트리거 조건 및 행동 요령
-    킬존 시간대 체결 강도 및 분할 매수 대응 전략 서술
+    실전 진입 및 대응 타이밍 서술
 
     SPLIT
 
-    ICT 시각에서 분석한 기관 세력의 오더블록(OB)과 FVG 구조
+    과거 시계열 데이터(20일선 이격도, RSI, 거래량 변화)가 보여주는 종합 추세 진단
 
-    Buy-side 및 Sell-side 유동성 풀 배치 상태
+    현재 시장 매크로 환경 및 섹터 수급 집중도 심층 분석
 
-    예상 손익비 분석 및 실전 트레이딩 코멘트
+    예상 수익률 대비 감수할 리스크의 손익비 분석 및 최종 매매 코멘트
     """
     response = ai_model.generate_content(prompt).text
     parts = response.split("SPLIT")
@@ -527,55 +425,28 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
-        "• 종목 분석: 종목명 입력 (예: 엔비디아, 테슬라, 비트코인)\n"
-        "• 실전 성적표 조회: /성적표 또는 '승률' 입력\n"
-        "(분석 메시지는 15분 후 자동 정리됩니다)"
+        "Alpha Signal Quant Bot 가동 중입니다\n\n"
+        "종목명을 입력하시면 실시간 차트와 퀀트 액션 플랜을 전송합니다\n"
+        "예시 엔비디아 테슬라 삼성중공업 비트코인 sk하이닉스 대장"
     )
-
-async def show_performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """봇 실전 성적표 조회 핸들러"""
-    status_msg = await update.message.reply_text("📊 실시간 시세를 대조하여 타점 승률을 계산 중입니다...")
-    stats = update_and_calculate_performance()
-
-    hist_lines = ""
-    for item in stats['history']:
-        name, entry_p, target_p, st, ret, dt = item
-        st_icon = "🟢 익절" if st == "WIN" else ("🔴 손절" if st == "LOSS" else "⏳ 추적중")
-        ret_str = f"({ret:+.2f}%)" if st in ["WIN", "LOSS"] else ""
-        hist_lines += f"• {name} ➜ {st_icon} {ret_str}\n"
-
-    if not hist_lines:
-        hist_lines = "아직 기록된 타점이 없습니다 종목을 먼저 검색해 보세요\n"
-
-    report = f"""
-🏆 Alpha Signal 실전 타점 누적 성적표
-
-• 총 타점 발행 {stats['total']}건
-• 완료된 매매 {stats['finished']}건 (현재 진행중 {stats['pending']}건)
-• 익절(승리) {stats['win']}건 / 손절(패배) {stats['loss']}건
-• 실전 승률 {stats['win_rate']:.1f}%
-• 누적 확정 수익률 {stats['cum_ret']:+.2f}%
-
-최근 타점 진행 현황
-{hist_lines}
-성적표는 실시간 시세가 변동될 때마다 자동 갱신됩니다
-"""
-    await status_msg.edit_text(report.strip())
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     chat_id = update.effective_chat.id
 
-    # 성적표 키워드 감지
-    if query in ["성적표", "/성적표", "승률", "수익률", "검증", "/검증"]:
-        await show_performance(update, context)
-        return
+    # 🧹 [직전 분석 메시지 자동 삭제] 새 검색 시 이전 메시지들을 깨끗하게 청소
+    if chat_id in LAST_MESSAGES:
+        for old_msg_id in LAST_MESSAGES[chat_id]:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=old_msg_id)
+            except Exception:
+                pass
+        LAST_MESSAGES[chat_id] = []
 
     if query in ["대장", "대장주", "종목추천", "추천", "/대장"]:
         query = "삼성전기"
 
-    status_msg = await update.message.reply_text(f"{query} ICT 스마트 머니 분석 중입니다...")
+    status_msg = await update.message.reply_text(f"{query} 다중 팩터 종합 분석 중입니다...")
     new_msg_ids = []
 
     try:
@@ -613,15 +484,12 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_price = quant_data['current_price']
         summary_text, detail_text = generate_full_quant_report(formal_name, symbol, current_price, quant_data)
 
-        # 🎯 타점 자동 DB 저장
-        record_trade_signal(symbol, formal_name, asset_type, quant_data['analysis'])
-
         report_id = str(uuid.uuid4())[:8]
         if len(REPORT_CACHE) > 30:
             REPORT_CACHE.clear()
         REPORT_CACHE[report_id] = {"summary": summary_text, "detail": detail_text}
 
-        keyboard = [[InlineKeyboardButton("ICT 심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
+        keyboard = [[InlineKeyboardButton("심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         chart_buf = generate_candlestick_chart(quant_data.get('chart_df'), formal_name)
@@ -641,9 +509,8 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent_msg = await context.bot.send_message(chat_id=chat_id, text=summary_text, reply_markup=reply_markup)
         new_msg_ids.append(sent_msg.message_id)
 
-        # 15분 후 자동 삭제
-        if new_msg_ids:
-            asyncio.create_task(delete_messages_later(context.bot, chat_id, new_msg_ids, delay=900))
+        # 현재 전송된 메시지 ID 저장
+        LAST_MESSAGES[chat_id] = new_msg_ids
 
     except Exception:
         try:
@@ -669,7 +536,7 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("타점 카드만 보기", callback_data=f"show_summary:{report_id}")]]
         await query.message.edit_text(text=full_text, reply_markup=InlineKeyboardMarkup(keyboard))
     elif action == "show_summary":
-        keyboard = [[InlineKeyboardButton("ICT 심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
+        keyboard = [[InlineKeyboardButton("심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
         await query.message.edit_text(text=data['summary'], reply_markup=InlineKeyboardMarkup(keyboard))
 
 class SimpleServer(BaseHTTPRequestHandler):
@@ -687,8 +554,6 @@ if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("성적표", show_performance))
-    app.add_handler(CommandHandler("검증", show_performance))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.run_polling()

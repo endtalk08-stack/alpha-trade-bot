@@ -2,6 +2,7 @@ import os
 import re
 import json
 import uuid
+import datetime
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
@@ -64,10 +65,43 @@ def get_stock_code_by_name(query):
         pass
     return None
 
+def fetch_realtime_news(query, symbol, asset_type):
+    """실시간 급등/급락 핵심 재료 및 뉴스 수집 (토스 AI 상승/하락 요인 구현)"""
+    try:
+        if asset_type == "domestic_stock":
+            url = f"https://m.stock.naver.com/api/news/stock/{symbol}?page=1&pageSize=3"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            res = requests.get(url, headers=headers, timeout=3).json()
+            titles = [re.sub(r'<[^>]+>', '', item.get("tit", "")) for item in res if item.get("tit")]
+            if titles:
+                return " / ".join(titles)
+    except Exception:
+        pass
+    return "현재 특정 개별 이슈보다는 전반적인 시장 및 수급 모멘텀에 의해 등락 중"
+
+def fetch_earnings_calendar(ticker_obj):
+    """실적 발표일 추적 (어닝 임박 시 도박 구간 경고 필터)"""
+    try:
+        cal = ticker_obj.calendar
+        if cal is not None and not cal.empty:
+            if 'Earnings Date' in cal.index:
+                earnings_dates = cal.loc['Earnings Date'].tolist()
+                if earnings_dates:
+                    target_date = pd.to_datetime(earnings_dates[0]).date()
+                    today = datetime.date.today()
+                    days_diff = (target_date - today).days
+                    if 0 <= days_diff <= 3:
+                        return f"⚠️ 실적 발표 D-{days_diff}일 임박 (실적 변동성 위험 구간, 관망 또는 방어적 분할 권고)"
+                    return f"다음 실적 발표 예정일: {target_date}"
+    except Exception:
+        pass
+    return "실적 발표 일정 정상 범위"
+
 def fetch_technical_quant_data(symbol, asset_type):
-    """파이썬 엔진이 직접 RSI, 이평선, 변동성(ATR), 20일 고저점을 정밀 계산"""
+    """파이썬 엔진이 직접 RSI, 이평선, ATR, 실적 일정 계산"""
     quant_info = {}
     try:
+        earnings_warning = "실적 발표 정상"
         if asset_type == "crypto":
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit=60"
             data = requests.get(url, timeout=5).json()
@@ -80,36 +114,31 @@ def fetch_technical_quant_data(symbol, asset_type):
         else:
             yf_symbol = f"{symbol}.KS" if asset_type == "domestic_stock" and not symbol.endswith((".KS", ".KQ")) else symbol
             stock = yf.Ticker(yf_symbol)
+            earnings_warning = fetch_earnings_calendar(stock)
             df = stock.history(period="60d")
             if df.empty and asset_type == "domestic_stock":
                 yf_symbol = f"{symbol}.KQ"
-                df = yf.Ticker(yf_symbol).history(period="60d")
+                stock = yf.Ticker(yf_symbol)
+                earnings_warning = fetch_earnings_calendar(stock)
+                df = stock.history(period="60d")
             curr_p = float(df['Close'].iloc[-1])
             currency = "원" if asset_type == "domestic_stock" else "달러"
             df = df.rename(columns={'Close': 'close', 'High': 'high', 'Low': 'low'})
 
         if len(df) >= 20:
-            # RSI(14) 계산
             delta = df['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / (loss + 1e-9)
             rsi = 100 - (100 / (1 + rs))
             quant_info['rsi'] = round(float(rsi.iloc[-1]), 1)
-
-            # 이동평균선
             quant_info['ma20'] = round(float(df['close'].rolling(20).mean().iloc[-1]), 2)
             quant_info['ma60'] = round(float(df['close'].rolling(60).mean().iloc[-1]), 2) if len(df) >= 60 else "산출중"
-
-            # 20일 최고가 / 최저가 (주요 매물대)
             quant_info['high20'] = round(float(df['high'].tail(20).max()), 2)
             quant_info['low20'] = round(float(df['low'].tail(20).min()), 2)
-
-            # ATR (일일 평균 변동폭)
             high_low = df['high'] - df['low']
             quant_info['atr'] = round(float(high_low.tail(14).mean()), 2)
-
-            # 포맷팅된 현재가
+            quant_info['earnings_status'] = earnings_warning
             quant_info['current_price'] = f"{int(curr_p):,} {currency}" if currency == "원" else f"{curr_p:,.2f} {currency}"
             return quant_info
     except Exception:
@@ -139,18 +168,22 @@ def fetch_realtime_price_fallback(user_query):
                 symbol = cleaned_query
             asset_type = "domestic_stock"
 
-    # 1. 퀀트 지표 정밀 산출
+    # 실시간 뉴스 및 재료 수집
+    news_brief = fetch_realtime_news(user_query, symbol, asset_type)
+
+    # 퀀트 수치 계산
     quant_data = fetch_technical_quant_data(symbol, asset_type)
     if quant_data:
+        quant_data['news'] = news_brief
         return quant_data['current_price'], symbol, quant_data
 
-    # 2. 백업 네이버 모바일 API
+    # 백업 모바일 시세
     try:
         url = f"https://m.stock.naver.com/api/stock/{symbol}/basic"
         res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()
         p = res.get("closePrice", "").replace(",", "")
         if p:
-            return f"{int(p):,} 원", symbol, None
+            return f"{int(p):,} 원", symbol, {"news": news_brief, "earnings_status": "일정 확인중"}
     except Exception:
         pass
 
@@ -160,27 +193,27 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     tech_context = ""
     if quant_data:
         tech_context = f"""
-        [사전 연산된 정밀 퀀트 팩터]
+        [실시간 연산된 정밀 퀀트 팩터 및 재료]
         - 실제 실시간 현재가: {price}
-        - 계산된 RSI(14): {quant_data['rsi']}
-        - 20일 이동평균선: {quant_data['ma20']}
-        - 60일 이동평균선: {quant_data['ma60']}
-        - 최근 20일 최고 매물벽(저항): {quant_data['high20']}
-        - 최근 20일 최저 바닥선(지지): {quant_data['low20']}
-        - 일일 평균 변동폭(ATR): {quant_data['atr']}
-        (위 실제 수치들을 근거로 1차/2차 진입, 목표가, 손절가를 오차 없이 수학적으로 계산할 것)
+        - 계산된 RSI(14): {quant_data.get('rsi', '산출중')}
+        - 20일선: {quant_data.get('ma20', '산출중')} / 60일선: {quant_data.get('ma60', '산출중')}
+        - 20일 매물벽 상단(저항): {quant_data.get('high20', '산출중')} / 하단 바닥(지지): {quant_data.get('low20', '산출중')}
+        - 변동성 폭(ATR): {quant_data.get('atr', '산출중')}
+        - 실적 발표 캘린더 상태: {quant_data.get('earnings_status', '정상')}
+        - 장중 실시간 포착 이슈 및 재료: {quant_data.get('news', '시장 수급 모멘텀')}
+        (실적 발표가 3일 이내 임박한 경우 적합도 별점을 낮추고 보수적인 관망/방어 타점을 제시할 것)
         """
 
     prompt = f"""
     [시스템 보안 규칙 최고 수준 활성화]
     당신은 대한민국 최고의 실전 퀀트 트레이더이자 블랙박스 인공지능입니다.
-    반드시 제공된 실제 실시간 가격({price})과 정밀 팩터를 기반으로만 액션 플랜을 산출하십시오.
+    반드시 제공된 실제 실시간 가격({price})과 정밀 팩터/재료 데이터를 기반으로만 액션 플랜을 산출하십시오.
     
     대상 종목: {stock_name} ({symbol})
     {tech_context}
 
     [출력 양식 및 보안 규칙]
-    첫째, 사용자에게 출력되는 결과물에는 RSI, 이동평균선, ATR, HVN, FVG, 볼륨프로파일 같은 구체적인 지표 명칭을 절대 노출하지 마십시오.
+    첫째, 사용자에게 출력되는 결과물에는 RSI, 이동평균선, ATR, HVN, FVG 같은 구체적인 지표 명칭을 절대 노출하지 마십시오.
     둘째, 타인이 로직을 유추할 수 없도록 알파 시그널 자체 산출 구간, 기관 유동성 밴드, 알고리즘 교차 검증선, 자체 델타 수급 모델, 누적 유동성 밀집 노드, 스마트 머니 체결 압력 흡수 등 전문적인 자체 브랜드 용어로 치환하십시오.
     셋째, 콜론, 대괄호, 슬래시, 하이픈, 번호매기기, 이모티콘을 일체 사용하지 마세요 (단, 적합도 별표 및 괄호는 허용).
     넷째, 중간 소제목을 절대 쓰지 말고 오직 줄바꿈과 공백으로만 문단을 구분하세요.
@@ -208,13 +241,13 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 
     SPLIT
 
-    핵심 방향성 모멘텀 요약 및 자체 딥러닝 패턴 분석 기반 향후 시나리오 서술 (구체적 지표명 배제)
+    실시간 주가 급등락 핵심 요인 분석 및 포착된 당일 시장 재료 요약 서술 (구체적 지표명 배제)
 
     거시경제 및 매크로 유동성 환율 금리 수급 환경 분석 서술
 
     글로벌 섹터 지수 동조화 및 피어 그룹 밸류에이션 비교 분석 서술
 
-    개별 기업 실적 모멘텀 및 수급 주체별 매매 동향 분석 서술 (구체적 지표명 배제)
+    개별 기업 실적 모멘텀 어닝 일정 및 수급 주체별 매매 동향 분석 서술 (구체적 지표명 배제)
 
     자체 퀀트 모델 교차 검증 및 자체 델타 수급 분석을 통한 단기 체결 압력 흡수 과정 서술 (구체적 지표명 배제)
 
@@ -230,13 +263,13 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
-        "종목명을 입력하시면 실시간 시세와 교차 검증 알고리즘을 반영한 분석을 시작합니다\n"
+        "종목명을 입력하시면 실시간 시세, 뉴스 모멘텀, 실적 캘린더를 결합한 퀀트 분석을 시작합니다\n"
         "예시 SK스퀘어 삼성전자 비트코인 TSLA"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
-    status_msg = await update.message.reply_text(f"{query} 실시간 호가 및 퀀트 팩터 연산 중입니다")
+    status_msg = await update.message.reply_text(f"{query} 실시간 호가 및 재료 팩터 연산 중입니다")
 
     try:
         current_price, symbol, quant_data = fetch_realtime_price_fallback(query)

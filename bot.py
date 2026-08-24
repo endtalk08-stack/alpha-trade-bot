@@ -520,7 +520,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
         "• 종목 분석: 종목명 입력 (예: 엔비디아, 테슬라, 비트코인)\n"
-        "• 실전 성적표 조회: /성적표 또는 '승률' 입력\n"
+        "• 실전 성적표 조회: '성적표' 또는 '승률' 입력\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
 
@@ -557,11 +557,12 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     chat_id = update.effective_chat.id
 
-    if query in ["성적표", "/성적표", "승률", "수익률", "검증", "/검증"]:
+    # 성적표/승률 키워드 완벽 지원
+    if query in ["성적표", "승률", "수익률", "검증", "/score", "/report"]:
         await show_performance(update, context)
         return
 
-    if query in ["대장", "대장주", "종목추천", "추천", "/대장"]:
+    if query in ["대장", "대장주", "종목추천", "추천"]:
         query = "삼성전기"
 
     status_msg = await update.message.reply_text(f"{query} ICT 스마트 머니 분석 중입니다...")
@@ -681,8 +682,8 @@ if __name__ == "__main__":
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("성적표", show_performance))
-    app.add_handler(CommandHandler("검증", show_performance))
+    app.add_handler(CommandHandler("score", show_performance))
+    app.add_handler(CommandHandler("report", show_performance))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.run_polling(drop_pending_updates=True)

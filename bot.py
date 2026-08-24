@@ -34,7 +34,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJY
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
 genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-1.5-flash')
+# 가장 안정적이고 빠른 플래시 모델 지정
+ai_model = genai.GenerativeModel('gemini-2.5-flash')
 
 REPORT_CACHE = {}
 DB_FILE = "trades.db"
@@ -330,7 +331,7 @@ def perform_ict_quant_analysis(raw_price, df):
     ma20 = closes.rolling(20, min_periods=5).mean().iloc[-1]
     ma60 = closes.rolling(60, min_periods=10).mean().iloc[-1] if len(df_c) >= 10 else ma20
     disparity = ((curr_p - ma20) / ma20) * 100
-    ma20_status = f"20일선({ma20:,.1f}) 대비 {disparity:+.1f}% / 60일선({ma60:,.1f})"
+    ma20_status = f"20일선 대비 {disparity:+.1f}%"
 
     delta = closes.diff()
     gain = (delta.where(delta > 0, 0)).rolling(14, min_periods=5).mean()
@@ -344,7 +345,7 @@ def perform_ict_quant_analysis(raw_price, df):
     curr_v = df_c[v_col].iloc[-1]
     avg_v5 = df_c[v_col].iloc[-6:-1].mean() if len(df_c) >= 6 else curr_v
     vol_ratio = (curr_v / (avg_v5 + 1e-9)) * 100
-    vol_status = f"5일 평균 대비 {vol_ratio:.0f}% 수준"
+    vol_status = f"5일 평균 대비 {vol_ratio:.0f}%"
 
     atr_val = round(float((highs - lows).tail(14).mean()), 2)
     if atr_val <= 0:
@@ -392,13 +393,11 @@ def fetch_technical_quant_data(symbol, asset_type):
         return None
 
 def record_trade_signal_from_ai(symbol, name, asset_type, raw_price, summary_text):
-    """AI가 작성한 타점 카드에서 1차 목표가와 칼손절가를 파싱하여 DB에 자동 저장"""
     try:
         entry_p = raw_price
         target_p = raw_price * 1.05
         stop_p = raw_price * 0.96
 
-        # 정규식으로 AI가 제시한 1차 목표가, 칼손절가 추출
         m_target = re.search(r'1차 목표[^\d]*([\d,]+(?:\.\d+)?)', summary_text)
         if m_target:
             target_p = float(m_target.group(1).replace(",", ""))
@@ -545,7 +544,7 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
-        "• 종목 분석: 종목명 입력 (예: SK증권, 엔비디아, 테슬라, 비트코인)\n"
+        "• 종목 분석: 종목명 입력 (예: SK하이닉스, 엔비디아, 테슬라, 비트코인)\n"
         "• 실전 성적표 조회: /성적표 또는 '승률' 입력\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
@@ -626,9 +625,12 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         current_price = quant_data['current_price']
-        summary_text, detail_text = generate_full_quant_report(formal_name, symbol, current_price, quant_data)
+        
+        # AI 분석을 별도 스레드에서 안전하게 실행 (타임아웃 방지)
+        summary_text, detail_text = await asyncio.to_thread(
+            generate_full_quant_report, formal_name, symbol, current_price, quant_data
+        )
 
-        # 🎯 AI가 짚어준 정밀 타점을 DB에 자동 기록
         record_trade_signal_from_ai(symbol, formal_name, asset_type, quant_data['raw_price'], summary_text)
 
         report_id = str(uuid.uuid4())[:8]
@@ -659,9 +661,9 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if new_msg_ids:
             asyncio.create_task(delete_messages_later(context.bot, chat_id, new_msg_ids, delay=900))
 
-    except Exception:
+    except Exception as e:
         try:
-            await status_msg.edit_text("일시적 처리 지연이 발생했습니다. 다시 입력해 주세요.")
+            await status_msg.edit_text(f"일시적 처리 지연이 발생했습니다: {str(e)[:40]}")
         except Exception:
             pass
     finally:

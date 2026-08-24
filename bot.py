@@ -125,7 +125,7 @@ def fetch_events_and_catalysts(symbol, stock_name, asset_type):
     news_text = "업황 사이클 및 기관 수급 유입 모멘텀 지속"
     earnings_text = "분기 실적 시즌 변동성 안정권"
     macro_text = "FOMC 금리 및 매크로 물가지표 경계감 소화 중"
-    catalyst_score = 0.8  # 기본 0.8점
+    catalyst_score = 0.8
 
     try:
         if asset_type == "domestic_stock":
@@ -554,7 +554,7 @@ def generate_candlestick_chart(df, symbol_name):
         gc.collect()
 
 def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None):
-    """5대 독립 퀀트 팩터(각 1.0점 만점 / 총 5.0점) 정밀 채점 엔진"""
+    """신고가 돌파 가점 및 쌍봉 저항 감점이 통합 내장된 5대 정밀 퀀트 채점 엔진"""
     f1_regime_score = regime_info.get("regime_score", 0.5) if regime_info else 0.5
     f5_catalyst_score = event_info.get("catalyst_score", 0.8) if event_info else 0.8
 
@@ -572,7 +572,7 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
             "ict_zone": "Discount Zone",
             "raw_price": raw_price,
             "score": f"{total_score:.1f}",
-            "grade": "A급 (스윙 분할)" if total_score >= 4.0 else "B급 (단기 대응)",
+            "grade": "A급 우수 타점 1·2차 분할" if total_score >= 4.0 else "B급 중립 단타 대응",
             "stars": "★★★★★" if total_score >= 4.5 else ("★★★★☆" if total_score >= 4.0 else ("★★★☆☆" if total_score >= 3.5 else "★★☆☆☆")),
             "entry1_low": round(raw_price * 0.985, 2),
             "entry1_high": round(raw_price, 2),
@@ -592,6 +592,7 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
 
     recent_high = highs.tail(20).max()
     recent_low = lows.tail(20).min()
+    prior_high_60 = float(highs.tail(60).max()) if len(df_c) >= 60 else float(recent_high)
     eq = (recent_high + recent_low) / 2.0
     ict_zone = "Discount Zone (할인 / 롱 OTE 유리)" if curr_p <= eq else "Premium Zone (할증 / 숏 유리)"
 
@@ -601,7 +602,7 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
     disparity = ((curr_p - ma20) / ma20) * 100
     ma20_status = f"20일선({ma20:,.1f}) 대비 {disparity:+.1f}%"
 
-    # 팩터 2: 이평선 추세 배열 (1.0점 만점)
+    # 1. 20일선 추세 배열 점수 (1.0점 만점)
     if curr_p >= ma20 and ma_slope_positive:
         f2_trend_score = 1.0
     elif curr_p >= ma20 * 0.975:
@@ -629,7 +630,7 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
     if atr_val <= 0 or np.isnan(atr_val):
         atr_val = round(curr_p * 0.03, 2)
 
-    # FVG 불균형 매물대 및 Sweep 탐색
+    # FVG 매물대 및 Sweep 탐색
     fvg_top, fvg_bot = None, None
     for k in range(max(2, len(df_c)-5), len(df_c)):
         if float(lows.iloc[k]) > float(highs.iloc[k-2]):
@@ -638,7 +639,7 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
 
     sweep_low = float(lows.tail(5).min())
 
-    # 팩터 3: ICT Discount & FVG 가격 메리트 (1.0점 만점)
+    # 2. ICT Discount & FVG 가격 메리트 점수 (1.0점 만점)
     if (curr_p <= eq) and fvg_top and (fvg_top <= curr_p):
         f3_price_score = 1.0
     elif curr_p <= eq:
@@ -648,7 +649,7 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
     else:
         f3_price_score = 0.3
 
-    # 팩터 4: RSI & 수급 모멘텀 (1.0점 만점)
+    # 3. RSI & 수급 모멘텀 점수 (1.0점 만점)
     if (40.0 <= rsi_val <= 55.0) and (70.0 <= vol_ratio <= 140.0):
         f4_momentum_score = 1.0
     elif (35.0 <= rsi_val <= 65.0):
@@ -658,26 +659,36 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
     else:
         f4_momentum_score = 0.4
 
-    # 5대 팩터 합산 (총 5.0점 만점)
-    total_raw_score = f1_regime_score + f2_trend_score + f3_price_score + f4_momentum_score + f5_catalyst_score
+    # 4. 신고가 돌파 가점 vs 쌍봉 저항 감점
+    breakout_bonus = 0.0
+    is_near_peak = (curr_p >= prior_high_60 * 0.97)
+    
+    if curr_p >= prior_high_60 and vol_ratio >= 130.0:
+        breakout_bonus = 0.35
+    elif is_near_peak and vol_ratio < 90.0:
+        breakout_bonus = -0.5
+    elif is_near_peak and (rsi_val >= 68.0):
+        breakout_bonus = -0.4
+
+    total_raw_score = f1_regime_score + f2_trend_score + f3_price_score + f4_momentum_score + f5_catalyst_score + breakout_bonus
     total_score = round(min(5.0, max(1.5, total_raw_score)), 1)
 
-    # 5단계 등급 및 별점 부여
+    # 5단계 등급 산출 (깔끔한 간결형)
     if total_score >= 4.5:
         stars_str = "★★★★★"
-        grade_str = "S급 (최우수 타점 / 적극 진입)"
+        grade_str = "S급 적극 진입"
     elif total_score >= 4.0:
         stars_str = "★★★★☆"
-        grade_str = "A급 (우수 타점 / 1·2차 분할)"
+        grade_str = "A급 우수 타점 1·2차 분할"
     elif total_score >= 3.5:
         stars_str = "★★★☆☆"
-        grade_str = "B급 (중립 / 짧은 단타 대응)"
+        grade_str = "B급 중립 단타 대응"
     elif total_score >= 3.0:
         stars_str = "★★☆☆☆"
-        grade_str = "C급 (주의 / 관망 권고)"
+        grade_str = "C급 주의 관망 권고"
     else:
         stars_str = "★☆☆☆☆"
-        grade_str = "D급 (고위험 / 진입 금지)"
+        grade_str = "D급 위험 진입 금지"
 
     if fvg_top and fvg_top <= curr_p:
         e1_high = round(curr_p, 2)
@@ -781,7 +792,7 @@ def generate_reliable_report(stock_name, symbol, price, an, regime_info, event_i
 
 현재가 {price}
 종합지수 국면 {regime_tag}
-트레이딩 적합도 {an['stars']} {an['score']}점 [{an['grade']}]
+트레이딩 적합도 {an['stars']} {an['score']}점 {an['grade']}
 
 주요 재료 및 일정 캘린더
 • 실시간 핵심 재료: {event_info['news']}

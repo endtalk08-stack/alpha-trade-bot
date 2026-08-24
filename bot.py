@@ -30,7 +30,7 @@ ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 
-# 주요 종목 매핑 (대소문자/띄어쓰기 무관 자동 매핑 지원)
+# 자주 쓰는 대표 종목 매핑
 COMMON_SYMBOLS = {
     "비트코인": ("crypto", "BTCUSDT"),
     "이더리움": ("crypto", "ETHUSDT"),
@@ -41,18 +41,31 @@ COMMON_SYMBOLS = {
     "XRP": ("crypto", "XRPUSDT"),
     "삼성전자": ("domestic_stock", "005930"),
     "SK하이닉스": ("domestic_stock", "000660"),
-    "금호전기": ("domestic_stock", "001210"),
-    "현대차": ("domestic_stock", "005380"),
-    "NAVER": ("domestic_stock", "035420"),
-    "카카오": ("domestic_stock", "035720"),
     "테슬라": ("overseas_stock", "TSLA"),
     "엔비디아": ("overseas_stock", "NVDA"),
     "애플": ("overseas_stock", "AAPL"),
     "QQQ": ("overseas_stock", "QQQ")
 }
 
+def get_stock_code_by_name(query):
+    """한글 종목명을 네이버 증권 검색 API를 통해 6자리 종목코드로 자동 변환 (코스피/코스닥 전 종목 지원)"""
+    try:
+        url = f"https://ac.finance.naver.com/ac?q={query}&target=stock"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=3).json()
+        items = res.get("items", [[]])[0]
+        if items:
+            for item in items:
+                # item[0]: 종목코드, item[1]: 종목명
+                if item[1].replace(" ", "").upper() == query.replace(" ", "").upper():
+                    return item[0]
+            return items[0][0]
+    except Exception:
+        pass
+    return None
+
 def get_naver_stock_price(code):
-    """국내 주식 1초 단위 실시간 시세 (네이버 금융 연동)"""
+    """국내 주식 1초 단위 실시간 시세 (네이버 금융 모바일 API)"""
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/basic"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -87,7 +100,7 @@ def get_toss_stock_price(symbol, market_type="domestic"):
 def fetch_realtime_price(user_query):
     cleaned_query = user_query.strip().replace(" ", "").upper()
     
-    # 매핑 목록 확인
+    # 1. 고정 매핑 확인
     matched_key = None
     for key in COMMON_SYMBOLS:
         if key.replace(" ", "").upper() == cleaned_query:
@@ -102,9 +115,15 @@ def fetch_realtime_price(user_query):
         elif any(c.isupper() for c in cleaned_query) and not cleaned_query.endswith(".KS"):
             asset_type, symbol = "overseas_stock", cleaned_query
         else:
-            asset_type, symbol = "domestic_stock", cleaned_query
+            # 6자리 숫자가 아니면 한글 종목명 검색으로 종목코드 자동 추출
+            if not (cleaned_query.isdigit() and len(cleaned_query) == 6):
+                searched_code = get_stock_code_by_name(user_query.strip())
+                symbol = searched_code if searched_code else cleaned_query
+            else:
+                symbol = cleaned_query
+            asset_type = "domestic_stock"
 
-    # 1. 가상자산 시세 조회 (바이낸스 실시간)
+    # 1) 가상자산 시세 조회 (바이낸스 실시간)
     if asset_type == "crypto":
         try:
             url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
@@ -113,15 +132,15 @@ def fetch_realtime_price(user_query):
         except Exception:
             return None, symbol
 
-    # 2. 국내 주식 시세 조회 (토스 API 우선 -> 네이버 금융 백업)
+    # 2) 국내 주식 시세 조회 (네이버 금융 우선 -> 토스 API 2중 백업)
     if asset_type == "domestic_stock":
-        price = get_toss_stock_price(symbol, "domestic")
+        price = get_naver_stock_price(symbol)
         if not price:
-            price = get_naver_stock_price(symbol)
+            price = get_toss_stock_price(symbol, "domestic")
         if price:
             return price, symbol
 
-    # 3. 해외 주식 시세 조회 (토스 API 우선 -> 야후 파이낸스 백업)
+    # 3) 해외 주식 시세 조회 (토스 API -> 야후 파이낸스)
     if asset_type == "overseas_stock":
         price = get_toss_stock_price(symbol, "overseas")
         if not price:
@@ -205,7 +224,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
         "종목명을 입력하시면 실시간 시세와 교차 검증 알고리즘을 반영한 분석을 시작합니다\n"
-        "예시 비트코인 삼성전자 SK하이닉스 QQQ"
+        "예시 SK스퀘어 삼성전자 비트코인 TSLA"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -215,7 +234,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         current_price, symbol = fetch_realtime_price(query)
 
-        # 실시간 가격 수집 실패 시 오류 출력 및 가짜 분석 방지
+        # 실시간 가격 수집 실패 시 가짜 분석 생성 방지
         if not current_price:
             await status_msg.edit_text(f"❌ {query}의 실시간 가격을 가져오지 못했습니다. 종목명을 다시 확인해 주세요.")
             return

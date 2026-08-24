@@ -1,7 +1,5 @@
 python-telegram-bot
-google-generativeai
 requests
-yfinance
 pandas
 numpy
 matplotlib

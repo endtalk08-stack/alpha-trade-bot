@@ -137,7 +137,6 @@ def get_toss_stock_price(code):
     return None, None
 
 def fetch_events_and_catalysts_gemini(symbol, stock_name, asset_type):
-    """Google Search 기반 실시간 고유 뉴스/일정/재료 요약 (지수/ETF 구분)"""
     cache_key = f"gemini_{asset_type}_{symbol}"
     curr_time = time.time()
     if cache_key in EVENT_CACHE:
@@ -459,7 +458,6 @@ def fetch_domestic_stock_candles(code, years=1):
     return None
 
 def backtest_alpha_strategy(df, years=1):
-    """전 종목(국내/해외/코인) 변동성(ATR) 자동 연동 5대 팩터 백테스팅 엔진"""
     if df is None or len(df) < 25:
         if years == 2:
             return {"total": 35, "win": 25, "loss": 10, "win_rate": 71.4, "cum_ret": 142.5, "avg_win": 9.1, "avg_loss": -2.4, "pf": 3.79}
@@ -877,7 +875,7 @@ def generate_reliable_report(stock_name, symbol, price, an, regime_info, event_i
 실적/공시: {event_info['earnings']}
 매크로 지표: {event_info['macro']}
 
-🎯 Alpha Signal 액션 플랜
+🎯 gaemiGTP 액션 플랜
 방향성: 롱 (단기 눌림목 매수)
 1차 진입: {e1_l} ~ {e1_h} (FVG 갭 상단 지지 확인 1차 분할)
 2차 진입: {e2_l} ~ {e2_h} (구조적 매물대 하단 지지 2차 분할)
@@ -902,7 +900,7 @@ RSI {an['rsi']} 수준의 저위험 타점으로 장중 변동폭 {atr_str} 기�
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Alpha Signal 올인원 퀀트 봇 가동 중입니다\n\n"
+        "gaemiGTP 올인원 퀀트 봇 가동 중입니다\n\n"
         "• 종목 실시간 타점 + 실시간 뉴스: 종목명 입력 (예: 삼성전자, 씨젠, 엔비디아, 비트코인)\n"
         "• 실전 백테스팅 검증표: '검증 종목명' (예: 검증 SK하이닉스, 검증 삼성전자)\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
@@ -912,7 +910,7 @@ async def run_backtest_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     raw_target = query_text.replace("검증", "").replace("/검증", "").replace("성적표", "").replace("/성적표", "").replace("승률", "").replace("수익률", "").strip()
     target = raw_target if raw_target else "삼성전자"
 
-    status_msg = await update.message.reply_text(f"📊 {target}의 Alpha Signal 5대 팩터 검증 데이터를 산출 중입니다...")
+    status_msg = await update.message.reply_text(f"📊 {target}의 gaemiGTP 5대 팩터 검증 데이터를 산출 중입니다...")
 
     clean_q = target.replace(" ", "").upper()
     if clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "USDT", "코인", "비트코인"]):
@@ -985,12 +983,10 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         clean_q = query.replace(" ", "").upper()
         
-        # 1. 암호화폐
         if clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "USDT", "코인", "비트코인", "이더리움", "리플", "도지"]):
             asset_type = "crypto"
             symbol = CRYPTO_MAP.get(clean_q, clean_q.replace("코인", "") + "USDT")
             formal_name = query
-        # 2. 미국 주식
         elif clean_q in US_STOCK_MAP:
             asset_type = "overseas_stock"
             symbol = US_STOCK_MAP[clean_q]
@@ -999,7 +995,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asset_type = "overseas_stock"
             symbol = query.upper()
             formal_name = query
-        # 3. 국내 주식
         else:
             code, name = find_stock_code(query)
             if not code:
@@ -1095,7 +1090,7 @@ class SimpleServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is Running Alive!")
+        self.wfile.write(b"gaemiGTP Bot is Running Alive!")
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))

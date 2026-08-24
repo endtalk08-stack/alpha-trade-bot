@@ -10,7 +10,6 @@ import datetime
 import threading
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
-import google.generativeai as genai
 import requests
 import pandas as pd
 import numpy as np
@@ -32,9 +31,6 @@ from telegram.ext import (
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
-
-genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 REPORT_CACHE = {}
 DB_FILE = "trades.db"
@@ -100,6 +96,26 @@ DOMESTIC_FAST_MAP = {
     "LG에너지솔루션": "373220", "한화오션": "042660", "두산에너빌리티": "034020",
     "한화에어로스페이스": "012450", "현대모비스": "012330", "셀트리온": "068270"
 }
+
+def ask_gemini_api(prompt_text):
+    """라이브러리 버전 충돌 없는 순수 REST API Gemini 호출"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [{"parts": [{"text": prompt_text}]}]
+    }
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=8.0)
+        data = res.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        # 비상 Fallback (2.0-flash 시도)
+        try:
+            url_fallback = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+            res = requests.post(url_fallback, headers=headers, json=payload, timeout=8.0)
+            return res.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception:
+            return "전략 생성 중 일시적인 API 지연이 발생했습니다 SPLIT 심층 데이터를 불러오는 중입니다"
 
 async def delete_messages_later(bot, chat_id, message_ids, delay=900):
     try:
@@ -513,8 +529,8 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 
     예상 손익비 분석 및 실전 트레이딩 코멘트
     """
-    response = ai_model.generate_content(prompt).text
-    parts = response.split("SPLIT")
+    response_text = ask_gemini_api(prompt)
+    parts = response_text.split("SPLIT")
     summary = parts[0].strip()
     detail = parts[1].strip() if len(parts) > 1 else "심층 분석 데이터를 불러올 수 없습니다"
     return summary, detail
@@ -681,6 +697,4 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("검증", show_performance))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(handle_button))
-    
-    # 중복 실행 충돌 방지 drop_pending_updates 적용
     app.run_polling(drop_pending_updates=True)

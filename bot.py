@@ -171,7 +171,7 @@ def get_market_regime(asset_type):
         if curr_time < expire:
             return cached_data
 
-    regime_name = "횡보 박스권 📦 (Range)"
+    regime_name = "횡보장 (Range)"
     regime_score = 0.5
     action_note = "종합지수 수렴 구간으로 1차 목표가 도달 시 빠른 분할 익절 대응"
     index_name = "KOSPI 200" if asset_type == "domestic_stock" else ("NASDAQ" if asset_type == "overseas_stock" else "비트코인(BTC)")
@@ -196,19 +196,19 @@ def get_market_regime(asset_type):
             slope = ma20 - ma20_prev
 
             if curr_p >= ma20 * 1.01 and slope > 0:
-                regime_name = "강한 상승장 🚀 (Bull)"
+                regime_name = "상승장 (Bull)"
                 regime_score = 1.0
                 action_note = f"{index_name} 20일선 위 우상향 안착 중. 적극 돌파 및 스윙 목표가 홀딩 유리"
             elif curr_p >= ma20 * 0.985 and curr_p < ma20 * 1.01:
-                regime_name = "건전한 조정장 ☕ (Pullback)"
+                regime_name = "조정장 (Pullback)"
                 regime_score = 0.8
                 action_note = f"{index_name} 20일선 지지 수렴 중. 최적의 Discount Zone 분할 매수 적기"
             elif curr_p < ma20 * 0.985 and slope < 0:
-                regime_name = "위험 하락장 ⚠️ (Bear)"
+                regime_name = "하락장 (Bear)"
                 regime_score = 0.2
                 action_note = f"{index_name} 역배열 하향세. 휩쏘 주의, 진입 비중 30% 이하 축소 및 칼손절 엄수"
             else:
-                regime_name = "횡보 박스권 📦 (Range)"
+                regime_name = "횡보장 (Range)"
                 regime_score = 0.5
                 action_note = f"{index_name} 방향성 탐색 구간. 짧은 손익비 박스권 단타 대응"
     except Exception:
@@ -554,7 +554,6 @@ def generate_candlestick_chart(df, symbol_name):
         gc.collect()
 
 def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None):
-    """신고가 돌파 가점 및 쌍봉 저항 감점이 통합 내장된 5대 정밀 퀀트 채점 엔진"""
     f1_regime_score = regime_info.get("regime_score", 0.5) if regime_info else 0.5
     f5_catalyst_score = event_info.get("catalyst_score", 0.8) if event_info else 0.8
 
@@ -602,7 +601,6 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
     disparity = ((curr_p - ma20) / ma20) * 100
     ma20_status = f"20일선({ma20:,.1f}) 대비 {disparity:+.1f}%"
 
-    # 1. 20일선 추세 배열 점수 (1.0점 만점)
     if curr_p >= ma20 and ma_slope_positive:
         f2_trend_score = 1.0
     elif curr_p >= ma20 * 0.975:
@@ -630,7 +628,6 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
     if atr_val <= 0 or np.isnan(atr_val):
         atr_val = round(curr_p * 0.03, 2)
 
-    # FVG 매물대 및 Sweep 탐색
     fvg_top, fvg_bot = None, None
     for k in range(max(2, len(df_c)-5), len(df_c)):
         if float(lows.iloc[k]) > float(highs.iloc[k-2]):
@@ -639,7 +636,6 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
 
     sweep_low = float(lows.tail(5).min())
 
-    # 2. ICT Discount & FVG 가격 메리트 점수 (1.0점 만점)
     if (curr_p <= eq) and fvg_top and (fvg_top <= curr_p):
         f3_price_score = 1.0
     elif curr_p <= eq:
@@ -649,7 +645,6 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
     else:
         f3_price_score = 0.3
 
-    # 3. RSI & 수급 모멘텀 점수 (1.0점 만점)
     if (40.0 <= rsi_val <= 55.0) and (70.0 <= vol_ratio <= 140.0):
         f4_momentum_score = 1.0
     elif (35.0 <= rsi_val <= 65.0):
@@ -659,7 +654,6 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
     else:
         f4_momentum_score = 0.4
 
-    # 4. 신고가 돌파 가점 vs 쌍봉 저항 감점
     breakout_bonus = 0.0
     is_near_peak = (curr_p >= prior_high_60 * 0.97)
     
@@ -673,7 +667,6 @@ def perform_ict_quant_analysis(raw_price, df, regime_info=None, event_info=None)
     total_raw_score = f1_regime_score + f2_trend_score + f3_price_score + f4_momentum_score + f5_catalyst_score + breakout_bonus
     total_score = round(min(5.0, max(1.5, total_raw_score)), 1)
 
-    # 5단계 등급 산출 (깔끔한 간결형)
     if total_score >= 4.5:
         stars_str = "★★★★★"
         grade_str = "S급 적극 진입"
@@ -784,7 +777,7 @@ def generate_reliable_report(stock_name, symbol, price, an, regime_info, event_i
         st = f"{an['stop']:,.2f}{unit}"
         atr_str = f"{an['atr']:,.2f}{unit}"
 
-    regime_tag = regime_info.get("regime_name", "횡보 박스권 📦")
+    regime_tag = regime_info.get("regime_name", "횡보장 (Range)")
     regime_note = regime_info.get("action_note", "")
 
     summary = f"""
@@ -794,23 +787,22 @@ def generate_reliable_report(stock_name, symbol, price, an, regime_info, event_i
 종합지수 국면 {regime_tag}
 트레이딩 적합도 {an['stars']} {an['score']}점 {an['grade']}
 
-주요 재료 및 일정 캘린더
-• 실시간 핵심 재료: {event_info['news']}
-• 실적 및 공시: {event_info['earnings']}
+📰 주요 재료 및 일정
+• 핵심 재료: {event_info['news']}
+• 실적/공시: {event_info['earnings']}
 • 매크로 지표: {event_info['macro']}
 
-Alpha Signal 하이브리드 액션 플랜
+🎯 Alpha Signal 액션 플랜
+• 방향성: 롱 (단기 눌림목 매수)
+• 1차 진입: {e1_l} ~ {e1_h} (FVG 갭 상단 지지 확인 1차 분할)
+• 2차 진입: {e2_l} ~ {e2_h} (구조적 매물대 하단 지지 2차 분할)
+• 1차 목표: {t1} (50% 분할 익절 + 본전 스탑 상향)
+• 2차 목표: {t2} (상단 저항 돌파 시 전량 익절)
+• 칼손절: {st} (Sweep 저점 이탈 방어 기준가)
 
-방향성 롱 (단기 눌림목 매수)
-1차 진입 {e1_l}에서 {e1_h} (FVG 수급 갭 상단 및 단기 지지 확인 1차 분할)
-2차 진입 {e2_l}에서 {e2_h} (구조적 매물대 하단 및 20일선 반등 마지노선 2차 분할)
-1차 목표 {t1} (직전 매물벽 도달 시 50퍼센트 분할 익절 + 본전 스탑 상향)
-2차 목표 {t2} (상단 저항 밴드 돌파 시 최종 전량 익절)
-칼손절 {st} (Sweep 저점 이탈 방어 기준가)
-
-시장 가이드 및 행동 요령
+💡 시장 가이드 및 행동 요령
 {regime_note}
-당일 체결강도 105퍼센트 이상 유지 시 1차 구간 착수하며 장중 변동폭 {atr_str} 내외의 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행
+당일 체결강도 105% 이상 유지 시 1차 구간 착수하며 장중 변동폭 {atr_str} 내외의 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행
 """.strip()
 
     detail = f"""

@@ -129,28 +129,70 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
     return None, None
 
 def get_us_stock_fmp_data(symbol):
-    """FMP 공식 API를 통한 미국 주식 실시간 시세 및 일봉 수신 (IP 차단 0%)"""
+    """FMP 공식 API + 다중 엔드포인트 폴백 (무료 플랜 100% 대응)"""
     clean_sym = symbol.upper().strip()
+    
+    # 1. FMP 공식 Quote 엔드포인트
     try:
-        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{clean_sym}?timeseries=40&apikey={FMP_API_KEY}"
-        res = requests.get(url, timeout=3.5).json()
-        hist = res.get("historical", [])
-        if hist:
-            records = []
-            for item in hist:
-                records.append({
-                    "Date": pd.to_datetime(item["date"]),
-                    "Open": float(item["open"]),
-                    "High": float(item["high"]),
-                    "Low": float(item["low"]),
-                    "Close": float(item["close"]),
-                    "Volume": float(item["volume"])
-                })
-            df = pd.DataFrame(records).set_index("Date").sort_index()
-            curr_p = float(df['Close'].iloc[-1])
-            return f"{curr_p:,.2f} 달러", df
+        url = f"https://financialmodelingprep.com/api/v3/quote/{clean_sym}?apikey={FMP_API_KEY}"
+        res = requests.get(url, timeout=3.0).json()
+        if isinstance(res, list) and len(res) > 0:
+            curr_p = float(res[0].get("price", 0))
+            if curr_p > 0:
+                # FMP 차트 데이터 가져오기
+                chart_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{clean_sym}?timeseries=30&apikey={FMP_API_KEY}"
+                chart_res = requests.get(chart_url, timeout=3.0).json()
+                hist = chart_res.get("historical", [])
+                if hist:
+                    records = []
+                    for item in hist:
+                        records.append({
+                            "Date": pd.to_datetime(item["date"]),
+                            "Open": float(item["open"]),
+                            "High": float(item["high"]),
+                            "Low": float(item["low"]),
+                            "Close": float(item["close"]),
+                            "Volume": float(item.get("volume", 0))
+                        })
+                    df = pd.DataFrame(records).set_index("Date").sort_index()
+                    return f"{curr_p:,.2f} 달러", df
+                return f"{curr_p:,.2f} 달러", None
     except Exception:
         pass
+
+    # 2. Yahoo Finance Chart REST API 백업 (IP 차단 방지 헤더)
+    try:
+        y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?range=1mo&interval=1d"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        y_res = requests.get(y_url, headers=headers, timeout=3.0).json()
+        result = y_res.get("chart", {}).get("result", [])
+        if result:
+            ts = result[0].get("timestamp", [])
+            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+            opens = quote.get("open", [])
+            highs = quote.get("high", [])
+            lows = quote.get("low", [])
+            closes = quote.get("close", [])
+            volumes = quote.get("volume", [])
+
+            records = []
+            for i in range(len(ts)):
+                if opens[i] is not None and closes[i] is not None:
+                    records.append({
+                        "Date": pd.to_datetime(ts[i], unit='s'),
+                        "Open": float(opens[i]),
+                        "High": float(highs[i]),
+                        "Low": float(lows[i]),
+                        "Close": float(closes[i]),
+                        "Volume": float(volumes[i]) if volumes[i] is not None else 0.0
+                    })
+            if records:
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                curr_p = float(df['Close'].iloc[-1])
+                return f"{curr_p:,.2f} 달러", df
+    except Exception:
+        pass
+
     return None, None
 
 def get_naver_realtime_price(code):
@@ -405,7 +447,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asset_type = "crypto"
             symbol = CRYPTO_MAP.get(clean_q, clean_q.replace("코인", "") + "USDT")
             formal_name = query
-        # 2. 미국 주식 (한글 / 영문 티커)
+        # 2. 미국 주식
         elif clean_q in US_STOCK_MAP:
             asset_type = "overseas_stock"
             symbol = US_STOCK_MAP[clean_q]

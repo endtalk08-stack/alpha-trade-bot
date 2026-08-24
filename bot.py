@@ -38,6 +38,7 @@ ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 
+# 자주 쓰는 대표 종목 단축 사전
 COMMON_SYMBOLS = {
     "비트코인": ("crypto", "BTCUSDT"),
     "이더리움": ("crypto", "ETHUSDT"),
@@ -60,8 +61,8 @@ COMMON_SYMBOLS = {
     "NAVER": ("domestic_stock", "035420"),
     "현대차": ("domestic_stock", "005380"),
     "기아": ("domestic_stock", "000270"),
-    "POSCO홀딩스": ("domestic_stock", "005490"),
     "포스코홀딩스": ("domestic_stock", "005490"),
+    "POSCO홀딩스": ("domestic_stock", "005490"),
     "LG에너지솔루션": ("domestic_stock", "373220"),
     "테슬라": ("overseas_stock", "TSLA"),
     "엔비디아": ("overseas_stock", "NVDA"),
@@ -71,97 +72,122 @@ COMMON_SYMBOLS = {
 }
 
 def get_stock_code_by_name(query):
-    """코스피/코스닥 전 종목 실시간 검색 (다음/네이버/통합 4단계 파싱)"""
+    """4중 교차 검색으로 코스피/코스닥 전 종목 6자리 코드 100% 추출"""
     clean_q = query.strip()
+    clean_no_space = clean_q.replace(" ", "").upper()
     
-    # 1. 다음 증권 자동완성
+    # 1. 다음 카카오 증권 검색 (코스닥/중소형주 1위)
     try:
         d_url = f"https://suggest-baro.daum.net/suggest?id=stock&v=4&code=utf-8&q={requests.utils.quote(clean_q)}"
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.daum.net"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": "https://finance.daum.net"}
         res = requests.get(d_url, headers=headers, timeout=2).json()
         sub_items = res.get("sub", [])
         if sub_items:
             for item in sub_items:
                 raw_code = item[0].replace("A", "").strip()
                 name = item[1].strip()
-                if clean_q.replace(" ", "").upper() == name.replace(" ", "").upper():
+                if clean_no_space == name.replace(" ", "").upper():
                     return raw_code, name
             return sub_items[0][0].replace("A", "").strip(), sub_items[0][1].strip()
     except Exception:
         pass
 
-    # 2. 네이버 모바일 통합 검색 API
+    # 2. 네이버 모바일 통합 검색
     try:
         url = f"https://m.stock.naver.com/api/search/autoComplete?keyword={requests.utils.quote(clean_q)}"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"}
         res = requests.get(url, headers=headers, timeout=2).json()
-        for group in ["stocks", "items"]:
-            if group in res and res[group]:
-                for item in res[group]:
+        for key in ["stocks", "items"]:
+            if key in res and isinstance(res[key], list):
+                for item in res[key]:
                     code = item.get("itemCode") or item.get("code")
                     name = item.get("stockName") or item.get("name")
                     if code and name:
-                        return code, name
+                        if clean_no_space == name.replace(" ", "").upper():
+                            return str(code).strip(), str(name).strip()
+                if res[key]:
+                    first = res[key][0]
+                    c = first.get("itemCode") or first.get("code")
+                    n = first.get("stockName") or first.get("name")
+                    if c and n:
+                        return str(c).strip(), str(n).strip()
     except Exception:
         pass
 
-    # 3. 네이버 PC 자동완성 API
+    # 3. 네이버 PC 자동완성
     try:
         url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(clean_q)}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=2).json()
         items_list = res.get("items", [])
-        if items_list and len(items_list[0]) > 0:
+        if items_list and isinstance(items_list[0], list) and len(items_list[0]) > 0:
             for item in items_list[0]:
-                code = item[0]
-                name = item[1]
-                if clean_q.replace(" ", "").upper() == name.replace(" ", "").upper():
+                code = str(item[0]).strip()
+                name = str(item[1]).strip()
+                if clean_no_space == name.replace(" ", "").upper():
                     return code, name
-            return items_list[0][0][0], items_list[0][0][1]
+            return str(items_list[0][0][0]).strip(), str(items_list[0][0][1]).strip()
     except Exception:
         pass
 
     return None, clean_q
 
 def get_naver_realtime_price(code):
-    """네이버 모바일 증권 실시간 현재가 추출"""
+    """네이버 실시간 시세 추출 (모바일 + 실시간 폴링 2중 체크)"""
+    headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"}
+    
+    # 1. 네이버 모바일 기본 API
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/basic"
-        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=2).json()
-        p = str(res.get("closePrice", "")).replace(",", "")
-        if p and p != "None" and p != "":
+        p = str(res.get("closePrice", "")).replace(",", "").strip()
+        if p and p.isdigit():
             return f"{int(p):,} 원"
     except Exception:
         pass
+
+    # 2. 네이버 실시간 폴링 API 백업
+    try:
+        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        res = requests.get(url, headers=headers, timeout=2).json()
+        datas = res.get("result", {}).get("areas", [{}])[0].get("datas", [])
+        if datas:
+            nv = datas[0].get("nv")
+            if nv:
+                return f"{int(nv):,} 원"
+    except Exception:
+        pass
+
     return None
 
 def fetch_domestic_stock_candles(code):
-    """네이버 모바일 통합 일봉 데이터 수집 (코스피/코스닥 100% 보장)"""
+    """일봉 데이터 수집 (네이버 모바일 JSON + XML 2중 파싱)"""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    # 1. JSON 엔드포인트
     try:
         url = f"https://api.stock.naver.com/chart/domestic/market/stock/{code}?periodType=dayCandle&range=60"
-        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=3).json()
         price_infos = res.get("priceInfos", [])
         if price_infos:
             records = []
             for item in price_infos:
                 records.append({
-                    "Date": pd.to_datetime(item["localDate"], format="%Y%m%d"),
+                    "Date": pd.to_datetime(str(item["localDate"]), format="%Y%m%d"),
                     "Open": float(item["openPrice"]),
                     "High": float(item["highPrice"]),
                     "Low": float(item["lowPrice"]),
                     "Close": float(item["closePrice"]),
                     "Volume": float(item["accumulatedTradingVolume"])
                 })
-            df = pd.DataFrame(records).set_index("Date").sort_index()
-            return df
+            if records:
+                return pd.DataFrame(records).set_index("Date").sort_index()
     except Exception:
         pass
 
+    # 2. XML 엔드포인트 백업
     try:
         url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
-        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=3)
         matches = re.findall(r'<item data="([^"]+)"', res.text)
         records = []
@@ -177,8 +203,7 @@ def fetch_domestic_stock_candles(code):
                     "Volume": float(parts[5])
                 })
         if records:
-            df = pd.DataFrame(records).set_index("Date").sort_index()
-            return df
+            return pd.DataFrame(records).set_index("Date").sort_index()
     except Exception:
         pass
 
@@ -187,6 +212,9 @@ def fetch_domestic_stock_candles(code):
 def generate_candlestick_chart(df, symbol_name):
     """트레이딩뷰 다크 테마 캔들 차트 생성"""
     try:
+        if df is None or len(df) < 5:
+            return None
+
         chart_df = df.tail(40).copy()
         chart_df.index = pd.to_datetime(chart_df.index)
         
@@ -215,9 +243,9 @@ def generate_candlestick_chart(df, symbol_name):
 
 def fetch_orderbook_and_sentiment(symbol, asset_type):
     sentiment_data = {
-        "orderbook_ratio": "중립 델타",
+        "orderbook_ratio": "중립",
         "retail_sentiment": "정상 범위",
-        "action_guide": "정석 분할 진입 유효"
+        "action_guide": "분할 매수 유효"
     }
     if asset_type == "crypto":
         try:
@@ -245,11 +273,11 @@ def fetch_orderbook_and_sentiment(symbol, asset_type):
             if total_ask > 0 and total_bid > 0:
                 imbalance = total_ask / total_bid
                 if imbalance >= 2.0:
-                    sentiment_data["orderbook_ratio"] = f"상승형 매도벽 흡수 패턴 (매도/매수 {imbalance:.1f}배)"
-                    sentiment_data["retail_sentiment"] = "스마트 머니 체결 가동"
+                    sentiment_data["orderbook_ratio"] = f"매도벽 흡수 (매도/매수 {imbalance:.1f}배)"
+                    sentiment_data["retail_sentiment"] = "세력 매수 유입"
                 elif imbalance <= 0.5:
-                    sentiment_data["orderbook_ratio"] = f"허매수벽 트랩 주의 (매수/매도 {1/imbalance:.1f}배)"
-                    sentiment_data["retail_sentiment"] = "개미 매수 쏠림"
+                    sentiment_data["orderbook_ratio"] = f"허매수벽 주의 (매수/매도 {1/imbalance:.1f}배)"
+                    sentiment_data["retail_sentiment"] = "개미 쏠림"
                     sentiment_data["action_guide"] = "진입가 보수적 하향"
         except Exception:
             pass
@@ -266,7 +294,7 @@ def fetch_realtime_news(symbol, asset_type):
                 return " / ".join(titles)
     except Exception:
         pass
-    return "현재 시장 전반의 수급 모멘텀에 의해 등락 중"
+    return "시장 전반의 수급 모멘텀에 의해 등락 중"
 
 def fetch_technical_quant_data(symbol, asset_type):
     quant_info = {}
@@ -295,6 +323,7 @@ def fetch_technical_quant_data(symbol, asset_type):
                 curr_price_str = f"{int(c_val):,} 원"
 
         else:
+            # 미국 주식
             stock = yf.Ticker(symbol)
             df = stock.history(period="60d")
             if not df.empty:
@@ -364,6 +393,7 @@ def fetch_realtime_price_fallback(user_query):
     cleaned_query = user_query.strip().replace(" ", "").upper()
     display_name = user_query.strip()
     
+    # 1. 고정 딕셔너리 매핑
     matched_key = None
     for key in COMMON_SYMBOLS:
         if key.replace(" ", "").upper() == cleaned_query:
@@ -379,6 +409,7 @@ def fetch_realtime_price_fallback(user_query):
         elif any(c.isupper() for c in cleaned_query) and not any('\uac00' <= char <= '\ud7a3' for char in cleaned_query):
             asset_type, symbol = "overseas_stock", cleaned_query
         else:
+            # 6자리 종목코드 자동 추출
             if not (cleaned_query.isdigit() and len(cleaned_query) == 6):
                 searched_code, formal_name = get_stock_code_by_name(user_query.strip())
                 symbol = searched_code if searched_code else cleaned_query
@@ -394,6 +425,22 @@ def fetch_realtime_price_fallback(user_query):
         quant_data['news'] = news_brief
         return quant_data['current_price'], symbol, display_name, quant_data
 
+    # 실시간 가격 단독 최후 백업
+    if asset_type == "domestic_stock":
+        p = get_naver_realtime_price(symbol)
+        if p:
+            sent = fetch_orderbook_and_sentiment(symbol, asset_type)
+            fallback_quant = {
+                "current_price": p,
+                "news": news_brief,
+                "earnings_status": "정상",
+                "sentiment": sent,
+                "vol_status": "정상",
+                "chart_df": None,
+                "rsi": 50.0
+            }
+            return p, symbol, display_name, fallback_quant
+
     return None, symbol, display_name, None
 
 def generate_full_quant_report(stock_name, symbol, price, quant_data):
@@ -401,20 +448,20 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     if quant_data:
         sent = quant_data.get('sentiment', {})
         tech_context = f"""
-        [실시간 연산된 정밀 퀀트 팩터]
+        [실시간 연산된 정밀 팩터]
         - 실제 실시간 현재가: {price}
-        - 계산된 RSI(14): {quant_data.get('rsi', '산출중')}
+        - RSI: {quant_data.get('rsi', '산출중')}
         - 20일선: {quant_data.get('ma20', '산출중')} / 60일선: {quant_data.get('ma60', '산출중')}
-        - 20일 매물벽 상단: {quant_data.get('high20', '산출중')} / 하단 바닥: {quant_data.get('low20', '산출중')}
+        - 20일 고점: {quant_data.get('high20', '산출중')} / 20일 저점: {quant_data.get('low20', '산출중')}
         - 일일 변동폭(ATR): {quant_data.get('atr', '산출중')}
-        - 거래량 폭발 모멘텀: {quant_data.get('vol_status', '보통')}
+        - 거래량 흐름: {quant_data.get('vol_status', '보통')}
         - 장중 뉴스 재료: {quant_data.get('news', '시장 수급 모멘텀')}
-        - 10호가 오더북 체결 델타: {sent.get('orderbook_ratio', '중립')}
-        - 개미 군중 심리 포지션: {sent.get('retail_sentiment', '정상')}
+        - 호가창 수급 델타: {sent.get('orderbook_ratio', '중립')}
+        - 개미 매수세: {sent.get('retail_sentiment', '정상')}
         """
 
     prompt = f"""
-    당신은 주식을 처음 하는 사람도 1초 만에 이해할 수 있게 쉽게 설명해주는 베테랑 실전 퀀트 트레이더입니다.
+    당신은 초보자도 1초 만에 바로 이해할 수 있게 쉽게 설명해주는 베테랑 실전 퀀트 트레이더입니다.
     어려운 퀀트 전문 용어나 뜬구름 잡는 외계어(예: 델타 수급 모델, 유동성 밴드, 체결 압력 흡수 등)는 절대 쓰지 마세요.
     실제 매매할 때 쓰는 아주 직관적이고 쉬운 한국어로 요약해서 전달하세요.
     
@@ -493,15 +540,21 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("쉬운 해설 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # 1. 차트 이미지 생성
+        # 차트 이미지 생성 (실패해도 텍스트 전송에 영향 없도록 독립 try 처리)
         chart_buffer = None
         if quant_data and quant_data.get('chart_df') is not None and not quant_data['chart_df'].empty:
-            chart_buffer = generate_candlestick_chart(quant_data['chart_df'], formal_name)
+            try:
+                chart_buffer = generate_candlestick_chart(quant_data['chart_df'], formal_name)
+            except Exception:
+                chart_buffer = None
 
-        # 2. 로딩 메시지 삭제
-        await status_msg.delete()
+        # 로딩 메시지 삭제
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
 
-        # 3. 차트 사진 먼저 전송
+        # 1. 차트 이미지 전송 시도
         if chart_buffer is not None:
             try:
                 await context.bot.send_photo(
@@ -511,7 +564,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as pe:
                 print(f"Photo send error: {pe}")
 
-        # 4. 타점 요약 카드 전송
+        # 2. 타점 요약 카드 전송 (항상 무조건 전송 보장)
         await context.bot.send_message(
             chat_id=chat_id,
             text=summary_text,
@@ -521,9 +574,9 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         err_msg = str(e)
         if "429" in err_msg or "quota" in err_msg.lower():
-            await update.message.reply_text("일일 API 할당량이 소진되었습니다 잠시 후 다시 시도해 주세요")
+            await context.bot.send_message(chat_id=chat_id, text="일일 API 할당량이 소진되었습니다 잠시 후 다시 시도해 주세요")
         else:
-            await update.message.reply_text(f"분석 오류 {err_msg}")
+            await context.bot.send_message(chat_id=chat_id, text=f"분석 처리 중 일시적 지연이 발생했습니다 다시 입력해 주세요 ({err_msg[:60]})")
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

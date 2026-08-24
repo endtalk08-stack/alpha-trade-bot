@@ -26,6 +26,7 @@ from telegram.ext import (
     ContextTypes
 )
 
+# 1. 인증 정보
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 
@@ -34,7 +35,7 @@ ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 
-# 1. 암호화폐 매핑 (한글/영문)
+# 1. 암호화폐 한/영 매핑 (Bybit 기준)
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
     "ETH": "ETHUSDT", "이더리움": "ETHUSDT", "이더": "ETHUSDT",
@@ -42,10 +43,12 @@ CRYPTO_MAP = {
     "DOGE": "DOGEUSDT", "도지코인": "DOGEUSDT", "도지": "DOGEUSDT",
     "SOL": "SOLUSDT", "솔라나": "SOLUSDT",
     "ADA": "ADAUSDT", "에이다": "ADAUSDT",
-    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT"
+    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT",
+    "DOT": "DOTUSDT", "폴카닷": "DOTUSDT",
+    "TRX": "TRXUSDT", "트론": "TRXUSDT"
 }
 
-# 2. 해외 주식 매핑 (한글/영문)
+# 2. 미국 주식 한/영 매핑
 US_STOCK_MAP = {
     "엔비디아": "NVDA", "NVDA": "NVDA",
     "테슬라": "TSLA", "TSLA": "TSLA",
@@ -55,62 +58,65 @@ US_STOCK_MAP = {
     "구글": "GOOGL", "알파벳": "GOOGL", "GOOGL": "GOOGL",
     "메타": "META", "META": "META",
     "AMD": "AMD", "아이온큐": "IONQ", "IONQ": "IONQ",
-    "팔란티어": "PLTR", "PLTR": "PLTR",
+    "팔란티어": "PLTR", "PLTR": "PLTR", "TSM": "TSM", "대만반도체": "TSM",
     "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
 }
 
-# 국내 주요 대형주 고정 사전 (검색 지연 방지)
-COMMON_DOMESTIC_MAP = {
-    "삼성중공업": "010140", "삼성전자": "005930", "삼성전기": "009150",
-    "SK하이닉스": "000660", "SK스퀘어": "402340", "SK증권": "001510",
-    "솔트룩스": "304100", "알테오젠": "196170", "에코프로": "086520",
-    "에코프로비엠": "247540", "레인보우로보틱스": "277810", "카카오": "035720",
-    "네이버": "035420", "NAVER": "035420", "현대차": "005380",
-    "기아": "000270", "포스코홀딩스": "005490", "POSCO홀딩스": "005490",
-    "LG에너지솔루션": "373220", "한화오션": "042660", "두산에너빌리티": "034020"
-}
+# 3. 국내 전 종목 자동 매핑 캐시
+KR_STOCK_CACHE = {}
 
-def get_stock_code_and_name(query):
-    """국내 전 종목 초고속 탐색기"""
-    clean_q = query.strip().replace(" ", "").upper()
-    
-    # 1. 고정 사전 매칭
-    for name, code in COMMON_DOMESTIC_MAP.items():
-        if name.replace(" ", "").upper() == clean_q:
-            return code, name
-            
-    # 2. 6자리 종목코드 직접 입력
-    if clean_q.isdigit() and len(clean_q) == 6:
-        return clean_q, clean_q
-
-    # 3. 다음 증권 자동완성 API (차단 없음)
+def load_kr_master():
+    """서버 시작 시 국내 전 종목 마스터 테이블을 메모리에 탑재"""
+    global KR_STOCK_CACHE
     try:
-        d_url = f"https://suggest-baro.daum.net/suggest?id=stock&v=4&code=utf-8&q={urllib.parse.quote(query.strip())}"
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.daum.net"}
-        res = requests.get(d_url, headers=headers, timeout=2.5).json()
-        sub_items = res.get("sub", [])
-        if sub_items:
-            for item in sub_items:
-                raw_code = str(item[0]).replace("A", "").strip()
-                name = str(item[1]).strip()
-                if name.replace(" ", "").upper() == clean_q:
-                    return raw_code, name
-            return str(sub_items[0][0]).replace("A", "").strip(), str(sub_items[0][1]).strip()
+        # 네이버 증권 시가총액 상위 전 종목 일괄 수집 (코스피/코스닥)
+        headers = {"User-Agent": "Mozilla/5.0"}
+        for sise_type in [0, 1]: # 0: 코스피, 1: 코스닥
+            for page in range(1, 15): # 상위 수천 개 종목 수집
+                url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sise_type}&page={page}"
+                res = requests.get(url, headers=headers, timeout=3)
+                res.encoding = "euc-kr"
+                matches = re.findall(r'<a href="/item/main\.naver\?code=(\d{6})" class="tltle">([^<]+)</a>', res.text)
+                if not matches:
+                    break
+                for code, name in matches:
+                    clean_name = name.strip().replace(" ", "").upper()
+                    KR_STOCK_CACHE[clean_name] = (code, name.strip())
     except Exception:
         pass
 
-    # 4. 네이버 모바일 자동완성
+# 백그라운드에서 마스터 로딩
+threading.Thread(target=load_kr_master, daemon=True).start()
+
+def find_stock_code(query):
+    """국내 주식 코드 탐색 (내부 캐시 ➔ 실시간 API 백업)"""
+    clean_q = query.strip().replace(" ", "").upper()
+
+    # 1. 6자리 숫자 직접 입력 시
+    if clean_q.isdigit() and len(clean_q) == 6:
+        return clean_q, clean_q
+
+    # 2. 내부 마스터 캐시 매핑 (즉시 반환)
+    if clean_q in KR_STOCK_CACHE:
+        return KR_STOCK_CACHE[clean_q][0], KR_STOCK_CACHE[clean_q][1]
+
+    for k, v in KR_STOCK_CACHE.items():
+        if clean_q in k or k in clean_q:
+            return v[0], v[1]
+
+    # 3. 실시간 네이버 API 백업 탐색
     try:
-        url = f"https://m.stock.naver.com/api/search/autoComplete?keyword={urllib.parse.quote(query.strip())}"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        url = f"https://ac.finance.naver.com/ac?q={urllib.parse.quote(query.strip())}&target=stock"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         res = requests.get(url, headers=headers, timeout=2.5).json()
-        for key in ["stocks", "items"]:
-            if key in res and isinstance(res[key], list):
-                for item in res[key]:
-                    c = item.get("itemCode") or item.get("code")
-                    n = item.get("stockName") or item.get("name")
-                    if c and n:
-                        return str(c).strip(), str(n).strip()
+        items_list = res.get("items", [])
+        if items_list and isinstance(items_list[0], list) and len(items_list[0]) > 0:
+            for item in items_list[0]:
+                code = str(item[0]).strip()
+                name = str(item[1]).strip()
+                if name.replace(" ", "").upper() == clean_q:
+                    return code, name
+            return str(items_list[0][0][0]).strip(), str(items_list[0][0][1]).strip()
     except Exception:
         pass
 
@@ -146,7 +152,6 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
     return None, None
 
 def get_us_stock_data(symbol):
-    """해외 주식 실시간 시세 및 캔들 (네이버 글로벌 + yfinance 이중화)"""
     # 1. 네이버 해외증권 API (IP 차단 없음)
     try:
         headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"}
@@ -184,7 +189,7 @@ def get_us_stock_data(symbol):
     return None, None
 
 def get_naver_realtime_price(code):
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/basic"
         res = requests.get(url, headers=headers, timeout=2.5).json()
@@ -207,7 +212,7 @@ def get_naver_realtime_price(code):
     return None
 
 def fetch_domestic_stock_candles(code):
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         url = f"https://api.stock.naver.com/chart/domestic/market/stock/{code}?periodType=dayCandle&range=60"
         res = requests.get(url, headers=headers, timeout=3).json()
@@ -389,7 +394,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asset_type = "crypto"
             symbol = CRYPTO_MAP.get(clean_q, clean_q.replace("코인", "") + "USDT")
             formal_name = query
-        # 2. 해외 주식 (한글/티커)
+        # 2. 미국 주식 (한글/티커)
         elif clean_q in US_STOCK_MAP:
             asset_type = "overseas_stock"
             symbol = US_STOCK_MAP[clean_q]
@@ -400,7 +405,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             formal_name = query
         # 3. 국내 주식
         else:
-            code, name = get_stock_code_and_name(query)
+            code, name = find_stock_code(query)
             if not code:
                 await status_msg.edit_text(f"❌ '{query}' 종목을 찾지 못했습니다. 종목명을 확인해 주세요.")
                 return

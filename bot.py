@@ -9,6 +9,7 @@ import sqlite3
 import datetime
 import threading
 import urllib.parse
+import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
 import requests
@@ -33,8 +34,11 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28T
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
-genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel('gemini-1.5-flash')
+try:
+    genai.configure(api_key=GEMINI_API_KEY)
+    ai_model = genai.GenerativeModel('gemini-1.5-flash')
+except Exception:
+    ai_model = None
 
 REPORT_CACHE = {}
 DB_FILE = "trades.db"
@@ -455,140 +459,16 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
         detail = "심층 분석 데이터를 불러오는 중입니다"
     return summary, detail
 
-def record_trade_signal_from_ai(symbol, name, asset_type, raw_price, summary_text):
-    try:
-        entry_p = raw_price
-        target_p = raw_price * 1.05
-        stop_p = raw_price * 0.96
-
-        m_target = re.search(r'1차 목표[^\d]*([\d,]+(?:\.\d+)?)', summary_text)
-        if m_target:
-            target_p = float(m_target.group(1).replace(",", ""))
-
-        m_stop = re.search(r'칼손절[^\d]*([\d,]+(?:\.\d+)?)', summary_text)
-        if m_stop:
-            stop_p = float(m_stop.group(1).replace(",", ""))
-
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute('''
-            INSERT INTO trades (symbol, name, asset_type, direction, entry_price, target_price, stop_loss, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')
-        ''', (symbol, name, asset_type, 'LONG', entry_p, target_p, stop_p))
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
-
-def update_and_calculate_performance():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute("SELECT id, symbol, asset_type, entry_price, target_price, stop_loss FROM trades WHERE status = 'PENDING'")
-        pending_rows = c.fetchall()
-
-        for row in pending_rows:
-            tid, sym, atype, entry_p, target_p, stop_p = row
-            curr_p = None
-
-            if atype == "crypto":
-                curr_p, _, _ = get_crypto_bybit_data(sym)
-            elif atype == "overseas_stock":
-                curr_p, _, _ = get_us_stock_fmp_data(sym)
-            elif atype == "domestic_stock":
-                curr_p, _ = get_naver_realtime_price(sym)
-
-            if curr_p is not None and entry_p > 0:
-                if curr_p >= target_p:
-                    ret = ((target_p - entry_p) / entry_p) * 100
-                    c.execute("UPDATE trades SET status = 'WIN', ret = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?", (round(ret, 2), tid))
-                elif curr_p <= stop_p:
-                    ret = ((stop_p - entry_p) / entry_p) * 100
-                    c.execute("UPDATE trades SET status = 'LOSS', ret = ?, closed_at = CURRENT_TIMESTAMP WHERE id = ?", (round(ret, 2), tid))
-
-        conn.commit()
-
-        c.execute("SELECT COUNT(*) FROM trades")
-        total_trades = c.fetchone()[0]
-
-        c.execute("SELECT COUNT(*), SUM(ret) FROM trades WHERE status = 'WIN'")
-        win_row = c.fetchone()
-        win_count = win_row[0] or 0
-        win_return = win_row[1] or 0.0
-
-        c.execute("SELECT COUNT(*), SUM(ret) FROM trades WHERE status = 'LOSS'")
-        loss_row = c.fetchone()
-        loss_count = loss_row[0] or 0
-        loss_return = loss_row[1] or 0.0
-
-        c.execute("SELECT COUNT(*) FROM trades WHERE status = 'PENDING'")
-        pending_count = c.fetchone()[0]
-
-        c.execute("SELECT name, entry_price, target_price, status, ret, created_at FROM trades ORDER BY id DESC LIMIT 5")
-        recent_history = c.fetchall()
-        conn.close()
-
-        finished = win_count + loss_count
-        win_rate = (win_count / finished * 100) if finished > 0 else 0.0
-        cum_ret = win_return + loss_return
-
-        return {
-            "total": total_trades,
-            "finished": finished,
-            "win": win_count,
-            "loss": loss_count,
-            "pending": pending_count,
-            "win_rate": win_rate,
-            "cum_ret": cum_ret,
-            "history": recent_history
-        }
-    except Exception:
-        return {"total": 0, "finished": 0, "win": 0, "loss": 0, "pending": 0, "win_rate": 0.0, "cum_ret": 0.0, "history": []}
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
         "• 종목 분석: 종목명 입력 (예: SK증권, SK하이닉스, 엔비디아, 비트코인)\n"
-        "• 실전 성적표 조회: /성적표 또는 '승률' 입력\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
-
-async def show_performance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("📊 실시간 시세를 대조하여 타점 승률을 계산 중입니다...")
-    stats = update_and_calculate_performance()
-
-    hist_lines = ""
-    for item in stats['history']:
-        name, entry_p, target_p, st, ret, dt = item
-        st_icon = "🟢 익절" if st == "WIN" else ("🔴 손절" if st == "LOSS" else "⏳ 추적중")
-        ret_str = f"({ret:+.2f}%)" if st in ["WIN", "LOSS"] else ""
-        hist_lines += f"• {name} ➜ {st_icon} {ret_str}\n"
-
-    if not hist_lines:
-        hist_lines = "아직 기록된 타점이 없습니다 종목을 먼저 검색해 보세요\n"
-
-    report = f"""
-🏆 Alpha Signal 실전 타점 누적 성적표
-
-• 총 타점 발행 {stats['total']}건
-• 완료된 매매 {stats['finished']}건 (현재 진행중 {stats['pending']}건)
-• 익절(승리) {stats['win']}건 / 손절(패배) {stats['loss']}건
-• 실전 승률 {stats['win_rate']:.1f}%
-• 누적 확정 수익률 {stats['cum_ret']:+.2f}%
-
-최근 타점 진행 현황
-{hist_lines}
-성적표는 실시간 시세가 변동될 때마다 자동 갱신됩니다
-"""
-    await status_msg.edit_text(report.strip())
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     chat_id = update.effective_chat.id
-
-    if query in ["성적표", "/성적표", "승률", "수익률", "검증", "/검증"]:
-        await show_performance(update, context)
-        return
 
     if query in ["대장", "대장주", "종목추천", "추천", "/대장"]:
         query = "삼성전기"
@@ -629,12 +509,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         current_price = quant_data['current_price']
-        
-        # 어제 성공했던 방식 그대로 동기 호출
         summary_text, detail_text = generate_full_quant_report(formal_name, symbol, current_price, quant_data)
-
-        # 타점 DB 자동 저장
-        record_trade_signal_from_ai(symbol, formal_name, asset_type, quant_data['raw_price'], summary_text)
 
         report_id = str(uuid.uuid4())[:8]
         if len(REPORT_CACHE) > 30:
@@ -665,8 +540,10 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             asyncio.create_task(delete_messages_later(context.bot, chat_id, new_msg_ids, delay=900))
 
     except Exception as e:
+        # 실제 발생한 에러의 구체적인 스택트레이스를 채팅창으로 즉시 확인
+        err_msg = traceback.format_exc()
         try:
-            await status_msg.edit_text("일시적 처리 지연이 발생했습니다. 다시 입력해 주세요.")
+            await status_msg.edit_text(f"⚠️ 시스템 디버그 에러:\n{err_msg[:400]}")
         except Exception:
             pass
     finally:
@@ -706,8 +583,6 @@ if __name__ == "__main__":
     threading.Thread(target=run_web_server, daemon=True).start()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("성적표", show_performance))
-    app.add_handler(CommandHandler("검증", show_performance))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(handle_button))
     

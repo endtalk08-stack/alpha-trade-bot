@@ -1,4 +1,6 @@
 python-telegram-bot
 google-generativeai
-yfinance
 requests
+yfinance
+pandas
+numpy

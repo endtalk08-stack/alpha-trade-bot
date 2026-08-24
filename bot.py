@@ -129,38 +129,26 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
     return None, None
 
 def get_us_stock_fmp_data(symbol):
-    """FMP 공식 API + 다중 엔드포인트 폴백 (무료 플랜 100% 대응)"""
+    """미국 주식 3중 시세 파이프라인 (Stooq 글로벌 + Yahoo v8 + FMP)"""
     clean_sym = symbol.upper().strip()
-    
-    # 1. FMP 공식 Quote 엔드포인트
+
+    # 1. Stooq 글로벌 금융 API (IP 차단 0%, API 키 불필요, 100% 안정)
     try:
-        url = f"https://financialmodelingprep.com/api/v3/quote/{clean_sym}?apikey={FMP_API_KEY}"
-        res = requests.get(url, timeout=3.0).json()
-        if isinstance(res, list) and len(res) > 0:
-            curr_p = float(res[0].get("price", 0))
-            if curr_p > 0:
-                # FMP 차트 데이터 가져오기
-                chart_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{clean_sym}?timeseries=30&apikey={FMP_API_KEY}"
-                chart_res = requests.get(chart_url, timeout=3.0).json()
-                hist = chart_res.get("historical", [])
-                if hist:
-                    records = []
-                    for item in hist:
-                        records.append({
-                            "Date": pd.to_datetime(item["date"]),
-                            "Open": float(item["open"]),
-                            "High": float(item["high"]),
-                            "Low": float(item["low"]),
-                            "Close": float(item["close"]),
-                            "Volume": float(item.get("volume", 0))
-                        })
-                    df = pd.DataFrame(records).set_index("Date").sort_index()
-                    return f"{curr_p:,.2f} 달러", df
-                return f"{curr_p:,.2f} 달러", None
+        stooq_url = f"https://stooq.com/q/d/l/?s={clean_sym.lower()}.us&i=d"
+        stooq_res = requests.get(stooq_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3.0)
+        if stooq_res.status_code == 200 and "Date,Open,High,Low,Close" in stooq_res.text:
+            csv_data = io.StringIO(stooq_res.text)
+            df = pd.read_csv(csv_data)
+            if not df.empty and len(df) >= 5:
+                df['Date'] = pd.to_datetime(df['Date'])
+                df = df.set_index('Date').sort_index()
+                df = df.tail(40)
+                curr_p = float(df['Close'].iloc[-1])
+                return f"{curr_p:,.2f} 달러", df
     except Exception:
         pass
 
-    # 2. Yahoo Finance Chart REST API 백업 (IP 차단 방지 헤더)
+    # 2. Yahoo Finance Chart v8 REST API
     try:
         y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?range=1mo&interval=1d"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -190,6 +178,17 @@ def get_us_stock_fmp_data(symbol):
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 curr_p = float(df['Close'].iloc[-1])
                 return f"{curr_p:,.2f} 달러", df
+    except Exception:
+        pass
+
+    # 3. FMP Quote API 폴백
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/quote/{clean_sym}?apikey={FMP_API_KEY}"
+        res = requests.get(url, timeout=3.0).json()
+        if isinstance(res, list) and len(res) > 0:
+            curr_p = float(res[0].get("price", 0))
+            if curr_p > 0:
+                return f"{curr_p:,.2f} 달러", None
     except Exception:
         pass
 

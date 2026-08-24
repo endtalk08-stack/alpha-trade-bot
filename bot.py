@@ -26,7 +26,7 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. 환경 설정 및 키
+# 1. 환경 설정 및 인증 키
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
@@ -66,7 +66,8 @@ DOMESTIC_FAST_MAP = {
     "NAVER": "035420", "현대차": "005380", "기아": "000270",
     "포스코홀딩스": "005490", "POSCO홀딩스": "005490", "LG에너지솔루션": "373220",
     "한화오션": "042660", "두산에너빌리티": "034020", "한화에어로스페이스": "012450",
-    "현대모비스": "012330", "셀트리온": "068270"
+    "현대모비스": "012330", "셀트리온": "068270", "한미반도체": "042700",
+    "씨젠": "096530", "HLB": "028300", "에코프로머티": "450080"
 }
 
 async def delete_messages_later(bot, chat_id, message_ids, delay=900):
@@ -94,13 +95,18 @@ def find_stock_code(query):
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=2.5).json()
         items_list = res.get("items", [])
-        if items_list and isinstance(items_list[0], list) and len(items_list[0]) > 0:
-            for item in items_list[0]:
-                code = str(item[0]).strip()
-                name = str(item[1]).strip()
-                if name.replace(" ", "").upper() == clean_q:
-                    return code, name
-            return str(items_list[0][0][0]).strip(), str(items_list[0][0][1]).strip()
+        if items_list and isinstance(items_list, list) and len(items_list) > 0:
+            target_group = items_list[0]
+            if isinstance(target_group, list) and len(target_group) > 0:
+                for item in target_group:
+                    if isinstance(item, list) and len(item) >= 2:
+                        code = str(item[0]).strip()
+                        name = str(item[1]).strip()
+                        if name.replace(" ", "").upper() == clean_q:
+                            return code, name
+                first_item = target_group[0]
+                if isinstance(first_item, list) and len(first_item) >= 2:
+                    return str(first_item[0]).strip(), str(first_item[1]).strip()
     except Exception:
         pass
     return None, query.strip()
@@ -110,7 +116,7 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT"):
     if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
         clean_sym = f"{clean_sym}USDT"
 
-    # 1. 바이낸스 API (가장 안정적이고 빠름)
+    # 1. 바이낸스 API
     try:
         b_url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit=40"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -132,7 +138,7 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT"):
     except Exception:
         pass
 
-    # 2. 바이비트 API (백업 1)
+    # 2. 바이비트 API
     try:
         bybit_url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={clean_sym}&interval=D&limit=40"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -155,7 +161,7 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT"):
     except Exception:
         pass
 
-    # 3. 업비트 API (백업 2)
+    # 3. 업비트 API
     try:
         coin_code = clean_sym.replace("USDT", "").replace("USD", "")
         upbit_url = f"https://api.upbit.com/v1/candles/days?market=KRW-{coin_code}&count=40"
@@ -477,7 +483,7 @@ RSI 수치가 {an['rsi']} 수준으로 적정 진입 구간에 머물고 있으�
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
-        "• 종목 분석: 종목명 입력 (예: 비트코인, 삼성전자, SK하이닉스, 엔비디아)\n"
+        "• 종목 분석: 종목명 입력 (예: 한미반도체, 씨젠, 비트코인, 엔비디아)\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
 

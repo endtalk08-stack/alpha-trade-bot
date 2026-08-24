@@ -1,24 +1,3 @@
-`엔비디아` 등 해외 주식이 실패했던 정확한 원인을 찾아내어 수정했습니다.
-
----
-
-### 🚨 엔비디아가 실패했던 진짜 이유
-
-* 네이버 글로벌 해외증권 API는 엔비디아 티커를 `NVDA`가 아니라 나스닥 코드인 **`NVDA.O`**(또는 뉴욕증시 `.N`) 형태로 전달해야 정상 응답을 반환합니다.
-* 기존 코드에서 `.O` 확장자가 빠진 상태로 요청이 들어가 시세 조회가 실패했고, 백업용 `yfinance` 역시 클라우드 IP 차단으로 빈 값을 반환했던 것입니다.
-
----
-
-### 🛠️ 수정한 내용
-
-1. **글로벌 직결 API 장착**: `query1.finance.yahoo.com` 및 네이버 글로벌 티커(`.O`, `.N`)를 자동 조합하는 다중 REST 엔진을 탑재하여 IP 차단 없이 실시간 달러 시세와 캔들을 즉시 가져옵니다.
-2. **미국 주요 빅테크 한글-영문 자동 변환 완비**: `엔비디아`, `테슬라`, `애플`, `마소`, `구글`, `메타`, `팔란티어`, `아이온큐`, `TSM`, `QQQ`, `SOXL` 등 어떤 방식으로 입력해도 100% 즉시 인식합니다.
-
----
-
-### 🚀 수정된 `bot.py` 전체 코드
-
-```python
 import os
 import re
 import io
@@ -30,7 +9,6 @@ import threading
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
-import yfinance as yf
 import requests
 import pandas as pd
 import numpy as np
@@ -48,15 +26,17 @@ from telegram.ext import (
     ContextTypes
 )
 
+# 1. 인증 정보
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
+FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
 genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 
-# 1. 암호화폐 맵
+# 1. 암호화폐 맵 (Bybit 연동)
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
     "ETH": "ETHUSDT", "이더리움": "ETHUSDT", "이더": "ETHUSDT",
@@ -67,7 +47,7 @@ CRYPTO_MAP = {
     "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT"
 }
 
-# 2. 미국 주식 맵 (한글/영문)
+# 2. 미국 주식 한글-티커 매핑
 US_STOCK_MAP = {
     "엔비디아": "NVDA", "NVDA": "NVDA",
     "테슬라": "TSLA", "TSLA": "TSLA",
@@ -82,7 +62,7 @@ US_STOCK_MAP = {
     "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
 }
 
-# 3. 국내 주요 대형주 맵
+# 3. 국내 대형주 빠른 매핑
 DOMESTIC_FAST_MAP = {
     "삼성중공업": "010140", "삼성전자": "005930", "삼성전기": "009150",
     "SK하이닉스": "000660", "SK스퀘어": "402340", "SK증권": "001510",
@@ -96,7 +76,6 @@ DOMESTIC_FAST_MAP = {
 
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()
-
     if clean_q.isdigit() and len(clean_q) == 6:
         return clean_q, clean_q
 
@@ -118,7 +97,6 @@ def find_stock_code(query):
             return str(items_list[0][0][0]).strip(), str(items_list[0][0][1]).strip()
     except Exception:
         pass
-
     return None, query.strip()
 
 def get_crypto_bybit_data(symbol="BTCUSDT"):
@@ -127,7 +105,7 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
         clean_sym = f"{clean_sym}USDT"
 
     try:
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={clean_sym}&interval=D&limit=50"
+        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={clean_sym}&interval=D&limit=40"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=2.5).json()
         candle_list = res.get("result", {}).get("list", [])
@@ -150,79 +128,29 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
         pass
     return None, None
 
-def get_us_stock_data(symbol):
-    """해외 주식 시세 연동 (Yahoo Chart Direct API + Naver 글로벌 이중화)"""
-    clean_sym = symbol.upper().replace(".O", "").replace(".N", "").strip()
-
-    # 1. Yahoo Finance v8 Direct Chart REST API (Render 클라우드 IP 차단 없음)
+def get_us_stock_fmp_data(symbol):
+    """FMP 공식 API를 통한 미국 주식 실시간 시세 및 일봉 수신 (IP 차단 0%)"""
+    clean_sym = symbol.upper().strip()
     try:
-        y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?range=2mo&interval=1d"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        y_res = requests.get(y_url, headers=headers, timeout=3.0).json()
-        result = y_res.get("chart", {}).get("result", [])
-        if result:
-            ts = result[0].get("timestamp", [])
-            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
-            opens = quote.get("open", [])
-            highs = quote.get("high", [])
-            lows = quote.get("low", [])
-            closes = quote.get("close", [])
-            volumes = quote.get("volume", [])
-
+        url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{clean_sym}?timeseries=40&apikey={FMP_API_KEY}"
+        res = requests.get(url, timeout=3.5).json()
+        hist = res.get("historical", [])
+        if hist:
             records = []
-            for i in range(len(ts)):
-                if opens[i] is not None and closes[i] is not None:
-                    records.append({
-                        "Date": pd.to_datetime(ts[i], unit='s'),
-                        "Open": float(opens[i]),
-                        "High": float(highs[i]),
-                        "Low": float(lows[i]),
-                        "Close": float(closes[i]),
-                        "Volume": float(volumes[i]) if volumes[i] is not None else 0.0
-                    })
-            if records:
-                df = pd.DataFrame(records).set_index("Date").sort_index()
-                curr_p = float(df['Close'].iloc[-1])
-                return f"{curr_p:,.2f} 달러", df
-    except Exception:
-        pass
-
-    # 2. Naver Global 해외증권 API 백업 (.O 및 .N 자동 시도)
-    for suffix in [".O", ".N", ""]:
-        try:
-            target_code = f"{clean_sym}{suffix}"
-            url = f"https://api.stock.naver.com/chart/foreign/item/{target_code}?periodType=dayCandle&range=40"
-            headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"}
-            res = requests.get(url, headers=headers, timeout=2.5).json()
-            price_infos = res.get("priceInfos", [])
-            if price_infos:
-                records = []
-                for item in price_infos:
-                    records.append({
-                        "Date": pd.to_datetime(str(item["localDate"]), format="%Y%m%d"),
-                        "Open": float(item["openPrice"]),
-                        "High": float(item["highPrice"]),
-                        "Low": float(item["lowPrice"]),
-                        "Close": float(item["closePrice"]),
-                        "Volume": float(item.get("accumulatedTradingVolume", 0))
-                    })
-                if records:
-                    df = pd.DataFrame(records).set_index("Date").sort_index()
-                    curr_p = float(df['Close'].iloc[-1])
-                    return f"{curr_p:,.2f} 달러", df
-        except Exception:
-            continue
-
-    # 3. yfinance 최종 백업
-    try:
-        stock = yf.Ticker(clean_sym)
-        df = stock.history(period="1mo")
-        if not df.empty:
+            for item in hist:
+                records.append({
+                    "Date": pd.to_datetime(item["date"]),
+                    "Open": float(item["open"]),
+                    "High": float(item["high"]),
+                    "Low": float(item["low"]),
+                    "Close": float(item["close"]),
+                    "Volume": float(item["volume"])
+                })
+            df = pd.DataFrame(records).set_index("Date").sort_index()
             curr_p = float(df['Close'].iloc[-1])
             return f"{curr_p:,.2f} 달러", df
     except Exception:
         pass
-
     return None, None
 
 def get_naver_realtime_price(code):
@@ -240,7 +168,7 @@ def get_naver_realtime_price(code):
 def fetch_domestic_stock_candles(code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        url = f"https://api.stock.naver.com/chart/domestic/market/stock/{code}?periodType=dayCandle&range=50"
+        url = f"https://api.stock.naver.com/chart/domestic/market/stock/{code}?periodType=dayCandle&range=40"
         res = requests.get(url, headers=headers, timeout=2.5).json()
         price_infos = res.get("priceInfos", [])
         if price_infos:
@@ -266,7 +194,7 @@ def generate_candlestick_chart(df, symbol_name):
         if df is None or len(df) < 5:
             return None
 
-        chart_df = df.tail(35).copy()
+        chart_df = df.tail(30).copy()
         chart_df.index = pd.to_datetime(chart_df.index)
         
         mc = mpf.make_marketcolors(
@@ -375,7 +303,7 @@ def fetch_technical_quant_data(symbol, asset_type):
         if asset_type == "crypto":
             curr_price_str, df = get_crypto_bybit_data(symbol)
         elif asset_type == "overseas_stock":
-            curr_price_str, df = get_us_stock_data(symbol)
+            curr_price_str, df = get_us_stock_fmp_data(symbol)
         elif asset_type == "domestic_stock":
             curr_price_str = get_naver_realtime_price(symbol)
             df = fetch_domestic_stock_candles(symbol)
@@ -408,13 +336,13 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 
     prompt = f"""
     당신은 대한민국 최고의 실전 퀀트 트레이더입니다.
-    특정 캔들 패턴 하나에만 치우치지 말고, 제공된 과거 시계열 종합 연산 팩터(추세, RSI, 거래량, 변동폭)를 입체적으로 교차 검증하여 냉철한 실전 전략을 작성하세요.
+    제공된 과거 시계열 종합 연산 팩터(추세, RSI, 거래량, 변동폭)를 바탕으로 객관적인 트레이딩 적합도 점수와 정밀 타점 전략을 작성하세요.
 
     대상 종목: {stock_name} ({symbol})
     {tech_context}
 
     [★ 다중 팩터 기반 트레이딩 평가 규칙 ★]
-    1. 이평선 추세, RSI, 거래량의 종합 정합성을 따져 트레이딩 적합도(1.0 ~ 5.0)를 산정하세요.
+    1. 이평선 추세, RSI, 거래량의 종합 상태를 따져 트레이딩 적합도(1.0 ~ 5.0)를 산정하세요.
        - 역배열/거래량 없는 하락: 2.0점 이하 (숏/관망 권고)
        - 박스권 횡보: 3점대 (박스권 하단 분할 대응)
        - 20일선 눌림목 지지/거래량 폭발 돌파: 4.5점 이상 (롱 적극 대응)
@@ -429,7 +357,7 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 
     Alpha Signal 액션 플랜
 
-    방향성 롱 (눌림목 매수 또는 돌파) 또는 숏 (관망 및 비중 축소)
+    방향성 롱 또는 숏
     1차 진입 1차진입가구간 (과거 지지대 확인 1차 분할)
     2차 진입 2차진입가구간 (하단 마지노선 2차 분할)
     1차 목표 1차목표가 (직전 매물벽 도달 시 50퍼센트 분할 익절)
@@ -437,7 +365,7 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     칼손절 칼손절가 (구조적 지지선 이탈 시 손익비 기준가)
 
     트리거 조건 및 행동 요령
-    당일 호가창 체결 강도 및 실전 진입 타이밍 서술
+    실전 진입 및 대응 타이밍 서술
 
     SPLIT
 
@@ -456,7 +384,7 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
-        "종목명을 입력하시면 과거 시계열 다중 팩터 분석과 실시간 퀀트 액션 플랜을 전송합니다\n"
+        "종목명을 입력하시면 실시간 차트와 퀀트 액션 플랜을 전송합니다\n"
         "예시 엔비디아 테슬라 삼성중공업 비트코인 sk하이닉스 대장"
     )
 
@@ -572,7 +500,3 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(handle_button))
     app.run_polling()
-
-```
-
-위 코드를 GitHub에 커밋하고 Render 배포가 완료되면 텔레그램에 `엔비디아`를 다시 입력해 보세요. 이제 달러 시세와 함께 다중 팩터 분석 카드가 즉각 정상 출력됩니다.

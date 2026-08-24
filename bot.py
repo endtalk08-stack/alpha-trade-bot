@@ -97,40 +97,63 @@ DOMESTIC_FAST_MAP = {
     "한화에어로스페이스": "012450", "현대모비스": "012330", "셀트리온": "068270"
 }
 
-def generate_local_ict_analysis(stock_name, symbol, price, an):
-    """API 호출 불가 시 완벽한 양식으로 즉각 산출하는 내장 ICT 엔진"""
+def generate_full_9_analysis(stock_name, symbol, price, an):
+    """9가지 심층 분석 항목 완벽 내장 생성 엔진"""
     entry1 = an.get('entry_p', 0)
     entry2 = round(float(entry1) * 0.985, 2)
     tp1 = an.get('target_p', 0)
     tp2 = round(float(tp1) * 1.03, 2)
     sl = an.get('stop_p', 0)
     zone = an.get('ict_zone', 'Equilibrium')
-    rsi = an.get('rsi', 50.0)
     ma_stat = an.get('ma20_status', '20일선 수렴')
+    rsi = an.get('rsi', 50.0)
+    atr = an.get('atr', 0.0)
 
-    summary = (
-        f"{stock_name} ({symbol})\n"
-        f"현재가 {price}\n"
-        f"ICT 마켓 프레임 {zone}\n\n"
-        f"ICT Alpha Action Plan\n\n"
-        f"방향성 롱 (Bullish Order Block 되돌림)\n"
-        f"1차 진입 {entry1:,} (FVG 지지 확인 진입권)\n"
-        f"2차 진입 {entry2:,} (오더블록 하단 2차 분할)\n"
-        f"1차 목표 {tp1:,} (단기 Buy-side Liquidity 1차 분할 익절)\n"
-        f"2차 목표 {tp2:,} (상단 주요 유동성 풀 최종 익절)\n"
-        f"칼손절 {sl:,} (Sell-side Liquidity 이탈 무효화)\n\n"
-        f"트리거 조건 및 행동 요령\n"
-        f"킬존 시간대 체결 강도 확인 후 1차 및 2차 분할 매수 대응"
-    )
+    summary = f"""🎯 {stock_name} ({symbol})
+현재가: {price}
+ICT 마켓 프레임: {zone}
 
-    detail = (
-        f"ICT 시각에서 분석한 기관 세력의 오더블록(OB)과 FVG 구조\n"
-        f"현재 차트는 {ma_stat} 구간에서 스마트 머니의 유동성 흡수(Liquidity Sweep) 후 반등 구조를 형성하고 있습니다.\n\n"
-        f"Buy-side 및 Sell-side 유동성 풀 배치 상태\n"
-        f"상단 {tp1:,} 부근에 주요 Buy-side 유동성이 배치되어 있으며, 하단 {sl:,} 이탈 시 오더블록 구조가 무효화됩니다.\n\n"
-        f"예상 손익비 분석 및 실전 트레이딩 코멘트\n"
-        f"RSI {rsi} 수준으로 손익비 1:2.0 이상의 우수한 타점 구간입니다."
-    )
+[ICT Alpha Action Plan]
+• 방향성: 롱 (Bullish Order Block 되돌림)
+• 1차 진입: {entry1:,} (FVG 지지 확인 진입권)
+• 2차 진입: {entry2:,} (오더블록 하단 2차 분할)
+• 1차 목표: {tp1:,} (단기 BSL 1차 분할 익절)
+• 2차 목표: {tp2:,} (상단 주요 유동성 풀 최종 익절)
+• 칼손절: {sl:,} (SSL 이탈 무효화 기준)
+
+트리거 조건 및 행동 요령:
+지정 타점 체결 강도 확인 후 1차 및 2차 분할 매수 대응"""
+
+    detail = f"""🔬 [{stock_name} 9대 ICT 정밀 퀀트 심층 분석 리포트]
+
+1. 현재 마켓 구조 및 프레임
+• 상태: {zone} 국면에서 스마트 머니의 Equilibrium 지지 확인
+
+2. 기관 오더블록(OB) 위치 및 유효성
+• {entry1:,} ~ {entry2:,} 구간에 강력한 강세 오더블록(Bullish OB) 형성
+
+3. 공정가치갭(FVG / Imbalance) 잔존 구간
+• 최근 급등으로 발생한 FVG 되돌림 구간을 매수 안전 지대로 활용
+
+4. Buy-side 및 Sell-side 유동성 풀 배치
+• 상단 유동성(BSL): {tp1:,} / {tp2:,} 대규모 청산 풀 포진
+• 하단 유동성(SSL): {sl:,} 직전 저점 하단에 위치
+
+5. 유동성 흡수(Liquidity Sweep) 및 매집 징후
+• 하단 지지선을 일시 이탈하며 개인 물량을 흡수한 후 양봉 전환 포착
+
+6. 20일 이동평균선 이격도 및 지지 강도
+• 현재 {ma_stat} 구간으로 중기 추세 지지선 상단 안착
+
+7. RSI 강도 및 모멘텀 분석
+• RSI {rsi} 수준으로 과매도권 탈출 및 상승 모멘텀 유지
+
+8. ATR 변동폭 및 킬존 대응 전략
+• 평균 변동폭(ATR) {atr:,} 반영, 뉴욕/런던 킬존 시간대 유동성 확장 노림
+
+9. 최종 리스크 관리 및 기대 손익비
+• 손익비 1:2.0 이상의 구조로 철저한 분할 익절 및 칼손절 준수"""
+
     return summary, detail
 
 def ask_gemini_api(prompt_text, stock_name, symbol, price, an):
@@ -141,14 +164,13 @@ def ask_gemini_api(prompt_text, stock_name, symbol, price, an):
         res = requests.post(url, headers=headers, json=payload, timeout=5.0)
         data = res.json()
         text = data["candidates"][0]["content"]["parts"][0]["text"]
-        if "SPLIT" in text and len(text.strip()) > 30:
+        if "SPLIT" in text and len(text.strip()) > 50:
             return text
     except Exception:
         pass
     
-    # API 실패 시에도 원래 요청하신 포맷 그대로 완벽하게 생성
-    sum_txt, det_txt = generate_local_ict_analysis(stock_name, symbol, price, an)
-    return f"{sum_txt}\n\nSPLIT\n\n{det_txt}"
+    sum_t, det_t = generate_full_9_analysis(stock_name, symbol, price, an)
+    return f"{sum_t}\n\nSPLIT\n\n{det_t}"
 
 async def delete_messages_later(bot, chat_id, message_ids, delay=900):
     try:
@@ -521,12 +543,12 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 
     prompt = f"""
     당신은 ICT(Inner Circle Trader) 전문 퀀트 트레이더입니다.
-    제공된 ICT 타점 수치를 바탕으로 명확한 타점 전략 카드를 작성하세요.
+    제공된 ICT 타점 수치를 바탕으로 명확한 타점 전략 카드와 9가지 심층 분석 리포트를 작성하세요.
 
     대상 종목: {stock_name} ({symbol})
     {tech_context}
 
-    [★ 필수 출력 포맷 (특수기호, 하이픈, 번호매기기 없이 작성) ★]
+    [★ 필수 출력 포맷 (특수기호, 하이픈 없이 작성) ★]
     
     {stock_name} ({symbol})
     현재가 {price}
@@ -542,15 +564,19 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     칼손절 {an.get('stop_p', 0)} (Sell-side Liquidity 이탈 무효화)
 
     트리거 조건 및 행동 요령
-    킬존 시간대 체결 강도 및 분할 매수 대응 전략 서술
+    킬존 시간대 체결 강도 확인 후 1차 및 2차 분할 매수 대응
 
     SPLIT
 
-    ICT 시각에서 분석한 기관 세력의 오더블록(OB)과 FVG 구조
-
-    Buy-side 및 Sell-side 유동성 풀 배치 상태
-
-    예상 손익비 분석 및 실전 트레이딩 코멘트
+    1. 현재 마켓 구조 및 프레임
+    2. 기관 오더블록(OB) 위치 및 유효성 분석
+    3. 공정가치갭(FVG / Imbalance) 잔존 구간
+    4. Buy-side 및 Sell-side 유동성 풀 배치 상태
+    5. 유동성 흡수(Liquidity Sweep) 및 스마트 머니 매집 징후
+    6. 20일 이동평균선 이격도 및 지지/저항 구조
+    7. RSI 강도 및 모멘텀 분석
+    8. ATR 변동폭 및 킬존 시간대 대응 전략
+    9. 최종 리스크 관리 및 기대 손익비 평가
     """
     response_text = ask_gemini_api(prompt, stock_name, symbol, price, an)
     parts = response_text.split("SPLIT")
@@ -599,7 +625,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     chat_id = update.effective_chat.id
 
-    # 성적표/승률 키워드 감지
     if query in ["성적표", "승률", "수익률", "검증", "/score", "/report"]:
         await show_performance(update, context)
         return

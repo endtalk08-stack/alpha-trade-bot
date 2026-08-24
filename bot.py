@@ -5,7 +5,6 @@ import gc
 import json
 import uuid
 import asyncio
-import sqlite3
 import datetime
 import threading
 import urllib.parse
@@ -27,40 +26,12 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. 인증 정보
+# 1. 환경 설정 및 키
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
 REPORT_CACHE = {}
-DB_FILE = "trades.db"
-
-def init_db():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                symbol TEXT,
-                name TEXT,
-                asset_type TEXT,
-                direction TEXT,
-                entry_price REAL,
-                target_price REAL,
-                stop_loss REAL,
-                status TEXT DEFAULT 'PENDING',
-                ret REAL DEFAULT 0.0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                closed_at TIMESTAMP
-            )
-        ''')
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
-
-init_db()
 
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
@@ -134,17 +105,39 @@ def find_stock_code(query):
         pass
     return None, query.strip()
 
-def get_crypto_bybit_data(symbol="BTCUSDT"):
+def get_crypto_multi_exchange_data(symbol="BTCUSDT"):
     clean_sym = symbol.replace("KRW-", "").replace("-", "").upper()
     if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
         clean_sym = f"{clean_sym}USDT"
 
+    # 1. 바이낸스 API (가장 안정적이고 빠름)
     try:
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={clean_sym}&interval=D&limit=40"
+        b_url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit=40"
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=2.5).json()
+        res = requests.get(b_url, headers=headers, timeout=2.0).json()
+        if isinstance(res, list) and len(res) > 5:
+            records = []
+            for item in res:
+                records.append({
+                    "Date": pd.to_datetime(int(item[0]), unit='ms'),
+                    "Open": float(item[1]),
+                    "High": float(item[2]),
+                    "Low": float(item[3]),
+                    "Close": float(item[4]),
+                    "Volume": float(item[5])
+                })
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            curr_p = float(df['Close'].iloc[-1])
+            return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
+    except Exception:
+        pass
+
+    # 2. 바이비트 API (백업 1)
+    try:
+        bybit_url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={clean_sym}&interval=D&limit=40"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(bybit_url, headers=headers, timeout=2.0).json()
         candle_list = res.get("result", {}).get("list", [])
-        
         if candle_list:
             records = []
             for item in candle_list:
@@ -157,10 +150,33 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
                     "Volume": float(item[5])
                 })
             df = pd.DataFrame(records).set_index("Date").sort_index()
-            curr_price = float(df['Close'].iloc[-1])
-            return curr_price, f"{curr_price:,.2f} 달러 (USDT)", df
+            curr_p = float(df['Close'].iloc[-1])
+            return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
     except Exception:
         pass
+
+    # 3. 업비트 API (백업 2)
+    try:
+        coin_code = clean_sym.replace("USDT", "").replace("USD", "")
+        upbit_url = f"https://api.upbit.com/v1/candles/days?market=KRW-{coin_code}&count=40"
+        res = requests.get(upbit_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        if isinstance(res, list) and len(res) > 0:
+            records = []
+            for item in res:
+                records.append({
+                    "Date": pd.to_datetime(item["candle_date_time_kst"]),
+                    "Open": float(item["opening_price"]),
+                    "High": float(item["high_price"]),
+                    "Low": float(item["low_price"]),
+                    "Close": float(item["trade_price"]),
+                    "Volume": float(item["candle_acc_trade_volume"])
+                })
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            curr_p = float(df['Close'].iloc[-1])
+            return curr_p, f"{int(curr_p):,} 원", df
+    except Exception:
+        pass
+
     return None, None, None
 
 def get_us_stock_fmp_data(symbol):
@@ -383,7 +399,7 @@ def fetch_technical_quant_data(symbol, asset_type):
 
     try:
         if asset_type == "crypto":
-            curr_price_num, curr_price_str, df = get_crypto_bybit_data(symbol)
+            curr_price_num, curr_price_str, df = get_crypto_multi_exchange_data(symbol)
         elif asset_type == "overseas_stock":
             curr_price_num, curr_price_str, df = get_us_stock_fmp_data(symbol)
         elif asset_type == "domestic_stock":
@@ -405,28 +421,9 @@ def fetch_technical_quant_data(symbol, asset_type):
     except Exception:
         return None
 
-def call_gemini_rest_api(prompt):
-    """gRPC를 거치지 않고 HTTP REST 엔드포인트로 직접 호출"""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=6.0)
-        if res.status_code == 200:
-            data = res.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception:
-        pass
-    return None
-
-def generate_full_quant_report(stock_name, symbol, price, quant_data):
-    an = quant_data.get('analysis', {}) if quant_data else {}
-    
+def generate_reliable_report(stock_name, symbol, price, an):
     is_krw = "원" in str(price)
+    
     if is_krw:
         e1_l = f"{int(an['entry1_low']):,} 원"
         e1_h = f"{int(an['entry1_high']):,} 원"
@@ -447,43 +444,7 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
         st = f"{an['stop']:,.2f}{unit}"
         atr_str = f"{an['atr']:,.2f}{unit}"
 
-    prompt = f"""
-    당신은 대한민국 최고의 실전 퀀트 및 ICT 스마트머니 트레이더입니다.
-    대상 종목: {stock_name} ({symbol})
-    현재가: {price}
-
-    [작성 규칙]
-    1. 콜론, 하이픈, 특수기호 없이 정갈하게 작성하세요.
-    2. SPLIT 으로 1부와 2부를 나누세요.
-
-    1부:
-    {stock_name} ({symbol})
-    현재가 {price}
-    현재 트레이딩 적합도 {an['stars']} (점수 {an['score']})
-
-    Alpha Signal 액션 플랜
-    방향성 롱 (단기 눌림목 매수)
-    1차 진입 {e1_l}에서 {e1_h} (단기 매물 소화 및 지지 확인 구간 1차 분할)
-    2차 진입 {e2_l}에서 {e2_h} (주요 구조적 지지대 및 하단 반등 마지노선 2차 분할)
-    1차 목표 {t1} (직전 단기 매물벽 도달 시 50퍼센트 분할 익절)
-    2차 목표 {t2} (상단 저항 밴드 돌파 시 최종 전량 익절)
-    칼손절 {st} (지지선 붕괴 및 시나리오 무효화 기준가)
-
-    트리거 조건 및 행동 요령
-    체결강도 105퍼센트 이상 유지 시 1차 분할 매수 집행
-
-    SPLIT
-
-    2부:
-    최근 주가 흐름, 20일선({an['ma20_status']}), RSI({an['rsi']}), 손익비 1대 1.8에 대한 심층 해설
-    """
-
-    res_text = call_gemini_rest_api(prompt)
-    if res_text and "SPLIT" in res_text:
-        parts = res_text.split("SPLIT")
-        return parts[0].strip(), parts[1].strip()
-
-    fallback_summary = f"""
+    summary = f"""
 {stock_name} ({symbol})
 
 현재가 {price}
@@ -503,7 +464,7 @@ Alpha Signal 액션 플랜
 당일 체결강도 105퍼센트 이상 유지 시 1차 구간 분할 착수하며 장중 변동폭 {atr_str} 내외의 단기 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행
 """.strip()
 
-    fallback_detail = f"""
+    detail = f"""
 {stock_name}의 최근 주가 흐름은 직전 고점 도달 이후 과열 매물을 소화하는 눌림목 구간에 진입해 있으며 현재 가격대는 상승 파동 이후의 정당한 가격 조정 범위에 위치합니다. 단기 거래량이 {an['vol_status']}로 수렴하는 것은 자발적 손절매보다는 상단 저항선에 대한 부담감으로 인한 관망세가 짙은 전형적인 수급 숨고르기 양상입니다.
 
 해당 섹터 전반에 걸친 유동성 모멘텀과 기관 및 외국인의 패시브 자금 유입은 주가 하단을 견고하게 지지하고 있습니다. 현재 주가 위치가 {an['ma20_status']} 상태로 안정적으로 안착해 있어 단기 턴어라운드 시 섹터 내 강력한 탄력을 보일 가능성이 높습니다.
@@ -511,12 +472,12 @@ Alpha Signal 액션 플랜
 RSI 수치가 {an['rsi']} 수준으로 적정 진입 구간에 머물고 있으며 장중 변동폭 {atr_str} 수준의 파동을 활용한 손익비는 1 대 1.8 이상으로 매우 우수한 단기 스윙 타점입니다. 손절선 {st}을 철저히 엄수하면서 분할 매수로 대응한다면 최적의 알파 수익을 확보할 수 있는 구간입니다.
 """.strip()
 
-    return fallback_summary, fallback_detail
+    return summary, detail
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
-        "• 종목 분석: 종목명 입력 (예: 삼성전자, SK하이닉스, 엔비디아, 비트코인)\n"
+        "• 종목 분석: 종목명 입력 (예: 비트코인, 삼성전자, SK하이닉스, 엔비디아)\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
 
@@ -563,7 +524,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         current_price = quant_data['current_price']
-        summary_text, detail_text = generate_full_quant_report(formal_name, symbol, current_price, quant_data)
+        summary_text, detail_text = generate_reliable_report(formal_name, symbol, current_price, quant_data['analysis'])
 
         report_id = str(uuid.uuid4())[:8]
         if len(REPORT_CACHE) > 30:

@@ -9,7 +9,6 @@ import sqlite3
 import datetime
 import threading
 import urllib.parse
-import traceback
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
 import requests
@@ -34,11 +33,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28T
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
-try:
-    genai.configure(api_key=GEMINI_API_KEY)
-    ai_model = genai.GenerativeModel('gemini-1.5-flash')
-except Exception:
-    ai_model = None
+# gRPC 통신 에러 방지 -> REST 방식 강제 지정
+genai.configure(api_key=GEMINI_API_KEY, transport="rest")
+ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 REPORT_CACHE = {}
 DB_FILE = "trades.db"
@@ -462,7 +459,7 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
-        "• 종목 분석: 종목명 입력 (예: SK증권, SK하이닉스, 엔비디아, 비트코인)\n"
+        "• 종목 분석: 종목명 입력 (예: 삼성전자, SK하이닉스, 엔비디아, 비트코인)\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
 
@@ -539,11 +536,9 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if new_msg_ids:
             asyncio.create_task(delete_messages_later(context.bot, chat_id, new_msg_ids, delay=900))
 
-    except Exception as e:
-        # 실제 발생한 에러의 구체적인 스택트레이스를 채팅창으로 즉시 확인
-        err_msg = traceback.format_exc()
+    except Exception:
         try:
-            await status_msg.edit_text(f"⚠️ 시스템 디버그 에러:\n{err_msg[:400]}")
+            await status_msg.edit_text("일시적 처리 지연이 발생했습니다. 다시 입력해 주세요.")
         except Exception:
             pass
     finally:

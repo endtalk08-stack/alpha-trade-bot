@@ -35,6 +35,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
+LAST_MESSAGES = {}  # {chat_id: [message_id_list]} - 직전 분석 메시지 정리용
 
 # 1. 암호화폐 맵 (Bybit 연동)
 CRYPTO_MAP = {
@@ -129,13 +130,13 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
     return None, None
 
 def get_us_stock_fmp_data(symbol):
-    """미국 주식 3중 시세 파이프라인 (Stooq 글로벌 + Yahoo v8 + FMP)"""
+    """미국 주식 시세 (Stooq + Yahoo v8 + FMP)"""
     clean_sym = symbol.upper().strip()
 
-    # 1. Stooq 글로벌 금융 API (IP 차단 0%, API 키 불필요, 100% 안정)
+    # 1. Stooq
     try:
         stooq_url = f"https://stooq.com/q/d/l/?s={clean_sym.lower()}.us&i=d"
-        stooq_res = requests.get(stooq_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3.0)
+        stooq_res = requests.get(stooq_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5)
         if stooq_res.status_code == 200 and "Date,Open,High,Low,Close" in stooq_res.text:
             csv_data = io.StringIO(stooq_res.text)
             df = pd.read_csv(csv_data)
@@ -148,11 +149,11 @@ def get_us_stock_fmp_data(symbol):
     except Exception:
         pass
 
-    # 2. Yahoo Finance Chart v8 REST API
+    # 2. Yahoo Finance Chart
     try:
         y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?range=1mo&interval=1d"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        y_res = requests.get(y_url, headers=headers, timeout=3.0).json()
+        y_res = requests.get(y_url, headers=headers, timeout=2.5).json()
         result = y_res.get("chart", {}).get("result", [])
         if result:
             ts = result[0].get("timestamp", [])
@@ -181,10 +182,10 @@ def get_us_stock_fmp_data(symbol):
     except Exception:
         pass
 
-    # 3. FMP Quote API 폴백
+    # 3. FMP Quote
     try:
         url = f"https://financialmodelingprep.com/api/v3/quote/{clean_sym}?apikey={FMP_API_KEY}"
-        res = requests.get(url, timeout=3.0).json()
+        res = requests.get(url, timeout=2.5).json()
         if isinstance(res, list) and len(res) > 0:
             curr_p = float(res[0].get("price", 0))
             if curr_p > 0:
@@ -210,7 +211,7 @@ def fetch_domestic_stock_candles(code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = f"https://api.stock.naver.com/chart/domestic/market/stock/{code}?periodType=dayCandle&range=40"
-        res = requests.get(url, headers=headers, timeout=2.5).json()
+        res = requests.get(url, headers=headers, timeout=2.0).json()
         price_infos = res.get("priceInfos", [])
         if price_infos:
             records = []
@@ -433,10 +434,20 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     chat_id = update.effective_chat.id
 
+    # 🧹 [직전 분석 메시지 자동 삭제] 새 검색 시 이전 메시지들을 깨끗하게 청소
+    if chat_id in LAST_MESSAGES:
+        for old_msg_id in LAST_MESSAGES[chat_id]:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=old_msg_id)
+            except Exception:
+                pass
+        LAST_MESSAGES[chat_id] = []
+
     if query in ["대장", "대장주", "종목추천", "추천", "/대장"]:
         query = "삼성전기"
 
     status_msg = await update.message.reply_text(f"{query} 다중 팩터 종합 분석 중입니다...")
+    new_msg_ids = []
 
     try:
         clean_q = query.replace(" ", "").upper()
@@ -474,7 +485,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         summary_text, detail_text = generate_full_quant_report(formal_name, symbol, current_price, quant_data)
 
         report_id = str(uuid.uuid4())[:8]
-        if len(REPORT_CACHE) > 50:
+        if len(REPORT_CACHE) > 30:
             REPORT_CACHE.clear()
         REPORT_CACHE[report_id] = {"summary": summary_text, "detail": detail_text}
 
@@ -490,11 +501,16 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if chart_buf is not None:
             try:
-                await context.bot.send_photo(chat_id=chat_id, photo=chart_buf.getvalue())
+                sent_photo = await context.bot.send_photo(chat_id=chat_id, photo=chart_buf.getvalue())
+                new_msg_ids.append(sent_photo.message_id)
             except Exception:
                 pass
 
-        await context.bot.send_message(chat_id=chat_id, text=summary_text, reply_markup=reply_markup)
+        sent_msg = await context.bot.send_message(chat_id=chat_id, text=summary_text, reply_markup=reply_markup)
+        new_msg_ids.append(sent_msg.message_id)
+
+        # 현재 전송된 메시지 ID 저장
+        LAST_MESSAGES[chat_id] = new_msg_ids
 
     except Exception:
         try:

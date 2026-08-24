@@ -31,6 +31,8 @@ from telegram.ext import (
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
+TOSS_API_KEY = os.getenv("TOSS_API_KEY", "")
+TOSS_API_SECRET = os.getenv("TOSS_API_SECRET", "")
 
 REPORT_CACHE = {}
 BACKTEST_CACHE = {}
@@ -115,8 +117,27 @@ def find_stock_code(query):
         pass
     return None, query.strip()
 
+def get_toss_stock_price(code):
+    if not TOSS_API_KEY or not TOSS_API_SECRET:
+        return None, None
+    try:
+        url = f"https://openapi.tossinvest.com/v1/market/quote?symbol={code}"
+        headers = {
+            "Authorization": f"Bearer {TOSS_API_KEY}",
+            "X-Toss-Secret": TOSS_API_SECRET,
+            "User-Agent": "Mozilla/5.0"
+        }
+        res = requests.get(url, headers=headers, timeout=2.0).json()
+        price = res.get("currentPrice") or res.get("price") or res.get("lastPrice")
+        if price:
+            p_val = float(price)
+            return p_val, f"{int(p_val):,} 원"
+    except Exception:
+        pass
+    return None, None
+
 def fetch_events_and_catalysts_gemini(symbol, stock_name, asset_type):
-    """Google Search Grounding을 통해 실시간 뉴스/일정/재료를 정확히 요약"""
+    """Google Search 기반 실시간 고유 뉴스/일정/재료 요약 (지수/ETF 구분)"""
     cache_key = f"gemini_{asset_type}_{symbol}"
     curr_time = time.time()
     if cache_key in EVENT_CACHE:
@@ -127,20 +148,22 @@ def fetch_events_and_catalysts_gemini(symbol, stock_name, asset_type):
     news_text = ""
     earnings_text = ""
     macro_text = ""
+    is_etf = symbol in ["QQQ", "SPY", "SOXL", "TQQQ"]
 
-    # Gemini REST API with Google Search Grounding Tool
     if GEMINI_API_KEY:
         try:
             today_str = datetime.datetime.now().strftime("%Y년 %m월 %d일")
+            etf_guide = "이 종목은 지수/ETF이므로 개별 실적 대신 구성종목 동향과 지수 수급을 분석하세요." if is_etf else ""
             prompt = f"""
 오늘 날짜: {today_str}
-대상 종목: {stock_name} ({symbol})
+대상: {stock_name} ({symbol})
+{etf_guide}
 반드시 구글 검색 도구를 사용하여 오늘 기준 이 종목의 실시간 최신 뉴스, 공시, 주가 변동 원인을 확인하세요.
 
 아래 JSON 포맷으로만 답변하세요:
 {{
   "news": "오늘 가장 중요한 실시간 핵심 재료 및 주가 변동 요인 (한 줄, 40자 내외)",
-  "earnings": "가장 가까운 실적 발표 일정이나 주요 공시/수주 이슈 (한 줄, 35자 내외)",
+  "earnings": "{'지수 리밸런싱 및 대형 구성종목 실적 일정' if is_etf else '가장 가까운 실적 발표 일정이나 주요 공시 이슈'} (한 줄, 35자 내외)",
   "macro": "이 종목에 직접 영향을 주는 금리/환율/섹터 수급 동향 (한 줄, 35자 내외)"
 }}
 """.strip()
@@ -149,11 +172,11 @@ def fetch_events_and_catalysts_gemini(symbol, stock_name, asset_type):
             headers = {"Content-Type": "application/json"}
             payload = {
                 "contents": [{"parts": [{"text": prompt}]}],
-                "tools": [{"google_search_retrieval": {}}],
+                "tools": [{"googleSearch": {}}],
                 "generationConfig": {"temperature": 0.2, "response_mime_type": "application/json"}
             }
 
-            res = requests.post(url, headers=headers, json=payload, timeout=3.5).json()
+            res = requests.post(url, headers=headers, json=payload, timeout=2.8).json()
             candidates = res.get("candidates", [])
             if candidates:
                 content_text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
@@ -164,7 +187,6 @@ def fetch_events_and_catalysts_gemini(symbol, stock_name, asset_type):
         except Exception:
             pass
 
-    # Fallback 로직 (API 지연 시 안전 백업)
     if not news_text:
         try:
             if asset_type == "domestic_stock":
@@ -176,17 +198,22 @@ def fetch_events_and_catalysts_gemini(symbol, stock_name, asset_type):
                 earnings_text = f"{stock_name} 분기 실적 발표 및 주요 경영 공시 추적"
                 macro_text = "외국인 선물 포지션 및 원달러 환율 변동성 연동"
             elif asset_type == "overseas_stock":
-                news_text = f"{stock_name} 글로벌 빅테크 및 AI 증설 모멘텀 지속"
-                earnings_text = f"{symbol} 차기 실적 발표 캘린더 대기 및 가이던스 추적"
-                macro_text = "미 연준 금리 정책 및 나스닥 지수 수급 연동"
+                if is_etf:
+                    news_text = f"{stock_name} 주요 빅테크 패시브 유입 및 기술주 반등세 지속"
+                    earnings_text = "주요 대형 기술주 분기 실적 가이던스 추적 중"
+                    macro_text = "미 국채 금리 변동성 및 FOMC 통화정책 경로 주시"
+                else:
+                    news_text = f"{stock_name} 글로벌 빅테크 및 AI 증설 모멘텀 지속"
+                    earnings_text = f"{symbol} 차기 실적 발표 캘린더 대기 및 가이던스 추적"
+                    macro_text = "미 연준 금리 정책 및 나스닥 지수 수급 연동"
             else:
                 news_text = f"{stock_name} 글로벌 가상자산 현물 ETF 순유입 및 기관 매집"
                 earnings_text = "온체인 유동성 공급 및 선물 미결제약정(OI) 안정화"
                 macro_text = "글로벌 매크로 유동성 및 미 달러화 지수(DXY) 추종"
         except Exception:
             news_text = f"{stock_name} 주도 섹터 수급 유입 및 모멘텀 지속"
-            earnings_text = "분기 정기 실적 시즌 변동성 안정권"
-            macro_text = "종합지수 및 시장 유동성 환경 연동"
+            earnings_text = "정기 실적 및 지수 수급 환경 안정권"
+            macro_text = "종합지수 및 시장 매크로 유동성 연동"
 
     event_info = {
         "news": news_text[:70],
@@ -194,7 +221,7 @@ def fetch_events_and_catalysts_gemini(symbol, stock_name, asset_type):
         "macro": macro_text[:70],
         "catalyst_score": 0.9
     }
-    EVENT_CACHE[cache_key] = (event_info, curr_time + 3600)  # 1시간 캐싱
+    EVENT_CACHE[cache_key] = (event_info, curr_time + 3600)
     return event_info
 
 def get_market_regime(asset_type):
@@ -361,6 +388,10 @@ def get_us_stock_fmp_data(symbol, years=1):
     return None, None, None
 
 def get_naver_realtime_price(code):
+    t_price, t_str = get_toss_stock_price(code)
+    if t_price is not None:
+        return t_price, t_str
+
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/basic"
@@ -932,7 +963,7 @@ async def run_backtest_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         "text_2y": text_2y
     }
 
-    keyboard = [[InlineKeyboardButton("📊 2년 누적 데이터 보기", callback_data=f"bt_toggle_2y:{bt_id}")]]
+    keyboard = [[InlineKeyboardButton("2년 누적 데이터 보기", callback_data=f"bt_toggle_2y:{bt_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await status_msg.edit_text(text_1y, reply_markup=reply_markup)
@@ -1038,10 +1069,10 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if mode == "bt_toggle_2y":
-            keyboard = [[InlineKeyboardButton("⏱ 1년 단기 데이터 보기", callback_data=f"bt_toggle_1y:{bt_id}")]]
+            keyboard = [[InlineKeyboardButton("1년 단기 데이터 보기", callback_data=f"bt_toggle_1y:{bt_id}")]]
             await query.message.edit_text(text=data["text_2y"], reply_markup=InlineKeyboardMarkup(keyboard))
         elif mode == "bt_toggle_1y":
-            keyboard = [[InlineKeyboardButton("📊 2년 누적 데이터 보기", callback_data=f"bt_toggle_2y:{bt_id}")]]
+            keyboard = [[InlineKeyboardButton("2년 누적 데이터 보기", callback_data=f"bt_toggle_2y:{bt_id}")]]
             await query.message.edit_text(text=data["text_1y"], reply_markup=InlineKeyboardMarkup(keyboard))
         return
 

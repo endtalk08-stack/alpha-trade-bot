@@ -59,14 +59,14 @@ COMMON_SYMBOLS = {
 }
 
 def get_stock_code_by_name(query):
-    """네이버 및 다음 증권 실시간 검색을 통한 6자리 종목코드 추출"""
+    """네이버 / 다음 실시간 검색으로 6자리 종목코드 추출"""
     clean_q = query.strip()
     
     # 1. 네이버 자동완성 API
     try:
         url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(clean_q)}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=3).json()
+        res = requests.get(url, headers=headers, timeout=2).json()
         items = res.get("items", [[]])[0]
         if items:
             q_comp = clean_q.replace(" ", "").upper()
@@ -82,7 +82,7 @@ def get_stock_code_by_name(query):
     try:
         d_url = f"https://suggest-baro.daum.net/suggest?id=stock&v=4&code=utf-8&q={requests.utils.quote(clean_q)}"
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.daum.net"}
-        res = requests.get(d_url, headers=headers, timeout=3).json()
+        res = requests.get(d_url, headers=headers, timeout=2).json()
         sub_items = res.get("sub", [])
         if sub_items:
             raw_code = sub_items[0][0].replace("A", "")
@@ -98,20 +98,20 @@ def get_naver_realtime_price(code):
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/basic"
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=3).json()
-        p = res.get("closePrice", "").replace(",", "")
-        if p:
+        res = requests.get(url, headers=headers, timeout=2).json()
+        p = str(res.get("closePrice", "")).replace(",", "")
+        if p and p != "None":
             return f"{int(p):,} 원"
     except Exception:
         pass
     return None
 
 def fetch_naver_stock_candles(code):
-    """네이버 증권 캔들 차트 API (코스피/코스닥 전 종목 100% 안정 수집)"""
+    """네이버 증권 일봉 캔들 API (국내 전종목 100% 지원)"""
     try:
         url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=4)
+        res = requests.get(url, headers=headers, timeout=3)
         matches = re.findall(r'<item data="([^"]+)"', res.text)
         
         records = []
@@ -173,7 +173,7 @@ def fetch_orderbook_and_sentiment(symbol, asset_type):
     if asset_type == "crypto":
         try:
             url = f"https://api.binance.com/api/v3/depth?symbol={symbol}&limit=10"
-            ob = requests.get(url, timeout=3).json()
+            ob = requests.get(url, timeout=2).json()
             bids = sum([float(x[1]) for x in ob.get("bids", [])])
             asks = sum([float(x[1]) for x in ob.get("asks", [])])
             if asks > 0:
@@ -190,7 +190,7 @@ def fetch_orderbook_and_sentiment(symbol, asset_type):
         try:
             url = f"https://m.stock.naver.com/api/stock/{symbol}/market"
             headers = {"User-Agent": "Mozilla/5.0"}
-            res = requests.get(url, headers=headers, timeout=3).json()
+            res = requests.get(url, headers=headers, timeout=2).json()
             total_ask = int(res.get("totalAskQty", 0))
             total_bid = int(res.get("totalBidQty", 0))
             if total_ask > 0 and total_bid > 0:
@@ -211,7 +211,7 @@ def fetch_realtime_news(symbol, asset_type):
         if asset_type == "domestic_stock":
             url = f"https://m.stock.naver.com/api/news/stock/{symbol}?page=1&pageSize=3"
             headers = {"User-Agent": "Mozilla/5.0"}
-            res = requests.get(url, headers=headers, timeout=3).json()
+            res = requests.get(url, headers=headers, timeout=2).json()
             titles = [re.sub(r'<[^>]+>', '', item.get("tit", "")) for item in res if item.get("tit")]
             if titles:
                 return " / ".join(titles)
@@ -221,11 +221,13 @@ def fetch_realtime_news(symbol, asset_type):
 
 def fetch_technical_quant_data(symbol, asset_type):
     quant_info = {}
+    curr_price_str = None
+    df = None
+
     try:
-        df = None
         if asset_type == "crypto":
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit=60"
-            data = requests.get(url, timeout=5).json()
+            data = requests.get(url, timeout=3).json()
             df = pd.DataFrame(data, columns=['time', 'open', 'high', 'low', 'close', 'vol', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
             df['close'] = df['close'].astype(float)
             df['high'] = df['high'].astype(float)
@@ -235,29 +237,40 @@ def fetch_technical_quant_data(symbol, asset_type):
             df.index = pd.to_datetime(df['time'], unit='ms')
             curr_p = float(df['close'].iloc[-1])
             curr_price_str = f"{curr_p:,.2f} 달러"
+
         elif asset_type == "domestic_stock":
-            # 1순위: 네이버 공식 시세 차트 엔진
+            # 1. 네이버 실시간 가격 최우선 확보
+            curr_price_str = get_naver_realtime_price(symbol)
+            # 2. 네이버 캔들 수집
             df = fetch_naver_stock_candles(symbol)
-            if df is None or len(df) < 15:
-                df = yf.Ticker(f"{symbol}.KQ").history(period="60d")
-                if df.empty or len(df) < 15:
-                    df = yf.Ticker(f"{symbol}.KS").history(period="60d")
-            
-            naver_p = get_naver_realtime_price(symbol)
-            if naver_p:
-                curr_price_str = naver_p
-            else:
-                curr_p = float(df['Close'].iloc[-1])
-                curr_price_str = f"{int(curr_p):,} 원"
+            if df is None or len(df) < 10:
+                try:
+                    df = yf.Ticker(f"{symbol}.KQ").history(period="60d")
+                    if df.empty:
+                        df = yf.Ticker(f"{symbol}.KS").history(period="60d")
+                except Exception:
+                    pass
+            if not curr_price_str and df is not None and not df.empty:
+                c_val = float(df['Close'].iloc[-1])
+                curr_price_str = f"{int(c_val):,} 원"
+
         else:
-            # 해외 주식
+            # 미국 주식
             stock = yf.Ticker(symbol)
             df = stock.history(period="60d")
-            curr_p = float(df['Close'].iloc[-1])
-            curr_price_str = f"{curr_p:,.2f} 달러"
+            if not df.empty:
+                curr_p = float(df['Close'].iloc[-1])
+                curr_price_str = f"{curr_p:,.2f} 달러"
 
-        if df is not None and len(df) >= 15:
-            # 컬럼명 소문자 통일
+        if not curr_price_str:
+            return None
+
+        # 기본 퀀트 구조체 세팅
+        quant_info['current_price'] = curr_price_str
+        quant_info['sentiment'] = fetch_orderbook_and_sentiment(symbol, asset_type)
+        quant_info['earnings_status'] = "정상 범위"
+
+        if df is not None and len(df) >= 10:
             col_map = {c: c.lower() for c in df.columns}
             df_calc = df.rename(columns=col_map)
 
@@ -266,8 +279,8 @@ def fetch_technical_quant_data(symbol, asset_type):
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / (loss + 1e-9)
             rsi = 100 - (100 / (1 + rs))
-            quant_info['rsi'] = round(float(rsi.iloc[-1]), 1)
-            quant_info['ma20'] = round(float(df_calc['close'].rolling(20).mean().iloc[-1]), 2)
+            quant_info['rsi'] = round(float(rsi.iloc[-1]), 1) if not pd.isna(rsi.iloc[-1]) else 50.0
+            quant_info['ma20'] = round(float(df_calc['close'].rolling(20).mean().iloc[-1]), 2) if len(df_calc) >= 20 else "산출중"
             quant_info['ma60'] = round(float(df_calc['close'].rolling(60).mean().iloc[-1]), 2) if len(df_calc) >= 60 else "산출중"
             quant_info['high20'] = round(float(df_calc['high'].tail(20).max()), 2)
             quant_info['low20'] = round(float(df_calc['low'].tail(20).min()), 2)
@@ -281,17 +294,32 @@ def fetch_technical_quant_data(symbol, asset_type):
             vol_ratio = (curr_vol / (avg_vol5 + 1e-9)) * 100
             quant_info['vol_status'] = f"5일 평균 대비 {vol_ratio:.0f}%"
 
-            quant_info['earnings_status'] = "정상 범위"
-            quant_info['current_price'] = curr_price_str
-            quant_info['sentiment'] = fetch_orderbook_and_sentiment(symbol, asset_type)
-            
             standard_df = df_calc[['open', 'high', 'low', 'close', v_col]].rename(columns={
                 'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', v_col: 'Volume'
             })
             quant_info['chart_df'] = standard_df
-            return quant_info
+        else:
+            quant_info['chart_df'] = None
+            quant_info['rsi'] = 50.0
+            quant_info['ma20'] = "산출중"
+            quant_info['ma60'] = "산출중"
+            quant_info['high20'] = "산출중"
+            quant_info['low20'] = "산출중"
+            quant_info['atr'] = "산출중"
+            quant_info['vol_status'] = "정상"
+
+        return quant_info
+
     except Exception:
-        pass
+        if curr_price_str:
+            return {
+                "current_price": curr_price_str,
+                "sentiment": fetch_orderbook_and_sentiment(symbol, asset_type),
+                "earnings_status": "정상",
+                "vol_status": "정상",
+                "chart_df": None,
+                "rsi": 50.0
+            }
     return None
 
 def fetch_realtime_price_fallback(user_query):
@@ -313,6 +341,7 @@ def fetch_realtime_price_fallback(user_query):
         elif any(c.isupper() for c in cleaned_query) and not any('\uac00' <= char <= '\ud7a3' for char in cleaned_query):
             asset_type, symbol = "overseas_stock", cleaned_query
         else:
+            # 6자리 종목코드 자동 검색
             if not (cleaned_query.isdigit() and len(cleaned_query) == 6):
                 searched_code, formal_name = get_stock_code_by_name(user_query.strip())
                 symbol = searched_code if searched_code else cleaned_query
@@ -327,20 +356,6 @@ def fetch_realtime_price_fallback(user_query):
     if quant_data and quant_data.get('current_price'):
         quant_data['news'] = news_brief
         return quant_data['current_price'], symbol, display_name, quant_data
-
-    # 네이버 모바일 실시간 가격 2차 백업
-    if asset_type == "domestic_stock":
-        p = get_naver_realtime_price(symbol)
-        if p:
-            sent = fetch_orderbook_and_sentiment(symbol, asset_type)
-            fallback_quant = {
-                "news": news_brief,
-                "earnings_status": "정상",
-                "sentiment": sent,
-                "vol_status": "정상",
-                "chart_df": None
-            }
-            return p, symbol, display_name, fallback_quant
 
     return None, symbol, display_name, None
 
@@ -452,7 +467,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await status_msg.delete()
 
-        # 차트 사진 먼저 전송 후 타점 카드 전송
+        # 차트 먼저 전송 후 요약 카드 전송
         if chart_buffer:
             await update.message.reply_photo(photo=chart_buffer)
         

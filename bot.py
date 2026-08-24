@@ -1,5 +1,6 @@
 import os
 import re
+import io
 import json
 import uuid
 import datetime
@@ -10,6 +11,10 @@ import yfinance as yf
 import requests
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')  # GUI 없는 서버 환경용 백엔드
+import matplotlib.pyplot as plt
+import mplfinance as mpf
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -51,9 +56,8 @@ COMMON_SYMBOLS = {
 }
 
 def get_stock_code_by_name(query):
-    """한글/영문 혼용 종목명을 네이버 증권 검색 API를 통해 6자리 코드로 완벽 변환"""
+    """한글/영문 혼용 종목명을 네이버 증권 검색 API를 통해 6자리 코드로 변환"""
     try:
-        # 네이버 자동완성 API
         url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(query)}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=3).json()
@@ -82,14 +86,43 @@ def get_naver_realtime_price(code):
         pass
     return None
 
+def generate_candlestick_chart(df, stock_name):
+    """최근 60일 캔들 차트, 20/60 이평선, 거래량 차트 이미지 버퍼 생성"""
+    try:
+        chart_df = df.tail(45).copy()
+        chart_df.index = pd.to_datetime(chart_df.index)
+        
+        # 차트 스타일 설정 (다크 테마)
+        mc = mpf.make_marketcolors(
+            up='#ef5350', down='#26a69a',
+            wick={'up':'#ef5350', 'down':'#26a69a'},
+            edge={'up':'#ef5350', 'down':'#26a69a'},
+            volume={'up':'#ef5350', 'down':'#26a69a'}
+        )
+        s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', gridcolor='#333333', facecolor='#131722', figcolor='#131722')
+        
+        buf = io.BytesIO()
+        mpf.plot(
+            chart_df,
+            type='candle',
+            mav=(20, 60),
+            volume=True,
+            style=s,
+            title=f"\n[ {stock_name} Alpha Quant Technical Structure ]",
+            figsize=(9, 5),
+            savefig=dict(fname=buf, format='png', bbox_inches='tight', facecolor='#131722')
+        )
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
+
 def fetch_orderbook_and_sentiment(symbol, asset_type):
-    """10호가 잔량 델타 및 시장 심리 분석"""
     sentiment_data = {
         "orderbook_ratio": "중립 델타",
         "retail_sentiment": "정상 범위",
         "action_guide": "정석 분할 진입 유효"
     }
-    
     if asset_type == "crypto":
         try:
             url = f"https://api.binance.com/api/v3/depth?symbol={symbol}&limit=10"
@@ -99,14 +132,13 @@ def fetch_orderbook_and_sentiment(symbol, asset_type):
             if asks > 0:
                 ratio = bids / asks
                 if ratio > 1.8:
-                    sentiment_data["orderbook_ratio"] = f"매수잔량 우세 ({ratio:.2f}배, 단기 지지 탄탄)"
+                    sentiment_data["orderbook_ratio"] = f"매수잔량 우세 ({ratio:.2f}배)"
                 elif ratio < 0.6:
-                    sentiment_data["orderbook_ratio"] = f"매도잔량 우세 ({1/ratio:.2f}배, 상단 매도벽 두터움)"
+                    sentiment_data["orderbook_ratio"] = f"매도잔량 우세 ({1/ratio:.2f}배)"
                 else:
-                    sentiment_data["orderbook_ratio"] = f"균형 오더북 (체결 델타 {ratio:.2f})"
+                    sentiment_data["orderbook_ratio"] = f"균형 오더북 ({ratio:.2f})"
         except Exception:
             pass
-
     elif asset_type == "domestic_stock":
         try:
             url = f"https://m.stock.naver.com/api/stock/{symbol}/market"
@@ -117,19 +149,17 @@ def fetch_orderbook_and_sentiment(symbol, asset_type):
             if total_ask > 0 and total_bid > 0:
                 imbalance = total_ask / total_bid
                 if imbalance >= 2.0:
-                    sentiment_data["orderbook_ratio"] = f"상승형 매도벽 흡수 패턴 (매도잔량/매수잔량 {imbalance:.1f}배 - 세력 돌파형 호가)"
-                    sentiment_data["retail_sentiment"] = "스마트 머니 체결 흡수 가동"
+                    sentiment_data["orderbook_ratio"] = f"상승형 매도벽 흡수 패턴 (매도/매수 {imbalance:.1f}배)"
+                    sentiment_data["retail_sentiment"] = "스마트 머니 체결 가동"
                 elif imbalance <= 0.5:
-                    sentiment_data["orderbook_ratio"] = f"허매수벽 트랩 주의 (매수잔량/매도잔량 {1/imbalance:.1f}배 - 지지선 이탈 리스크)"
-                    sentiment_data["retail_sentiment"] = "개미 매수 쏠림 과열"
-                    sentiment_data["action_guide"] = "허매수 트랩 회피를 위해 1차 진입가 보수적 하향"
+                    sentiment_data["orderbook_ratio"] = f"허매수벽 트랩 주의 (매수/매도 {1/imbalance:.1f}배)"
+                    sentiment_data["retail_sentiment"] = "개미 매수 쏠림"
+                    sentiment_data["action_guide"] = "진입가 보수적 하향"
         except Exception:
             pass
-
     return sentiment_data
 
 def fetch_realtime_news(query, symbol, asset_type):
-    """실시간 급등/급락 핵심 재료 및 뉴스 수집"""
     try:
         if asset_type == "domestic_stock":
             url = f"https://m.stock.naver.com/api/news/stock/{symbol}?page=1&pageSize=3"
@@ -140,28 +170,25 @@ def fetch_realtime_news(query, symbol, asset_type):
                 return " / ".join(titles)
     except Exception:
         pass
-    return "현재 특정 개별 이슈보다는 전반적인 시장 및 수급 모멘텀에 의해 등락 중"
+    return "현재 시장 전반의 수급 모멘텀에 의해 등락 중"
 
 def fetch_earnings_calendar(ticker_obj):
-    """실적 발표일 추적"""
     try:
         cal = ticker_obj.calendar
-        if cal is not None and not cal.empty:
-            if 'Earnings Date' in cal.index:
-                earnings_dates = cal.loc['Earnings Date'].tolist()
-                if earnings_dates:
-                    target_date = pd.to_datetime(earnings_dates[0]).date()
-                    today = datetime.date.today()
-                    days_diff = (target_date - today).days
-                    if 0 <= days_diff <= 3:
-                        return f"⚠️ 실적 발표 D-{days_diff}일 임박 (실적 변동성 위험 구간, 관망 또는 방어적 분할 권고)"
-                    return f"다음 실적 발표 예정일: {target_date}"
+        if cal is not None and not cal.empty and 'Earnings Date' in cal.index:
+            earnings_dates = cal.loc['Earnings Date'].tolist()
+            if earnings_dates:
+                target_date = pd.to_datetime(earnings_dates[0]).date()
+                today = datetime.date.today()
+                days_diff = (target_date - today).days
+                if 0 <= days_diff <= 3:
+                    return f"⚠️ 실적 발표 D-{days_diff}일 임박 (변동성 주의)"
+                return f"실적 예정일: {target_date}"
     except Exception:
         pass
-    return "실적 발표 일정 정상 범위"
+    return "실적 발표 정상"
 
 def calculate_relative_strength(df, asset_type):
-    """시장 지수 대비 상대 강도(RS) 계산"""
     try:
         bench_symbol = "^KS11" if asset_type == "domestic_stock" else ("^IXIC" if asset_type == "overseas_stock" else "BTC-USD")
         bench_df = yf.Ticker(bench_symbol).history(period="20d")
@@ -170,16 +197,15 @@ def calculate_relative_strength(df, asset_type):
             bench_ret = (bench_df['Close'].iloc[-1] - bench_df['Close'].iloc[-5]) / bench_df['Close'].iloc[-5] * 100
             rs_score = stock_ret - bench_ret
             if rs_score > 3.0:
-                return f"🔥 시장 대비 압도적 주도주 (RS +{rs_score:.1f}% 초과 탄력)"
+                return f"🔥 시장 주도주 (RS +{rs_score:.1f}%)"
             elif rs_score < -3.0:
-                return f"❄️ 시장 대비 약세 소외주 (RS {rs_score:.1f}% 부진)"
-            return f"시장 동조화 흐름 (RS {rs_score:+.1f}%)"
+                return f"❄️ 시장 소외주 (RS {rs_score:.1f}%)"
+            return f"시장 동조화 (RS {rs_score:+.1f}%)"
     except Exception:
         pass
     return "상대 강도 중립"
 
 def fetch_technical_quant_data(symbol, asset_type):
-    """RSI, 이평선, ATR, 거래량, RS 지표 정밀 계산"""
     quant_info = {}
     try:
         earnings_warning = "실적 발표 정상"
@@ -190,7 +216,9 @@ def fetch_technical_quant_data(symbol, asset_type):
             df['close'] = df['close'].astype(float)
             df['high'] = df['high'].astype(float)
             df['low'] = df['low'].astype(float)
+            df['open'] = df['open'].astype(float)
             df['vol'] = df['vol'].astype(float)
+            df.index = pd.to_datetime(df['time'], unit='ms')
             curr_p = float(df['close'].iloc[-1])
             currency = "달러"
         else:
@@ -204,7 +232,6 @@ def fetch_technical_quant_data(symbol, asset_type):
                 earnings_warning = fetch_earnings_calendar(stock)
                 df = stock.history(period="60d")
             
-            # 네이버 실시간 호가로 현재가 보정
             naver_p = get_naver_realtime_price(symbol)
             if naver_p:
                 curr_price_str = naver_p
@@ -213,7 +240,7 @@ def fetch_technical_quant_data(symbol, asset_type):
                 curr_price_str = f"{int(curr_p):,} 원" if asset_type == "domestic_stock" else f"{curr_p:,.2f} 달러"
 
             currency = "원" if asset_type == "domestic_stock" else "달러"
-            df = df.rename(columns={'Close': 'close', 'High': 'high', 'Low': 'low', 'Volume': 'vol'})
+            df = df.rename(columns={'Close': 'close', 'High': 'high', 'Low': 'low', 'Open': 'open', 'Volume': 'vol'})
 
         if len(df) >= 20:
             delta = df['close'].diff()
@@ -233,12 +260,18 @@ def fetch_technical_quant_data(symbol, asset_type):
             avg_vol5 = df['vol'].iloc[-6:-1].mean() if len(df) >= 6 else df['vol'].mean()
             curr_vol = df['vol'].iloc[-1]
             vol_ratio = (curr_vol / (avg_vol5 + 1e-9)) * 100
-            quant_info['vol_status'] = f"5일 평균 대비 {vol_ratio:.0f}% 수준"
+            quant_info['vol_status'] = f"5일 평균 대비 {vol_ratio:.0f}%"
 
             quant_info['rs_signal'] = calculate_relative_strength(df, asset_type)
             quant_info['earnings_status'] = earnings_warning
             quant_info['current_price'] = curr_price_str if 'curr_price_str' in locals() else f"{curr_p:,.2f} {currency}"
             quant_info['sentiment'] = fetch_orderbook_and_sentiment(symbol, asset_type)
+            
+            # 차트용 표준 데이터프레임 저장
+            standard_df = df[['open', 'high', 'low', 'close', 'vol']].rename(columns={
+                'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'vol': 'Volume'
+            })
+            quant_info['chart_df'] = standard_df
             return quant_info
     except Exception:
         pass
@@ -248,7 +281,6 @@ def fetch_realtime_price_fallback(user_query):
     cleaned_query = user_query.strip().replace(" ", "").upper()
     display_name = user_query.strip()
     
-    # 1. 고정 딕셔너리 매핑 확인 (대소문자/공백 무시)
     matched_key = None
     for key in COMMON_SYMBOLS:
         if key.replace(" ", "").upper() == cleaned_query:
@@ -264,7 +296,6 @@ def fetch_realtime_price_fallback(user_query):
         elif any(c.isupper() for c in cleaned_query) and not cleaned_query.endswith(".KS") and not any('\uac00' <= char <= '\ud7a3' for char in cleaned_query):
             asset_type, symbol = "overseas_stock", cleaned_query
         else:
-            # 6자리 숫자가 아니면 네이버 검색으로 6자리 종목코드 자동 추출
             if not (cleaned_query.isdigit() and len(cleaned_query) == 6):
                 searched_code, formal_name = get_stock_code_by_name(user_query.strip())
                 symbol = searched_code if searched_code else cleaned_query
@@ -280,17 +311,17 @@ def fetch_realtime_price_fallback(user_query):
         quant_data['news'] = news_brief
         return quant_data['current_price'], symbol, display_name, quant_data
 
-    # 네이버 모바일 실시간 가격 2차 백업
     if asset_type == "domestic_stock":
         p = get_naver_realtime_price(symbol)
         if p:
             sent = fetch_orderbook_and_sentiment(symbol, asset_type)
             fallback_quant = {
                 "news": news_brief,
-                "earnings_status": "정상 범위",
+                "earnings_status": "정상",
                 "sentiment": sent,
                 "vol_status": "정상",
-                "rs_signal": "시장 동조화"
+                "rs_signal": "시장 동조화",
+                "chart_df": None
             }
             return p, symbol, display_name, fallback_quant
 
@@ -367,7 +398,6 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     """
     response = ai_model.generate_content(prompt).text
     parts = response.split("SPLIT")
-    
     summary = parts[0].strip()
     detail = parts[1].strip() if len(parts) > 1 else "심층 분석 데이터를 불러올 수 없습니다"
     return summary, detail
@@ -375,13 +405,13 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
-        "종목명을 입력하시면 실시간 시세, 오더북 델타, 상대 강도(RS), 거래량 모멘텀을 결합한 퀀트 분석을 시작합니다\n"
-        "예시 sk스퀘어 삼성전자 비트코인 TSLA"
+        "종목명을 입력하시면 실시간 차트 렌더링 및 퀀트 액션 플랜을 함께 전송합니다\n"
+        "예시 SK스퀘어 삼성전자 비트코인 TSLA"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
-    status_msg = await update.message.reply_text(f"{query} 실시간 호가 및 다차원 퀀트 팩터 연산 중입니다")
+    status_msg = await update.message.reply_text(f"{query} 실시간 차트 렌더링 및 퀀트 연산 중입니다")
 
     try:
         current_price, symbol, formal_name, quant_data = fetch_realtime_price_fallback(query)
@@ -401,7 +431,20 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("심층 분석 근거 보기", callback_data=f"show_detail:{report_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await status_msg.edit_text(summary_text, reply_markup=reply_markup)
+        # 차트 이미지 생성 및 전송
+        chart_buffer = None
+        if quant_data and quant_data.get('chart_df') is not None:
+            chart_buffer = generate_candlestick_chart(quant_data['chart_df'], formal_name)
+
+        if chart_buffer:
+            await status_msg.delete()  # 로딩 메시지 삭제 후 사진 전송
+            await update.message.reply_photo(
+                photo=chart_buffer,
+                caption=summary_text,
+                reply_markup=reply_markup
+            )
+        else:
+            await status_msg.edit_text(summary_text, reply_markup=reply_markup)
 
     except Exception as e:
         err_msg = str(e)
@@ -418,17 +461,23 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = REPORT_CACHE.get(report_id)
 
     if not data:
-        await query.edit_message_text("만료된 세션입니다 종목명을 다시 입력해 주세요")
+        await query.message.reply_text("만료된 세션입니다 종목명을 다시 입력해 주세요")
         return
 
     if action == "show_detail":
         full_text = f"{data['summary']}\n\n{data['detail']}"
         keyboard = [[InlineKeyboardButton("타점 카드만 보기", callback_data=f"show_summary:{report_id}")]]
-        await query.edit_message_text(full_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        if query.message.caption:
+            await query.message.edit_caption(caption=full_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await query.message.edit_text(text=full_text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif action == "show_summary":
         keyboard = [[InlineKeyboardButton("심층 분석 근거 보기", callback_data=f"show_detail:{report_id}")]]
-        await query.edit_message_text(data['summary'], reply_markup=InlineKeyboardMarkup(keyboard))
+        if query.message.caption:
+            await query.message.edit_caption(caption=data['summary'], reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await query.message.edit_text(text=data['summary'], reply_markup=InlineKeyboardMarkup(keyboard))
 
 class SimpleServer(BaseHTTPRequestHandler):
     def do_GET(self):

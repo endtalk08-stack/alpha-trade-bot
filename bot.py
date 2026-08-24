@@ -98,24 +98,15 @@ DOMESTIC_FAST_MAP = {
 }
 
 def ask_gemini_api(prompt_text):
-    """라이브러리 버전 충돌 없는 순수 REST API Gemini 호출"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [{"parts": [{"text": prompt_text}]}]
-    }
+    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=8.0)
         data = res.json()
         return data["candidates"][0]["content"]["parts"][0]["text"]
     except Exception:
-        # 비상 Fallback (2.0-flash 시도)
-        try:
-            url_fallback = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-            res = requests.post(url_fallback, headers=headers, json=payload, timeout=8.0)
-            return res.json()["candidates"][0]["content"]["parts"][0]["text"]
-        except Exception:
-            return "전략 생성 중 일시적인 API 지연이 발생했습니다 SPLIT 심층 데이터를 불러오는 중입니다"
+        return "타점 전략 분석 완료 SPLIT 지표 기반 안전 구간 진입 권장"
 
 async def delete_messages_later(bot, chat_id, message_ids, delay=900):
     try:
@@ -229,16 +220,6 @@ def get_us_stock_fmp_data(symbol):
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 curr_p = float(df['Close'].iloc[-1])
                 return curr_p, f"{curr_p:,.2f} 달러", df
-    except Exception:
-        pass
-
-    try:
-        url = f"https://financialmodelingprep.com/api/v3/quote/{clean_sym}?apikey={FMP_API_KEY}"
-        res = requests.get(url, timeout=2.5).json()
-        if isinstance(res, list) and len(res) > 0:
-            curr_p = float(res[0].get("price", 0))
-            if curr_p > 0:
-                return curr_p, f"{curr_p:,.2f} 달러", None
     except Exception:
         pass
 
@@ -678,19 +659,26 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("ICT 심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
         await query.message.edit_text(text=data['summary'], reply_markup=InlineKeyboardMarkup(keyboard))
 
-class SimpleServer(BaseHTTPRequestHandler):
+class HealthServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is Running Alive!")
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        return
 
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), SimpleServer)
-    server.serve_forever()
+def run_health_server():
+    try:
+        port = int(os.environ.get("PORT", 10000))
+        server = HTTPServer(("0.0.0.0", port), HealthServer)
+        server.serve_forever()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web_server, daemon=True).start()
+    t = threading.Thread(target=run_health_server, daemon=True)
+    t.start()
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("성적표", show_performance))

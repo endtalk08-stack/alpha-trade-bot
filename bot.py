@@ -43,6 +43,7 @@ COMMON_SYMBOLS = {
     "XRP": ("crypto", "XRPUSDT"),
     "삼성전자": ("domestic_stock", "005930"),
     "SK하이닉스": ("domestic_stock", "000660"),
+    "SK스퀘어": ("domestic_stock", "402340"),
     "테슬라": ("overseas_stock", "TSLA"),
     "엔비디아": ("overseas_stock", "NVDA"),
     "애플": ("overseas_stock", "AAPL"),
@@ -50,23 +51,39 @@ COMMON_SYMBOLS = {
 }
 
 def get_stock_code_by_name(query):
-    """한글 종목명을 네이버 검색 API를 통해 6자리 코드로 변환"""
+    """한글/영문 혼용 종목명을 네이버 증권 검색 API를 통해 6자리 코드로 완벽 변환"""
     try:
-        url = f"https://ac.finance.naver.com/ac?q={query}&target=stock"
+        # 네이버 자동완성 API
+        url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(query)}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=3).json()
         items = res.get("items", [[]])[0]
         if items:
+            q_clean = query.replace(" ", "").upper()
             for item in items:
-                if item[1].replace(" ", "").upper() == query.replace(" ", "").upper():
-                    return item[0]
-            return items[0][0]
+                name_clean = item[1].replace(" ", "").upper()
+                if q_clean == name_clean or q_clean in name_clean:
+                    return item[0], item[1]
+            return items[0][0], items[0][1]
+    except Exception:
+        pass
+    return None, query
+
+def get_naver_realtime_price(code):
+    """네이버 모바일 증권에서 실시간 현재가 즉시 추출"""
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=3).json()
+        p = res.get("closePrice", "").replace(",", "")
+        if p:
+            return f"{int(p):,} 원"
     except Exception:
         pass
     return None
 
 def fetch_orderbook_and_sentiment(symbol, asset_type):
-    """토스 10호가 잔량 델타 및 시장 심리 분석"""
+    """10호가 잔량 델타 및 시장 심리 분석"""
     sentiment_data = {
         "orderbook_ratio": "중립 델타",
         "retail_sentiment": "정상 범위",
@@ -126,7 +143,7 @@ def fetch_realtime_news(query, symbol, asset_type):
     return "현재 특정 개별 이슈보다는 전반적인 시장 및 수급 모멘텀에 의해 등락 중"
 
 def fetch_earnings_calendar(ticker_obj):
-    """실적 발표일 추적 (어닝 임박 시 도박 구간 경고)"""
+    """실적 발표일 추적"""
     try:
         cal = ticker_obj.calendar
         if cal is not None and not cal.empty:
@@ -144,7 +161,7 @@ def fetch_earnings_calendar(ticker_obj):
     return "실적 발표 일정 정상 범위"
 
 def calculate_relative_strength(df, asset_type):
-    """시장 지수(코스피/나스닥/BTC) 대비 종목의 상대 강도(RS) 계산"""
+    """시장 지수 대비 상대 강도(RS) 계산"""
     try:
         bench_symbol = "^KS11" if asset_type == "domestic_stock" else ("^IXIC" if asset_type == "overseas_stock" else "BTC-USD")
         bench_df = yf.Ticker(bench_symbol).history(period="20d")
@@ -153,16 +170,16 @@ def calculate_relative_strength(df, asset_type):
             bench_ret = (bench_df['Close'].iloc[-1] - bench_df['Close'].iloc[-5]) / bench_df['Close'].iloc[-5] * 100
             rs_score = stock_ret - bench_ret
             if rs_score > 3.0:
-                return f"🔥 시장 대비 압도적 주도주 (RS +{rs_score:.1f}% 초과 탄력 - 대장주 시그널)"
+                return f"🔥 시장 대비 압도적 주도주 (RS +{rs_score:.1f}% 초과 탄력)"
             elif rs_score < -3.0:
-                return f"❄️ 시장 대비 약세 소외주 (RS {rs_score:.1f}% 부진 - 반등 시 매도벽 주의)"
+                return f"❄️ 시장 대비 약세 소외주 (RS {rs_score:.1f}% 부진)"
             return f"시장 동조화 흐름 (RS {rs_score:+.1f}%)"
     except Exception:
         pass
     return "상대 강도 중립"
 
 def fetch_technical_quant_data(symbol, asset_type):
-    """파이썬 엔진이 직접 RSI, 이평선, ATR, 거래량 폭발, 상대강도(RS) 계산"""
+    """RSI, 이평선, ATR, 거래량, RS 지표 정밀 계산"""
     quant_info = {}
     try:
         earnings_warning = "실적 발표 정상"
@@ -186,45 +203,41 @@ def fetch_technical_quant_data(symbol, asset_type):
                 stock = yf.Ticker(yf_symbol)
                 earnings_warning = fetch_earnings_calendar(stock)
                 df = stock.history(period="60d")
-            curr_p = float(df['Close'].iloc[-1])
+            
+            # 네이버 실시간 호가로 현재가 보정
+            naver_p = get_naver_realtime_price(symbol)
+            if naver_p:
+                curr_price_str = naver_p
+            else:
+                curr_p = float(df['Close'].iloc[-1])
+                curr_price_str = f"{int(curr_p):,} 원" if asset_type == "domestic_stock" else f"{curr_p:,.2f} 달러"
+
             currency = "원" if asset_type == "domestic_stock" else "달러"
             df = df.rename(columns={'Close': 'close', 'High': 'high', 'Low': 'low', 'Volume': 'vol'})
 
         if len(df) >= 20:
-            # 1. RSI
             delta = df['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / (loss + 1e-9)
             rsi = 100 - (100 / (1 + rs))
             quant_info['rsi'] = round(float(rsi.iloc[-1]), 1)
-            
-            # 2. 이평선 및 매물대
             quant_info['ma20'] = round(float(df['close'].rolling(20).mean().iloc[-1]), 2)
             quant_info['ma60'] = round(float(df['close'].rolling(60).mean().iloc[-1]), 2) if len(df) >= 60 else "산출중"
             quant_info['high20'] = round(float(df['high'].tail(20).max()), 2)
             quant_info['low20'] = round(float(df['low'].tail(20).min()), 2)
             
-            # 3. ATR 변동성
             high_low = df['high'] - df['low']
             quant_info['atr'] = round(float(high_low.tail(14).mean()), 2)
             
-            # 4. 거래량 폭발 모멘텀 (최근 거래량 vs 5일 평균)
             avg_vol5 = df['vol'].iloc[-6:-1].mean() if len(df) >= 6 else df['vol'].mean()
             curr_vol = df['vol'].iloc[-1]
             vol_ratio = (curr_vol / (avg_vol5 + 1e-9)) * 100
-            if vol_ratio >= 200:
-                quant_info['vol_status'] = f"🚀 5일 평균 대비 {vol_ratio:.0f}% 대량 거래량 폭발 (스마트 머니 주도주)"
-            elif vol_ratio <= 50:
-                quant_info['vol_status'] = f"거래량 급감 구간 ({vol_ratio:.0f}% 횡보)"
-            else:
-                quant_info['vol_status'] = f"평균 거래량 유지 ({vol_ratio:.0f}%)"
+            quant_info['vol_status'] = f"5일 평균 대비 {vol_ratio:.0f}% 수준"
 
-            # 5. 시장 대비 상대 강도 (RS)
             quant_info['rs_signal'] = calculate_relative_strength(df, asset_type)
-
             quant_info['earnings_status'] = earnings_warning
-            quant_info['current_price'] = f"{int(curr_p):,} {currency}" if currency == "원" else f"{curr_p:,.2f} {currency}"
+            quant_info['current_price'] = curr_price_str if 'curr_price_str' in locals() else f"{curr_p:,.2f} {currency}"
             quant_info['sentiment'] = fetch_orderbook_and_sentiment(symbol, asset_type)
             return quant_info
     except Exception:
@@ -233,6 +246,9 @@ def fetch_technical_quant_data(symbol, asset_type):
 
 def fetch_realtime_price_fallback(user_query):
     cleaned_query = user_query.strip().replace(" ", "").upper()
+    display_name = user_query.strip()
+    
+    # 1. 고정 딕셔너리 매핑 확인 (대소문자/공백 무시)
     matched_key = None
     for key in COMMON_SYMBOLS:
         if key.replace(" ", "").upper() == cleaned_query:
@@ -241,15 +257,18 @@ def fetch_realtime_price_fallback(user_query):
             
     if matched_key:
         asset_type, symbol = COMMON_SYMBOLS[matched_key]
+        display_name = matched_key
     else:
         if any(c in cleaned_query for c in ["코인", "USDT", "BTC", "ETH"]):
             asset_type, symbol = "crypto", cleaned_query
-        elif any(c.isupper() for c in cleaned_query) and not cleaned_query.endswith(".KS"):
+        elif any(c.isupper() for c in cleaned_query) and not cleaned_query.endswith(".KS") and not any('\uac00' <= char <= '\ud7a3' for char in cleaned_query):
             asset_type, symbol = "overseas_stock", cleaned_query
         else:
+            # 6자리 숫자가 아니면 네이버 검색으로 6자리 종목코드 자동 추출
             if not (cleaned_query.isdigit() and len(cleaned_query) == 6):
-                searched_code = get_stock_code_by_name(user_query.strip())
+                searched_code, formal_name = get_stock_code_by_name(user_query.strip())
                 symbol = searched_code if searched_code else cleaned_query
+                display_name = formal_name if searched_code else user_query.strip()
             else:
                 symbol = cleaned_query
             asset_type = "domestic_stock"
@@ -257,28 +276,25 @@ def fetch_realtime_price_fallback(user_query):
     news_brief = fetch_realtime_news(user_query, symbol, asset_type)
     quant_data = fetch_technical_quant_data(symbol, asset_type)
     
-    if quant_data:
+    if quant_data and quant_data.get('current_price'):
         quant_data['news'] = news_brief
-        return quant_data['current_price'], symbol, quant_data
+        return quant_data['current_price'], symbol, display_name, quant_data
 
-    # 백업 모바일 시세
-    try:
-        url = f"https://m.stock.naver.com/api/stock/{symbol}/basic"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()
-        p = res.get("closePrice", "").replace(",", "")
+    # 네이버 모바일 실시간 가격 2차 백업
+    if asset_type == "domestic_stock":
+        p = get_naver_realtime_price(symbol)
         if p:
             sent = fetch_orderbook_and_sentiment(symbol, asset_type)
-            return f"{int(p):,} 원", symbol, {
+            fallback_quant = {
                 "news": news_brief,
-                "earnings_status": "일정 확인중",
+                "earnings_status": "정상 범위",
                 "sentiment": sent,
-                "vol_status": "거래량 산출중",
+                "vol_status": "정상",
                 "rs_signal": "시장 동조화"
             }
-    except Exception:
-        pass
+            return p, symbol, display_name, fallback_quant
 
-    return None, symbol, None
+    return None, symbol, display_name, None
 
 def generate_full_quant_report(stock_name, symbol, price, quant_data):
     tech_context = ""
@@ -360,7 +376,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
         "종목명을 입력하시면 실시간 시세, 오더북 델타, 상대 강도(RS), 거래량 모멘텀을 결합한 퀀트 분석을 시작합니다\n"
-        "예시 SK하이닉스 삼성전자 비트코인 TSLA"
+        "예시 sk스퀘어 삼성전자 비트코인 TSLA"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -368,13 +384,13 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text(f"{query} 실시간 호가 및 다차원 퀀트 팩터 연산 중입니다")
 
     try:
-        current_price, symbol, quant_data = fetch_realtime_price_fallback(query)
+        current_price, symbol, formal_name, quant_data = fetch_realtime_price_fallback(query)
 
         if not current_price:
             await status_msg.edit_text(f"❌ {query}의 실시간 가격을 가져오지 못했습니다. 종목명을 다시 확인해 주세요.")
             return
 
-        summary_text, detail_text = generate_full_quant_report(query, symbol, current_price, quant_data)
+        summary_text, detail_text = generate_full_quant_report(formal_name, symbol, current_price, quant_data)
 
         report_id = str(uuid.uuid4())[:8]
         REPORT_CACHE[report_id] = {

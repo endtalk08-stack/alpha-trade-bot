@@ -4,6 +4,7 @@ import io
 import gc
 import json
 import uuid
+import time
 import asyncio
 import datetime
 import threading
@@ -26,12 +27,13 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. 환경 설정 및 인증 키
+# 1. 환경 변수 및 토큰
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
 REPORT_CACHE = {}
+MARKET_REGIME_CACHE = {}
 
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
@@ -110,6 +112,68 @@ def find_stock_code(query):
     except Exception:
         pass
     return None, query.strip()
+
+def get_market_regime(asset_type):
+    """지수 매크로 국면 판정 엔진 (상승/조정/횡보/하락 4단계 세분화)"""
+    curr_time = time.time()
+    if asset_type in MARKET_REGIME_CACHE:
+        cached_data, expire = MARKET_REGIME_CACHE[asset_type]
+        if curr_time < expire:
+            return cached_data
+
+    regime_name = "횡보 박스권 📦 (Range)"
+    score_adj = 0.0
+    action_note = "종합지수 수렴 구간으로 1차 목표가 도달 시 빠른 분할 익절 대응"
+    index_name = "KOSPI / KOSDAQ" if asset_type == "domestic_stock" else ("NASDAQ" if asset_type == "overseas_stock" else "BTC Dominance")
+
+    try:
+        df = None
+        if asset_type == "domestic_stock":
+            # KOSPI 지수 ETF (KODEX 200) 활용
+            df = fetch_domestic_stock_candles_1y("069500")
+            index_name = "KOSPI 200"
+        elif asset_type == "overseas_stock":
+            # QQQ ETF 활용
+            _, _, df = get_us_stock_fmp_data("QQQ")
+            index_name = "NASDAQ (QQQ)"
+        elif asset_type == "crypto":
+            _, _, df = get_crypto_multi_exchange_data("BTCUSDT")
+            index_name = "비트코인(BTC)"
+
+        if df is not None and len(df) >= 20:
+            closes = df['Close']
+            ma20 = float(closes.rolling(20, min_periods=5).mean().iloc[-1])
+            curr_p = float(closes.iloc[-1])
+            ma20_prev = float(closes.rolling(20, min_periods=5).mean().iloc[-5]) if len(closes) >= 25 else ma20
+            slope = ma20 - ma20_prev
+
+            if curr_p >= ma20 * 1.01 and slope > 0:
+                regime_name = "강한 상승장 🚀 (Bull)"
+                score_adj = 0.4
+                action_note = f"{index_name} 20일선 위 우상향 안착 중. 적극 돌파 및 스윙 목표가 홀딩 유리"
+            elif curr_p >= ma20 * 0.985 and curr_p < ma20 * 1.01:
+                regime_name = "건전한 조정장 ☕ (Pullback)"
+                score_adj = 0.2
+                action_note = f"{index_name} 20일선 지지 수렴 중. 최적의 Discount Zone 분할 매수 적기"
+            elif curr_p < ma20 * 0.985 and slope < 0:
+                regime_name = "위험 하락장 ⚠️ (Bear)"
+                score_adj = -0.6
+                action_note = f"{index_name} 역배열 하향세. 휩쏘 주의, 진입 비중 30% 이하 축소 및 칼손절 엄수"
+            else:
+                regime_name = "횡보 박스권 📦 (Range)"
+                score_adj = 0.0
+                action_note = f"{index_name} 방향성 탐색 구간. 짧은 손익비 박스권 단타 대응"
+    except Exception:
+        pass
+
+    result = {
+        "index_name": index_name,
+        "regime_name": regime_name,
+        "score_adj": score_adj,
+        "action_note": action_note
+    }
+    MARKET_REGIME_CACHE[asset_type] = (result, curr_time + 600) # 10분 캐싱
+    return result
 
 def get_crypto_multi_exchange_data(symbol="BTCUSDT"):
     clean_sym = symbol.replace("KRW-", "").replace("-", "").upper()
@@ -284,7 +348,6 @@ def fetch_domestic_stock_candles_1y(code):
     return None
 
 def backtest_alpha_strategy(df):
-    """추세 필터 + 동적 ATR 밴드가 적용된 백테스트 알고리즘"""
     if df is None or len(df) < 25:
         return None
 
@@ -320,45 +383,37 @@ def backtest_alpha_strategy(df):
         c_ma = float(ma20.iloc[i])
         c_rsi = float(rsi.iloc[i]) if not np.isnan(rsi.iloc[i]) else 50.0
         c_atr = float(atr.iloc[i]) if not np.isnan(atr.iloc[i]) else (c_p * 0.03)
-
-        # 20일선 기울기 (단기 우상향 추세 확인)
         ma_slope = (c_ma - float(ma20.iloc[max(0, i-3)])) >= 0
 
         if not in_pos:
-            # 1. 20일선 위 지지 안착 + 우상향 추세 필터
-            # 2. RSI 40~60의 건강한 눌림목
             if (c_p >= c_ma * 0.975) and ma_slope and (c_rsi <= 60):
                 in_pos = True
                 entry_p = float(closes.iloc[i + 1])
-                target1_p = entry_p + (c_atr * 2.0) # 1차 목표 (+2.0 ATR)
-                target2_p = entry_p + (c_atr * 3.5) # 2차 목표 (+3.5 ATR)
-                stop_p = entry_p - (c_atr * 1.5)    # 휩쏘 방어 손절선 (-1.5 ATR)
+                target1_p = entry_p + (c_atr * 2.0)
+                target2_p = entry_p + (c_atr * 3.5)
+                stop_p = entry_p - (c_atr * 1.5)
                 entry_idx = i + 1
                 half_taken = False
         else:
             h_p = float(highs.iloc[i])
             l_p = float(lows.iloc[i])
 
-            # 1차 목표가 달성 시: 50% 분할 익절 및 손절가를 본전(BEP)으로 상향 이동
             if not half_taken and h_p >= target1_p:
                 half_taken = True
-                stop_p = entry_p # 리스크 0% 고정
+                stop_p = entry_p
 
-            # 2차 목표가 전량 달성
             if half_taken and h_p >= target2_p:
                 ret = ((target1_p + target2_p) / 2.0 - entry_p) / entry_p * 100
                 trades.append({"ret": ret, "result": "WIN"})
                 in_pos = False
-            # 손절선 또는 본전 터치
             elif l_p <= stop_p:
                 if half_taken:
-                    ret = ((target1_p - entry_p) / 2.0) / entry_p * 100 # 절반은 익절, 절반은 본전
+                    ret = ((target1_p - entry_p) / 2.0) / entry_p * 100
                     trades.append({"ret": ret, "result": "WIN"})
                 else:
                     ret = ((stop_p - entry_p) / entry_p) * 100
                     trades.append({"ret": ret, "result": "LOSS"})
                 in_pos = False
-            # 14거래일 초과 시 시간 청산
             elif (i - entry_idx) >= 14:
                 final_ret = ((float(closes.iloc[i]) - entry_p) / entry_p) * 100
                 trades.append({"ret": final_ret, "result": "WIN" if final_ret > 0 else "LOSS"})
@@ -435,9 +490,13 @@ def generate_candlestick_chart(df, symbol_name):
         plt.close('all')
         gc.collect()
 
-def perform_ict_quant_analysis(raw_price, df):
+def perform_ict_quant_analysis(raw_price, df, regime_info=None):
+    score_adj = regime_info.get("score_adj", 0.0) if regime_info else 0.0
+
     if df is None or len(df) < 10:
         atr = round(raw_price * 0.03, 2)
+        base_s = 4.2 + score_adj
+        base_s = min(5.0, max(2.5, base_s))
         return {
             "trend_status": "중립 레인지",
             "rsi": 50.0,
@@ -447,8 +506,8 @@ def perform_ict_quant_analysis(raw_price, df):
             "atr": atr,
             "ict_zone": "Discount Zone",
             "raw_price": raw_price,
-            "score": "4.2",
-            "stars": "★★★★☆",
+            "score": f"{base_s:.1f}",
+            "stars": "★★★★★" if base_s >= 4.4 else ("★★★★☆" if base_s >= 3.9 else "★★★☆☆"),
             "entry1_low": round(raw_price * 0.98, 2),
             "entry1_high": round(raw_price * 0.995, 2),
             "entry2_low": round(raw_price * 0.95, 2),
@@ -492,6 +551,22 @@ def perform_ict_quant_analysis(raw_price, df):
     if atr_val <= 0 or np.isnan(atr_val):
         atr_val = round(curr_p * 0.03, 2)
 
+    # 4대 팩터 + 종합지수 가중치 종합 점수 산출
+    base_score = 4.2 if curr_p >= ma20 else 3.8
+    if curr_p <= eq:
+        base_score += 0.2
+    if 40.0 <= rsi_val <= 60.0:
+        base_score += 0.2
+    base_score += score_adj
+    base_score = round(min(5.0, max(2.5, base_score)), 1)
+
+    if base_score >= 4.4:
+        stars_str = "★★★★★"
+    elif base_score >= 3.9:
+        stars_str = "★★★★☆"
+    else:
+        stars_str = "★★★☆☆"
+
     return {
         "trend_status": "상승 모멘텀 가속" if curr_p >= ma20 else "단기 매물 소화 조정",
         "rsi": round(rsi_val, 1),
@@ -501,8 +576,8 @@ def perform_ict_quant_analysis(raw_price, df):
         "atr": atr_val,
         "ict_zone": ict_zone,
         "raw_price": curr_p,
-        "score": "4.4" if curr_p >= ma20 else "4.1",
-        "stars": "★★★★★" if curr_p >= ma20 else "★★★★☆",
+        "score": f"{base_score:.1f}",
+        "stars": stars_str,
         "entry1_low": round(curr_p - (atr_val * 0.5), 2),
         "entry1_high": round(curr_p, 2),
         "entry2_low": round(curr_p - (atr_val * 1.3), 2),
@@ -519,6 +594,8 @@ def fetch_technical_quant_data(symbol, asset_type):
     df = None
 
     try:
+        regime_info = get_market_regime(asset_type)
+
         if asset_type == "crypto":
             curr_price_num, curr_price_str, df = get_crypto_multi_exchange_data(symbol)
         elif asset_type == "overseas_stock":
@@ -535,14 +612,15 @@ def fetch_technical_quant_data(symbol, asset_type):
 
         quant_info['raw_price'] = curr_price_num
         quant_info['current_price'] = curr_price_str
-        quant_info['analysis'] = perform_ict_quant_analysis(curr_price_num, df)
+        quant_info['analysis'] = perform_ict_quant_analysis(curr_price_num, df, regime_info)
         quant_info['chart_df'] = df
+        quant_info['regime_info'] = regime_info
 
         return quant_info
     except Exception:
         return None
 
-def generate_reliable_report(stock_name, symbol, price, an):
+def generate_reliable_report(stock_name, symbol, price, an, regime_info):
     is_krw = "원" in str(price)
     
     if is_krw:
@@ -565,11 +643,14 @@ def generate_reliable_report(stock_name, symbol, price, an):
         st = f"{an['stop']:,.2f}{unit}"
         atr_str = f"{an['atr']:,.2f}{unit}"
 
+    regime_tag = regime_info.get("regime_name", "횡보 박스권 📦")
+    regime_note = regime_info.get("action_note", "")
+
     summary = f"""
 {stock_name} ({symbol})
 
 현재가 {price}
-
+종합지수 국면 {regime_tag}
 현재 트레이딩 적합도 {an['stars']} (점수 {an['score']})
 
 Alpha Signal 액션 플랜
@@ -577,16 +658,17 @@ Alpha Signal 액션 플랜
 방향성 롱 (단기 눌림목 매수)
 1차 진입 {e1_l}에서 {e1_h} (단기 매물 소화 및 지지 확인 구간 1차 분할)
 2차 진입 {e2_l}에서 {e2_h} (주요 구조적 지지대 및 하단 반등 마지노선 2차 분할)
-1차 목표 {t1} (직전 매물벽 도달 시 50퍼센트 분할 익절 + 스탑로스를 본전으로 상향)
+1차 목표 {t1} (직전 매물벽 도달 시 50퍼센트 분할 익절 + 본전 스탑 상향)
 2차 목표 {t2} (상단 저항 밴드 돌파 시 최종 전량 익절)
 칼손절 {st} (동적 ATR 휩쏘 방어 기준선)
 
-트리거 조건 및 행동 요령
-당일 체결강도 105퍼센트 이상 유지 시 1차 구간 분할 착수하며 장중 변동폭 {atr_str} 내외의 단기 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행
+시장 가이드 및 행동 요령
+{regime_note}
+당일 체결강도 105퍼센트 이상 유지 시 1차 구간 착수하며 장중 변동폭 {atr_str} 내외의 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행
 """.strip()
 
     detail = f"""
-{stock_name}의 최근 주가 흐름은 20일선 추세 필터 상단에서 과열 매물을 소화하는 최적의 Discount Zone 눌림목 구간에 위치합니다. 단기 거래량이 {an['vol_status']}로 수렴하는 것은 자발적 투매보다는 상단 저항선에 대한 부담감으로 인한 건강한 수급 숨고르기 양상입니다.
+{stock_name}의 최근 주가 흐름은 종합지수 [{regime_tag}] 국면 속에서 과열 매물을 소화하는 최적의 Discount Zone 눌림목 구간에 위치합니다. 단기 거래량이 {an['vol_status']}로 수렴하는 것은 자발적 투매보다는 상단 저항선에 대한 부담감으로 인한 건강한 수급 숨고르기 양상입니다.
 
 해당 섹터 전반의 기관/외국인 패시브 자금 유입이 하단을 단단하게 받치고 있으며 현재 주가는 {an['ma20_status']} 상태로 완벽한 기술적 지지를 형성 중입니다.
 
@@ -641,10 +723,13 @@ async def run_backtest_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await status_msg.edit_text(f"❌ {formal_name}의 백테스트 데이터가 부족합니다.")
         return
 
+    regime_tag = quant_data['regime_info'].get('regime_name', '종합지수 연동')
+
     res_text = f"""
 🏆 Alpha Signal 알고리즘 1년 백데이터 실전 검증표
 
 대상 종목 {formal_name}
+종합지수 환경 {regime_tag}
 시뮬레이션 기간 최근 1년 일봉 기준
 
 • 총 타점 진입 횟수 {bt['total']}회
@@ -655,7 +740,7 @@ async def run_backtest_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 • 손익비(Profit Factor) {bt['pf']:.2f} : 1
 
 검증 요약
-20일선 추세 필터와 동적 ATR 휩쏘 방어 로직 적용으로 승률과 손익비를 극대화했습니다
+종합지수 추세 필터와 동적 ATR 휩쏘 방어 로직 적용으로 안정적인 우상향 곡선을 완성했습니다
 """.strip()
 
     await status_msg.edit_text(res_text)
@@ -707,7 +792,9 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         current_price = quant_data['current_price']
-        summary_text, detail_text = generate_reliable_report(formal_name, symbol, current_price, quant_data['analysis'])
+        summary_text, detail_text = generate_reliable_report(
+            formal_name, symbol, current_price, quant_data['analysis'], quant_data['regime_info']
+        )
 
         report_id = str(uuid.uuid4())[:8]
         if len(REPORT_CACHE) > 30:

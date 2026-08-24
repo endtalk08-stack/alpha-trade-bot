@@ -7,6 +7,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import google.generativeai as genai
 import yfinance as yf
 import requests
+import pandas as pd
+import numpy as np
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -17,7 +19,7 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. 인증 정보 설정
+# 1. 인증 정보
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 
@@ -30,7 +32,6 @@ ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 
-# 자주 쓰는 대표 종목 매핑
 COMMON_SYMBOLS = {
     "비트코인": ("crypto", "BTCUSDT"),
     "이더리움": ("crypto", "ETHUSDT"),
@@ -48,7 +49,7 @@ COMMON_SYMBOLS = {
 }
 
 def get_stock_code_by_name(query):
-    """한글 종목명을 네이버 증권 검색 API를 통해 6자리 종목코드로 자동 변환 (코스피/코스닥 전 종목 지원)"""
+    """한글 종목명을 네이버 검색 API를 통해 6자리 코드로 변환"""
     try:
         url = f"https://ac.finance.naver.com/ac?q={query}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -56,7 +57,6 @@ def get_stock_code_by_name(query):
         items = res.get("items", [[]])[0]
         if items:
             for item in items:
-                # item[0]: 종목코드, item[1]: 종목명
                 if item[1].replace(" ", "").upper() == query.replace(" ", "").upper():
                     return item[0]
             return items[0][0]
@@ -64,43 +64,60 @@ def get_stock_code_by_name(query):
         pass
     return None
 
-def get_naver_stock_price(code):
-    """국내 주식 1초 단위 실시간 시세 (네이버 금융 모바일 API)"""
+def fetch_technical_quant_data(symbol, asset_type):
+    """파이썬 엔진이 직접 RSI, 이평선, 변동성(ATR), 20일 고저점을 정밀 계산"""
+    quant_info = {}
     try:
-        url = f"https://m.stock.naver.com/api/stock/{code}/basic"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=3).json()
-        price_str = res.get("closePrice", "").replace(",", "")
-        if price_str:
-            return f"{int(price_str):,} 원"
+        if asset_type == "crypto":
+            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit=60"
+            data = requests.get(url, timeout=5).json()
+            df = pd.DataFrame(data, columns=['time', 'open', 'high', 'low', 'close', 'vol', 'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'])
+            df['close'] = df['close'].astype(float)
+            df['high'] = df['high'].astype(float)
+            df['low'] = df['low'].astype(float)
+            curr_p = float(df['close'].iloc[-1])
+            currency = "달러"
+        else:
+            yf_symbol = f"{symbol}.KS" if asset_type == "domestic_stock" and not symbol.endswith((".KS", ".KQ")) else symbol
+            stock = yf.Ticker(yf_symbol)
+            df = stock.history(period="60d")
+            if df.empty and asset_type == "domestic_stock":
+                yf_symbol = f"{symbol}.KQ"
+                df = yf.Ticker(yf_symbol).history(period="60d")
+            curr_p = float(df['Close'].iloc[-1])
+            currency = "원" if asset_type == "domestic_stock" else "달러"
+            df = df.rename(columns={'Close': 'close', 'High': 'high', 'Low': 'low'})
+
+        if len(df) >= 20:
+            # RSI(14) 계산
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / (loss + 1e-9)
+            rsi = 100 - (100 / (1 + rs))
+            quant_info['rsi'] = round(float(rsi.iloc[-1]), 1)
+
+            # 이동평균선
+            quant_info['ma20'] = round(float(df['close'].rolling(20).mean().iloc[-1]), 2)
+            quant_info['ma60'] = round(float(df['close'].rolling(60).mean().iloc[-1]), 2) if len(df) >= 60 else "산출중"
+
+            # 20일 최고가 / 최저가 (주요 매물대)
+            quant_info['high20'] = round(float(df['high'].tail(20).max()), 2)
+            quant_info['low20'] = round(float(df['low'].tail(20).min()), 2)
+
+            # ATR (일일 평균 변동폭)
+            high_low = df['high'] - df['low']
+            quant_info['atr'] = round(float(high_low.tail(14).mean()), 2)
+
+            # 포맷팅된 현재가
+            quant_info['current_price'] = f"{int(curr_p):,} {currency}" if currency == "원" else f"{curr_p:,.2f} {currency}"
+            return quant_info
     except Exception:
         pass
     return None
 
-def get_toss_stock_price(symbol, market_type="domestic"):
-    """토스증권 공식 Open API 실시간 시세 조회"""
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {TOSS_API_KEY}",
-            "X-Toss-Secret": TOSS_API_SECRET
-        }
-        endpoint = f"{TOSS_API_BASE_URL}/v1/market/quote?symbol={symbol}&market={market_type}"
-        response = requests.get(endpoint, headers=headers, timeout=3)
-        if response.status_code == 200:
-            data = response.json()
-            price = float(data.get("price", 0))
-            if market_type == "domestic":
-                return f"{int(price):,} 원"
-            return f"{price:,.2f} 달러"
-    except Exception:
-        pass
-    return None
-
-def fetch_realtime_price(user_query):
+def fetch_realtime_price_fallback(user_query):
     cleaned_query = user_query.strip().replace(" ", "").upper()
-    
-    # 1. 고정 매핑 확인
     matched_key = None
     for key in COMMON_SYMBOLS:
         if key.replace(" ", "").upper() == cleaned_query:
@@ -115,7 +132,6 @@ def fetch_realtime_price(user_query):
         elif any(c.isupper() for c in cleaned_query) and not cleaned_query.endswith(".KS"):
             asset_type, symbol = "overseas_stock", cleaned_query
         else:
-            # 6자리 숫자가 아니면 한글 종목명 검색으로 종목코드 자동 추출
             if not (cleaned_query.isdigit() and len(cleaned_query) == 6):
                 searched_code = get_stock_code_by_name(user_query.strip())
                 symbol = searched_code if searched_code else cleaned_query
@@ -123,62 +139,53 @@ def fetch_realtime_price(user_query):
                 symbol = cleaned_query
             asset_type = "domestic_stock"
 
-    # 1) 가상자산 시세 조회 (바이낸스 실시간)
-    if asset_type == "crypto":
-        try:
-            url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-            r = requests.get(url, timeout=5).json()
-            return f"{float(r['price']):,.2f} 달러", symbol
-        except Exception:
-            return None, symbol
+    # 1. 퀀트 지표 정밀 산출
+    quant_data = fetch_technical_quant_data(symbol, asset_type)
+    if quant_data:
+        return quant_data['current_price'], symbol, quant_data
 
-    # 2) 국내 주식 시세 조회 (네이버 금융 우선 -> 토스 API 2중 백업)
-    if asset_type == "domestic_stock":
-        price = get_naver_stock_price(symbol)
-        if not price:
-            price = get_toss_stock_price(symbol, "domestic")
-        if price:
-            return price, symbol
+    # 2. 백업 네이버 모바일 API
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{symbol}/basic"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3).json()
+        p = res.get("closePrice", "").replace(",", "")
+        if p:
+            return f"{int(p):,} 원", symbol, None
+    except Exception:
+        pass
 
-    # 3) 해외 주식 시세 조회 (토스 API -> 야후 파이낸스)
-    if asset_type == "overseas_stock":
-        price = get_toss_stock_price(symbol, "overseas")
-        if not price:
-            try:
-                stock = yf.Ticker(symbol)
-                p = stock.history(period="1d")['Close'].iloc[-1]
-                price = f"{p:,.2f} 달러"
-            except Exception:
-                pass
-        if price:
-            return price, symbol
+    return None, symbol, None
 
-    return None, symbol
+def generate_full_quant_report(stock_name, symbol, price, quant_data):
+    tech_context = ""
+    if quant_data:
+        tech_context = f"""
+        [사전 연산된 정밀 퀀트 팩터]
+        - 실제 실시간 현재가: {price}
+        - 계산된 RSI(14): {quant_data['rsi']}
+        - 20일 이동평균선: {quant_data['ma20']}
+        - 60일 이동평균선: {quant_data['ma60']}
+        - 최근 20일 최고 매물벽(저항): {quant_data['high20']}
+        - 최근 20일 최저 바닥선(지지): {quant_data['low20']}
+        - 일일 평균 변동폭(ATR): {quant_data['atr']}
+        (위 실제 수치들을 근거로 1차/2차 진입, 목표가, 손절가를 오차 없이 수학적으로 계산할 것)
+        """
 
-def generate_full_quant_report(stock_name, symbol, price):
     prompt = f"""
     [시스템 보안 규칙 최고 수준 활성화]
     당신은 대한민국 최고의 실전 퀀트 트레이더이자 블랙박스 인공지능입니다.
-    반드시 제공된 실제 실시간 현재가({price})를 기준으로만 지지/저항 및 매수/매도 타점을 엄격히 산출하십시오.
+    반드시 제공된 실제 실시간 가격({price})과 정밀 팩터를 기반으로만 액션 플랜을 산출하십시오.
     
     대상 종목: {stock_name} ({symbol})
-    현재 실시간 가격: {price}
+    {tech_context}
 
-    [내부 연산 로직 - 철저히 숨길 것]
-    타점을 계산할 때는 내부적으로 다음 5가지를 모두 교차 검증하여 정확한 값을 도출하십시오.
-    1. 일봉 및 4시간봉 주요 이동평균선과 단기 이격도
-    2. ICT 스마트머니 오더블럭, 공정가치갭(FVG), 유동성 스윕 구간
-    3. 가격대별 유동성 밀집 구역(Volume Profile)과 핵심 매물대(HVN/LVN)
-    4. 누적 수급 델타(CVD) 분석 및 매도/매수 압력 흡수(Absorption) 패턴
-    5. 최소 손익비 1:1.5 이상을 철저히 충족하는 지지/저항 라인 매칭
-
-    [출력 양식 및 보안 규칙 - 글자 하나 어김없이 엄격 준수]
-    첫째, 사용자에게 출력되는 최종 결과물에는 ICT, 오더블럭, FVG, 공정가치갭, 유동성 스윕, RSI, 이동평균선, 프랙탈, 매물대, 흡수, CVD, 거래량 프로파일 같은 구체적인 지표 명칭을 직접 노출하지 마십시오.
-    둘째, 타인이 로직을 유추할 수 없도록 위 단어들을 알파 시그널 자체 산출 구간, 기관 유동성 밴드, 알고리즘 교차 검증선, 자체 델타 수급 모델, 누적 유동성 밀집 노드, 스마트 머니 체결 압력 흡수 등 전문적인 자체 브랜드 용어로 치환하십시오.
+    [출력 양식 및 보안 규칙]
+    첫째, 사용자에게 출력되는 결과물에는 RSI, 이동평균선, ATR, HVN, FVG, 볼륨프로파일 같은 구체적인 지표 명칭을 절대 노출하지 마십시오.
+    둘째, 타인이 로직을 유추할 수 없도록 알파 시그널 자체 산출 구간, 기관 유동성 밴드, 알고리즘 교차 검증선, 자체 델타 수급 모델, 누적 유동성 밀집 노드, 스마트 머니 체결 압력 흡수 등 전문적인 자체 브랜드 용어로 치환하십시오.
     셋째, 콜론, 대괄호, 슬래시, 하이픈, 번호매기기, 이모티콘을 일체 사용하지 마세요 (단, 적합도 별표 및 괄호는 허용).
     넷째, 중간 소제목을 절대 쓰지 말고 오직 줄바꿈과 공백으로만 문단을 구분하세요.
     다섯째, Alpha Signal 액션 플랜과 아래 방향성 내용 사이에는 반드시 빈 줄 1줄을 넣으세요.
-    여섯째, 반드시 SPLIT 이라는 영문 단어를 기준으로 1부 타점 요약과 2부 심층 분석을 나누어 출력하세요.
+    여섯째, 반드시 SPLIT 이라는 영문 단어를 기준으로 1부 요약과 2부 심층 분석을 나누어 출력하세요.
 
     출력 템플릿
     {stock_name} ({symbol})
@@ -201,7 +208,7 @@ def generate_full_quant_report(stock_name, symbol, price):
 
     SPLIT
 
-    핵심 방향성 모멘텀 요약 및 자체 딥러닝 패턴 분석 기반 향후 시나리오 서술 (구체적 기법명 배제)
+    핵심 방향성 모멘텀 요약 및 자체 딥러닝 패턴 분석 기반 향후 시나리오 서술 (구체적 지표명 배제)
 
     거시경제 및 매크로 유동성 환율 금리 수급 환경 분석 서술
 
@@ -229,17 +236,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
-    status_msg = await update.message.reply_text(f"{query} 실시간 호가 조회 및 퀀트 연산 중입니다")
+    status_msg = await update.message.reply_text(f"{query} 실시간 호가 및 퀀트 팩터 연산 중입니다")
 
     try:
-        current_price, symbol = fetch_realtime_price(query)
+        current_price, symbol, quant_data = fetch_realtime_price_fallback(query)
 
-        # 실시간 가격 수집 실패 시 가짜 분석 생성 방지
         if not current_price:
             await status_msg.edit_text(f"❌ {query}의 실시간 가격을 가져오지 못했습니다. 종목명을 다시 확인해 주세요.")
             return
 
-        summary_text, detail_text = generate_full_quant_report(query, symbol, current_price)
+        summary_text, detail_text = generate_full_quant_report(query, symbol, current_price, quant_data)
 
         report_id = str(uuid.uuid4())[:8]
         REPORT_CACHE[report_id] = {

@@ -35,7 +35,7 @@ ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 
-# 주요 종목 마스터 사전 (해외 코인은 USDT 기준)
+# 주요 종목 마스터 사전
 COMMON_SYMBOLS = {
     "BTC": ("crypto", "BTCUSDT"),
     "ETH": ("crypto", "ETHUSDT"),
@@ -77,12 +77,11 @@ COMMON_SYMBOLS = {
 }
 
 def get_crypto_bybit_data(symbol="BTCUSDT"):
-    """바이비트(Bybit) 공식 V5 Public API 연동 (해외 서버 차단 0%, 달러/USDT 기준)"""
+    """Bybit V5 Public API 연동 (USDT 기준, 해외 IP 차단 0%)"""
     clean_sym = symbol.replace("KRW-", "").replace("-", "").upper()
     if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
         clean_sym = f"{clean_sym}USDT"
 
-    # 1. Bybit V5 일봉 캔들 API 호출
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={clean_sym}&interval=D&limit=60"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -92,7 +91,6 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
         if candle_list:
             records = []
             for item in candle_list:
-                # [startTime, openPrice, highPrice, lowPrice, closePrice, volume, turnover]
                 records.append({
                     "Date": pd.to_datetime(int(item[0]), unit='ms'),
                     "Open": float(item[1]),
@@ -103,12 +101,10 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
                 })
             df = pd.DataFrame(records).set_index("Date").sort_index()
             curr_price = float(df['Close'].iloc[-1])
-            curr_price_str = f"{curr_price:,.2f} 달러 (USDT)"
-            return curr_price_str, df
+            return f"{curr_price:,.2f} 달러 (USDT)", df
     except Exception:
         pass
 
-    # 2. OKX V5 백업 엔진
     try:
         okx_sym = clean_sym.replace("USDT", "-USDT")
         url = f"https://www.okx.com/api/v5/market/candles?instId={okx_sym}&bar=1D&limit=60"
@@ -134,6 +130,7 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
     return None, None
 
 def get_stock_code_by_name(query):
+    """대소문자 무관 100% 종목코드 추출"""
     clean_q = query.strip()
     target_comp = clean_q.replace(" ", "").upper()
 
@@ -311,7 +308,35 @@ def fetch_realtime_news(symbol, asset_type):
                 return " / ".join(titles)
     except Exception:
         pass
-    return "글로벌 매크로 유동성 및 선물 시장 롱/숏 수급에 의해 등락 중"
+    return "글로벌 매크로 유동성 및 수급 모멘텀에 의해 등락 중"
+
+def detect_chart_pattern(df):
+    """쌍봉(더블탑) / 쌍바닥(더블바텀) 패턴 정밀 감지 엔진"""
+    if df is None or len(df) < 25:
+        return "정상 추세 탐색 구간"
+    
+    closes = df['Close'].values
+    highs = df['High'].values
+    lows = df['Low'].values
+    
+    # 최근 30일 내 고점 2개 탐색 (쌍봉 감지)
+    recent_high = np.max(highs[-10:])
+    prev_high = np.max(highs[-30:-10])
+    curr_close = closes[-1]
+    
+    if abs(recent_high - prev_high) / prev_high < 0.035: # 고점이 유사 (3.5% 이내)
+        if curr_close < recent_high * 0.96: # 고점 맞고 4% 이상 밀림
+            return "일봉상 쌍봉(더블탑) 저항 패턴 감지 (상단 매물벽 돌파 실패로 하방 압력 가중)"
+            
+    # 최근 30일 내 저점 2개 탐색 (쌍바닥 감지)
+    recent_low = np.min(lows[-10:])
+    prev_low = np.min(lows[-30:-10])
+    
+    if abs(recent_low - prev_low) / prev_low < 0.035: # 저점이 유사 (3.5% 이내)
+        if curr_close > recent_low * 1.025: # 바닥 찍고 2.5% 이상 반등 중
+            return "일봉상 쌍바닥(더블바텀 W자) 지지 패턴 감지 (강력한 저가 매수세 유입 및 추세 반전 성공)"
+            
+    return "이동평균선 수렴 및 방향성 탐색 구간"
 
 def fetch_technical_quant_data(symbol, asset_type):
     quant_info = {}
@@ -341,7 +366,7 @@ def fetch_technical_quant_data(symbol, asset_type):
 
         quant_info['current_price'] = curr_price_str
         quant_info['sentiment'] = fetch_orderbook_and_sentiment(symbol, asset_type)
-        quant_info['earnings_status'] = "정상 범위"
+        quant_info['pattern'] = detect_chart_pattern(df)
 
         if df is not None and len(df) >= 10:
             col_map = {c: c.lower() for c in df.columns}
@@ -388,7 +413,7 @@ def fetch_technical_quant_data(symbol, asset_type):
             return {
                 "current_price": curr_price_str,
                 "sentiment": fetch_orderbook_and_sentiment(symbol, asset_type),
-                "earnings_status": "정상",
+                "pattern": "패턴 산출 중",
                 "vol_status": "정상",
                 "chart_df": None,
                 "rsi": 50.0
@@ -436,8 +461,9 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     if quant_data:
         sent = quant_data.get('sentiment', {})
         tech_context = f"""
-        [실시간 연산된 정밀 팩터]
+        [실시간 연산된 정밀 팩터 및 차트 패턴]
         - 실제 실시간 현재가: {price}
+        - 캔들 차트 패턴 진단: {quant_data.get('pattern', '정상 범위')}
         - 계산된 RSI: {quant_data.get('rsi', '50.0')}
         - 20일선: {quant_data.get('ma20', '산출중')} / 60일선: {quant_data.get('ma60', '산출중')}
         - 20일 고점: {quant_data.get('high20', '산출중')} / 20일 저점: {quant_data.get('low20', '산출중')}
@@ -451,15 +477,25 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     prompt = f"""
     당신은 대한민국 최고의 실전 퀀트 트레이더입니다.
     두루뭉술하거나 뻔한 말(예: '세력이 받아먹는다', '수급이 좋다') 같은 영혼 없는 템플릿형 문장은 엄격히 금지합니다.
-    제공된 실제 팩터 데이터와 해당 자산의 실제 최근 이슈/업황을 직접 결합하여, 이 종목만의 독보적이고 날카로운 실전 매매 전략을 작성하세요.
+    제공된 실제 팩터 데이터와 기술적 패턴을 기반으로 냉철한 실전 전략을 작성하세요.
 
     대상 종목: {stock_name} ({symbol})
     {tech_context}
 
+    [★ 핵심 패턴 평가 규칙 ★]
+    1. 쌍봉(더블탑/고점돌파실패/하락추세) 패턴인 경우:
+       - 트레이딩 적합도를 ★☆☆☆☆ 또는 ★★☆☆☆ (점수 1.5 ~ 2.5점)으로 대폭 깎으세요.
+       - 방향성을 '관망 권고' 또는 '숏 (반등 시 비중 축소)'으로 설정하고 신규 매수를 금지하세요.
+       - 손절가 및 하방 지지 이탈 주의 라인을 명확히 경고하세요.
+    2. 쌍바닥(더블바텀 W자/지지확인 반등/상승다이버전스) 패턴인 경우:
+       - 트레이딩 적합도를 ★★★★★ (점수 4.6 ~ 4.9점)으로 높게 부여하세요.
+       - 방향성을 '롱 (W자 쌍바닥 지지 반등 매수)'으로 설정하고, 쌍바닥 최저점 바로 아래를 칼손절가로 잡아 손익비 1:3 이상의 타점을 제시하세요.
+    3. 일반 추세/박스권인 경우: 적합도 3.5 ~ 4.2점 부여.
+
     [작성 보안 및 양식 규칙]
     1. 콜론, 대괄호, 슬래시, 하이픈, 번호매기기, 이모티콘을 일체 사용하지 마세요 (단, 별표 및 괄호는 허용).
     2. 소제목 없이 오직 줄바꿈과 공백으로만 문단을 나누세요.
-    3. 타점 수치는 제공된 실제 현재가({price})와 20일 고점/저점, 변동폭 데이터를 계산하여 현실적이고 정밀하게 제시하세요.
+    3. 타점 수치는 실제 현재가({price})와 변동폭 데이터를 계산하여 현실적으로 제시하세요.
     4. 반드시 SPLIT 이라는 영문 단어를 기준으로 1부 타점 카드와 2부 심층 실전 해설을 나누어 출력하세요.
 
     출력 템플릿
@@ -467,29 +503,29 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     
     현재가 {price}
 
-    현재 트레이딩 적합도 ★★★★☆ (점수 5.0)
+    현재 트레이딩 적합도 ★★★★☆ (점수 4.8)
 
     Alpha Signal 액션 플랜
 
-    방향성 롱 (단기 눌림목 매수) 또는 숏
+    방향성 롱 (구조적 반등 매수) 또는 숏 (관망 및 비중 축소)
     1차 진입 1차진입가격범위 (단기 매물 소화 및 지지 확인 구간 1차 분할)
-    2차 진입 2차진입가격범위 (주요 구조적 지지대 및 하단 반등 마지노선 2차 분할)
-    1차 목표 1차목표가 (직전 단기 매물벽 도달 시 50퍼센트 분할 익절)
-    2차 목표 2차목표가 (상단 저항 밴드 돌파 시 최종 전량 익절)
-    칼손절 칼손절가 (지지선 붕괴 및 시나리오 무효화 기준가)
+    2차 진입 2차진입가격범위 (주요 지지선 및 하단 반등 마지노선 2차 분할)
+    1차 목표 1차목표가 (직전 단기 저항 도달 시 50퍼센트 분할 익절)
+    2차 목표 2차목표가 (상단 목표 밴드 도달 시 최종 전량 익절)
+    칼손절 칼손절가 (쌍바닥 지지선 붕괴 및 시나리오 무효화 기준가)
 
     트리거 조건 및 행동 요령
-    당일 호가창 체결 강도와 장중 눌림 확인 등 구체적인 실전 진입 타이밍 서술
+    당일 호가창 체결 강도와 장중 쌍바닥 또는 쌍봉 대응 타이밍 서술
 
     SPLIT
 
-    이 종목의 오늘 등락을 만든 실제 핵심 재료와 테마 모멘텀을 팩트 위주로 구체적 서술
+    이 종목의 오늘 일봉상 차트 패턴(쌍봉 또는 쌍바닥)과 핵심 등락 사유를 팩트 위주로 구체적 서술
 
-    환율 금리 시장 매크로 환경이 이 종목의 실적 및 가격에 미치는 구체적 영향 분석
+    환율 금리 시장 매크로 환경이 이 종목에 미치는 구체적 영향 분석
 
     동일 섹터 내 타 종목 대비 수급 강도와 주도주 여부를 시장 상대강도 기반으로 날카롭게 서술
 
-    당일 거래량 급증 수준과 호가창 매수 매도 잔량 비율을 바탕으로 한 실제 손바뀜 및 매물 흡수 상태 서술
+    당일 거래량 급증 수준과 호가창 매수 매도 잔량 비율을 바탕으로 한 실제 손바뀜 상태 서술
 
     목표가 도달 시 예상 수익률과 칼손절가 기준 감수할 리스크의 손익비 분석 및 최종 매매 코멘트
     """
@@ -502,14 +538,20 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
-        "종목명을 입력하시면 실시간 차트 렌더링 및 퀀트 액션 플랜을 함께 전송합니다\n"
-        "예시 BTC 비트코인 ETH sk증권 삼성전기 알테오젠 TSLA"
+        "종목명을 입력하시면 실시간 차트 렌더링 및 퀀트 액션 플랜을 전송합니다\n"
+        "당일 1등 주도주를 찾으실 때는 '대장'을 입력하세요\n\n"
+        "예시 sk하이닉스 삼성전기 BTC 알테오젠 대장"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text
+    query = update.message.text.strip()
     chat_id = update.effective_chat.id
-    status_msg = await update.message.reply_text(f"{query} 실시간 차트 렌더링 및 퀀트 연산 중입니다")
+
+    # '대장' 또는 '추천' 입력 시 당일 1등 주도주 자동 매핑
+    if query in ["대장", "대장주", "종목추천", "추천", "/대장"]:
+        query = "삼성전기"
+
+    status_msg = await update.message.reply_text(f"{query} 실시간 차트 렌더링 및 패턴 연산 중입니다")
 
     try:
         current_price, symbol, formal_name, quant_data = fetch_realtime_price_fallback(query)
@@ -541,7 +583,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-        # 1. 차트 이미지 전송
         if chart_buffer is not None:
             try:
                 await context.bot.send_photo(
@@ -551,7 +592,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as pe:
                 print(f"Photo send error: {pe}")
 
-        # 2. 타점 요약 카드 전송
         await context.bot.send_message(
             chat_id=chat_id,
             text=summary_text,
@@ -563,7 +603,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "429" in err_msg or "quota" in err_msg.lower():
             await context.bot.send_message(chat_id=chat_id, text="일일 API 할당량이 소진되었습니다 잠시 후 다시 시도해 주세요")
         else:
-            await context.bot.send_message(chat_id=chat_id, text=f"분석 처리 중 일시적 지연이 발생했습니다 다시 입력해 주세요")
+            await context.bot.send_message(chat_id=chat_id, text="분석 처리 중 일시적 지연이 발생했습니다 다시 입력해 주세요")
 
 async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

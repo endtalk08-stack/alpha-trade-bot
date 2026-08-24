@@ -1,14 +1,3 @@
-과거 1년 치 일봉 데이터를 역으로 시뮬레이션하여 실제 승률과 손익비를 즉시 계산하는 **백테스팅(수익률 백데이터 검증) 모듈**을 탑재했습니다.
-
-이제 채팅창에 **`검증 삼성전자`**, **`검증 비트코인`**, **`검증 NVDA`** 또는 단순히 `검증`을 입력하면 지난 1년간 해당 종목에서 Alpha Signal 타점 전략대로 진입했을 때의 총 매매 횟수, 실전 승률, 누적 확정 수익률, 평균 익절/손절 비율, 최대 낙폭(MDD)을 산출합니다.
-
----
-
-### 🛠️ 실시간 백데이터 수익률 검증 엔진이 탑재된 `bot.py` 전체 코드
-
-GitHub의 **`bot.py`** 파일 내용을 전체 교체해 주세요.
-
-```python
 import os
 import re
 import io
@@ -37,6 +26,7 @@ from telegram.ext import (
     ContextTypes
 )
 
+# 1. 환경 설정 및 인증 키
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
@@ -299,7 +289,6 @@ def fetch_domestic_stock_candles(code, count=200):
     return None
 
 def backtest_alpha_strategy(df):
-    """과거 데이터를 기반으로 Alpha Signal 타점 전략의 실전 승률과 누적 수익률을 역산출"""
     if df is None or len(df) < 50:
         return None
 
@@ -334,15 +323,13 @@ def backtest_alpha_strategy(df):
         c_atr = atr.iloc[i]
 
         if not in_pos:
-            # Alpha Signal 진입 조건: 20일선 근접 눌림목 + RSI 40~55 분할 타점
             if (c_p >= c_ma * 0.96) and (c_rsi <= 55) and (c_atr > 0):
                 in_pos = True
-                entry_p = closes.iloc[i + 1]  # 다음 날 시가/종가 진입
-                target_p = entry_p + (c_atr * 1.8) # 1차 목표가
-                stop_p = entry_p - (c_atr * 1.2)   # 손절가
+                entry_p = closes.iloc[i + 1]
+                target_p = entry_p + (c_atr * 1.8)
+                stop_p = entry_p - (c_atr * 1.2)
                 entry_idx = i + 1
         else:
-            # 포지션 보유 중 익절/손절 체크
             h_p = highs.iloc[i]
             l_p = lows.iloc[i]
 
@@ -354,7 +341,7 @@ def backtest_alpha_strategy(df):
                 ret = ((stop_p - entry_p) / entry_p) * 100
                 trades.append({"ret": ret, "result": "LOSS", "days": i - entry_idx})
                 in_pos = False
-            elif (i - entry_idx) >= 15:  # 15일 이상 횡보 시 본전/시간 청산
+            elif (i - entry_idx) >= 15:
                 ret = ((closes.iloc[i] - entry_p) / entry_p) * 100
                 trades.append({"ret": ret, "result": "WIN" if ret > 0 else "LOSS", "days": 15})
                 in_pos = False
@@ -585,7 +572,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
         "• 종목 실시간 타점: 종목명 입력 (예: 삼성전자, 엔비디아, 비트코인)\n"
-        "• 1년 수익률 백테스팅 검증: '검증 삼성전자' 또는 '검증'\n"
+        "• 1년 수익률 백테스팅 검증: '검증 삼성전자' 또는 '검증 엔비디아'\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
 
@@ -770,5 +757,3 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handle_button))
     
     app.run_polling(drop_pending_updates=True)
-
-```

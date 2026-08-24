@@ -17,7 +17,7 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. 인증 정보
+# 1. 인증 정보 설정
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 
@@ -26,12 +26,11 @@ TOSS_API_SECRET = os.getenv("TOSS_API_SECRET", "tssk_live_5U9SuuC4pLY2DpYYObXRH1
 TOSS_API_BASE_URL = "https://open-api.tossinvest.com"
 
 genai.configure(api_key=GEMINI_API_KEY)
-# 구글 최신 플래시 모델 적용
 ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 
-# 주요 종목 매핑 (대소문자/공백 자동 보정 지원)
+# 주요 종목 매핑 (대소문자/띄어쓰기 무관 자동 매핑 지원)
 COMMON_SYMBOLS = {
     "비트코인": ("crypto", "BTCUSDT"),
     "이더리움": ("crypto", "ETHUSDT"),
@@ -66,7 +65,7 @@ def get_naver_stock_price(code):
     return None
 
 def get_toss_stock_price(symbol, market_type="domestic"):
-    """토스증권 공식 Open API 실시간 시세"""
+    """토스증권 공식 Open API 실시간 시세 조회"""
     try:
         headers = {
             "Content-Type": "application/json",
@@ -86,10 +85,9 @@ def get_toss_stock_price(symbol, market_type="domestic"):
     return None
 
 def fetch_realtime_price(user_query):
-    # 공백 제거 및 대문자 변환
     cleaned_query = user_query.strip().replace(" ", "").upper()
     
-    # 1. 딕셔너리 매핑 확인
+    # 매핑 목록 확인
     matched_key = None
     for key in COMMON_SYMBOLS:
         if key.replace(" ", "").upper() == cleaned_query:
@@ -106,7 +104,7 @@ def fetch_realtime_price(user_query):
         else:
             asset_type, symbol = "domestic_stock", cleaned_query
 
-    # 2. 가상자산 시세 조회 (바이낸스)
+    # 1. 가상자산 시세 조회 (바이낸스 실시간)
     if asset_type == "crypto":
         try:
             url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
@@ -115,7 +113,7 @@ def fetch_realtime_price(user_query):
         except Exception:
             return None, symbol
 
-    # 3. 국내 주식 시세 조회 (토스 -> 네이버 증권 2중 확인)
+    # 2. 국내 주식 시세 조회 (토스 API 우선 -> 네이버 금융 백업)
     if asset_type == "domestic_stock":
         price = get_toss_stock_price(symbol, "domestic")
         if not price:
@@ -123,7 +121,7 @@ def fetch_realtime_price(user_query):
         if price:
             return price, symbol
 
-    # 4. 해외 주식 시세 조회 (토스 -> 야후 파이낸스)
+    # 3. 해외 주식 시세 조회 (토스 API 우선 -> 야후 파이낸스 백업)
     if asset_type == "overseas_stock":
         price = get_toss_stock_price(symbol, "overseas")
         if not price:
@@ -141,27 +139,27 @@ def fetch_realtime_price(user_query):
 def generate_full_quant_report(stock_name, symbol, price):
     prompt = f"""
     [시스템 보안 규칙 최고 수준 활성화]
-    당신은 대한민국 최고의 실전 퀀트 트레이더이자 블랙박스 인공지능입니다
+    당신은 대한민국 최고의 실전 퀀트 트레이더이자 블랙박스 인공지능입니다.
     반드시 제공된 실제 실시간 현재가({price})를 기준으로만 지지/저항 및 매수/매도 타점을 엄격히 산출하십시오.
     
-    대상 종목 {stock_name} ({symbol})
-    현재 실시간 가격 {price}
+    대상 종목: {stock_name} ({symbol})
+    현재 실시간 가격: {price}
 
     [내부 연산 로직 - 철저히 숨길 것]
-    타점을 계산할 때는 내부적으로 다음 5가지를 모두 교차 검증하여 정확한 값을 도출하십시오
-    1 일봉 및 4시간봉 이동평균선
-    2 ICT 스마트머니 오더블럭 공정가치갭 유동성 스윕
-    3 향후 일정 및 과거 실적 패턴 통계
-    4 가격대별 유동성 밀집 구역(Volume Profile)과 누적 수급 델타(CVD) 분석 및 매도 압력 흡수(Absorption) 패턴 포착
-    5 기업 밸류업 프로그램 및 주주환원(배당 확대, 자사주 매입 및 전량 소각, FCF 환원율) 공시와 과거 이벤트 스터디 통계 데이터를 분석하여 타점에 정밀 반영
+    타점을 계산할 때는 내부적으로 다음 5가지를 모두 교차 검증하여 정확한 값을 도출하십시오.
+    1. 일봉 및 4시간봉 주요 이동평균선과 단기 이격도
+    2. ICT 스마트머니 오더블럭, 공정가치갭(FVG), 유동성 스윕 구간
+    3. 가격대별 유동성 밀집 구역(Volume Profile)과 핵심 매물대(HVN/LVN)
+    4. 누적 수급 델타(CVD) 분석 및 매도/매수 압력 흡수(Absorption) 패턴
+    5. 최소 손익비 1:1.5 이상을 철저히 충족하는 지지/저항 라인 매칭
 
     [출력 양식 및 보안 규칙 - 글자 하나 어김없이 엄격 준수]
-    첫째 사용자에게 출력되는 최종 결과물에는 ICT 오더블럭 FVG 공정가치갭 유동성 스윕 RSI 이동평균선 프랙탈 매물대 흡수 CVD 거래량 프로파일 자사주매입 소각 배당 같은 구체적인 기법이나 일반 공시 명칭을 직접 노출하지 마십시오
-    둘째 타인이 로직을 유추할 수 없도록 위 단어들을 알파 시그널 자체 산출 구간, 기관 유동성 밴드, 알고리즘 교차 검증선, 과거 딥러닝 패턴 매칭, 자체 델타 수급 모델, 누적 유동성 밀집 노드, 스마트 머니 체결 압력 흡수, 자체 잉여 유동성 환원 모델, 주당 내재가치 제고 프로그램 등 추상적이고 전문적인 자체 브랜드 용어로 치환하십시오
-    셋째 콜론 대괄호 슬래시 하이픈 번호매기기 이모티콘을 일체 사용하지 마세요 (단 적합도 별표 및 괄호는 허용)
-    넷째 중간 소제목을 절대 쓰지 말고 오직 줄바꿈과 공백으로만 문단을 구분하세요
-    다섯째 Alpha Signal 액션 플랜과 아래 방향성 내용 사이에는 반드시 빈 줄 1줄을 넣으세요
-    여섯째 반드시 SPLIT 이라는 영문 단어를 기준으로 1부 타점 요약과 2부 심층 분석을 나누어 출력하세요
+    첫째, 사용자에게 출력되는 최종 결과물에는 ICT, 오더블럭, FVG, 공정가치갭, 유동성 스윕, RSI, 이동평균선, 프랙탈, 매물대, 흡수, CVD, 거래량 프로파일 같은 구체적인 지표 명칭을 직접 노출하지 마십시오.
+    둘째, 타인이 로직을 유추할 수 없도록 위 단어들을 알파 시그널 자체 산출 구간, 기관 유동성 밴드, 알고리즘 교차 검증선, 자체 델타 수급 모델, 누적 유동성 밀집 노드, 스마트 머니 체결 압력 흡수 등 전문적인 자체 브랜드 용어로 치환하십시오.
+    셋째, 콜론, 대괄호, 슬래시, 하이픈, 번호매기기, 이모티콘을 일체 사용하지 마세요 (단, 적합도 별표 및 괄호는 허용).
+    넷째, 중간 소제목을 절대 쓰지 말고 오직 줄바꿈과 공백으로만 문단을 구분하세요.
+    다섯째, Alpha Signal 액션 플랜과 아래 방향성 내용 사이에는 반드시 빈 줄 1줄을 넣으세요.
+    여섯째, 반드시 SPLIT 이라는 영문 단어를 기준으로 1부 타점 요약과 2부 심층 분석을 나누어 출력하세요.
 
     출력 템플릿
     {stock_name} ({symbol})
@@ -173,10 +171,11 @@ def generate_full_quant_report(stock_name, symbol, price):
     Alpha Signal 액션 플랜
 
     방향성 롱 (Buy 단기 눌림목 매수) 또는 숏
-    1차 진입 1차진입가격범위 (자체 델타 수급 모델 및 주당 내재가치 제고 1차 지지선)
-    2차 진입 2차진입가격범위 (스마트 머니 체결 압력 흡수 및 극한의 알고리즘 방어선)
-    1차 목표 1차목표가 (과거 유사 이벤트 및 밸류에이션 확장 통계 반영 50퍼센트 분할 익절)
-    칼손절 칼손절가 (시그널 구조 붕괴 및 모델링 무효화 기준선)
+    1차 진입 1차진입가격범위 (단기 눌림목 지지선 및 유동성 밀집 매물대 1차 진입)
+    2차 진입 2차진입가격범위 (하단 강력 지지선 및 스마트 머니 최종 방어선 2차 진입)
+    1차 목표 1차목표가 (직전 고점 매물벽 및 단기 상단 저항 도달 시 50퍼센트 분할 익절)
+    2차 목표 2차목표가 (주요 구조적 저항대 및 상단 유동성 풀 도달 시 전량 익절)
+    칼손절 칼손절가 (지지 구조 이탈 및 알고리즘 무효화 기준선)
 
     트리거 조건 및 행동 수칙
     알고리즘 단기 모멘텀 전환 및 누적 유동성 밀집 노드 안착 확인 등 블랙박스 로직 기반 실전 행동 수칙 서술 (구체적 지표명 배제)
@@ -189,7 +188,7 @@ def generate_full_quant_report(stock_name, symbol, price):
 
     글로벌 섹터 지수 동조화 및 피어 그룹 밸류에이션 비교 분석 서술
 
-    개별 기업 펀더멘털 자체 잉여 유동성 환원 모델 및 과거 유사 국면 주가 반응 통계 서술 (구체적 공시명 배제)
+    개별 기업 실적 모멘텀 및 수급 주체별 매매 동향 분석 서술 (구체적 지표명 배제)
 
     자체 퀀트 모델 교차 검증 및 자체 델타 수급 분석을 통한 단기 체결 압력 흡수 과정 서술 (구체적 지표명 배제)
 
@@ -216,9 +215,9 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         current_price, symbol = fetch_realtime_price(query)
 
-        # 실시간 가격을 가져오지 못했을 때 엉터리 분석이 나가지 않도록 차단
+        # 실시간 가격 수집 실패 시 오류 출력 및 가짜 분석 방지
         if not current_price:
-            await status_msg.edit_text(f"❌ {query}의 실시간 가격을 가져오지 못했습니다. 종목명을 정확히 입력해 주세요.")
+            await status_msg.edit_text(f"❌ {query}의 실시간 가격을 가져오지 못했습니다. 종목명을 다시 확인해 주세요.")
             return
 
         summary_text, detail_text = generate_full_quant_report(query, symbol, current_price)

@@ -1,8 +1,6 @@
 import os
-import re
 import io
 import gc
-import json
 import uuid
 import asyncio
 import sqlite3
@@ -27,9 +25,8 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. 인증 정보
+# 인증 정보
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 
 REPORT_CACHE = {}
@@ -96,17 +93,6 @@ DOMESTIC_FAST_MAP = {
     "LG에너지솔루션": "373220", "한화오션": "042660", "두산에너빌리티": "034020",
     "한화에어로스페이스": "012450", "현대모비스": "012330", "셀트리온": "068270"
 }
-
-def ask_gemini_api(prompt_text):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
-    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=8.0)
-        data = res.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception:
-        return "타점 전략 분석 완료 SPLIT 지표 기반 안전 구간 진입 권장"
 
 async def delete_messages_later(bot, chat_id, message_ids, delay=900):
     try:
@@ -463,57 +449,44 @@ def update_and_calculate_performance():
     except Exception:
         return {"total": 0, "finished": 0, "win": 0, "loss": 0, "pending": 0, "win_rate": 0.0, "cum_ret": 0.0, "history": []}
 
-def generate_full_quant_report(stock_name, symbol, price, quant_data):
-    an = quant_data.get('analysis', {}) if quant_data else {}
-    tech_context = f"""
-    [ICT & 퀀트 정밀 연산치]
-    - 현재가: {price}
-    - ICT 마켓 프레임: {an.get('ict_zone', 'Equilibrium')}
-    - 진입 기준가: {an.get('entry_p', 0)}
-    - 1차 BSL 목표가: {an.get('target_p', 0)}
-    - SSL 칼손절가: {an.get('stop_p', 0)}
-    - 이평선 구조: {an.get('ma20_status', '산출중')}
-    - RSI 강도: {an.get('rsi', 50.0)}
-    - ATR 변동폭: {an.get('atr', '산출중')}
-    """
+def build_robust_quant_report(stock_name, symbol, price, quant_data):
+    an = quant_data.get('analysis', {})
+    entry1 = an.get('entry_p', 0)
+    entry2 = round(entry1 * 0.985, 2)
+    tp1 = an.get('target_p', 0)
+    tp2 = round(tp1 * 1.03, 2)
+    sl = an.get('stop_p', 0)
+    zone = an.get('ict_zone', 'Equilibrium')
+    rsi = an.get('rsi', 50.0)
+    ma_stat = an.get('ma20_status', '20일선 지지')
 
-    prompt = f"""
-    당신은 ICT(Inner Circle Trader) 전문 퀀트 트레이더입니다.
-    제공된 ICT 타점 수치를 바탕으로 명확한 타점 전략 카드를 작성하세요.
+    summary = f"""🎯 {stock_name} ({symbol})
+현재가: {price}
+ICT 프레임: {zone}
 
-    대상 종목: {stock_name} ({symbol})
-    {tech_context}
+[ICT Alpha Action Plan]
+• 방향성: 롱 (Bullish Order Block 되돌림)
+• 1차 진입: {entry1:,} (FVG 지지 확인 진입권)
+• 2차 진입: {entry2:,} (오더블록 하단 분할 진입)
+• 1차 목표: {tp1:,} (단기 BSL 1차 분할 익절)
+• 2차 목표: {tp2:,} (상단 주요 유동성 풀 최종 익절)
+• 칼손절: {sl:,} (SSL 이탈 무효화 기준)
 
-    [★ 필수 출력 포맷 (특수기호, 하이픈, 번호매기기 없이 작성) ★]
-    
-    {stock_name} ({symbol})
-    현재가 {price}
-    ICT 마켓 프레임 {an.get('ict_zone', 'Equilibrium')}
+트리거 조건 및 요령:
+지정 타점 부근 체결 강도 확인 후 1, 2차 분할 매수 대응"""
 
-    ICT Alpha Action Plan
+    detail = f"""🔬 [ICT 심층 퀀트 분석 데이터]
 
-    방향성 롱 (Bullish Order Block 되돌림)
-    1차 진입 {an.get('entry_p', 0)} (FVG 지지 확인 진입권)
-    2차 진입 {round(float(an.get('entry_p', 0)) * 0.985, 2)} (오더블록 하단 2차 분할)
-    1차 목표 {an.get('target_p', 0)} (단기 Buy-side Liquidity 1차 분할 익절)
-    2차 목표 {round(float(an.get('target_p', 0)) * 1.03, 2)} (상단 주요 유동성 풀 최종 익절)
-    칼손절 {an.get('stop_p', 0)} (Sell-side Liquidity 이탈 무효화)
+1. 오더블록(OB) & FVG 구조:
+현재 차트는 {ma_stat} 구간에서 스마트 머니의 유동성 흡수(Liquidity Sweep) 후 반등 구조를 형성하고 있습니다.
 
-    트리거 조건 및 행동 요령
-    킬존 시간대 체결 강도 및 분할 매수 대응 전략 서술
+2. 유동성 풀(Liquidity Pool) 배치:
+상단 {tp1:,} 부근에 대규모 Buy-side Liquidity가 집중되어 있으며, 하단 {sl:,} 이탈 시 손절 기준이 유효합니다.
 
-    SPLIT
+3. 보조지표 & 모멘텀:
+• RSI 강도: {rsi}
+• 프레임 상태: {zone}"""
 
-    ICT 시각에서 분석한 기관 세력의 오더블록(OB)과 FVG 구조
-
-    Buy-side 및 Sell-side 유동성 풀 배치 상태
-
-    예상 손익비 분석 및 실전 트레이딩 코멘트
-    """
-    response_text = ask_gemini_api(prompt)
-    parts = response_text.split("SPLIT")
-    summary = parts[0].strip()
-    detail = parts[1].strip() if len(parts) > 1 else "심층 분석 데이터를 불러올 수 없습니다"
     return summary, detail
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -600,7 +573,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         current_price = quant_data['current_price']
-        summary_text, detail_text = generate_full_quant_report(formal_name, symbol, current_price, quant_data)
+        summary_text, detail_text = build_robust_quant_report(formal_name, symbol, current_price, quant_data)
 
         record_trade_signal(symbol, formal_name, asset_type, quant_data['analysis'])
 

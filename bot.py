@@ -33,46 +33,62 @@ genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
+STOCK_DICT = {}
 
-COMMON_SYMBOLS = {
-    "BTC": ("crypto", "BTCUSDT"),
-    "ETH": ("crypto", "ETHUSDT"),
-    "XRP": ("crypto", "XRPUSDT"),
-    "DOGE": ("crypto", "DOGEUSDT"),
-    "SOL": ("crypto", "SOLUSDT"),
-    "비트코인": ("crypto", "BTCUSDT"),
-    "이더리움": ("crypto", "ETHUSDT"),
-    "리플": ("crypto", "XRPUSDT"),
-    "도지코인": ("crypto", "DOGEUSDT"),
-    "솔라나": ("crypto", "SOLUSDT"),
-    "삼성전자": ("domestic_stock", "005930"),
-    "삼성전기": ("domestic_stock", "009150"),
-    "SK하이닉스": ("domestic_stock", "000660"),
-    "SK스퀘어": ("domestic_stock", "402340"),
-    "SK증권": ("domestic_stock", "001510"),
-    "솔트룩스": ("domestic_stock", "304100"),
-    "알테오젠": ("domestic_stock", "196170"),
-    "에코프로": ("domestic_stock", "086520"),
-    "에코프로비엠": ("domestic_stock", "247540"),
-    "레인보우로보틱스": ("domestic_stock", "277810"),
-    "카카오": ("domestic_stock", "035720"),
-    "네이버": ("domestic_stock", "035420"),
-    "NAVER": ("domestic_stock", "035420"),
-    "현대차": ("domestic_stock", "005380"),
-    "기아": ("domestic_stock", "000270"),
-    "포스코홀딩스": ("domestic_stock", "005490"),
-    "POSCO홀딩스": ("domestic_stock", "005490"),
-    "LG에너지솔루션": ("domestic_stock", "373220"),
-    "테슬라": ("overseas_stock", "TSLA"),
-    "TSLA": ("overseas_stock", "TSLA"),
-    "엔비디아": ("overseas_stock", "NVDA"),
-    "NVDA": ("overseas_stock", "NVDA"),
-    "애플": ("overseas_stock", "AAPL"),
-    "AAPL": ("overseas_stock", "AAPL"),
-    "마이크로소프트": ("overseas_stock", "MSFT"),
-    "MSFT": ("overseas_stock", "MSFT"),
-    "QQQ": ("overseas_stock", "QQQ")
+# 1. 암호화폐 매핑 (한글/영문)
+CRYPTO_MAP = {
+    "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
+    "ETH": "ETHUSDT", "이더리움": "ETHUSDT", "이더": "ETHUSDT",
+    "XRP": "XRPUSDT", "리플": "XRPUSDT",
+    "DOGE": "DOGEUSDT", "도지코인": "DOGEUSDT", "도지": "DOGEUSDT",
+    "SOL": "SOLUSDT", "솔라나": "SOLUSDT",
+    "ADA": "ADAUSDT", "에이다": "ADAUSDT",
+    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT"
 }
+
+# 2. 해외 주식 매핑 (한글/영문)
+US_STOCK_MAP = {
+    "엔비디아": "NVDA", "NVDA": "NVDA",
+    "테슬라": "TSLA", "TSLA": "TSLA",
+    "애플": "AAPL", "AAPL": "AAPL",
+    "마이크로소프트": "MSFT", "MSFT": "MSFT",
+    "아마존": "AMZN", "AMZN": "AMZN",
+    "구글": "GOOGL", "알파벳": "GOOGL", "GOOGL": "GOOGL",
+    "메타": "META", "META": "META",
+    "AMD": "AMD", "아이온큐": "IONQ", "IONQ": "IONQ",
+    "팔란티어": "PLTR", "PLTR": "PLTR",
+    "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
+}
+
+def init_korean_stocks():
+    """KRX 전 종목 마스터 로딩"""
+    global STOCK_DICT
+    try:
+        url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
+        df = pd.read_html(url, header=0)[0]
+        for _, row in df.iterrows():
+            name = str(row['회사명']).strip().replace(" ", "").upper()
+            code = str(row['종목코드']).zfill(6)
+            STOCK_DICT[name] = (code, str(row['회사명']).strip())
+    except Exception:
+        pass
+
+init_korean_stocks()
+
+def get_stock_code_and_name(query):
+    clean_q = query.strip().replace(" ", "").upper()
+    
+    if clean_q in STOCK_DICT:
+        return STOCK_DICT[clean_q][0], STOCK_DICT[clean_q][1]
+    
+    for k, v in STOCK_DICT.items():
+        if clean_q in k or k in clean_q:
+            return v[0], v[1]
+            
+    if clean_q.isdigit() and len(clean_q) == 6:
+        return clean_q, clean_q
+
+    return None, query.strip()
 
 def get_crypto_bybit_data(symbol="BTCUSDT"):
     clean_sym = symbol.replace("KRW-", "").replace("-", "").upper()
@@ -82,7 +98,7 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
     try:
         url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={clean_sym}&interval=D&limit=60"
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=2.5).json()
+        res = requests.get(url, headers=headers, timeout=3).json()
         candle_list = res.get("result", {}).get("list", [])
         
         if candle_list:
@@ -103,60 +119,36 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
         pass
     return None, None
 
-def get_stock_code_by_name(query):
-    clean_q = query.strip()
-    target_comp = clean_q.replace(" ", "").upper()
-
-    for k, v in COMMON_SYMBOLS.items():
-        if k.replace(" ", "").upper() == target_comp:
-            return v[1], k
-
+def get_us_stock_data(symbol):
     try:
-        d_url = f"https://suggest-baro.daum.net/suggest?id=stock&v=4&code=utf-8&q={requests.utils.quote(clean_q)}"
-        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.daum.net"}
-        res = requests.get(d_url, headers=headers, timeout=2).json()
-        sub_items = res.get("sub", [])
-        if sub_items:
-            for item in sub_items:
-                raw_code = str(item[0]).replace("A", "").strip()
-                name = str(item[1]).strip()
-                if name.replace(" ", "").upper() == target_comp:
-                    return raw_code, name
-            return str(sub_items[0][0]).replace("A", "").strip(), str(sub_items[0][1]).strip()
+        stock = yf.Ticker(symbol)
+        df = stock.history(period="60d")
+        if not df.empty:
+            curr_p = float(df['Close'].iloc[-1])
+            return f"{curr_p:,.2f} 달러", df
     except Exception:
         pass
-
-    try:
-        url = f"https://m.stock.naver.com/api/search/autoComplete?keyword={requests.utils.quote(clean_q)}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=2).json()
-        for key in ["stocks", "items"]:
-            if key in res and isinstance(res[key], list):
-                for item in res[key]:
-                    c = item.get("itemCode") or item.get("code")
-                    n = item.get("stockName") or item.get("name")
-                    if c and n:
-                        if str(n).replace(" ", "").upper() == target_comp:
-                            return str(c).strip(), str(n).strip()
-                if res[key]:
-                    first = res[key][0]
-                    c = first.get("itemCode") or first.get("code")
-                    n = first.get("stockName") or first.get("name")
-                    if c and n:
-                        return str(c).strip(), str(n).strip()
-    except Exception:
-        pass
-
-    return None, clean_q
+    return None, None
 
 def get_naver_realtime_price(code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/basic"
-        res = requests.get(url, headers=headers, timeout=2).json()
+        res = requests.get(url, headers=headers, timeout=2.5).json()
         p = str(res.get("closePrice", "")).replace(",", "").strip()
         if p and p.isdigit():
             return f"{int(p):,} 원"
+    except Exception:
+        pass
+
+    try:
+        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        res = requests.get(url, headers=headers, timeout=2.5).json()
+        datas = res.get("result", {}).get("areas", [{}])[0].get("datas", [])
+        if datas:
+            nv = datas[0].get("nv")
+            if nv:
+                return f"{int(nv):,} 원"
     except Exception:
         pass
     return None
@@ -165,7 +157,7 @@ def fetch_domestic_stock_candles(code):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         url = f"https://api.stock.naver.com/chart/domestic/market/stock/{code}?periodType=dayCandle&range=60"
-        res = requests.get(url, headers=headers, timeout=2.5).json()
+        res = requests.get(url, headers=headers, timeout=3).json()
         price_infos = res.get("priceInfos", [])
         if price_infos:
             records = []
@@ -219,9 +211,12 @@ def detect_chart_pattern(df):
     if df is None or len(df) < 25:
         return "정상 추세 탐색 구간"
     
-    closes = df['Close'].values
-    highs = df['High'].values
-    lows = df['Low'].values
+    col_map = {c: c.capitalize() for c in df.columns}
+    df_calc = df.rename(columns=col_map)
+
+    closes = df_calc['Close'].values
+    highs = df_calc['High'].values
+    lows = df_calc['Low'].values
     
     recent_high = np.max(highs[-10:])
     prev_high = np.max(highs[-30:-10])
@@ -248,32 +243,18 @@ def fetch_technical_quant_data(symbol, asset_type):
     try:
         if asset_type == "crypto":
             curr_price_str, df = get_crypto_bybit_data(symbol)
+        elif asset_type == "overseas_stock":
+            curr_price_str, df = get_us_stock_data(symbol)
         elif asset_type == "domestic_stock":
             curr_price_str = get_naver_realtime_price(symbol)
             df = fetch_domestic_stock_candles(symbol)
-        else:
-            stock = yf.Ticker(symbol)
-            df = stock.history(period="60d")
-            if not df.empty:
-                curr_p = float(df['Close'].iloc[-1])
-                curr_price_str = f"{curr_p:,.2f} 달러"
 
         if not curr_price_str:
             return None
 
         quant_info['current_price'] = curr_price_str
         quant_info['pattern'] = detect_chart_pattern(df)
-
-        if df is not None and len(df) >= 10:
-            col_map = {c: c.lower() for c in df.columns}
-            df_calc = df.rename(columns=col_map)
-            quant_info['chart_df'] = df
-            quant_info['rsi'] = 50.0
-            quant_info['ma20'] = round(float(df_calc['close'].rolling(20).mean().iloc[-1]), 2) if len(df_calc) >= 20 else "산출중"
-        else:
-            quant_info['chart_df'] = None
-            quant_info['rsi'] = 50.0
-            quant_info['ma20'] = "산출중"
+        quant_info['chart_df'] = df
 
         return quant_info
     except Exception:
@@ -282,15 +263,23 @@ def fetch_technical_quant_data(symbol, asset_type):
 def generate_full_quant_report(stock_name, symbol, price, quant_data):
     pattern_info = quant_data.get('pattern', '정상 추세') if quant_data else '정상 추세'
     prompt = f"""
-    당신은 실전 퀀트 트레이더입니다.
-    종목: {stock_name} ({symbol})
+    당신은 대한민국 최고의 실전 퀀트 트레이더입니다.
+    대상 종목: {stock_name} ({symbol})
     현재가: {price}
     차트 패턴 진단: {pattern_info}
 
+    [★ 핵심 패턴 평가 규칙 ★]
+    1. 쌍봉(더블탑/돌파실패) 패턴인 경우:
+       - 트레이딩 적합도를 ★☆☆☆☆ 또는 ★★☆☆☆ (1.5~2.3점)으로 대폭 깎으세요.
+       - 방향성을 '관망 권고' 또는 '숏 (반등 시 비중 축소)'으로 설정하고 매수를 금지하세요.
+    2. 쌍바닥(더블바텀 W자) 패턴인 경우:
+       - 트레이딩 적합도를 ★★★★★ (4.7~4.9점)으로 부여하세요.
+       - 방향성을 '롱 (W자 쌍바닥 지지 반등 매수)'으로 설정하세요.
+    3. 일반 추세/박스권인 경우: 3.8~4.3점 부여.
+
     [작성 규칙]
-    - 쌍봉 감지 시 적합도 2.0점 이하 부여 및 숏/관망 권고.
-    - 쌍바닥 감지 시 적합도 4.7점 이상 부여 및 W자 롱 매수 타점 제시.
-    - 콜론, 특수기호 없이 작성하고 SPLIT으로 1부 타점 카드와 2부 해설을 나누세요.
+    - 콜론, 하이픈, 특수기호 없이 작성하세요.
+    - 반드시 영문 SPLIT 으로 1부 타점 카드와 2부 해설을 나누세요.
 
     {stock_name} ({symbol})
     
@@ -301,18 +290,18 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     Alpha Signal 액션 플랜
 
     방향성 롱 또는 숏
-    1차 진입 1차진입가구간 (지지 확인 1차 분할)
-    2차 진입 2차진입가구간 (마지노선 2차 분할)
+    1차 진입 1차진입가범위 (지지 확인 1차 분할)
+    2차 진입 2차진입가범위 (구조적 마지노선 2차 분할)
     1차 목표 1차목표가 (50퍼센트 분할 익절)
-    2차 목표 2차목표가 (전량 최종 익절)
-    칼손절 칼손절가 (시나리오 이탈 기준가)
+    2차 목표 2차목표가 (상단 최종 익절)
+    칼손절 칼손절가 (시나리오 무효화 기준가)
 
     트리거 조건 및 행동 요령
-    장중 눌림목 체결 강도 대응 요령 서술
+    장중 체결 강도 및 진입 타이밍 서술
 
     SPLIT
 
-    일봉상 차트 패턴과 핵심 수급 흐름 심층 분석 서술
+    일봉상 차트 패턴 진단 및 주요 수급 모멘텀 심층 분석 서술
     """
     response = ai_model.generate_content(prompt).text
     parts = response.split("SPLIT")
@@ -324,7 +313,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
         "종목명을 입력하시면 실시간 차트와 퀀트 액션 플랜을 전송합니다\n"
-        "예시 삼성전기 sk하이닉스 BTC 알테오젠 대장"
+        "예시 엔비디아 테슬라 삼성중공업 비트코인 sk하이닉스 대장"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -334,25 +323,38 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query in ["대장", "대장주", "종목추천", "추천", "/대장"]:
         query = "삼성전기"
 
-    status_msg = await update.message.reply_text(f"{query} 실시간 데이터 분석 중입니다")
+    status_msg = await update.message.reply_text(f"{query} 실시간 분석 중입니다")
 
     try:
-        # 종목코드 식별
-        if any(c in query.upper() for c in ["BTC", "ETH", "코인", "비트"]):
-            asset_type, symbol = "crypto", query.upper()
+        clean_q = query.replace(" ", "").upper()
+        
+        # 1. 암호화폐 (한글/티커)
+        if clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "USDT", "코인", "비트코인", "이더리움", "리플", "도지"]):
+            asset_type = "crypto"
+            symbol = CRYPTO_MAP.get(clean_q, clean_q.replace("코인", "") + "USDT")
+            formal_name = query
+        # 2. 해외 주식 (한글/티커)
+        elif clean_q in US_STOCK_MAP:
+            asset_type = "overseas_stock"
+            symbol = US_STOCK_MAP[clean_q]
             formal_name = query
         elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
-            asset_type, symbol = "overseas_stock", query.upper()
+            asset_type = "overseas_stock"
+            symbol = query.upper()
             formal_name = query
+        # 3. 국내 주식
         else:
-            code, name = get_stock_code_by_name(query)
-            symbol = code if code else query
-            formal_name = name if code else query
+            code, name = get_stock_code_and_name(query)
+            if not code:
+                await status_msg.edit_text(f"❌ '{query}' 종목을 찾지 못했습니다. 종목명을 확인해 주세요.")
+                return
+            symbol = code
+            formal_name = name
             asset_type = "domestic_stock"
 
         quant_data = fetch_technical_quant_data(symbol, asset_type)
         if not quant_data or not quant_data.get('current_price'):
-            await status_msg.edit_text(f"❌ {query}의 시세를 조회하지 못했습니다. 종목명을 다시 확인해 주세요.")
+            await status_msg.edit_text(f"❌ {formal_name}의 실시간 시세를 가져오지 못했습니다. 종목명을 확인해 주세요.")
             return
 
         current_price = quant_data['current_price']
@@ -364,7 +366,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # 차트 이미지
         chart_buf = generate_candlestick_chart(quant_data.get('chart_df'), formal_name)
         
         try:
@@ -380,9 +381,9 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(chat_id=chat_id, text=summary_text, reply_markup=reply_markup)
 
-    except Exception as e:
+    except Exception:
         try:
-            await status_msg.edit_text(f"일시적인 네트워크 지연이 발생했습니다. 10초 후 다시 입력해 주세요.")
+            await status_msg.edit_text("일시적 처리 지연이 발생했습니다. 다시 입력해 주세요.")
         except Exception:
             pass
 

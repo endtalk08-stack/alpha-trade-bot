@@ -52,6 +52,8 @@ COMMON_SYMBOLS = {
     "솔트룩스": ("domestic_stock", "304100"),
     "알테오젠": ("domestic_stock", "196170"),
     "에코프로": ("domestic_stock", "086520"),
+    "에코프로비엠": ("domestic_stock", "247540"),
+    "레인보우로보틱스": ("domestic_stock", "277810"),
     "테슬라": ("overseas_stock", "TSLA"),
     "엔비디아": ("overseas_stock", "NVDA"),
     "애플": ("overseas_stock", "AAPL"),
@@ -59,86 +61,113 @@ COMMON_SYMBOLS = {
 }
 
 def get_stock_code_by_name(query):
-    """네이버 / 다음 실시간 검색으로 6자리 종목코드 추출"""
+    """코스피/코스닥 전 종목 검색기 (네이버/다음 다중 교차 검색)"""
     clean_q = query.strip()
     
-    try:
-        url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(clean_q)}&target=stock"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=2).json()
-        items = res.get("items", [[]])[0]
-        if items:
-            q_comp = clean_q.replace(" ", "").upper()
-            for item in items:
-                name_comp = item[1].replace(" ", "").upper()
-                if q_comp == name_comp:
-                    return item[0], item[1]
-            return items[0][0], items[0][1]
-    except Exception:
-        pass
-
+    # 1. 다음 증권 추천 API (코스닥 중소형주 인식률 1위)
     try:
         d_url = f"https://suggest-baro.daum.net/suggest?id=stock&v=4&code=utf-8&q={requests.utils.quote(clean_q)}"
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.daum.net"}
         res = requests.get(d_url, headers=headers, timeout=2).json()
         sub_items = res.get("sub", [])
         if sub_items:
-            raw_code = sub_items[0][0].replace("A", "")
-            name = sub_items[0][1]
-            return raw_code, name
+            for item in sub_items:
+                raw_code = item[0].replace("A", "").strip()
+                name = item[1].strip()
+                if clean_q.replace(" ", "").upper() == name.replace(" ", "").upper():
+                    return raw_code, name
+            # 정확 일치 없으면 1순위 반환
+            return sub_items[0][0].replace("A", "").strip(), sub_items[0][1].strip()
+    except Exception:
+        pass
+
+    # 2. 네이버 자동완성 API
+    try:
+        url = f"https://ac.finance.naver.com/ac?q={requests.utils.quote(clean_q)}&target=stock"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=2).json()
+        items_list = res.get("items", [])
+        if items_list and len(items_list[0]) > 0:
+            for item in items_list[0]:
+                code = item[0]
+                name = item[1]
+                if clean_q.replace(" ", "").upper() == name.replace(" ", "").upper():
+                    return code, name
+            return items_list[0][0][0], items_list[0][0][1]
     except Exception:
         pass
 
     return None, clean_q
 
 def get_naver_realtime_price(code):
-    """네이버 모바일 증권에서 실시간 가격 추출"""
+    """네이버 모바일 증권 실시간 현재가 추출"""
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/basic"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=2).json()
         p = str(res.get("closePrice", "")).replace(",", "")
-        if p and p != "None":
+        if p and p != "None" and p != "":
             return f"{int(p):,} 원"
     except Exception:
         pass
     return None
 
-def fetch_naver_stock_candles(code):
-    """네이버 증권 일봉 캔들 API (국내 전종목 100% 지원)"""
+def fetch_domestic_stock_candles(code):
+    """네이버 모바일 통합 일봉 데이터 수집 (코스피/코스닥 100% 보장)"""
+    try:
+        # 네이버 모바일 일봉 API (안정적인 JSON 엔드포인트)
+        url = f"https://api.stock.naver.com/chart/domestic/market/stock/{code}?periodType=dayCandle&range=60"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=3).json()
+        price_infos = res.get("priceInfos", [])
+        if price_infos:
+            records = []
+            for item in price_infos:
+                records.append({
+                    "Date": pd.to_datetime(item["localDate"], format="%Y%m%d"),
+                    "Open": float(item["openPrice"]),
+                    "High": float(item["highPrice"]),
+                    "Low": float(item["lowPrice"]),
+                    "Close": float(item["closePrice"]),
+                    "Volume": float(item["accumulatedTradingVolume"])
+                })
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            return df
+    except Exception:
+        pass
+
+    # XML 백업 엔드포인트
     try:
         url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=60&requestType=0"
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=3)
         matches = re.findall(r'<item data="([^"]+)"', res.text)
-        
         records = []
         for m in matches:
             parts = m.split("|")
             if len(parts) >= 6:
-                date_str, o, h, l, c, v = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
                 records.append({
-                    "Date": pd.to_datetime(date_str, format="%Y%m%d"),
-                    "Open": float(o),
-                    "High": float(h),
-                    "Low": float(l),
-                    "Close": float(c),
-                    "Volume": float(v)
+                    "Date": pd.to_datetime(parts[0], format="%Y%m%d"),
+                    "Open": float(parts[1]),
+                    "High": float(parts[2]),
+                    "Low": float(parts[3]),
+                    "Close": float(parts[4]),
+                    "Volume": float(parts[5])
                 })
         if records:
-            df = pd.DataFrame(records).set_index("Date")
+            df = pd.DataFrame(records).set_index("Date").sort_index()
             return df
     except Exception:
         pass
+
     return None
 
 def generate_candlestick_chart(df, symbol_name):
-    """트레이딩뷰 다크테마 캔들 차트 이미지 버퍼 생성 (텔레그램 전송 안정화)"""
+    """트레이딩뷰 다크 테마 캔들 차트 생성 (안정화)"""
     try:
         chart_df = df.tail(40).copy()
         chart_df.index = pd.to_datetime(chart_df.index)
         
-        # 다크 테마 컬러 설정
         mc = mpf.make_marketcolors(
             up='#ef5350', down='#26a69a',
             wick={'up':'#ef5350', 'down':'#26a69a'},
@@ -158,10 +187,8 @@ def generate_candlestick_chart(df, symbol_name):
             savefig=dict(fname=buf, format='png', bbox_inches='tight', facecolor='#131722')
         )
         buf.seek(0)
-        buf.name = "chart.png"  # 텔레그램 전송용 가상 파일명 부여
         return buf
-    except Exception as e:
-        print(f"Chart Render Error: {e}")
+    except Exception:
         return None
 
 def fetch_orderbook_and_sentiment(symbol, asset_type):
@@ -240,14 +267,7 @@ def fetch_technical_quant_data(symbol, asset_type):
 
         elif asset_type == "domestic_stock":
             curr_price_str = get_naver_realtime_price(symbol)
-            df = fetch_naver_stock_candles(symbol)
-            if df is None or len(df) < 10:
-                try:
-                    df = yf.Ticker(f"{symbol}.KQ").history(period="60d")
-                    if df.empty:
-                        df = yf.Ticker(f"{symbol}.KS").history(period="60d")
-                except Exception:
-                    pass
+            df = fetch_domestic_stock_candles(symbol)
             if not curr_price_str and df is not None and not df.empty:
                 c_val = float(df['Close'].iloc[-1])
                 curr_price_str = f"{int(c_val):,} 원"
@@ -337,6 +357,7 @@ def fetch_realtime_price_fallback(user_query):
         elif any(c.isupper() for c in cleaned_query) and not any('\uac00' <= char <= '\ud7a3' for char in cleaned_query):
             asset_type, symbol = "overseas_stock", cleaned_query
         else:
+            # 6자리 종목코드 자동 검색
             if not (cleaned_query.isdigit() and len(cleaned_query) == 6):
                 searched_code, formal_name = get_stock_code_by_name(user_query.strip())
                 symbol = searched_code if searched_code else cleaned_query
@@ -430,7 +451,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
         "종목명을 입력하시면 실시간 차트 렌더링 및 퀀트 액션 플랜을 함께 전송합니다\n"
-        "예시 솔트룩스 알테오젠 SK스퀘어 삼성전자 비트코인 TSLA"
+        "예시 솔트룩스 알테오젠 에코프로 SK스퀘어 삼성전자 비트코인 TSLA"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -464,13 +485,12 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 2. 로딩 메시지 삭제
         await status_msg.delete()
 
-        # 3. 차트 사진 전송
+        # 3. 차트 사진 먼저 전송 (getvalue 바이트 직접 전달)
         if chart_buffer is not None:
             try:
                 await context.bot.send_photo(
                     chat_id=chat_id,
-                    photo=chart_buffer.getvalue(),
-                    filename="chart.png"
+                    photo=chart_buffer.getvalue()
                 )
             except Exception as pe:
                 print(f"Photo send error: {pe}")

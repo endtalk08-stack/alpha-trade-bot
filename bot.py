@@ -17,7 +17,7 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. 통합 인증 키 설정
+# 1. 인증 정보
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 
@@ -26,26 +26,47 @@ TOSS_API_SECRET = os.getenv("TOSS_API_SECRET", "tssk_live_5U9SuuC4pLY2DpYYObXRH1
 TOSS_API_BASE_URL = "https://open-api.tossinvest.com"
 
 genai.configure(api_key=GEMINI_API_KEY)
+# 구글 최신 플래시 모델 적용
 ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
 
+# 주요 종목 매핑 (대소문자/공백 자동 보정 지원)
 COMMON_SYMBOLS = {
     "비트코인": ("crypto", "BTCUSDT"),
     "이더리움": ("crypto", "ETHUSDT"),
     "리플": ("crypto", "XRPUSDT"),
     "도지코인": ("crypto", "DOGEUSDT"),
+    "BTC": ("crypto", "BTCUSDT"),
+    "ETH": ("crypto", "ETHUSDT"),
+    "XRP": ("crypto", "XRPUSDT"),
     "삼성전자": ("domestic_stock", "005930"),
     "SK하이닉스": ("domestic_stock", "000660"),
     "금호전기": ("domestic_stock", "001210"),
+    "현대차": ("domestic_stock", "005380"),
+    "NAVER": ("domestic_stock", "035420"),
+    "카카오": ("domestic_stock", "035720"),
     "테슬라": ("overseas_stock", "TSLA"),
     "엔비디아": ("overseas_stock", "NVDA"),
     "애플": ("overseas_stock", "AAPL"),
     "QQQ": ("overseas_stock", "QQQ")
 }
 
+def get_naver_stock_price(code):
+    """국내 주식 1초 단위 실시간 시세 (네이버 금융 연동)"""
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=3).json()
+        price_str = res.get("closePrice", "").replace(",", "")
+        if price_str:
+            return f"{int(price_str):,} 원"
+    except Exception:
+        pass
+    return None
+
 def get_toss_stock_price(symbol, market_type="domestic"):
-    """토스증권 공식 Open API 실시간 시세 조회"""
+    """토스증권 공식 Open API 실시간 시세"""
     try:
         headers = {
             "Content-Type": "application/json",
@@ -54,7 +75,6 @@ def get_toss_stock_price(symbol, market_type="domestic"):
         }
         endpoint = f"{TOSS_API_BASE_URL}/v1/market/quote?symbol={symbol}&market={market_type}"
         response = requests.get(endpoint, headers=headers, timeout=3)
-        
         if response.status_code == 200:
             data = response.json()
             price = float(data.get("price", 0))
@@ -66,51 +86,64 @@ def get_toss_stock_price(symbol, market_type="domestic"):
     return None
 
 def fetch_realtime_price(user_query):
-    query = user_query.strip()
+    # 공백 제거 및 대문자 변환
+    cleaned_query = user_query.strip().replace(" ", "").upper()
     
-    if query in COMMON_SYMBOLS:
-        asset_type, symbol = COMMON_SYMBOLS[query]
+    # 1. 딕셔너리 매핑 확인
+    matched_key = None
+    for key in COMMON_SYMBOLS:
+        if key.replace(" ", "").upper() == cleaned_query:
+            matched_key = key
+            break
+            
+    if matched_key:
+        asset_type, symbol = COMMON_SYMBOLS[matched_key]
     else:
-        if any(c in query for c in ["코인", "USDT", "BTC", "ETH"]):
-            asset_type, symbol = "crypto", query.upper()
-        elif any(c.isupper() for c in query) and not query.endswith(".KS"):
-            asset_type, symbol = "overseas_stock", query.upper()
+        if any(c in cleaned_query for c in ["코인", "USDT", "BTC", "ETH"]):
+            asset_type, symbol = "crypto", cleaned_query
+        elif any(c.isupper() for c in cleaned_query) and not cleaned_query.endswith(".KS"):
+            asset_type, symbol = "overseas_stock", cleaned_query
         else:
-            asset_type, symbol = "domestic_stock", query
+            asset_type, symbol = "domestic_stock", cleaned_query
 
-    # 가상자산 시세 (바이낸스 실시간)
+    # 2. 가상자산 시세 조회 (바이낸스)
     if asset_type == "crypto":
         try:
             url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
             r = requests.get(url, timeout=5).json()
             return f"{float(r['price']):,.2f} 달러", symbol
         except Exception:
-            return "실시간 호가 집계중", symbol
+            return None, symbol
 
-    # 국내/미국 주식 시세 (토스증권 Open API)
-    market = "domestic" if asset_type == "domestic_stock" else "overseas"
-    toss_price = get_toss_stock_price(symbol, market)
-    if toss_price:
-        return toss_price, symbol
+    # 3. 국내 주식 시세 조회 (토스 -> 네이버 증권 2중 확인)
+    if asset_type == "domestic_stock":
+        price = get_toss_stock_price(symbol, "domestic")
+        if not price:
+            price = get_naver_stock_price(symbol)
+        if price:
+            return price, symbol
 
-    # 통신 지연 시 yfinance 백업
-    try:
-        yf_symbol = symbol
-        if asset_type == "domestic_stock" and not symbol.endswith((".KS", ".KQ")):
-            yf_symbol = f"{symbol}.KS"
-        
-        stock = yf.Ticker(yf_symbol)
-        price = stock.history(period="1d")['Close'].iloc[-1]
-        if yf_symbol.endswith((".KS", ".KQ")):
-            return f"{int(price):,} 원", symbol
-        return f"{price:,.2f} 달러", symbol
-    except Exception:
-        return "실시간 호가 집계중", symbol
+    # 4. 해외 주식 시세 조회 (토스 -> 야후 파이낸스)
+    if asset_type == "overseas_stock":
+        price = get_toss_stock_price(symbol, "overseas")
+        if not price:
+            try:
+                stock = yf.Ticker(symbol)
+                p = stock.history(period="1d")['Close'].iloc[-1]
+                price = f"{p:,.2f} 달러"
+            except Exception:
+                pass
+        if price:
+            return price, symbol
+
+    return None, symbol
 
 def generate_full_quant_report(stock_name, symbol, price):
     prompt = f"""
     [시스템 보안 규칙 최고 수준 활성화]
     당신은 대한민국 최고의 실전 퀀트 트레이더이자 블랙박스 인공지능입니다
+    반드시 제공된 실제 실시간 현재가({price})를 기준으로만 지지/저항 및 매수/매도 타점을 엄격히 산출하십시오.
+    
     대상 종목 {stock_name} ({symbol})
     현재 실시간 가격 {price}
 
@@ -178,10 +211,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
-    status_msg = await update.message.reply_text(f"{query} 실시간 데이터 수집 및 퀀트 연산 중입니다")
+    status_msg = await update.message.reply_text(f"{query} 실시간 호가 조회 및 퀀트 연산 중입니다")
 
     try:
         current_price, symbol = fetch_realtime_price(query)
+
+        # 실시간 가격을 가져오지 못했을 때 엉터리 분석이 나가지 않도록 차단
+        if not current_price:
+            await status_msg.edit_text(f"❌ {query}의 실시간 가격을 가져오지 못했습니다. 종목명을 정확히 입력해 주세요.")
+            return
+
         summary_text, detail_text = generate_full_quant_report(query, symbol, current_price)
 
         report_id = str(uuid.uuid4())[:8]

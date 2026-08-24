@@ -188,27 +188,18 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT"):
 def get_us_stock_fmp_data(symbol):
     clean_sym = symbol.upper().strip()
 
+    # 1. Yahoo Finance v8 프리마켓/애프터마켓/정규장 실시간 단가 조회
     try:
-        stooq_url = f"https://stooq.com/q/d/l/?s={clean_sym.lower()}.us&i=d"
-        stooq_res = requests.get(stooq_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5)
-        if stooq_res.status_code == 200 and "Date,Open,High,Low,Close" in stooq_res.text:
-            csv_data = io.StringIO(stooq_res.text)
-            df = pd.read_csv(csv_data)
-            if not df.empty and len(df) >= 5:
-                df['Date'] = pd.to_datetime(df['Date'])
-                df = df.set_index('Date').sort_index()
-                df = df.tail(40)
-                curr_p = float(df['Close'].iloc[-1])
-                return curr_p, f"{curr_p:,.2f} 달러", df
-    except Exception:
-        pass
-
-    try:
-        y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?range=1mo&interval=1d"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}?range=1mo&interval=1d&includePrePost=true"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         y_res = requests.get(y_url, headers=headers, timeout=2.5).json()
         result = y_res.get("chart", {}).get("result", [])
         if result:
+            meta = result[0].get("meta", {})
+            pre_p = meta.get("preMarketPrice")
+            post_p = meta.get("postMarketPrice")
+            reg_p = meta.get("regularMarketPrice")
+
             ts = result[0].get("timestamp", [])
             quote = result[0].get("indicators", {}).get("quote", [{}])[0]
             opens = quote.get("open", [])
@@ -230,11 +221,40 @@ def get_us_stock_fmp_data(symbol):
                     })
             if records:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
+                
+                market_tag = ""
+                if pre_p:
+                    curr_p = float(pre_p)
+                    market_tag = " (프리마켓)"
+                elif post_p:
+                    curr_p = float(post_p)
+                    market_tag = " (애프터마켓)"
+                elif reg_p:
+                    curr_p = float(reg_p)
+                else:
+                    curr_p = float(df['Close'].iloc[-1])
+
+                return float(curr_p), f"{float(curr_p):,.2f} 달러{market_tag}", df
+    except Exception:
+        pass
+
+    # 2. Stooq CSV 폴백
+    try:
+        stooq_url = f"https://stooq.com/q/d/l/?s={clean_sym.lower()}.us&i=d"
+        stooq_res = requests.get(stooq_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5)
+        if stooq_res.status_code == 200 and "Date,Open,High,Low,Close" in stooq_res.text:
+            csv_data = io.StringIO(stooq_res.text)
+            df = pd.read_csv(csv_data)
+            if not df.empty and len(df) >= 5:
+                df['Date'] = pd.to_datetime(df['Date'])
+                df = df.set_index('Date').sort_index()
+                df = df.tail(40)
                 curr_p = float(df['Close'].iloc[-1])
                 return curr_p, f"{curr_p:,.2f} 달러", df
     except Exception:
         pass
 
+    # 3. FMP API 폴백
     try:
         url = f"https://financialmodelingprep.com/api/v3/quote/{clean_sym}?apikey={FMP_API_KEY}"
         res = requests.get(url, timeout=2.5).json()
@@ -348,14 +368,14 @@ def perform_ict_quant_analysis(raw_price, df):
     closes = df_c['Close']
     highs = df_c['High']
     lows = df_c['Low']
-    curr_p = closes.iloc[-1]
+    curr_p = float(closes.iloc[-1]) if raw_price is None else float(raw_price)
 
     recent_high = highs.tail(20).max()
     recent_low = lows.tail(20).min()
     eq = (recent_high + recent_low) / 2.0
     ict_zone = "Discount Zone (할인 / 롱 OTE 유리)" if curr_p <= eq else "Premium Zone (할증 / 숏 유리)"
 
-    ma20 = closes.rolling(20, min_periods=5).mean().iloc[-1]
+    ma20 = float(closes.rolling(20, min_periods=5).mean().iloc[-1])
     disparity = ((curr_p - ma20) / ma20) * 100
     ma20_status = f"20일선({ma20:,.1f}) 대비 {disparity:+.1f}%"
 

@@ -557,7 +557,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     chat_id = update.effective_chat.id
 
-    # 성적표/승률 키워드 완벽 지원
     if query in ["성적표", "승률", "수익률", "검증", "/score", "/report"]:
         await show_performance(update, context)
         return

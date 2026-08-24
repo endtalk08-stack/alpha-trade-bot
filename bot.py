@@ -66,21 +66,19 @@ def get_stock_code_by_name(query):
     return None
 
 def fetch_orderbook_and_sentiment(symbol, asset_type):
-    """토스 10호가 잔량 델타 및 시장 심리 지표 분석"""
+    """토스 10호가 잔량 델타 및 시장 심리 분석"""
     sentiment_data = {
         "orderbook_ratio": "중립 델타",
         "retail_sentiment": "정상 범위",
         "action_guide": "정석 분할 진입 유효"
     }
     
-    # 1. 가상자산 오더북 및 롱숏 심리
     if asset_type == "crypto":
         try:
             url = f"https://api.binance.com/api/v3/depth?symbol={symbol}&limit=10"
             ob = requests.get(url, timeout=3).json()
             bids = sum([float(x[1]) for x in ob.get("bids", [])])
             asks = sum([float(x[1]) for x in ob.get("asks", [])])
-            
             if asks > 0:
                 ratio = bids / asks
                 if ratio > 1.8:
@@ -92,7 +90,6 @@ def fetch_orderbook_and_sentiment(symbol, asset_type):
         except Exception:
             pass
 
-    # 2. 국내 주식 호가 잔량 델타 (네이버/토스 호가)
     elif asset_type == "domestic_stock":
         try:
             url = f"https://m.stock.naver.com/api/stock/{symbol}/market"
@@ -100,7 +97,6 @@ def fetch_orderbook_and_sentiment(symbol, asset_type):
             res = requests.get(url, headers=headers, timeout=3).json()
             total_ask = int(res.get("totalAskQty", 0))
             total_bid = int(res.get("totalBidQty", 0))
-            
             if total_ask > 0 and total_bid > 0:
                 imbalance = total_ask / total_bid
                 if imbalance >= 2.0:
@@ -130,7 +126,7 @@ def fetch_realtime_news(query, symbol, asset_type):
     return "현재 특정 개별 이슈보다는 전반적인 시장 및 수급 모멘텀에 의해 등락 중"
 
 def fetch_earnings_calendar(ticker_obj):
-    """실적 발표일 추적"""
+    """실적 발표일 추적 (어닝 임박 시 도박 구간 경고)"""
     try:
         cal = ticker_obj.calendar
         if cal is not None and not cal.empty:
@@ -147,8 +143,26 @@ def fetch_earnings_calendar(ticker_obj):
         pass
     return "실적 발표 일정 정상 범위"
 
+def calculate_relative_strength(df, asset_type):
+    """시장 지수(코스피/나스닥/BTC) 대비 종목의 상대 강도(RS) 계산"""
+    try:
+        bench_symbol = "^KS11" if asset_type == "domestic_stock" else ("^IXIC" if asset_type == "overseas_stock" else "BTC-USD")
+        bench_df = yf.Ticker(bench_symbol).history(period="20d")
+        if not bench_df.empty and len(bench_df) >= 5 and len(df) >= 5:
+            stock_ret = (df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5] * 100
+            bench_ret = (bench_df['Close'].iloc[-1] - bench_df['Close'].iloc[-5]) / bench_df['Close'].iloc[-5] * 100
+            rs_score = stock_ret - bench_ret
+            if rs_score > 3.0:
+                return f"🔥 시장 대비 압도적 주도주 (RS +{rs_score:.1f}% 초과 탄력 - 대장주 시그널)"
+            elif rs_score < -3.0:
+                return f"❄️ 시장 대비 약세 소외주 (RS {rs_score:.1f}% 부진 - 반등 시 매도벽 주의)"
+            return f"시장 동조화 흐름 (RS {rs_score:+.1f}%)"
+    except Exception:
+        pass
+    return "상대 강도 중립"
+
 def fetch_technical_quant_data(symbol, asset_type):
-    """파이썬 엔진이 직접 RSI, 이평선, ATR, 오더북 델타 계산"""
+    """파이썬 엔진이 직접 RSI, 이평선, ATR, 거래량 폭발, 상대강도(RS) 계산"""
     quant_info = {}
     try:
         earnings_warning = "실적 발표 정상"
@@ -159,6 +173,7 @@ def fetch_technical_quant_data(symbol, asset_type):
             df['close'] = df['close'].astype(float)
             df['high'] = df['high'].astype(float)
             df['low'] = df['low'].astype(float)
+            df['vol'] = df['vol'].astype(float)
             curr_p = float(df['close'].iloc[-1])
             currency = "달러"
         else:
@@ -173,25 +188,43 @@ def fetch_technical_quant_data(symbol, asset_type):
                 df = stock.history(period="60d")
             curr_p = float(df['Close'].iloc[-1])
             currency = "원" if asset_type == "domestic_stock" else "달러"
-            df = df.rename(columns={'Close': 'close', 'High': 'high', 'Low': 'low'})
+            df = df.rename(columns={'Close': 'close', 'High': 'high', 'Low': 'low', 'Volume': 'vol'})
 
         if len(df) >= 20:
+            # 1. RSI
             delta = df['close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
             rs = gain / (loss + 1e-9)
             rsi = 100 - (100 / (1 + rs))
             quant_info['rsi'] = round(float(rsi.iloc[-1]), 1)
+            
+            # 2. 이평선 및 매물대
             quant_info['ma20'] = round(float(df['close'].rolling(20).mean().iloc[-1]), 2)
             quant_info['ma60'] = round(float(df['close'].rolling(60).mean().iloc[-1]), 2) if len(df) >= 60 else "산출중"
             quant_info['high20'] = round(float(df['high'].tail(20).max()), 2)
             quant_info['low20'] = round(float(df['low'].tail(20).min()), 2)
+            
+            # 3. ATR 변동성
             high_low = df['high'] - df['low']
             quant_info['atr'] = round(float(high_low.tail(14).mean()), 2)
+            
+            # 4. 거래량 폭발 모멘텀 (최근 거래량 vs 5일 평균)
+            avg_vol5 = df['vol'].iloc[-6:-1].mean() if len(df) >= 6 else df['vol'].mean()
+            curr_vol = df['vol'].iloc[-1]
+            vol_ratio = (curr_vol / (avg_vol5 + 1e-9)) * 100
+            if vol_ratio >= 200:
+                quant_info['vol_status'] = f"🚀 5일 평균 대비 {vol_ratio:.0f}% 대량 거래량 폭발 (스마트 머니 주도주)"
+            elif vol_ratio <= 50:
+                quant_info['vol_status'] = f"거래량 급감 구간 ({vol_ratio:.0f}% 횡보)"
+            else:
+                quant_info['vol_status'] = f"평균 거래량 유지 ({vol_ratio:.0f}%)"
+
+            # 5. 시장 대비 상대 강도 (RS)
+            quant_info['rs_signal'] = calculate_relative_strength(df, asset_type)
+
             quant_info['earnings_status'] = earnings_warning
             quant_info['current_price'] = f"{int(curr_p):,} {currency}" if currency == "원" else f"{curr_p:,.2f} {currency}"
-            
-            # 오더북 및 군중 심리 분석 결합
             quant_info['sentiment'] = fetch_orderbook_and_sentiment(symbol, asset_type)
             return quant_info
     except Exception:
@@ -235,7 +268,13 @@ def fetch_realtime_price_fallback(user_query):
         p = res.get("closePrice", "").replace(",", "")
         if p:
             sent = fetch_orderbook_and_sentiment(symbol, asset_type)
-            return f"{int(p):,} 원", symbol, {"news": news_brief, "earnings_status": "일정 확인중", "sentiment": sent}
+            return f"{int(p):,} 원", symbol, {
+                "news": news_brief,
+                "earnings_status": "일정 확인중",
+                "sentiment": sent,
+                "vol_status": "거래량 산출중",
+                "rs_signal": "시장 동조화"
+            }
     except Exception:
         pass
 
@@ -246,12 +285,14 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     if quant_data:
         sent = quant_data.get('sentiment', {})
         tech_context = f"""
-        [실시간 연산된 정밀 퀀트 팩터 및 오더북 심리 지표]
+        [실시간 연산된 정밀 퀀트 팩터 및 고도화 지표]
         - 실제 실시간 현재가: {price}
         - 계산된 RSI(14): {quant_data.get('rsi', '산출중')}
         - 20일선: {quant_data.get('ma20', '산출중')} / 60일선: {quant_data.get('ma60', '산출중')}
         - 20일 매물벽 상단: {quant_data.get('high20', '산출중')} / 하단 바닥: {quant_data.get('low20', '산출중')}
         - 일일 변동폭(ATR): {quant_data.get('atr', '산출중')}
+        - 거래량 폭발 모멘텀: {quant_data.get('vol_status', '보통')}
+        - 시장 대비 상대강도(RS): {quant_data.get('rs_signal', '중립')}
         - 실적 발표 일정: {quant_data.get('earnings_status', '정상')}
         - 포착된 당일 뉴스 재료: {quant_data.get('news', '시장 수급 모멘텀')}
         - 10호가 오더북 체결 델타: {sent.get('orderbook_ratio', '중립')}
@@ -262,14 +303,14 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     prompt = f"""
     [시스템 보안 규칙 최고 수준 활성화]
     당신은 대한민국 최고의 실전 퀀트 트레이더이자 블랙박스 인공지능입니다.
-    반드시 제공된 실제 실시간 가격({price})과 오더북 델타, 군중 심리 지표를 기반으로만 액션 플랜을 산출하십시오.
+    반드시 제공된 실제 실시간 가격({price})과 상대강도(RS), 거래량 폭발 모멘텀, 오더북 델타를 기반으로만 액션 플랜을 산출하십시오.
     
     대상 종목: {stock_name} ({symbol})
     {tech_context}
 
     [출력 양식 및 보안 규칙]
-    첫째, 사용자에게 출력되는 결과물에는 RSI, 이동평균선, ATR, HVN, FVG, 오더북, 10호가 같은 구체적인 지표 명칭을 절대 노출하지 마십시오.
-    둘째, 타인이 로직을 유추할 수 없도록 알파 시그널 자체 산출 구간, 기관 유동성 밴드, 알고리즘 교차 검증선, 자체 델타 수급 모델, 누적 유동성 밀집 노드, 스마트 머니 체결 압력 흡수, 자체 군중 심리 역발상 모델 등 전문적인 자체 브랜드 용어로 치환하십시오.
+    첫째, 사용자에게 출력되는 결과물에는 RSI, 이동평균선, ATR, HVN, FVG, 오더북, 상대강도 같은 구체적인 지표 명칭을 절대 노출하지 마십시오.
+    둘째, 타인이 로직을 유추할 수 없도록 알파 시그널 자체 산출 구간, 기관 유동성 밴드, 알고리즘 교차 검증선, 자체 델타 수급 모델, 누적 유동성 밀집 노드, 스마트 머니 체결 압력 흡수, 시장 초과 모멘텀 주도 강도 등 전문적인 자체 브랜드 용어로 치환하십시오.
     셋째, 콜론, 대괄호, 슬래시, 하이픈, 번호매기기, 이모티콘을 일체 사용하지 마세요 (단, 적합도 별표 및 괄호는 허용).
     넷째, 중간 소제목을 절대 쓰지 말고 오직 줄바꿈과 공백으로만 문단을 구분하세요.
     다섯째, Alpha Signal 액션 플랜과 아래 방향성 내용 사이에는 반드시 빈 줄 1줄을 넣으세요.
@@ -300,9 +341,9 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 
     거시경제 및 매크로 유동성 환율 금리 수급 환경 분석 서술
 
-    글로벌 섹터 지수 동조화 및 피어 그룹 밸류에이션 비교 분석 서술
+    글로벌 섹터 지수 동조화 및 시장 대비 초과 상대 강도 분석 서술 (구체적 지표명 배제)
 
-    개별 기업 실적 모멘텀 어닝 일정 및 수급 주체별 매매 동향 분석 서술 (구체적 지표명 배제)
+    개별 기업 실적 모멘텀 어닝 일정 및 대량 거래량 유입 강도 분석 서술 (구체적 지표명 배제)
 
     자체 퀀트 모델 교차 검증 및 자체 델타 수급 분석을 통한 호가 잔량 체결 압력 흡수 과정 서술 (구체적 지표명 배제)
 
@@ -318,13 +359,13 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
-        "종목명을 입력하시면 실시간 시세, 오더북 델타, 뉴스 모멘텀을 통합 연산한 퀀트 분석을 시작합니다\n"
+        "종목명을 입력하시면 실시간 시세, 오더북 델타, 상대 강도(RS), 거래량 모멘텀을 결합한 퀀트 분석을 시작합니다\n"
         "예시 SK하이닉스 삼성전자 비트코인 TSLA"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
-    status_msg = await update.message.reply_text(f"{query} 실시간 호가 및 오더북 델타 연산 중입니다")
+    status_msg = await update.message.reply_text(f"{query} 실시간 호가 및 다차원 퀀트 팩터 연산 중입니다")
 
     try:
         current_price, symbol, quant_data = fetch_realtime_price_fallback(query)

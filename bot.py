@@ -33,7 +33,6 @@ genai.configure(api_key=GEMINI_API_KEY)
 ai_model = genai.GenerativeModel('gemini-3.6-flash')
 
 REPORT_CACHE = {}
-STOCK_DICT = {}
 
 # 1. 암호화폐 매핑 (한글/영문)
 CRYPTO_MAP = {
@@ -60,33 +59,60 @@ US_STOCK_MAP = {
     "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
 }
 
-def init_korean_stocks():
-    """KRX 전 종목 마스터 로딩"""
-    global STOCK_DICT
+# 국내 주요 대형주 고정 사전 (검색 지연 방지)
+COMMON_DOMESTIC_MAP = {
+    "삼성중공업": "010140", "삼성전자": "005930", "삼성전기": "009150",
+    "SK하이닉스": "000660", "SK스퀘어": "402340", "SK증권": "001510",
+    "솔트룩스": "304100", "알테오젠": "196170", "에코프로": "086520",
+    "에코프로비엠": "247540", "레인보우로보틱스": "277810", "카카오": "035720",
+    "네이버": "035420", "NAVER": "035420", "현대차": "005380",
+    "기아": "000270", "포스코홀딩스": "005490", "POSCO홀딩스": "005490",
+    "LG에너지솔루션": "373220", "한화오션": "042660", "두산에너빌리티": "034020"
+}
+
+def get_stock_code_and_name(query):
+    """국내 전 종목 초고속 탐색기"""
+    clean_q = query.strip().replace(" ", "").upper()
+    
+    # 1. 고정 사전 매칭
+    for name, code in COMMON_DOMESTIC_MAP.items():
+        if name.replace(" ", "").upper() == clean_q:
+            return code, name
+            
+    # 2. 6자리 종목코드 직접 입력
+    if clean_q.isdigit() and len(clean_q) == 6:
+        return clean_q, clean_q
+
+    # 3. 다음 증권 자동완성 API (차단 없음)
     try:
-        url = "http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
-        df = pd.read_html(url, header=0)[0]
-        for _, row in df.iterrows():
-            name = str(row['회사명']).strip().replace(" ", "").upper()
-            code = str(row['종목코드']).zfill(6)
-            STOCK_DICT[name] = (code, str(row['회사명']).strip())
+        d_url = f"https://suggest-baro.daum.net/suggest?id=stock&v=4&code=utf-8&q={urllib.parse.quote(query.strip())}"
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.daum.net"}
+        res = requests.get(d_url, headers=headers, timeout=2.5).json()
+        sub_items = res.get("sub", [])
+        if sub_items:
+            for item in sub_items:
+                raw_code = str(item[0]).replace("A", "").strip()
+                name = str(item[1]).strip()
+                if name.replace(" ", "").upper() == clean_q:
+                    return raw_code, name
+            return str(sub_items[0][0]).replace("A", "").strip(), str(sub_items[0][1]).strip()
     except Exception:
         pass
 
-init_korean_stocks()
-
-def get_stock_code_and_name(query):
-    clean_q = query.strip().replace(" ", "").upper()
-    
-    if clean_q in STOCK_DICT:
-        return STOCK_DICT[clean_q][0], STOCK_DICT[clean_q][1]
-    
-    for k, v in STOCK_DICT.items():
-        if clean_q in k or k in clean_q:
-            return v[0], v[1]
-            
-    if clean_q.isdigit() and len(clean_q) == 6:
-        return clean_q, clean_q
+    # 4. 네이버 모바일 자동완성
+    try:
+        url = f"https://m.stock.naver.com/api/search/autoComplete?keyword={urllib.parse.quote(query.strip())}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=2.5).json()
+        for key in ["stocks", "items"]:
+            if key in res and isinstance(res[key], list):
+                for item in res[key]:
+                    c = item.get("itemCode") or item.get("code")
+                    n = item.get("stockName") or item.get("name")
+                    if c and n:
+                        return str(c).strip(), str(n).strip()
+    except Exception:
+        pass
 
     return None, query.strip()
 
@@ -120,6 +146,32 @@ def get_crypto_bybit_data(symbol="BTCUSDT"):
     return None, None
 
 def get_us_stock_data(symbol):
+    """해외 주식 실시간 시세 및 캔들 (네이버 글로벌 + yfinance 이중화)"""
+    # 1. 네이버 해외증권 API (IP 차단 없음)
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"}
+        url = f"https://api.stock.naver.com/chart/foreign/item/{symbol}?periodType=dayCandle&range=60"
+        res = requests.get(url, headers=headers, timeout=3).json()
+        price_infos = res.get("priceInfos", [])
+        if price_infos:
+            records = []
+            for item in price_infos:
+                records.append({
+                    "Date": pd.to_datetime(str(item["localDate"]), format="%Y%m%d"),
+                    "Open": float(item["openPrice"]),
+                    "High": float(item["highPrice"]),
+                    "Low": float(item["lowPrice"]),
+                    "Close": float(item["closePrice"]),
+                    "Volume": float(item.get("accumulatedTradingVolume", 0))
+                })
+            if records:
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                curr_p = float(df['Close'].iloc[-1])
+                return f"{curr_p:,.2f} 달러", df
+    except Exception:
+        pass
+
+    # 2. yfinance 백업
     try:
         stock = yf.Ticker(symbol)
         df = stock.history(period="60d")
@@ -128,6 +180,7 @@ def get_us_stock_data(symbol):
             return f"{curr_p:,.2f} 달러", df
     except Exception:
         pass
+
     return None, None
 
 def get_naver_realtime_price(code):
@@ -248,6 +301,9 @@ def fetch_technical_quant_data(symbol, asset_type):
         elif asset_type == "domestic_stock":
             curr_price_str = get_naver_realtime_price(symbol)
             df = fetch_domestic_stock_candles(symbol)
+            if not curr_price_str and df is not None and not df.empty:
+                c_val = float(df['Close'].iloc[-1])
+                curr_price_str = f"{int(c_val):,} 원"
 
         if not curr_price_str:
             return None
@@ -313,7 +369,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal Quant Bot 가동 중입니다\n\n"
         "종목명을 입력하시면 실시간 차트와 퀀트 액션 플랜을 전송합니다\n"
-        "예시 엔비디아 테슬라 삼성중공업 비트코인 sk하이닉스 대장"
+        "예시 삼성중공업 엔비디아 테슬라 비트코인 sk하이닉스 대장"
     )
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):

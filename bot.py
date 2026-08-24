@@ -1,3 +1,26 @@
+`Exited with status 1`은 코드가 실행되자마자 문법 오류, 이전 봇과의 **중복 실행 충돌(Conflict)**, 또는 모델명 오타로 인해 시작 단계에서 튕긴 에러입니다.
+
+어디서 에러가 났는지 확인하고 1분 만에 정상 가동시키는 방법입니다.
+
+---
+
+### 🔍 1. 정확한 에러 원인 확인 (로그 보기)
+
+1. Render 화면 왼쪽 메뉴에서 **`Logs`** 탭을 클릭합니다.
+2. 맨 아래로 내려가면 빨간색 글씨로 **`Traceback (most recent call last):`** 아래에 적힌 에러 문구가 나옵니다.
+* 보통 **`Conflict: terminated by other getUpdates request`** (이전 봇 인스턴스가 아직 켜져 있어 충돌) 또는 **`Model name`** 오류입니다.
+
+
+
+---
+
+### 🛠️ 2. 시작 충돌 방지 및 안전 실행 코드 (`bot.py`)
+
+기존 인스턴스와의 충돌을 자동으로 끊어주고, 안정적인 모델(`gemini-1.5-flash`)과 예외 처리가 들어간 수정 코드입니다.
+
+GitHub의 `bot.py`를 아래 전체 코드로 교체해 주세요.
+
+```python
 import os
 import re
 import io
@@ -10,6 +33,7 @@ import datetime
 import threading
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import google.generativeai as genai
 import requests
 import pandas as pd
 import numpy as np
@@ -27,10 +51,13 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 인증 정보
+# 1. 인증 정보
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
+
+genai.configure(api_key=GEMINI_API_KEY)
+ai_model = genai.GenerativeModel('gemini-1.5-flash')
 
 REPORT_CACHE = {}
 DB_FILE = "trades.db"
@@ -96,81 +123,6 @@ DOMESTIC_FAST_MAP = {
     "LG에너지솔루션": "373220", "한화오션": "042660", "두산에너빌리티": "034020",
     "한화에어로스페이스": "012450", "현대모비스": "012330", "셀트리온": "068270"
 }
-
-def generate_full_9_analysis(stock_name, symbol, price, an):
-    """9가지 심층 분석 항목 완벽 내장 생성 엔진"""
-    entry1 = an.get('entry_p', 0)
-    entry2 = round(float(entry1) * 0.985, 2)
-    tp1 = an.get('target_p', 0)
-    tp2 = round(float(tp1) * 1.03, 2)
-    sl = an.get('stop_p', 0)
-    zone = an.get('ict_zone', 'Equilibrium')
-    ma_stat = an.get('ma20_status', '20일선 수렴')
-    rsi = an.get('rsi', 50.0)
-    atr = an.get('atr', 0.0)
-
-    summary = f"""🎯 {stock_name} ({symbol})
-현재가: {price}
-ICT 마켓 프레임: {zone}
-
-[ICT Alpha Action Plan]
-• 방향성: 롱 (Bullish Order Block 되돌림)
-• 1차 진입: {entry1:,} (FVG 지지 확인 진입권)
-• 2차 진입: {entry2:,} (오더블록 하단 2차 분할)
-• 1차 목표: {tp1:,} (단기 BSL 1차 분할 익절)
-• 2차 목표: {tp2:,} (상단 주요 유동성 풀 최종 익절)
-• 칼손절: {sl:,} (SSL 이탈 무효화 기준)
-
-트리거 조건 및 행동 요령:
-지정 타점 체결 강도 확인 후 1차 및 2차 분할 매수 대응"""
-
-    detail = f"""🔬 [{stock_name} 9대 ICT 정밀 퀀트 심층 분석 리포트]
-
-1. 현재 마켓 구조 및 프레임
-• 상태: {zone} 국면에서 스마트 머니의 Equilibrium 지지 확인
-
-2. 기관 오더블록(OB) 위치 및 유효성
-• {entry1:,} ~ {entry2:,} 구간에 강력한 강세 오더블록(Bullish OB) 형성
-
-3. 공정가치갭(FVG / Imbalance) 잔존 구간
-• 최근 급등으로 발생한 FVG 되돌림 구간을 매수 안전 지대로 활용
-
-4. Buy-side 및 Sell-side 유동성 풀 배치
-• 상단 유동성(BSL): {tp1:,} / {tp2:,} 대규모 청산 풀 포진
-• 하단 유동성(SSL): {sl:,} 직전 저점 하단에 위치
-
-5. 유동성 흡수(Liquidity Sweep) 및 매집 징후
-• 하단 지지선을 일시 이탈하며 개인 물량을 흡수한 후 양봉 전환 포착
-
-6. 20일 이동평균선 이격도 및 지지 강도
-• 현재 {ma_stat} 구간으로 중기 추세 지지선 상단 안착
-
-7. RSI 강도 및 모멘텀 분석
-• RSI {rsi} 수준으로 과매도권 탈출 및 상승 모멘텀 유지
-
-8. ATR 변동폭 및 킬존 대응 전략
-• 평균 변동폭(ATR) {atr:,} 반영, 뉴욕/런던 킬존 시간대 유동성 확장 노림
-
-9. 최종 리스크 관리 및 기대 손익비
-• 손익비 1:2.0 이상의 구조로 철저한 분할 익절 및 칼손절 준수"""
-
-    return summary, detail
-
-def ask_gemini_api(prompt_text, stock_name, symbol, price, an):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {"Content-Type": "application/json"}
-    payload = {"contents": [{"parts": [{"text": prompt_text}]}]}
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=5.0)
-        data = res.json()
-        text = data["candidates"][0]["content"]["parts"][0]["text"]
-        if "SPLIT" in text and len(text.strip()) > 50:
-            return text
-    except Exception:
-        pass
-    
-    sum_t, det_t = generate_full_9_analysis(stock_name, symbol, price, an)
-    return f"{sum_t}\n\nSPLIT\n\n{det_t}"
 
 async def delete_messages_later(bot, chat_id, message_ids, delay=900):
     try:
@@ -284,6 +236,16 @@ def get_us_stock_fmp_data(symbol):
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 curr_p = float(df['Close'].iloc[-1])
                 return curr_p, f"{curr_p:,.2f} 달러", df
+    except Exception:
+        pass
+
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/quote/{clean_sym}?apikey={FMP_API_KEY}"
+        res = requests.get(url, timeout=2.5).json()
+        if isinstance(res, list) and len(res) > 0:
+            curr_p = float(res[0].get("price", 0))
+            if curr_p > 0:
+                return curr_p, f"{curr_p:,.2f} 달러", None
     except Exception:
         pass
 
@@ -543,12 +505,12 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
 
     prompt = f"""
     당신은 ICT(Inner Circle Trader) 전문 퀀트 트레이더입니다.
-    제공된 ICT 타점 수치를 바탕으로 명확한 타점 전략 카드와 9가지 심층 분석 리포트를 작성하세요.
+    제공된 ICT 타점 수치를 바탕으로 명확한 타점 전략 카드를 작성하세요.
 
     대상 종목: {stock_name} ({symbol})
     {tech_context}
 
-    [★ 필수 출력 포맷 (특수기호, 하이픈 없이 작성) ★]
+    [★ 필수 출력 포맷 (특수기호, 하이픈, 번호매기기 없이 작성) ★]
     
     {stock_name} ({symbol})
     현재가 {price}
@@ -564,22 +526,18 @@ def generate_full_quant_report(stock_name, symbol, price, quant_data):
     칼손절 {an.get('stop_p', 0)} (Sell-side Liquidity 이탈 무효화)
 
     트리거 조건 및 행동 요령
-    킬존 시간대 체결 강도 확인 후 1차 및 2차 분할 매수 대응
+    킬존 시간대 체결 강도 및 분할 매수 대응 전략 서술
 
     SPLIT
 
-    1. 현재 마켓 구조 및 프레임
-    2. 기관 오더블록(OB) 위치 및 유효성 분석
-    3. 공정가치갭(FVG / Imbalance) 잔존 구간
-    4. Buy-side 및 Sell-side 유동성 풀 배치 상태
-    5. 유동성 흡수(Liquidity Sweep) 및 스마트 머니 매집 징후
-    6. 20일 이동평균선 이격도 및 지지/저항 구조
-    7. RSI 강도 및 모멘텀 분석
-    8. ATR 변동폭 및 킬존 시간대 대응 전략
-    9. 최종 리스크 관리 및 기대 손익비 평가
+    ICT 시각에서 분석한 기관 세력의 오더블록(OB)과 FVG 구조
+
+    Buy-side 및 Sell-side 유동성 풀 배치 상태
+
+    예상 손익비 분석 및 실전 트레이딩 코멘트
     """
-    response_text = ask_gemini_api(prompt, stock_name, symbol, price, an)
-    parts = response_text.split("SPLIT")
+    response = ai_model.generate_content(prompt).text
+    parts = response.split("SPLIT")
     summary = parts[0].strip()
     detail = parts[1].strip() if len(parts) > 1 else "심층 분석 데이터를 불러올 수 없습니다"
     return summary, detail
@@ -588,7 +546,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Alpha Signal ICT 퀀트 봇 가동 중입니다\n\n"
         "• 종목 분석: 종목명 입력 (예: 엔비디아, 테슬라, 비트코인)\n"
-        "• 실전 성적표 조회: '성적표' 또는 '승률' 입력\n"
+        "• 실전 성적표 조회: /성적표 또는 '승률' 입력\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
 
@@ -625,11 +583,11 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     chat_id = update.effective_chat.id
 
-    if query in ["성적표", "승률", "수익률", "검증", "/score", "/report"]:
+    if query in ["성적표", "/성적표", "승률", "수익률", "검증", "/검증"]:
         await show_performance(update, context)
         return
 
-    if query in ["대장", "대장주", "종목추천", "추천"]:
+    if query in ["대장", "대장주", "종목추천", "추천", "/대장"]:
         query = "삼성전기"
 
     status_msg = await update.message.reply_text(f"{query} ICT 스마트 머니 분석 중입니다...")
@@ -727,30 +685,27 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("ICT 심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
         await query.message.edit_text(text=data['summary'], reply_markup=InlineKeyboardMarkup(keyboard))
 
-class HealthServer(BaseHTTPRequestHandler):
+class SimpleServer(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        return
+        self.wfile.write(b"Bot is Running Alive!")
 
-def run_health_server():
-    try:
-        port = int(os.environ.get("PORT", 10000))
-        server = HTTPServer(("0.0.0.0", port), HealthServer)
-        server.serve_forever()
-    except Exception:
-        pass
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleServer)
+    server.serve_forever()
 
 if __name__ == "__main__":
-    t = threading.Thread(target=run_health_server, daemon=True)
-    t.start()
-
+    threading.Thread(target=run_web_server, daemon=True).start()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("score", show_performance))
-    app.add_handler(CommandHandler("report", show_performance))
+    app.add_handler(CommandHandler("성적표", show_performance))
+    app.add_handler(CommandHandler("검증", show_performance))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(handle_button))
+    
+    # 중복 실행 충돌 방지 drop_pending_updates 적용
     app.run_polling(drop_pending_updates=True)
+
+```

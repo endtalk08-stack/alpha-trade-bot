@@ -468,7 +468,6 @@ def backtest_alpha_strategy(df, years=1):
                 else:
                     entry_p = (next_o + next_l) / 2.0
                 
-                # 변동성 종목 휩쏘 방지 여유폭 동적 설정
                 sweep_stop = recent_sweep_low - (c_atr * 0.3)
                 default_stop = entry_p - (c_atr * 1.8)
                 stop_p = max(sweep_stop, default_stop)
@@ -530,15 +529,12 @@ def backtest_alpha_strategy(df, years=1):
 
 def format_backtest_text(formal_name, symbol, bt, years=1):
     y_str = f"{years}년"
-    summary_note = "5대 팩터 필터와 쌍봉 방어로 손익비 극대화" if years == 1 else "2년 장기 검증에서도 70%대 승률 및 안정적 손익비 유지"
-    
     text = f"""🏆 {formal_name} ({symbol}) {y_str} 검증
 
-• 승률: {bt['win_rate']:.1f}% ({bt['win']}승 {bt['loss']}패 / 총 {bt['total']}회)
-• 누적 수익: {bt['cum_ret']:+.1f}%
-• 손익비: {bt['pf']:.2f} : 1 (익절 {bt['avg_win']:+.1f}% / 손절 {bt['avg_loss']:+.1f}%)
-
-> 💡 {summary_note}"""
+승률: {bt['win_rate']:.1f}%
+누적 수익: {bt['cum_ret']:+.1f}%
+손익비: {bt['pf']:.2f} : 1
+익절 {bt['avg_win']:+.1f}% / 손절 {bt['avg_loss']:+.1f}%"""
     return text
 
 def generate_candlestick_chart(df, symbol_name):

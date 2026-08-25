@@ -1,8 +1,6 @@
-python-telegram-bot
-google-generativeai
 requests
 pandas
 numpy
 matplotlib
 mplfinance
-yfinance
+python-telegram-bot

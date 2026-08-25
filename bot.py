@@ -72,7 +72,9 @@ DOMESTIC_FAST_MAP = {
     "포스코홀딩스": "005490", "POSCO홀딩스": "005490", "LG에너지솔루션": "373220",
     "한화오션": "042660", "두산에너빌리티": "034020", "한화에어로스페이스": "012450",
     "현대모비스": "012330", "셀트리온": "068270", "한미반도체": "042700",
-    "씨젠": "096530", "HLB": "028300", "에코프로머티": "450080"
+    "씨젠": "096530", "HLB": "028300", "에코프로머티": "450080",
+    "리가켐바이오": "141080", "엔켐": "348370", "삼천당제약": "000250",
+    "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
 }
 
 async def delete_messages_later(bot, chat_id, message_ids, delay=900):
@@ -95,6 +97,24 @@ def find_stock_code(query):
         if name.replace(" ", "").upper() == clean_q:
             return code, name
 
+    # 1. 네이버 최신 통합 검색 (코스닥/코스피 전 종목 커버)
+    try:
+        url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=2.5).json()
+        items = res.get("result", {}).get("items", [])
+        if items:
+            for it in items:
+                name = str(it.get("name", "")).strip()
+                code = str(it.get("code", "")).strip()
+                if name.replace(" ", "").upper() == clean_q:
+                    return code, name
+            first = items[0]
+            return str(first.get("code", "")).strip(), str(first.get("name", "")).strip()
+    except Exception:
+        pass
+
+    # 2. 레거시 자동완성 백업
     try:
         url = f"https://ac.finance.naver.com/ac?q={urllib.parse.quote(query.strip())}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -114,6 +134,7 @@ def find_stock_code(query):
                     return str(first_item[0]).strip(), str(first_item[1]).strip()
     except Exception:
         pass
+
     return None, query.strip()
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
@@ -316,19 +337,33 @@ def get_naver_realtime_price(code):
 
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
+        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        res = requests.get(url, headers=headers, timeout=2.0).json()
+        datas = res.get("datas", [])
+        if datas:
+            p = str(datas[0].get("closePrice", "")).replace(",", "").strip()
+            if p and p.replace(".", "").isdigit():
+                return float(p), f"{int(float(p)):,} 원"
+    except Exception:
+        pass
+
+    try:
         url = f"https://m.stock.naver.com/api/stock/{code}/basic"
         res = requests.get(url, headers=headers, timeout=2.0).json()
         p = str(res.get("closePrice", "")).replace(",", "").strip()
-        if p and p.isdigit():
-            return float(p), f"{int(p):,} 원"
+        if p and p.replace(".", "").isdigit():
+            return float(p), f"{int(float(p)):,} 원"
     except Exception:
         pass
+
     return None, None
 
 def fetch_domestic_stock_candles(code, years=1):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     range_str = f"{years}y"
-    for suffix in [".KS", ".KQ"]:
+    
+    # 1. 야후 파이낸스 (코스피 .KS / 코스닥 .KQ)
+    for suffix in [".KQ", ".KS"]:
         try:
             y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range={range_str}&interval=1d"
             y_res = requests.get(y_url, headers=headers, timeout=2.5).json()
@@ -358,20 +393,20 @@ def fetch_domestic_stock_candles(code, years=1):
         except Exception:
             pass
 
+    # 2. 네이버 모바일 일봉 API 백업 (코스피/코스닥 공용)
     try:
-        url = f"https://api.stock.naver.com/chart/domestic/market/stock/{code}?periodType=dayCandle&range=60"
-        res = requests.get(url, headers=headers, timeout=2.0).json()
-        price_infos = res.get("priceInfos", [])
-        if price_infos:
+        url = f"https://m.stock.naver.com/api/stock/{code}/price?pageSize=60&page=1"
+        res = requests.get(url, headers=headers, timeout=2.5).json()
+        if isinstance(res, list) and len(res) > 0:
             records = []
-            for item in price_infos:
+            for item in res:
                 records.append({
-                    "Date": pd.to_datetime(str(item["localDate"]), format="%Y%m%d"),
-                    "Open": float(item["openPrice"]),
-                    "High": float(item["highPrice"]),
-                    "Low": float(item["lowPrice"]),
-                    "Close": float(item["closePrice"]),
-                    "Volume": float(item["accumulatedTradingVolume"])
+                    "Date": pd.to_datetime(str(item["localTradedAt"])),
+                    "Open": float(str(item["openPrice"]).replace(",", "")),
+                    "High": float(str(item["highPrice"]).replace(",", "")),
+                    "Low": float(str(item["lowPrice"]).replace(",", "")),
+                    "Close": float(str(item["closePrice"]).replace(",", "")),
+                    "Volume": float(str(item["accumulatedTradingVolume"]).replace(",", ""))
                 })
             if records:
                 return pd.DataFrame(records).set_index("Date").sort_index()
@@ -879,8 +914,8 @@ def run_full_analysis_process(query):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "gaemiGTP 올인원 퀀트 봇 가동 중입니다\n\n"
-        "• 종목 실시간 타점 + 심층 리포트: 종목명 입력 (예: SK하이닉스, 삼성전자, 엔비디아, QQQ, 비트코인)\n"
-        "• 실전 백테스팅 검증표: '검증 종목명' (예: 검증 엔비디아, 검증 비트코인, 검증 하이닉스)\n"
+        "• 종목 실시간 타점 + 심층 리포트: 종목명 입력 (예: SK하이닉스, 삼성전자, 알테오젠, 에코프로, 비트코인)\n"
+        "• 실전 백테스팅 검증표: '검증 종목명' (예: 검증 알테오젠, 검증 비트코인, 검증 에코프로)\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
 
@@ -1084,7 +1119,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
                 return
 
-            # 상단 텔레그램 링크 제거 및 깔끔한 단일 뷰 HTML
             html_content = """<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -1103,13 +1137,11 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .hero-title { font-size: 3.6rem; font-weight: 800; margin-bottom: 12px; letter-spacing: -1.5px; color: #f5f5f5; }
         .hero-sub { font-size: 1.05rem; color: #8e8ea0; margin-bottom: 30px; font-weight: 400; }
         
-        /* 미니멀 검색 바 */
         .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 8px 10px 8px 20px; display: flex; align-items: center; box-shadow: 0 8px 24px rgba(0,0,0,0.3); transition: border-color 0.2s; }
         .search-box:focus-within { border-color: #777; }
         .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 1rem; padding: 6px 8px; }
         .search-box input::placeholder { color: #737380; font-size: 0.95rem; }
         
-        /* 원형 전송 버튼 */
         .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; flex-shrink: 0; }
         .send-btn:hover { background: #606060; transform: scale(1.04); }
         .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
@@ -1138,7 +1170,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
             <div class="hero-title">gaemiGTP</div>
             <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
             <div class="search-box">
-                <input type="text" id="queryInput" placeholder="종목명 또는 티커를 입력하세요 (예: 하이닉스, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch();">
+                <input type="text" id="queryInput" placeholder="종목명 또는 티커를 입력하세요 (예: 알테오젠, 에코프로, BTC)" onkeypress="if(event.keyCode==13) doSearch();">
                 <button class="send-btn" onclick="doSearch()" title="분석 시작">
                     <svg viewBox="0 0 24 24">
                         <path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
@@ -1147,11 +1179,11 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
             </div>
             <div class="popular-tags">
                 <button class="tag-btn" onclick="searchStock('SK하이닉스')">🔥 SK하이닉스</button>
-                <button class="tag-btn" onclick="searchStock('삼성전자')">📈 삼성전자</button>
+                <button class="tag-btn" onclick="searchStock('알테오젠')">🧬 알테오젠</button>
+                <button class="tag-btn" onclick="searchStock('에코프로')">🔋 에코프로</button>
                 <button class="tag-btn" onclick="searchStock('엔비디아')">🚀 엔비디아</button>
                 <button class="tag-btn" onclick="searchStock('테슬라')">🚗 테슬라</button>
                 <button class="tag-btn" onclick="searchStock('비트코인')">₿ 비트코인</button>
-                <button class="tag-btn" onclick="searchStock('QQQ')">📊 QQQ</button>
             </div>
             <div class="loading" id="loading">⚡ 실시간 수급/재무/뉴스 및 퀀트 팩터를 분석 중입니다...</div>
             <div id="result-container">

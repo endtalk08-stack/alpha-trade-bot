@@ -211,7 +211,7 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
         if "테슬라" in clean_name or "TSLA" in clean_name:
             return "테슬라 FSD 자율주행 고도화 및 로보택시 생태계 확장 기대감"
         if "USDT" in clean_name.upper():
-            return f"{clean_name} 파생상품 시장 수급 유입 및 변동성 확대"
+            return f"{clean_name} 파생상품 시장 유동성 유입 및 변동성 확대"
         return f"{clean_name} 업황 호조 및 기관 수급 유입"
     
     joined_issues = "\n- ".join(valid_issues)
@@ -259,7 +259,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     info = {
         "supply_status": "기관 및 외국인 수급 변곡점 형성 구간",
         "financial_status": "견조한 펀더멘털 및 실적 가시성 유지",
-        "recent_news": f"{stock_name} 업황 호조 및 수급 유입"
+        "recent_news": f"{stock_name} 업황 호조 및 기관 수급 유입"
     }
     
     if asset_type == "overseas_stock":
@@ -287,7 +287,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         if crypto_news:
             raw_issues.extend(crypto_news)
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
-        info["supply_status"] = "선물 미결제약정 및 거래소 유동성 수급 유입 구간"
+        info["supply_status"] = "선물 미결제약정 및 거래소 유동성 유입 구간"
 
     else:
         headers = {
@@ -402,7 +402,7 @@ def fetch_domestic_stock_candles(code, years=1):
     return None
 
 def backtest_alpha_strategy(df, years=1, asset_type="domestic_stock"):
-    """과거 캔들 전수 순회 기반 퀀트 시뮬레이션 엔진"""
+    """과거 캔들 전수 순회 기반 퀀트 시뮬레이션 엔진 (/검증 전용)"""
     if df is None or len(df) < 50:
         return {"total": 14, "win": 9, "loss": 5, "win_rate": 64.3, "cum_ret": 28.5, "pf": 1.75}
 
@@ -469,7 +469,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     """
     [이원화 퀀트 연산 엔진]
     - 상단: 중장기 정통 추세추종 (20/60일선, 대파동 확장 목표가)
-    - 하단: 실전 단기 ICT 타점 (오더블록 매집 밴드, 단기 청산 목표가)
+    - 하단: 실전 단기 ICT 타점 (스마트머니 유동성 지지 밴드, 단기 청산 목표가)
     """
     is_krw = "domestic" in asset_type
     round_fn = (lambda v: round(float(v), 0)) if is_krw else (lambda v: round(float(v), 2))
@@ -484,7 +484,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     score_val = 4.2
     regime_key = "PULLBACK"
 
-    # 1. 하단 ICT 단기 트레이딩 타점 기본값
+    # 1. 하단 ICT 스마트머니 단기 타점 기본값
     ict_entry1_low = round_fn(raw_price - (atr_val * 0.6))
     ict_entry1_high = round_fn(raw_price)
     ict_entry2_low = round_fn(raw_price - (atr_val * 1.4))
@@ -520,7 +520,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             if not np.isnan(calc_rsi):
                 rsi_val = round(float(calc_rsi), 1)
 
-            # --- ICT 단기 오더블록(OB) 탐색 ---
+            # --- 스마트머니 오더블록(OB) 지지대 탐색 ---
             ob_found = False
             for idx in range(len(df) - 2, max(0, len(df) - 22), -1):
                 c_prev = df['Close'].iloc[idx]
@@ -592,41 +592,41 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
         "BREAKOUT": {
             "pattern_name": "강력한 상승 모멘텀 돌파형",
             "direction": "단기 롱 (상승 모멘텀 돌파)",
-            "entry1_label": "기관 1차 지지 밴드",
-            "entry2_label": "하단 방어 마지노선",
+            "entry1_label": "주요 기관 1차 지지 밴드",
+            "entry2_label": "구조적 하단 방어 마지노선",
             "target1_label": "직전 고점 유동성 청산",
             "target2_label": "상단 저항선 전량 청산",
-            "stop_label": "기준봉 훼손 손절",
+            "stop_label": "모멘텀 기준봉 훼손 손절",
             "guide": f"5일 평균 대비 거래량 {vol_ratio}퍼센트 급증 확인 시 1차 분할 착수하며 장중 변동폭 {atr_display} 내외의 저항 돌파 시 매수세 유입 확인 후 집행"
         },
         "PULLBACK": {
             "pattern_name": "정석적인 우상향 눌림목 안착형",
-            "direction": "단기 롱 (세력 매집 눌림목)",
-            "entry1_label": "기관 1차 지지 밴드",
-            "entry2_label": "하단 방어 마지노선",
+            "direction": "단기 롱 (기관 수급 눌림목)",
+            "entry1_label": "주요 기관 1차 지지 밴드",
+            "entry2_label": "구조적 하단 방어 마지노선",
             "target1_label": "직전 고점 유동성 청산",
             "target2_label": "상단 저항선 전량 청산",
-            "stop_label": "지지선 붕괴 손절",
+            "stop_label": "기술적 지지선 이탈 손절",
             "guide": f"20일선 지지 확인 및 체결강도 105퍼센트 회복 시 1차 착수하며 장중 변동폭 {atr_display} 내외의 단기 음봉에서 지지대 안착 확인 후 집행"
         },
         "OVERSOLD": {
             "pattern_name": "낙폭과대 단기 기술적 반등형",
             "direction": "단기 롱 (과매도 기술적 반등)",
-            "entry1_label": "기관 1차 지지 밴드",
-            "entry2_label": "하단 방어 마지노선",
+            "entry1_label": "주요 기관 1차 지지 밴드",
+            "entry2_label": "구조적 하단 방어 마지노선",
             "target1_label": "직전 고점 유동성 청산",
             "target2_label": "상단 저항선 전량 청산",
-            "stop_label": "최저점 이탈 손절",
+            "stop_label": "구조적 최저점 이탈 손절",
             "guide": f"실시간 RSI {rsi_val} 침체권 매물 소화 확인 후 2차 지지 밴드 중심 분할 접근하며 변동폭 {atr_display} 수준의 하방 경직성 확인 후 집행"
         },
         "BOX": {
             "pattern_name": "박스권 횡보 수렴형",
             "direction": "단기 롱 (박스권 하단 반등)",
-            "entry1_label": "기관 1차 지지 밴드",
-            "entry2_label": "하단 방어 마지노선",
+            "entry1_label": "주요 기관 1차 지지 밴드",
+            "entry2_label": "구조적 하단 방어 마지노선",
             "target1_label": "직전 고점 유동성 청산",
             "target2_label": "상단 저항선 전량 청산",
-            "stop_label": "박스권 이탈 손절",
+            "stop_label": "박스권 하단 이탈 손절",
             "guide": f"거래량 {vol_ratio}퍼센트 수준의 수급 숨고르기 국면이므로 1차 밴드 하단 지지 여부 및 호가창 매도벽 소화 확인 후 집행"
         }
     }
@@ -661,22 +661,17 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
         "vol_ratio": vol_ratio
     }
 
-def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info):
+def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info):
     is_krw = "원" in str(price)
     unit = " 원" if is_krw else " 달러"
     fmt = lambda v: f"{int(v):,}{unit}" if is_krw else f"{v:,.2f}{unit}"
     clean_name = re.sub(r'\(.*?\)', '', stock_name).strip()
     
-    curr_num = an['ict_entry1_high']
-    trend_mid_ret = ((an['trend_target_mid'] - curr_num) / curr_num) * 100
-    ict_target1_ret = ((an['ict_target1'] - curr_num) / curr_num) * 100
-    stop_risk = ((curr_num - an['ict_stop']) / curr_num) * 100
-
     pattern_name = an.get('pattern_name', '우상향 눌림목 안착형')
 
     prompt = f"""
-당신은 최고 수준의 월스트리트 퀀트 헤드 애널리스트입니다.
-아래 제공된 '100% 실시간 팩트 데이터'를 문장에 정확히 명시하여 '{clean_name}'에 대한 전문 퀀트 심층 리포트(중장기 추세추종 뷰)를 5문단으로 작성하세요.
+당신은 최고 수준의 월스트리트 기관 퀀트 헤드 애널리스트입니다.
+아래 제공된 '100% 실시간 팩트 데이터'를 문장에 정확히 명시하여 '{clean_name}'에 대한 전문 퀀트 심층 리포트를 5문단으로 작성하세요.
 
 [실시간 팩트 데이터]
 - 종목명: {clean_name} ({symbol}) / 현재가: {price}
@@ -686,19 +681,15 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
 - 수급 현황: {extra_info.get('supply_status')}
 - 20일 이동평균선: {fmt(an['ma20'])} / 60일 이동평균선: {fmt(an['ma60'])} / 20일 고점: {fmt(an['high_20d'])}
 - 5일 평균 거래량 대비 비율: {an['vol_ratio']}퍼센트 / 실시간 RSI: {an['rsi']} / 일일 변동폭(ATR): {fmt(an['atr'])}
-- 1년 캔들 백테스트 시뮬레이션: 총 {bt_info['total']}회 검증, 승률 {bt_info['win_rate']}%, 누적 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1
-- 중장기 대파동 구조적 목표가: {fmt(an['trend_target_mid'])} (상승 여력 약 +{trend_mid_ret:.1f}%)
-- 단기 실전 1차 진입 지지대: {fmt(an['ict_entry1_low'])} ~ {fmt(an['ict_entry1_high'])}
-- 단기 실전 1차 목표가: {fmt(an['ict_target1'])} (단기 목표 약 +{ict_target1_ret:.1f}%)
-- 단기 실전 칼손절가: {fmt(an['ict_stop'])} (리스크 약 -{stop_risk:.1f}%)
 
-[작성 지침]
-- 중장기 추세추종(Trend Following) 관점으로 품격 있고 논리적으로 작성할 것.
-- 1문단: 현재가 위치, 실시간 핵심 이슈('{extra_info.get('recent_news')}'), 20일 고점 대비 현재 위치와 거래량 {an['vol_ratio']}%의 의미 서술.
-- 2문단: 실시간 펀더멘털 지표({extra_info.get('financial_status')})와 업황 재료가 중장기 기업 가치에 미칠 실질적 파급 효과 분석.
-- 3문단: 수급 현황({extra_info.get('supply_status')}), 20일선({fmt(an['ma20'])}) 및 60일선 정배열 추세 구조 설명.
-- 4문단: RSI {an['rsi']} 모멘텀, ATR {fmt(an['atr'])} 변동성, 1년 백테스트(승률 {bt_info['win_rate']}%, 누적수익 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1)의 통계적 우위 제시.
-- 5문단: 중장기 대파동 목표가({fmt(an['trend_target_mid'])}, 약 +{trend_mid_ret:.1f}%)를 제시하고, 실전 매매는 하단 시그널의 단기 ICT 오더블록 지지 밴드({fmt(an['ict_entry1_low'])} ~ {fmt(an['ict_entry1_high'])})를 활용한 정밀 분할 집행이 유효하다는 최종 결론 제시.
+[작성 지침 - 절대 준수]
+1. 정통 금융·기관 퀀트 전문 용어만 사용하십시오. '세력', '개미 털기' 같은 비전문적 은어는 절대 사용을 금지합니다.
+2. 구체적인 진입가, 목표가, 손절가 금액 숫자를 본문 글에 미리 적지 마십시오. (하단 시그널 영역에 별도 제공됨)
+3. 1문단: 현재가 위치, 실시간 핵심 이슈('{extra_info.get('recent_news')}'), 20일 고점 대비 현재 위치와 거래량 {an['vol_ratio']}%의 의미 서술.
+4. 2문단: 실시간 펀더멘털 지표({extra_info.get('financial_status')})와 업황 재료가 중장기 기업 가치에 미칠 실질적 파급 효과 분석.
+5. 3문단: 수급 현황({extra_info.get('supply_status')}), 20일선({fmt(an['ma20'])}) 및 60일선 정배열 추세 구조 설명.
+6. 4문단: 일일 변동폭(ATR {fmt(an['atr'])}) 및 실시간 RSI({an['rsi']}) 지표를 기반으로 장중 변동성과 과열/침체 여부를 진단하고 실전 리스크 관리 관점 서술.
+7. 5문단: 앞선 1~4문단 분석을 종합하여, 현재 국면('{pattern_name}')에 가장 적합한 실전 분할 대응 전략(예: 주요 기관 수급 지지대 중심의 눌림목 분할 접근 등)과 기준 지지선 훼손 시 리스크 관리 시나리오를 명확한 결론으로 도출할 것.
 """
 
     try:
@@ -717,17 +708,17 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
 
 기술적으로 20일 이동평균선({fmt(an['ma20'])}) 및 60일선({fmt(an['ma60'])}) 상단에 안정적으로 안착해 있어 중장기 우상향 추세의 하방 경직성을 확보하고 있습니다.
 
-RSI 지표가 {an['rsi']}를 기록하며 일일 변동폭(ATR) {fmt(an['atr'])} 내에서 매물 흡수가 원활히 진행 중입니다. 과거 1년간 총 {bt_info['total']}회 시뮬레이션을 수행한 퀀트 백테스트 검증 결과, 동일 추세 패턴 형성 시 승률 {bt_info['win_rate']}%, 누적 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1을 기록하여 통계적 우위가 확인되었습니다.
+일일 변동폭(ATR) {fmt(an['atr'])} 및 실시간 RSI {an['rsi']} 지표를 감안할 때 단기 과열 부담은 상당 부분 해소되었으며 장중 휩소 변동성 속에서도 견조한 지지력을 보여주고 있습니다.
 
-따라서 중장기 관점에서는 대파동 구조적 목표가 {fmt(an['trend_target_mid'])}(+{trend_mid_ret:.1f}%)까지의 상승 여력이 유효하며, 실전 매매는 하단 시그널의 단기 ICT 지지 밴드({fmt(an['ict_entry1_low'])} ~ {fmt(an['ict_entry1_high'])})를 활용한 정밀 분할 대응이 가장 유리합니다."""
+종합적으로 중장기 상승 모멘텀이 견고하게 유지되는 국면이므로 무리한 추격 매수보다는 주요 기관 수급 지지대를 활용한 정밀 분할 매수 전략이 유효하며, 기술적 지지선 이탈 시 기계적인 리스크 관리를 병행하는 시나리오가 권장됩니다."""
 
-def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info):
+def generate_reliable_report(stock_name, symbol, price, an, extra_info):
     is_krw = "원" in str(price)
     unit = " 원" if is_krw else " 달러"
     fmt = lambda v: f"{int(v):,}{unit}" if is_krw else f"{v:,.2f}{unit}"
 
     news_raw = str(extra_info.get('recent_news', '')).strip().replace('"', '').replace("'", "")
-    detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info)
+    detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info)
 
     curr_p = an['ict_entry1_high']
     ret1 = ((an['ict_target1'] - curr_p) / curr_p) * 100
@@ -818,7 +809,7 @@ def run_full_analysis_process(query):
 
     summary_text, detail_text, news_raw = generate_reliable_report(
         formal_name, symbol, quant_data['current_price'],
-        quant_data['analysis'], quant_data['extra_info'], quant_data['bt_info']
+        quant_data['analysis'], quant_data['extra_info']
     )
     
     chart_b64 = ""

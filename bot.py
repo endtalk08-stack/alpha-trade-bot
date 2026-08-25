@@ -526,7 +526,6 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
 
     detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info)
     
-    # 1. 화면 본문: 원형 타이틀(gaemiGTP 이슈) + 가격 + 적합도 + 5문단 리포트
     combined_body = f"""gaemiGTP 이슈
 👉 {news_raw}
 
@@ -536,7 +535,6 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
 
 {detail}""".strip()
 
-    # 2. 버튼 클릭 시 노출될 원형 시그널 서식 (기호 및 줄바꿈 원형 보존)
     signal_only = f"""gaemiGTP 시그널
 
 방향성: 롱 (단기 눌림목 매수)
@@ -1013,7 +1011,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 btn.innerText = 'gaemiGTP 시그널';
             } else {
                 d.style.display = 'block';
-                btn.innerText = '시그널 닫기';
+                btn.innerText = 'gaemiGTP 시그널 닫기';
             }
         }
     </script>

@@ -77,17 +77,16 @@ DOMESTIC_FAST_MAP = {
     "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
 }
 
-# 글로벌 공급망 및 상호 연결성 맵 (미국 주도주 ↔ 국내 밸류체인)
 GLOBAL_CORRELATION_MAP = {
-    "000660": "NVDA",  # SK하이닉스 ↔ 엔비디아
-    "005930": "NVDA",  # 삼성전자 ↔ 엔비디아
-    "042700": "NVDA",  # 한미반도체 ↔ 엔비디아
-    "373220": "TSLA",  # LG에너지솔루션 ↔ 테슬라
-    "247540": "TSLA",  # 에코프로비엠 ↔ 테슬라
-    "086520": "TSLA",  # 에코프로 ↔ 테슬라
-    "005380": "TSLA",  # 현대차 ↔ 테슬라
-    "035420": "GOOGL", # 네이버 ↔ 구글
-    "035720": "META"   # 카카오 ↔ 메타
+    "000660": "NVDA",
+    "005930": "NVDA",
+    "042700": "NVDA",
+    "373220": "TSLA",
+    "247540": "TSLA",
+    "086520": "TSLA",
+    "005380": "TSLA",
+    "035420": "GOOGL",
+    "035720": "META"
 }
 
 def generate_chart_image(df, title_text=""):
@@ -182,7 +181,6 @@ def fetch_fmp_macro_and_earnings():
     return events_summary
 
 def get_foreign_rss_headlines(ticker):
-    """야후 파이낸스 실시간 영문 속보 수집"""
     headlines = []
     try:
         rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
@@ -201,8 +199,24 @@ def get_foreign_rss_headlines(ticker):
         pass
     return headlines
 
+def direct_translate_to_ko(text):
+    """Google 다이렉트 번역기 (영문 -> 100% 한글 변환 보조 안전망)"""
+    try:
+        if not re.search(r'[a-zA-Z]', text):
+            return text
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ko&dt=t&q={urllib.parse.quote(text)}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=2.0).json()
+        if res and isinstance(res, list) and len(res) > 0 and res[0]:
+            translated = "".join([part[0] for part in res[0] if part and part[0]]).strip()
+            translated = translated.replace("모멘텀", "").replace("지속", "").strip()
+            return translated
+    except Exception:
+        pass
+    return text
+
 def synthesize_issue_headline_gemini(stock_name, raw_issues):
-    """다중 이슈 종합 및 간결한 명사형 종결 문장 생성 (모멘텀 등 군더더기 배제)"""
+    """다중 이슈 종합 및 100% 한국어 명사형 종결 속보 생성"""
     if not raw_issues:
         return f"{stock_name} 업황 호조 및 기관 수급 유입"
     
@@ -211,13 +225,13 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues):
 다음은 '{stock_name}' 종목과 관련된 실시간 뉴스 및 글로벌 상관관계 재료들입니다:
 [{joined_issues}]
 
-위 재료들을 바탕으로 개미 투자자가 1초 만에 주가 변동 원인을 이해할 수 있도록 가장 중요한 핵심 인과관계를 종합하여 단 1줄의 완성된 한국어 속보 문장으로 작성하세요.
+위 재료들을 바탕으로 개미 투자자가 1초 만에 주가 변동 원인을 이해할 수 있도록 가장 중요한 핵심 인과관계를 종합하여 단 1줄의 완성된 '한국어' 속보 문장으로 작성하세요.
 
 [규칙]
-1. '모멘텀', '지속', '전망' 같은 상투적이고 추상적인 단어는 절대 사용하지 말 것.
-2. 문장은 반드시 사실 중심의 간결한 명사형 종결(예: ~상회, ~가시화, ~순유입 가속화, ~공급 확대, ~기대감 고조)로 끝맺을 것.
-3. 영문 외신이 포함되어 있다면 가장 자연스러운 한국어로 번역하여 융합할 것.
-4. 설명이나 따옴표 없이 단 1줄의 문장만 출력할 것.
+1. 영문 외신이 포함되어 있다면 반드시 완벽하고 매끄러운 한국어로 번역할 것. (영문 알파벳 노출 절대 금지)
+2. '모멘텀', '지속', '전망' 같은 상투적이고 추상적인 단어는 절대 사용하지 말 것.
+3. 문장은 반드시 사실 중심의 간결한 명사형 종결(예: ~상회, ~가시화, ~순유입 가속화, ~공급 확대, ~기대감 고조)로 끝맺을 것.
+4. 설명이나 따옴표 없이 단 1줄의 한국어 문장만 출력할 것.
 """
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -229,13 +243,18 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues):
         res = requests.post(url, headers=headers, json=payload, timeout=2.5).json()
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         text = re.sub(r'["\'\n]', '', text).strip()
-        if text:
+        # 영어가 포함되어 있다면 번역 안전망 통과
+        if text and not re.search(r'[a-zA-Z]{3,}', text):
             return text
+        elif text:
+            return direct_translate_to_ko(text)
     except Exception:
         pass
     
-    first = raw_issues[0]
-    return first.replace("모멘텀", "").strip()
+    # 예비 Fallback: 구글 번역 안전망 직접 가동
+    first_issue = raw_issues[0]
+    translated_first = direct_translate_to_ko(first_issue)
+    return translated_first
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     """전 자산군 실시간 뉴스 종합 및 재무 데이터 통합 수집"""
@@ -282,7 +301,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://m.stock.naver.com/"
         }
-        # 3-1. 네이버 실시간 최신 기사 헤드라인
         try:
             news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=4&page=1"
             n_res = requests.get(news_url, headers=headers, timeout=2.0).json()
@@ -301,13 +319,11 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-        # 3-2. 글로벌 상관관계 미국 대형주 간밤 이슈 연동 (예: 하이닉스 -> NVDA 뉴스 결합)
         if symbol in GLOBAL_CORRELATION_MAP:
             global_partner = GLOBAL_CORRELATION_MAP[symbol]
             g_news = get_foreign_rss_headlines(global_partner)
             raw_issues.extend(g_news[:1])
 
-        # 3-3. 재무 및 수급
         try:
             integ_url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
             res = requests.get(integ_url, headers=headers, timeout=2.0).json()
@@ -325,7 +341,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-    # 다중 이슈를 AI 엔진이 단 1줄의 고품질 명사형 속보로 종합 합성
+    # 다중 이슈를 100% 한국어 명사형 속보로 종합
     info["recent_news"] = synthesize_issue_headline_gemini(stock_name, raw_issues)
     return info
 
@@ -500,7 +516,7 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
 
 외국인 및 기관 수급의 경우 {extra_info.get('supply_status')}를 보이고 있으며, 동종 섹터 내 타 종목 대비 주가 위치가 60일 이평선({fmt(an['ma60'])})과 20일 이평선({fmt(an['ma20'])}) 상단에 안정적으로 안착해 있어 단기 턴어라운드 시 강력한 탄력을 보일 가능성이 높습니다.
 
-RSI 수치가 {an['rsi']} 수준으로 일일 변동폭 {fmt(an['atr'])} 수준의 파동이 발생하며 매물 흡수가 활발히 진행 중입니다. 특히 GAEMIGTP 퀀트 엔진의 과거 1년 백테스팅 검증 결과, 동일 조건 발생 시 승률 {bt_info['win_rate']}%, 누적 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1을 기록하며 상방 반등 확률이 통계적으로 매우 우세한 구간임이 입증되었습니다.
+RSI 수치가 {an['rsi']} 수준으로 일일 변동폭 {fmt(an['atr'])} 수준의 파동이 발생하며 매물 흡수가 활발히 진행 중입니다. 특히 gaemiGTP 퀀트 엔진의 과거 1년 백테스팅 검증 결과, 동일 조건 발생 시 승률 {bt_info['win_rate']}%, 누적 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1을 기록하며 상방 반등 확률이 통계적으로 매우 우세한 구간임이 입증되었습니다.
 
 평균 진입가 {fmt(avg_entry)} 기준 1차 목표가 {fmt(an['target1'])} 도달 시 약 {target1_ret:.1f}퍼센트 수익률을 기대할 수 있으며 칼손절가 {fmt(an['stop'])} 적용 시 리스크는 약 {stop_risk:.1f}퍼센트 수준입니다. 2차 목표가인 {fmt(an['target2'])}까지 고려한 종합 기대 손익비는 1 대 {rr_ratio:.1f} 이상으로 매우 우수한 단기 스윙 타점입니다. 손절선 {fmt(an['stop'])}을 철저히 엄수하면서 분할 매수로 대응한다면 최적의 알파 수익을 확보할 수 있는 구간입니다."""
 
@@ -511,14 +527,14 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
 
     news_raw = str(extra_info.get('recent_news', '')).strip().replace('"', '').replace("'", "")
 
-    summary = f"""GAEMIGTP 실시간 이슈
+    summary = f"""gaemiGTP 실시간 이슈
 👉 {news_raw}
 
 현재가 {price}
 
 현재 트레이딩 적합도 {an['stars']} (점수 {an['score']})
 
-GAEMIGTP 시그널
+gaemiGTP 시그널
 
 방향성: 롱 (단기 눌림목 매수)
 
@@ -537,7 +553,7 @@ GAEMIGTP 시그널
 칼손절: 지지선 붕괴 및 시나리오 무효화 기준가
 👉 {fmt(an['stop'])}
 
-GAEMIGTP 가이드
+gaemiGTP 가이드
 당일 체결강도 110퍼센트 이상 유지 시 1차 구간 착수하며 장중 변동폭 {fmt(an['atr'])} 내외의 단기 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행""".strip()
 
     detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info)
@@ -613,12 +629,11 @@ def run_full_analysis_process(query):
     }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("GAEMIGTP 가동 중입니다. 종목명을 입력하세요 (예: 하이닉스, 엔비디아)\n백테스트 검증은 '검증 종목명' (예: 검증 하이닉스)을 입력하세요.")
+    await update.message.reply_text("gaemiGTP 가동 중입니다. 종목명을 입력하세요 (예: 하이닉스, 엔비디아)\n백테스트 검증은 '검증 종목명' (예: 검증 하이닉스)을 입력하세요.")
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     
-    # '/' 없이 그냥 '검증 종목명' 입력 시 백테스트 처리
     if query.startswith("검증 ") or query.startswith("검증") or query.startswith("/검증") or query.startswith("/verify"):
         clean_sub = re.sub(r"^(/검증|검증|/verify)", "", query).strip()
         if not clean_sub:
@@ -743,7 +758,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.6; }
         .card-header { font-size: 1.35rem; font-weight: 700; color: #60a5fa; margin-bottom: 14px; }
         
-        /* 🌟 본문과 일체화된 실시간 이슈 글로우 스타일 */
         .issue-wrap {
             margin-bottom: 18px;
         }
@@ -811,7 +825,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                     <div class="card-header" id="resTitle"></div>
                     
                     <div class="issue-wrap" id="issueWrap">
-                        <div class="issue-title">GAEMIGTP 실시간 이슈</div>
+                        <div class="issue-title">gaemiGTP 실시간 이슈</div>
                         <div class="issue-highlight" id="issueText"></div>
                     </div>
 

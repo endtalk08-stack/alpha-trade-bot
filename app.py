@@ -159,6 +159,130 @@ def get_history(asset):
     return get_yahoo_history(ticker)
 
 
+
+def _finite_float(value):
+    try:
+        v = float(value)
+        return v if v == v and abs(v) < 1e100 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def sma(values, period):
+    if len(values) < period:
+        return None
+    vals = [_finite_float(v) for v in values[-period:]]
+    if any(v is None for v in vals):
+        return None
+    return sum(vals) / period
+
+
+def rsi_wilder(candles, period=14):
+    closes = [_finite_float(c["c"]) for c in candles]
+    if len(closes) < period + 1 or any(v is None for v in closes[-(period + 1):]):
+        return None
+
+    gains = []
+    losses = []
+    for i in range(1, len(closes)):
+        delta = closes[i] - closes[i - 1]
+        gains.append(max(delta, 0.0))
+        losses.append(max(-delta, 0.0))
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    for i in range(period, len(gains)):
+        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
+        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
+
+    if avg_loss == 0:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def atr_wilder(candles, period=14):
+    if len(candles) < period + 1:
+        return None
+
+    trs = []
+    prev_close = None
+    for c in candles:
+        h = _finite_float(c["h"])
+        l = _finite_float(c["l"])
+        cl = _finite_float(c["c"])
+        if h is None or l is None or cl is None:
+            continue
+        if prev_close is None:
+            tr = h - l
+        else:
+            tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
+        trs.append(tr)
+        prev_close = cl
+
+    if len(trs) < period:
+        return None
+
+    atr = sum(trs[:period]) / period
+    for tr in trs[period:]:
+        atr = ((atr * (period - 1)) + tr) / period
+    return atr
+
+
+def volume_ratio(candles, lookback=5):
+    if len(candles) < lookback + 1:
+        return None
+    current = _finite_float(candles[-1]["v"])
+    prev = [_finite_float(c["v"]) for c in candles[-lookback-1:-1]]
+    if current is None or any(v is None for v in prev):
+        return None
+    base = sum(prev) / lookback
+    if base <= 0:
+        return None
+    return current / base * 100.0
+
+
+def build_indicators(candles):
+    closes = [c["c"] for c in candles]
+    current = _finite_float(closes[-1]) if closes else None
+    ma5 = sma(closes, 5)
+    ma20 = sma(closes, 20)
+    ma60 = sma(closes, 60)
+    ma120 = sma(closes, 120)
+    rsi14 = rsi_wilder(candles, 14)
+    atr14 = atr_wilder(candles, 14)
+    vol_ratio = volume_ratio(candles, 5)
+
+    if current is None:
+        trend = ""
+    elif ma20 is not None and ma60 is not None:
+        if current > ma20 > ma60:
+            trend = "상승"
+        elif current < ma20 < ma60:
+            trend = "하락"
+        else:
+            trend = "혼조"
+    else:
+        trend = ""
+
+    atr_pct = None
+    if current and atr14 is not None and current != 0:
+        atr_pct = atr14 / current * 100.0
+
+    return {
+        "ma5": ma5,
+        "ma20": ma20,
+        "ma60": ma60,
+        "ma120": ma120,
+        "rsi14": rsi14,
+        "atr14": atr14,
+        "atr_pct": atr_pct,
+        "volume_ratio": vol_ratio,
+        "trend": trend,
+    }
+
+
 def html_escape(value):
     return (str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
 
@@ -239,7 +363,7 @@ body{margin:0;min-height:100vh;background:#1f2022;color:#f3f3f3;font-family:Aria
 .logo{font-size:34px;font-weight:800;letter-spacing:-1px;margin-top:10px}.sub{margin-top:8px;color:#96999d;font-size:14px;text-align:center}
 .search{width:min(760px,100%);display:flex;gap:10px;margin-top:26px} input{flex:1;background:#2a2c2f;color:#fff;border:1px solid #3b3d40;border-radius:14px;padding:16px 18px;font-size:16px;outline:none}
 button{border:0;border-radius:14px;background:#f1f1f1;color:#111;padding:0 24px;font-size:16px;font-weight:700;cursor:pointer}
-.card{width:min(760px,100%);margin-top:22px;background:#2a2c2f;border-radius:18px;padding:24px}.title{font-size:22px;font-weight:800;margin-bottom:14px}.price{font-size:34px;font-weight:800;margin-bottom:8px}.meta{margin-top:8px;color:#a2a5aa;font-size:14px}.error{color:#ffb4b4}.small{margin-top:18px;color:#777b80;font-size:12px;line-height:1.6}.chart-wrap{width:min(760px,100%);margin-top:18px;background:#191a1c;border-radius:18px;padding:10px;overflow:hidden}.legend{width:min(760px,100%);display:flex;gap:16px;align-items:center;margin:14px 2px 0;color:#8f9398;font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+.card{width:min(760px,100%);margin-top:22px;background:#2a2c2f;border-radius:18px;padding:24px}.title{font-size:22px;font-weight:800;margin-bottom:14px}.price{font-size:34px;font-weight:800;margin-bottom:8px}.meta{margin-top:8px;color:#a2a5aa;font-size:14px}.error{color:#ffb4b4}.section-title{font-size:17px;font-weight:800;margin-bottom:14px}.trend{margin-bottom:14px;color:#a5a9ae}.metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px}.metric{background:#222427;border-radius:12px;padding:12px}.metric span{display:block;color:#8d9298;font-size:12px;margin-bottom:6px}.metric strong{font-size:15px}.small{margin-top:18px;color:#777b80;font-size:12px;line-height:1.6}.chart-wrap{width:min(760px,100%);margin-top:18px;background:#191a1c;border-radius:18px;padding:10px;overflow:hidden}.legend{width:min(760px,100%);display:flex;gap:16px;align-items:center;margin:14px 2px 0;color:#8f9398;font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
 </style>
 </head><body><div class="page">
 <div class="logo">gaemiGTP</div><div class="sub">종목 하나로 시작하는 금융 분석 플랫폼</div>
@@ -251,6 +375,39 @@ def render_page(query="", result=None):
     result_html = ""
     if result:
         if result.get("success"):
+            ind = result.get("indicators", {})
+
+            def fmt_indicator(v, suffix=""):
+                if v is None:
+                    return ""
+                return f"{v:,.2f}{suffix}"
+
+            ma_rows = []
+            for label, key in (("5일선", "ma5"), ("20일선", "ma20"), ("60일선", "ma60"), ("120일선", "ma120")):
+                value = ind.get(key)
+                if value is None:
+                    display = ""
+                elif result["market"] == "국내주식":
+                    display = f"{int(round(value)):,}원"
+                elif result["market"] == "암호화폐":
+                    display = f"{value:,.2f} USDT"
+                else:
+                    display = f"{value:,.2f} USD"
+                ma_rows.append(f'<div class="metric"><span>{label}</span><strong>{html_escape(display)}</strong></div>')
+
+            rsi_text = fmt_indicator(ind.get("rsi14"))
+            atr_text = ""
+            if ind.get("atr14") is not None:
+                if result["market"] == "국내주식":
+                    atr_text = f'{int(round(ind["atr14"])):,}원'
+                elif result["market"] == "암호화폐":
+                    atr_text = f'{ind["atr14"]:,.2f} USDT'
+                else:
+                    atr_text = f'{ind["atr14"]:,.2f} USD'
+            atr_pct_text = fmt_indicator(ind.get("atr_pct"), "%")
+            vol_text = fmt_indicator(ind.get("volume_ratio"), "%")
+            trend_text = html_escape(ind.get("trend") or "")
+
             result_html = (
                 '<div class="card">'
                 f'<div class="title">{html_escape(result["name"])} <span style="color:#777;font-weight:500">({html_escape(result["symbol"])})</span></div>'
@@ -259,9 +416,21 @@ def render_page(query="", result=None):
                 f'<div class="meta">조회시각: {html_escape(result["as_of"])}</div>'
                 '</div>'
                 f'<div class="chart-wrap">{result["chart_svg"]}</div>'
-                '<div class="legend"><span><i class="dot" style="background:#49d6c9"></i>20일 이동평균</span><span>최근 3개월 일봉</span></div>'
-                '<div class="card"><div class="small">현재 단계는 실제 시장 가격과 일봉 차트를 연결하는 테스트입니다. RSI·ATR·뉴스·ICT 분석은 다음 단계에서 연결합니다.</div>'
-                f'<div class="meta">차트 데이터: {html_escape(result["chart_source"])}</div></div>'
+                '<div class="legend"><span><i class="dot" style="background:#49d6c9"></i>20일 이동평균</span><span>최근 1년 일봉 데이터</span></div>'
+                '<div class="card">'
+                '<div class="section-title">퀀트 기술지표</div>'
+                f'<div class="trend">추세: <strong>{trend_text}</strong></div>'
+                '<div class="metrics">'
+                + "".join(ma_rows)
+                + '</div>'
+                '<div class="metrics">'
+                f'<div class="metric"><span>RSI(14)</span><strong>{html_escape(rsi_text)}</strong></div>'
+                f'<div class="metric"><span>ATR(14)</span><strong>{html_escape(atr_text)}</strong></div>'
+                f'<div class="metric"><span>ATR 비율</span><strong>{html_escape(atr_pct_text)}</strong></div>'
+                f'<div class="metric"><span>거래량/직전5일 평균</span><strong>{html_escape(vol_text)}</strong></div>'
+                '</div>'
+                f'<div class="small">차트 데이터: {html_escape(result["chart_source"])} · RSI/ATR은 실제 캔들에서 계산합니다.</div>'
+                '</div>'
             )
         else:
             result_html = f'<div class="card"><div class="title error">데이터 조회 실패</div><div class="meta">{html_escape(result.get("error", "시장 데이터를 가져오지 못했습니다."))}</div></div>'

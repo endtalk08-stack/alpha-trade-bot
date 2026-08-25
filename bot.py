@@ -515,6 +515,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     """ICT(오더블록/스마트머니 지지대) 기반 동적 타점 & 4대 국면(Regime) 자동 분류"""
     is_krw = "domestic" in asset_type
     round_fn = (lambda v: round(float(v), 0)) if is_krw else (lambda v: round(float(v), 2))
+    fmt_price = lambda v: f"{int(v):,}" if is_krw else f"{v:,.2f}"
 
     atr_val = round_fn(raw_price * 0.035)
     high_20d = round_fn(raw_price * 1.08)
@@ -589,7 +590,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             target1_val = round_fn(max(high_20d, avg_e + (risk_dist * 2.0)))
             target2_val = round_fn(avg_e + (risk_dist * 3.6))
 
-            # 4대 국면(Regime) 판별
             curr_close = float(df['Close'].iloc[-1])
             if (curr_close >= high_20d * 0.98 and rsi_val >= 62) or (vol_ratio >= 150 and curr_close > ma20):
                 regime_key = "BREAKOUT"
@@ -600,7 +600,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             else:
                 regime_key = "PULLBACK"
 
-            # 퀀트 스코어링 (5.0 만점)
             base_score = 2.0
             if curr_close >= ma20: base_score += 0.9
             if curr_close >= ma60: base_score += 0.6
@@ -623,7 +622,8 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     elif score_val >= 1.8: stars_str = "★★☆☆☆"
     else: stars_str = "★☆☆☆☆"
 
-    # 4대 국면에 맞춘 동적 UI 텍스트 세트
+    atr_display = fmt_price(atr_val)
+
     REGIME_META = {
         "BREAKOUT": {
             "pattern_name": "상승 모멘텀 돌파형",
@@ -633,7 +633,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             "target1_label": "신고가 확장 랠리 도달 시 50% 분할 익절",
             "target2_label": "피보나치 확장 상단 저항선 전량 익절",
             "stop_label": "돌파 기준봉 시가 훼손 및 지지 무효화 손절",
-            "guide": f"당일 5일 평균 대비 거래량 {vol_ratio}퍼센트 급증 확인 시 1차 구간 적극 착수하며 장중 변동폭 {atr_val:,.0f if is_krw else atr_val:.2f} 내외의 상단 저항 돌파 시 호가창 매수세 유입을 확인 후 집행"
+            "guide": f"당일 5일 평균 대비 거래량 {vol_ratio}퍼센트 급증 확인 시 1차 구간 적극 착수하며 장중 변동폭 {atr_display} 내외의 상단 저항 돌파 시 호가창 매수세 유입을 확인 후 집행"
         },
         "PULLBACK": {
             "pattern_name": "추세 지속형 눌림목 안착형",
@@ -643,7 +643,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             "target1_label": "직전 단기 매물벽 도달 시 50% 분할 익절",
             "target2_label": "상단 저항 밴드 돌파 시 전량 익절",
             "stop_label": "지지선 붕괴 및 시나리오 무효화 기준가",
-            "guide": f"20일선 지지 확인 및 체결강도 105퍼센트 회복 시 1차 분할 착수하며 장중 변동폭 {atr_val:,.0f if is_krw else atr_val:.2f} 내외의 단기 음봉 파동에서 지지대 안착을 확인 후 집행"
+            "guide": f"20일선 지지 확인 및 체결강도 105퍼센트 회복 시 1차 분할 착수하며 장중 변동폭 {atr_display} 내외의 단기 음봉 파동에서 지지대 안착을 확인 후 집행"
         },
         "OVERSOLD": {
             "pattern_name": "낙폭과대 과매도 기술적 반등형",
@@ -653,7 +653,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             "target1_label": "20일 이평선 이격 좁히기 1차 분할 청산",
             "target2_label": "평균 회귀 상단 저항선 전량 청산",
             "stop_label": "직전 최저점 이탈 시 리스크 관리 즉시 손절",
-            "guide": f"실시간 RSI {rsi_val} 침체권 매물 소화 확인 후 2차 지지 밴드 중심 분할 접근하며 장중 변동폭 {atr_val:,.0f if is_krw else atr_val:.2f} 수준의 하방 경직성 확보를 확인 후 집행"
+            "guide": f"실시간 RSI {rsi_val} 침체권 매물 소화 확인 후 2차 지지 밴드 중심 분할 접근하며 장중 변동폭 {atr_display} 수준의 하방 경직성 확보를 확인 후 집행"
         },
         "BOX": {
             "pattern_name": "박스권 횡보 수렴형",
@@ -751,7 +751,6 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         return text
     except Exception:
-        # API 오류 시 4대 국면별 맞춤형 백업 문단 세트
         if regime_key == "BREAKOUT":
             return f"""{clean_name}의 주가는 당일 주요 이슈인 '{extra_info.get('recent_news')}' 요인이 강력한 매수세를 견인하며 상방 돌파 파동을 형성하고 있습니다. 직전 20일 고점인 {fmt(an['high_20d'])} 상단을 돌파하거나 근접 안착하는 {pattern_name}에 위치하며 현재 {price}선은 상승 추세 확장의 중심에 서 있습니다. 5일 평균 대비 {an['vol_ratio']}퍼센트 수준의 폭발적인 거래량은 상단 악성 매물을 완벽히 흡수한 전형적인 추세 돌파 패턴입니다.
 
@@ -964,40 +963,41 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
 
-        if parsed.path == "/api/analyze":
-            q = params.get('q', [''])[0].strip()
-            res = run_full_analysis_process(q) if q else None
-            if not res:
-                self.send_response(404)
+            if parsed.path == "/api/analyze":
+                q = params.get('q', [''])[0].strip()
+                res = run_full_analysis_process(q) if q else None
+                if not res:
+                    self.send_response(404)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
+                    return
+
+                self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
+                self.wfile.write(json.dumps({
+                    "success": True,
+                    "name": res["formal_name"],
+                    "symbol": res["symbol"],
+                    "price": res["price"],
+                    "summary": res["summary"],
+                    "detail": res["detail"],
+                    "news_raw": res.get("news_raw", ""),
+                    "chart": res["chart_b64"],
+                    "win_rate": res["bt_info"]["win_rate"],
+                    "cum_ret": res["bt_info"]["cum_ret"],
+                    "pf": res["bt_info"]["pf"]
+                }, ensure_ascii=False).encode('utf-8'))
                 return
 
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps({
-                "success": True,
-                "name": res["formal_name"],
-                "symbol": res["symbol"],
-                "price": res["price"],
-                "summary": res["summary"],
-                "detail": res["detail"],
-                "news_raw": res.get("news_raw", ""),
-                "chart": res["chart_b64"],
-                "win_rate": res["bt_info"]["win_rate"],
-                "cum_ret": res["bt_info"]["cum_ret"],
-                "pf": res["bt_info"]["pf"]
-            }, ensure_ascii=False).encode('utf-8'))
-            return
-
-        html_content = """<!DOCTYPE html>
+            html_content = """<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
@@ -1301,11 +1301,17 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
     </script>
 </body>
 </html>"""
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(html_content.encode('utf-8'))
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(html_content.encode('utf-8'))
+        except Exception:
+            self.send_response(500)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "서버 처리 중 오류가 발생했습니다."}, ensure_ascii=False).encode('utf-8'))
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))

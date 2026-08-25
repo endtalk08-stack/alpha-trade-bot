@@ -242,7 +242,7 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
                 records.append({
                     "Date": pd.to_datetime(item["candle_date_time_kst"]),
                     "Open": float(item["opening_price"]),
-                    "High": float(item["highPrice"]),
+                    "High": float(item["high_price"]),
                     "Low": float(item["low_price"]),
                     "Close": float(item["trade_price"]),
                     "Volume": float(item["candle_acc_trade_volume"])
@@ -1084,7 +1084,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
                 return
 
-            # 정중앙 황금비율 레이아웃 보정 완료된 HTML
             html_content = """<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -1097,10 +1096,11 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         body { display: flex; flex-direction: column; justify-content: space-between; position: relative; }
         header { position: absolute; top: 0; left: 0; width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 24px 32px; z-index: 10; }
         .logo-top { font-weight: 800; font-size: 1.15rem; color: #e0e0e0; letter-spacing: -0.5px; }
-        .badge-link { font-size: 0.8rem; color: #9ca3af; text-decoration: none; border: 1px solid #4b5563; padding: 6px 14px; border-radius: 14px; transition: 0.2s; }
-        .badge-link:hover { background: #374151; color: #fff; border-color: #6b7280; }
         
-        /* 세로 완벽 정중앙 배치 영역 */
+        /* 텔레그램 공식 봇 캡슐형 뱃지 링크 */
+        .badge-link { font-size: 0.85rem; font-weight: 500; color: #d1d5db; text-decoration: none; border: 1px solid #404040; background-color: #2b2b2b; padding: 7px 15px; border-radius: 20px; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 6px; }
+        .badge-link:hover { background-color: #383838; color: #ffffff; border-color: #555555; }
+        
         main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; max-width: 720px; margin: 0 auto; width: 100%; min-height: 100vh; }
         .center-wrap { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; }
         .hero-title { font-size: 3.6rem; font-weight: 800; margin-bottom: 12px; letter-spacing: -1.5px; color: #f5f5f5; }
@@ -1112,7 +1112,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 1rem; padding: 6px 8px; }
         .search-box input::placeholder { color: #737380; font-size: 0.95rem; }
         
-        /* 그레이 원형 전송 버튼 */
+        /* 원형 전송 버튼 */
         .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; flex-shrink: 0; }
         .send-btn:hover { background: #606060; transform: scale(1.04); }
         .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
@@ -1135,7 +1135,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
 <body>
     <header>
         <div class="logo-top">gaemiGTP</div>
-        <a class="badge-link" href="https://t.me/gaemiGTP_bot" target="_blank">📱 텔레그램 VIP 알림</a>
+        <a class="badge-link" href="https://t.me/gaemiGTP_bot" target="_blank">📱 텔레그램 공식 봇</a>
     </header>
     <main>
         <div class="center-wrap">

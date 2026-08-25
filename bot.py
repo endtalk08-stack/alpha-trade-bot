@@ -77,6 +77,19 @@ DOMESTIC_FAST_MAP = {
     "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
 }
 
+# 글로벌 공급망 및 상호 연결성 맵 (미국 주도주 ↔ 국내 밸류체인)
+GLOBAL_CORRELATION_MAP = {
+    "000660": "NVDA",  # SK하이닉스 ↔ 엔비디아
+    "005930": "NVDA",  # 삼성전자 ↔ 엔비디아
+    "042700": "NVDA",  # 한미반도체 ↔ 엔비디아
+    "373220": "TSLA",  # LG에너지솔루션 ↔ 테슬라
+    "247540": "TSLA",  # 에코프로비엠 ↔ 테슬라
+    "086520": "TSLA",  # 에코프로 ↔ 테슬라
+    "005380": "TSLA",  # 현대차 ↔ 테슬라
+    "035420": "GOOGL", # 네이버 ↔ 구글
+    "035720": "META"   # 카카오 ↔ 메타
+}
+
 def generate_chart_image(df, title_text=""):
     try:
         if df is None or df.empty or len(df) < 5:
@@ -168,33 +181,79 @@ def fetch_fmp_macro_and_earnings():
         pass
     return events_summary
 
+def get_foreign_rss_headlines(ticker):
+    """야후 파이낸스 실시간 영문 속보 수집"""
+    headlines = []
+    try:
+        rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(rss_url, headers=headers, timeout=2.0)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            items = root.findall('.//item')
+            for it in items[:2]:
+                t = it.find('title')
+                if t is not None and t.text:
+                    clean = re.sub(r'<.*?>', '', t.text).strip()
+                    if clean:
+                        headlines.append(clean)
+    except Exception:
+        pass
+    return headlines
+
+def synthesize_issue_headline_gemini(stock_name, raw_issues):
+    """다중 이슈 종합 및 간결한 명사형 종결 문장 생성 (모멘텀 등 군더더기 배제)"""
+    if not raw_issues:
+        return f"{stock_name} 업황 호조 및 기관 수급 유입"
+    
+    joined_issues = " / ".join(raw_issues)
+    prompt = f"""
+다음은 '{stock_name}' 종목과 관련된 실시간 뉴스 및 글로벌 상관관계 재료들입니다:
+[{joined_issues}]
+
+위 재료들을 바탕으로 개미 투자자가 1초 만에 주가 변동 원인을 이해할 수 있도록 가장 중요한 핵심 인과관계를 종합하여 단 1줄의 완성된 한국어 속보 문장으로 작성하세요.
+
+[규칙]
+1. '모멘텀', '지속', '전망' 같은 상투적이고 추상적인 단어는 절대 사용하지 말 것.
+2. 문장은 반드시 사실 중심의 간결한 명사형 종결(예: ~상회, ~가시화, ~순유입 가속화, ~공급 확대, ~기대감 고조)로 끝맺을 것.
+3. 영문 외신이 포함되어 있다면 가장 자연스러운 한국어로 번역하여 융합할 것.
+4. 설명이나 따옴표 없이 단 1줄의 문장만 출력할 것.
+"""
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 100}
+        }
+        res = requests.post(url, headers=headers, json=payload, timeout=2.5).json()
+        text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+        text = re.sub(r'["\'\n]', '', text).strip()
+        if text:
+            return text
+    except Exception:
+        pass
+    
+    first = raw_issues[0]
+    return first.replace("모멘텀", "").strip()
+
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
-    """전 자산군 실시간 뉴스 파이프라인 및 재무 데이터 수집"""
+    """전 자산군 실시간 뉴스 종합 및 재무 데이터 통합 수집"""
     macro_event = fetch_fmp_macro_and_earnings()
+    raw_issues = []
     
     info = {
         "supply_status": "기관 및 외국인 수급 변곡점 형성 구간",
         "financial_status": "견조한 펀더멘털 및 실적 가시성 유지",
-        "recent_news": f"{stock_name} 업황 모멘텀 및 수급 유입 지속",
+        "recent_news": f"{stock_name} 업황 호조 및 수급 유입",
         "macro_calendar": macro_event
     }
     
     # 1. 미국 주식 실시간 RSS 뉴스 및 재무
     if asset_type == "overseas_stock":
         clean_sym = symbol.upper().strip()
-        try:
-            rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={clean_sym}&region=US&lang=en-US"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            r = requests.get(rss_url, headers=headers, timeout=2.5)
-            if r.status_code == 200:
-                root = ET.fromstring(r.content)
-                items = root.findall('.//item')
-                if items:
-                    titles = [re.sub(r'<.*?>', '', it.find('title').text or '').strip() for it in items[:2]]
-                    if titles:
-                        info["recent_news"] = " / ".join(titles)
-        except Exception:
-            pass
+        foreign_news = get_foreign_rss_headlines(clean_sym)
+        raw_issues.extend(foreign_news)
 
         try:
             fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{clean_sym}?apikey={FMP_API_KEY}"
@@ -208,74 +267,66 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
                 info["supply_status"] = "글로벌 기관 및 패시브 ETF 수급 유입 집중 구간"
         except Exception:
             pass
-        return info
 
     # 2. 암호화폐 실시간 RSS 뉴스 및 온체인
     elif asset_type == "crypto":
         c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else "BTC-USD")
-        try:
-            rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={c_sym}&region=US&lang=en-US"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            r = requests.get(rss_url, headers=headers, timeout=2.5)
-            if r.status_code == 200:
-                root = ET.fromstring(r.content)
-                items = root.findall('.//item')
-                if items:
-                    titles = [re.sub(r'<.*?>', '', it.find('title').text or '').strip() for it in items[:2]]
-                    if titles:
-                        info["recent_news"] = " / ".join(titles)
-        except Exception:
-            pass
+        crypto_news = get_foreign_rss_headlines(c_sym)
+        raw_issues.extend(crypto_news)
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
-        return info
 
-    # 3. 국내 주식 네이버 실시간 뉴스 & 재무 완벽 연동
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://m.stock.naver.com/"
-    }
-    
-    # 3-1. 네이버 실시간 뉴스 1순위 헤드라인 추출
-    try:
-        news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=5&page=1"
-        n_res = requests.get(news_url, headers=headers, timeout=2.5).json()
-        news_items = []
-        if isinstance(n_res, dict):
-            news_items = n_res.get("items", []) or n_res.get("newsList", []) or n_res.get("result", [])
-        elif isinstance(n_res, list):
-            news_items = n_res
-        
-        if news_items:
-            titles = []
-            for n in news_items:
-                title_txt = n.get("title") or n.get("tit") or n.get("itemTitle") or ""
-                clean_t = re.sub(r'<.*?>|&[a-z0-9]+;', '', title_txt).strip()
-                if clean_t and clean_t not in titles:
-                    titles.append(clean_t)
-            if titles:
-                info["recent_news"] = titles[0]  # 최신 1순위 실시간 헤드라인 사용
-    except Exception:
-        pass
+    # 3. 국내 주식 네이버 실시간 뉴스 + 글로벌 상관관계 미국 주식 뉴스 융합
+    else:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://m.stock.naver.com/"
+        }
+        # 3-1. 네이버 실시간 최신 기사 헤드라인
+        try:
+            news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=4&page=1"
+            n_res = requests.get(news_url, headers=headers, timeout=2.0).json()
+            news_items = []
+            if isinstance(n_res, dict):
+                news_items = n_res.get("items", []) or n_res.get("newsList", []) or n_res.get("result", [])
+            elif isinstance(n_res, list):
+                news_items = n_res
+            
+            if news_items:
+                for n in news_items:
+                    title_txt = n.get("title") or n.get("tit") or n.get("itemTitle") or ""
+                    clean_t = re.sub(r'<.*?>|&[a-z0-9]+;', '', title_txt).strip()
+                    if clean_t and clean_t not in raw_issues:
+                        raw_issues.append(clean_t)
+        except Exception:
+            pass
 
-    # 3-2. 네이버 재무 및 수급
-    try:
-        integ_url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
-        res = requests.get(integ_url, headers=headers, timeout=2.5).json()
-        total_infos = res.get("totalInfos", [])
-        per_val, pbr_val, for_rate = "", "", ""
-        for item in total_infos:
-            k = item.get("code")
-            v = item.get("value")
-            if k == "foreignRate" and v: for_rate = v
-            elif k == "per" and v: per_val = v
-            elif k == "pbr" and v: pbr_val = v
-        
-        if for_rate: info["supply_status"] = f"외국인 지분율 {for_rate}% (주요 수급 변곡점 형성)"
-        if per_val or pbr_val: info["financial_status"] = f"PER {per_val or '7.03'}배 / PBR {pbr_val or '4.25'}배 수준"
-    except Exception:
-        pass
-        
+        # 3-2. 글로벌 상관관계 미국 대형주 간밤 이슈 연동 (예: 하이닉스 -> NVDA 뉴스 결합)
+        if symbol in GLOBAL_CORRELATION_MAP:
+            global_partner = GLOBAL_CORRELATION_MAP[symbol]
+            g_news = get_foreign_rss_headlines(global_partner)
+            raw_issues.extend(g_news[:1])
+
+        # 3-3. 재무 및 수급
+        try:
+            integ_url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
+            res = requests.get(integ_url, headers=headers, timeout=2.0).json()
+            total_infos = res.get("totalInfos", [])
+            per_val, pbr_val, for_rate = "", "", ""
+            for item in total_infos:
+                k = item.get("code")
+                v = item.get("value")
+                if k == "foreignRate" and v: for_rate = v
+                elif k == "per" and v: per_val = v
+                elif k == "pbr" and v: pbr_val = v
+            
+            if for_rate: info["supply_status"] = f"외국인 지분율 {for_rate}% (주요 수급 변곡점 형성)"
+            if per_val or pbr_val: info["financial_status"] = f"PER {per_val or '7.03'}배 / PBR {pbr_val or '4.25'}배 수준"
+        except Exception:
+            pass
+
+    # 다중 이슈를 AI 엔진이 단 1줄의 고품질 명사형 속보로 종합 합성
+    info["recent_news"] = synthesize_issue_headline_gemini(stock_name, raw_issues)
     return info
 
 def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
@@ -424,7 +475,7 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
 
 [필수 작성 규칙]
 - 총 5개 문단으로 구성.
-- 1문단: 최근 주가 흐름, 뉴스 모멘텀('{extra_info.get('recent_news')}'), 20일 고점({fmt(an['high_20d'])}) 달성 후 눌림목, 거래량 {an['vol_ratio']}퍼센트 숨고르기.
+- 1문단: 최근 주가 흐름, 실시간 핵심 이슈('{extra_info.get('recent_news')}'), 20일 고점({fmt(an['high_20d'])}) 달성 후 눌림목, 거래량 {an['vol_ratio']}퍼센트 숨고르기.
 - 2문단: 실시간 펀더멘털({extra_info.get('financial_status')}), 미국 연준 금리 정책 및 글로벌 매크로·어닝 일정({extra_info.get('macro_calendar')})이 가져올 긍정적 파급 효과.
 - 3문단: 수급({extra_info.get('supply_status')}), 60일선({fmt(an['ma60'])}) 및 20일선({fmt(an['ma20'])}) 안착과 단기 턴어라운드 탄력.
 - 4문단: RSI {an['rsi']}, 일일 변동폭 {fmt(an['atr'])}, 과거 1년 백테스팅 검증 결과(승률 {bt_info['win_rate']}%, 누적 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1).
@@ -443,13 +494,13 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         return text
     except Exception:
-        return f"""{stock_name}의 최근 주가 흐름은 당일 주요 이슈인 '{extra_info.get('recent_news')}' 모멘텀이 핵심 동력으로 작용하고 있습니다. 20일 고점인 {fmt(an['high_20d'])} 달성 이후 단기 차익 실현 매물을 소화하는 눌림목 구간에 진입해 있으며 현재 {price}선은 상승 파동 이후의 정당한 가격 조정 범주에 위치합니다. 단기 거래량이 5일 평균 대비 {an['vol_ratio']}퍼센트로 감소한 것은 구조적 투매라기보다는 상단 저항선에 대한 부담감으로 인한 관망세가 짙은 전형적인 수급 숨고르기 양상입니다.
+        return f"""{stock_name}의 최근 주가 흐름은 당일 주요 이슈인 '{extra_info.get('recent_news')}' 요인이 핵심 동력으로 작용하고 있습니다. 20일 고점인 {fmt(an['high_20d'])} 달성 이후 단기 차익 실현 매물을 소화하는 눌림목 구간에 진입해 있으며 현재 {price}선은 상승 파동 이후의 정당한 가격 조정 범주에 위치합니다. 단기 거래량이 5일 평균 대비 {an['vol_ratio']}퍼센트로 감소한 것은 구조적 투매라기보다는 상단 저항선에 대한 부담감으로 인한 관망세가 짙은 전형적인 수급 숨고르기 양상입니다.
 
 기업의 펀더멘털 측면에서 {extra_info.get('financial_status')}의 견조한 지표를 유지하고 있으며, 미국 연준의 금리 정책 기조와 {extra_info.get('macro_calendar')}은 당사의 수익성 개선 및 밸류에이션 재평가라는 직접적인 긍정적 매크로 효과를 제공합니다. 시중 유동성이 주식 시장으로 재유입될 경우 실적 가시성을 획기적으로 높이는 요소입니다.
 
 외국인 및 기관 수급의 경우 {extra_info.get('supply_status')}를 보이고 있으며, 동종 섹터 내 타 종목 대비 주가 위치가 60일 이평선({fmt(an['ma60'])})과 20일 이평선({fmt(an['ma20'])}) 상단에 안정적으로 안착해 있어 단기 턴어라운드 시 강력한 탄력을 보일 가능성이 높습니다.
 
-RSI 수치가 {an['rsi']} 수준으로 일일 변동폭 {fmt(an['atr'])} 수준의 파동이 발생하며 매물 흡수가 활발히 진행 중입니다. 특히 gaemiGTP 퀀트 엔진의 과거 1년 백테스팅 검증 결과, 동일 조건 발생 시 승률 {bt_info['win_rate']}%, 누적 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1을 기록하며 상방 반등 확률이 통계적으로 매우 우세한 구간임이 입증되었습니다.
+RSI 수치가 {an['rsi']} 수준으로 일일 변동폭 {fmt(an['atr'])} 수준의 파동이 발생하며 매물 흡수가 활발히 진행 중입니다. 특히 GAEMIGTP 퀀트 엔진의 과거 1년 백테스팅 검증 결과, 동일 조건 발생 시 승률 {bt_info['win_rate']}%, 누적 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1을 기록하며 상방 반등 확률이 통계적으로 매우 우세한 구간임이 입증되었습니다.
 
 평균 진입가 {fmt(avg_entry)} 기준 1차 목표가 {fmt(an['target1'])} 도달 시 약 {target1_ret:.1f}퍼센트 수익률을 기대할 수 있으며 칼손절가 {fmt(an['stop'])} 적용 시 리스크는 약 {stop_risk:.1f}퍼센트 수준입니다. 2차 목표가인 {fmt(an['target2'])}까지 고려한 종합 기대 손익비는 1 대 {rr_ratio:.1f} 이상으로 매우 우수한 단기 스윙 타점입니다. 손절선 {fmt(an['stop'])}을 철저히 엄수하면서 분할 매수로 대응한다면 최적의 알파 수익을 확보할 수 있는 구간입니다."""
 
@@ -692,7 +743,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.6; }
         .card-header { font-size: 1.35rem; font-weight: 700; color: #60a5fa; margin-bottom: 14px; }
         
-        /* 🌟 테두리 박스 없이 카드 본문 위에 깔끔하게 녹아드는 실시간 이슈 스타일 */
+        /* 🌟 본문과 일체화된 실시간 이슈 글로우 스타일 */
         .issue-wrap {
             margin-bottom: 18px;
         }
@@ -826,7 +877,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
 
                 document.getElementById('resTitle').innerText = data.name + ' (' + data.symbol + ')';
                 
-                const issueRaw = data.news_raw || "업황 모멘텀 및 수급 유입 지속";
+                const issueRaw = data.news_raw || "업황 호조 및 기관 수급 유입";
                 document.getElementById('issueText').innerText = "👉 " + issueRaw;
 
                 let cleanSummary = data.summary;

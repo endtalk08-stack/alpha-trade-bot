@@ -205,7 +205,6 @@ def get_foreign_rss_headlines(ticker):
     return headlines
 
 def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domestic_stock"):
-    """모든 종목의 실시간 속보를 100% 매끄러운 한국어 팩트 헤드라인으로 정제"""
     valid_issues = [
         str(i).strip() for i in raw_issues 
         if i and len(str(i).strip()) > 5 and not str(i).strip().startswith("http")
@@ -247,13 +246,11 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
         res = requests.post(url, headers=headers, json=payload, timeout=3.5).json()
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         text = re.sub(r'["\'\n]', '', text).strip()
-        # 영문 알파벳이 3글자 이상 남아있지 않은 순수 한국어 결과만 채택
         if text and not re.search(r'[a-zA-Z]{3,}', text) and len(text) > 5:
             return text
     except Exception:
         pass
     
-    # Fallback (외신 번역 지연 시 영문 원문 노출 원천 차단)
     if "에코프로" in stock_name:
         return "에코프로 2차전지 양극재 수주 및 밸류체인 경쟁력 강화"
     elif "테슬라" in stock_name or "TSLA" in stock_name:
@@ -281,7 +278,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         "macro_calendar": macro_event
     }
     
-    # 1. 미국 주식: 티커별 독립적인 외신 수집
     if asset_type == "overseas_stock":
         clean_sym = symbol.upper().strip()
         foreign_news = get_foreign_rss_headlines(clean_sym)
@@ -301,7 +297,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-    # 2. 암호화폐: 암호화폐 외신 수집
     elif asset_type == "crypto":
         c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else "BTC-USD")
         crypto_news = get_foreign_rss_headlines(c_sym)
@@ -310,7 +305,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
 
-    # 3. 국내 주식: 국내 네이버 뉴스/공시만 100% 독립 수집 (타 종목 외신 혼입 원천 차단)
     else:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -530,14 +524,20 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
 
     news_raw = str(extra_info.get('recent_news', '')).strip().replace('"', '').replace("'", "")
 
-    summary = f"""gaemiGTP 실시간 이슈
+    detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info)
+    
+    # 1. 화면 본문: 원형 타이틀(gaemiGTP 이슈) + 가격 + 적합도 + 5문단 리포트
+    combined_body = f"""gaemiGTP 이슈
 👉 {news_raw}
 
 현재가 {price}
 
 현재 트레이딩 적합도 {an['stars']} (점수 {an['score']})
 
-gaemiGTP 시그널
+{detail}""".strip()
+
+    # 2. 버튼 클릭 시 노출될 원형 시그널 서식 (기호 및 줄바꿈 원형 보존)
+    signal_only = f"""gaemiGTP 시그널
 
 방향성: 롱 (단기 눌림목 매수)
 
@@ -559,8 +559,7 @@ gaemiGTP 시그널
 gaemiGTP 가이드
 당일 체결강도 110퍼센트 이상 유지 시 1차 구간 착수하며 장중 변동폭 {fmt(an['atr'])} 내외의 단기 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행""".strip()
 
-    detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info)
-    return summary, detail, news_raw
+    return combined_body, signal_only, news_raw
 
 def fetch_technical_quant_data(symbol, asset_type, stock_name=""):
     quant_info = {}
@@ -662,7 +661,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if res.get("chart_bytes"):
         await update.message.reply_photo(photo=io.BytesIO(res["chart_bytes"]))
     
-    keyboard = [[InlineKeyboardButton("심층 분석 및 근거 보기", callback_data=f"detail_{res['symbol']}")]]
+    keyboard = [[InlineKeyboardButton("gaemiGTP 시그널", callback_data=f"detail_{res['symbol']}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     DETAIL_REPORT_CACHE[res['symbol']] = res['detail']
     
@@ -675,8 +674,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data.startswith("detail_"):
         symbol = data.replace("detail_", "")
-        detail_text = DETAIL_REPORT_CACHE.get(symbol, "상세 리포트를 불러올 수 없습니다.")
-        await query.message.reply_text(f"📊 **심층 분석 및 근거**\n\n{detail_text}")
+        detail_text = DETAIL_REPORT_CACHE.get(symbol, "시그널을 불러올 수 없습니다.")
+        await query.message.reply_text(f"🎯 **gaemiGTP 시그널**\n\n{detail_text}")
 
 class ApiAndWebServer(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
@@ -862,12 +861,12 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                     <div class="card-header" id="resTitle"></div>
                     
                     <div class="issue-wrap" id="issueWrap">
-                        <div class="issue-title">gaemiGTP 실시간 이슈</div>
+                        <div class="issue-title">gaemiGTP 이슈</div>
                         <div class="issue-highlight" id="issueText"></div>
                     </div>
 
                     <div class="summary-body" id="resSummary"></div>
-                    <button class="detail-btn" id="toggleDetailBtn" onclick="toggleDetail()">심층 분석 및 근거 보기</button>
+                    <button class="detail-btn" id="toggleDetailBtn" onclick="toggleDetail()">gaemiGTP 시그널</button>
                     <div class="detail-content" id="resDetail"></div>
                 </div>
             </div>
@@ -967,7 +966,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
             document.getElementById('result-card-wrap').style.display = 'none';
             document.getElementById('chartBox').style.display = 'none';
             document.getElementById('resDetail').style.display = 'none';
-            document.getElementById('toggleDetailBtn').innerText = '심층 분석 및 근거 보기';
+            document.getElementById('toggleDetailBtn').innerText = 'gaemiGTP 시그널';
             document.getElementById('bottomInput').value = '';
 
             try {
@@ -1011,10 +1010,10 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
             const btn = document.getElementById('toggleDetailBtn');
             if (d.style.display === 'block') {
                 d.style.display = 'none';
-                btn.innerText = '심층 분석 및 근거 보기';
+                btn.innerText = 'gaemiGTP 시그널';
             } else {
                 d.style.display = 'block';
-                btn.innerText = '타점 카드만 보기';
+                btn.innerText = '시그널 닫기';
             }
         }
     </script>

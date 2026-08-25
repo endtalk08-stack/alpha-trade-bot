@@ -55,12 +55,13 @@ input{flex:1;background:#2a2c2f;color:#fff;border:1px solid #3b3d40;border-radiu
 input:focus{border-color:#666}
 button{border:0;border-radius:14px;background:#f1f1f1;color:#111;padding:0 24px;font-size:16px;font-weight:700;cursor:pointer}
 .status{margin-top:18px;color:#888c91;font-size:14px;text-align:center;min-height:20px}
-.card{width:min(760px,100%);margin-top:22px;background:#2a2c2f;border-radius:18px;padding:24px;display:none}
+.card{width:min(760px,100%);margin-top:22px;background:#2a2c2f;border-radius:18px;padding:24px}
 .title{font-size:22px;font-weight:800;margin-bottom:18px}
 .price{font-size:34px;font-weight:800}
 .meta{margin-top:10px;color:#a2a5aa;font-size:14px}
 .error{color:#ffb4b4}
 .small{margin-top:20px;color:#777b80;font-size:12px}
+.link{margin-top:18px;display:inline-block;color:#bbb;text-decoration:none}
 </style>
 </head>
 <body>
@@ -68,53 +69,14 @@ button{border:0;border-radius:14px;background:#f1f1f1;color:#111;padding:0 24px;
   <div class="logo">gaemiGTP</div>
   <div class="sub">종목 하나로 시작하는 금융 분석 플랫폼</div>
 
-  <div class="search">
-    <input id="q" placeholder="예: SK하이닉스, NVDA, BTC" onkeydown="if(event.key==='Enter') analyze()">
-    <button onclick="analyze()">분석</button>
-  </div>
+  <form class="search" action="/search" method="get">
+    <input id="q" name="q" value="{QUERY}" placeholder="예: SK하이닉스, NVDA, BTC" autocomplete="off">
+    <button type="submit">분석</button>
+  </form>
 
-  <div class="status" id="status">실제 시장 데이터 연결 대기 중</div>
-  <div class="card" id="card"></div>
+  {RESULT}
+
 </div>
-
-<script>
-async function analyze(){
-  const q=document.getElementById('q').value.trim();
-  const status=document.getElementById('status');
-  const card=document.getElementById('card');
-  if(!q){status.textContent='종목명을 입력해주세요.';return;}
-
-  status.textContent='실제 가격 데이터를 가져오는 중...';
-  card.style.display='none';
-  card.className='card';
-
-  try{
-    const r=await fetch('/api/price?q='+encodeURIComponent(q),{cache:'no-store'});
-    const data=await r.json();
-    if(!r.ok || !data.success){
-      status.textContent=data.error || '데이터를 가져오지 못했습니다.';
-      return;
-    }
-
-    card.innerHTML=`
-      <div class="title">${escapeHtml(data.name)} <span style="color:#777;font-weight:500">(${escapeHtml(data.symbol)})</span></div>
-      <div class="price">${escapeHtml(data.price_text)}</div>
-      <div class="meta">시장: ${escapeHtml(data.market)} · 데이터: ${escapeHtml(data.source)}</div>
-      <div class="meta">조회시각: ${escapeHtml(data.as_of)}</div>
-      <div class="small">현재 단계는 가격 데이터 연결 테스트입니다. 기술지표·차트·뉴스·ICT 분석은 다음 단계에서 연결합니다.</div>
-    `;
-    card.style.display='block';
-    status.textContent='가격 데이터 연결 성공';
-  }catch(e){
-    status.textContent='서버 통신 오류가 발생했습니다.';
-    card.className='card error';
-  }
-}
-
-function escapeHtml(v){
-  return String(v).replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"}[c]));
-}
-</script>
 </body>
 </html>
 """
@@ -211,6 +173,75 @@ def get_price(asset):
     raise ValueError("지원하지 않는 자산입니다.")
 
 
+
+
+def html_escape(value: str) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def render_page(query="", result=None):
+    q_safe = html_escape(query)
+    result_html = ""
+
+    if result:
+        if result.get("success"):
+            result_html = f"""
+  <div class="card">
+    <div class="title">{html_escape(result["name"])} <span style="color:#777;font-weight:500">({html_escape(result["symbol"])})</span></div>
+    <div class="price">{html_escape(result["price_text"])}</div>
+    <div class="meta">시장: {html_escape(result["market"])} · 데이터: {html_escape(result["source"])}</div>
+    <div class="meta">조회시각: {html_escape(result["as_of"])}</div>
+    <div class="small">현재 단계는 실제 가격 데이터 연결 테스트입니다. 기술지표·차트·뉴스·ICT 분석은 다음 단계에서 연결합니다.</div>
+  </div>
+"""
+        else:
+            result_html = f"""
+  <div class="card">
+    <div class="title error">데이터 조회 실패</div>
+    <div class="meta">{html_escape(result.get("error", "가격 데이터를 가져오지 못했습니다."))}</div>
+  </div>
+"""
+
+    return HTML.replace("{QUERY}", q_safe).replace("{RESULT}", result_html)
+
+
+def analyze_query(query):
+    q = (query or "").strip()
+    if not q:
+        return {"success": False, "error": "종목명을 입력해주세요."}
+
+    asset = find_asset(q)
+    if not asset:
+        return {"success": False, "error": "현재 개발 단계에서 지원하지 않는 종목입니다."}
+
+    try:
+        price_text, source_name = get_price(asset)
+        return {
+            "success": True,
+            "name": asset["name"],
+            "symbol": asset["symbol"],
+            "market": asset["market"],
+            "price_text": price_text,
+            "source": source_name,
+            "as_of": now_kst(),
+        }
+    except Exception as exc:
+        print(f"[PRICE ERROR] {asset['symbol']}: {exc}")
+        return {
+            "success": False,
+            "error": "가격 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해주세요.",
+        }
+
+
+
+
 class Handler(BaseHTTPRequestHandler):
     def send_bytes(self, status, content_type, body: bytes):
         self.send_response(status)
@@ -226,9 +257,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        query_params = parse_qs(parsed.query)
 
         if parsed.path == "/":
-            self.send_bytes(200, "text/html; charset=utf-8", HTML.encode("utf-8"))
+            self.send_bytes(200, "text/html; charset=utf-8", render_page().encode("utf-8"))
+            return
+
+        if parsed.path == "/search":
+            q = query_params.get("q", [""])[0].strip()
+            result = analyze_query(q)
+            status = 200 if result.get("success") else 502
+            self.send_bytes(status, "text/html; charset=utf-8", render_page(q, result).encode("utf-8"))
             return
 
         if parsed.path == "/health":
@@ -236,36 +275,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/price":
-            q = parse_qs(parsed.query).get("q", [""])[0].strip()
-            if not q:
-                self.send_json(400, {"success": False, "error": "종목명을 입력해주세요."})
-                return
-
-            asset = find_asset(q)
-            if not asset:
-                self.send_json(404, {"success": False, "error": "현재 개발 단계에서 지원하지 않는 종목입니다."})
-                return
-
-            try:
-                price_text, source = get_price(asset)
-                self.send_json(200, {
-                    "success": True,
-                    "name": asset["name"],
-                    "symbol": asset["symbol"],
-                    "market": asset["market"],
-                    "price_text": price_text,
-                    "source": source,
-                    "as_of": now_kst(),
-                })
-            except Exception as exc:
-                print(f"[PRICE ERROR] {asset['symbol']}: {exc}")
-                self.send_json(502, {
-                    "success": False,
-                    "error": "가격 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해주세요."
-                })
+            q = query_params.get("q", [""])[0].strip()
+            result = analyze_query(q)
+            self.send_json(200 if result.get("success") else 502, result)
             return
 
-        self.send_json(404, {"success": False, "error": "요청을 찾을 수 없습니다."})
+        self.send_json(404, {"error": "요청을 찾을 수 없습니다."})
 
     def log_message(self, fmt, *args):
         print("[WEB]", fmt % args)

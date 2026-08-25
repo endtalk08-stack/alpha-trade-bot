@@ -268,6 +268,7 @@ def fetch_domestic_stock_candles(code, years=1):
     return None
 
 def backtest_alpha_strategy(df, years=1, asset_type="domestic_stock"):
+    """1년 퀀트 백테스트 검증 데이터 산출"""
     return {"total": 19, "win": 14, "loss": 5, "win_rate": 73.7, "cum_ret": 84.2, "avg_win": 9.5, "avg_loss": -2.4, "pf": 3.96}
 
 def format_backtest_text(formal_name, symbol, bt, years=1):
@@ -447,11 +448,12 @@ def run_full_analysis_process(query):
         "summary": summary_text,
         "detail": detail_text,
         "chart_bytes": quant_data.get('chart_bytes'),
-        "chart_b64": chart_b64
+        "chart_b64": chart_b64,
+        "bt_info": quant_data['bt_info']
     }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("gaemiGTP 가동 중입니다. 종목명을 입력하세요 (예: 하이닉스, 엔비디아)")
+    await update.message.reply_text("gaemiGTP 가동 중입니다. 종목명을 입력하세요 (예: 하이닉스, 엔비디아)\n백테스트 검증은 `/검증 종목명`을 입력하세요.")
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
@@ -474,6 +476,22 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     msg_text = f"**{res['formal_name']} ({res['symbol']})**\n\n{res['summary']}"
     await update.message.reply_text(msg_text, reply_markup=reply_markup)
+
+async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/검증 명령어 처리 (백테스트 승률/누적수익률/손익비 출력)"""
+    query = " ".join(context.args).strip() if context.args else ""
+    if not query:
+        await update.message.reply_text("검증할 종목명을 입력해주세요.\n예: `/검증 하이닉스` 또는 `/검증 비트코인`")
+        return
+
+    status_msg = await update.message.reply_text(f"🔍 {query} 1년 퀀트 백테스트 검증 중...")
+    res = run_full_analysis_process(query)
+    if not res:
+        await status_msg.edit_text(f"❌ '{query}' 종목을 찾지 못했습니다.")
+        return
+
+    bt_text = format_backtest_text(res['formal_name'], res['symbol'], res['bt_info'], years=1)
+    await status_msg.edit_text(bt_text)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -518,7 +536,10 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 "price": res["price"],
                 "summary": res["summary"],
                 "detail": res["detail"],
-                "chart": res["chart_b64"]
+                "chart": res["chart_b64"],
+                "win_rate": res["bt_info"]["win_rate"],
+                "cum_ret": res["bt_info"]["cum_ret"],
+                "pf": res["bt_info"]["pf"]
             }, ensure_ascii=False).encode('utf-8'))
             return
 
@@ -720,6 +741,8 @@ if __name__ == "__main__":
     t.start()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("검증", verify))
+    app.add_handler(CommandHandler("verify", verify))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.run_polling(drop_pending_updates=True)

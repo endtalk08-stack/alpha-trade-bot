@@ -758,6 +758,148 @@ def render_news_block(items):
 
 
 
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash").strip()
+
+
+def analyze_news_with_gemini(asset, news_items):
+    """
+    Analyze only the real news items already collected by the server.
+    Never invent news, prices, dates, or other facts.
+    """
+    if not GEMINI_API_KEY or not news_items:
+        return None
+
+    prompt_lines = []
+    for i, item in enumerate(news_items, start=1):
+        prompt_lines.append(
+            f"{i}. 제목: {item.get('title', '')}\n"
+            f"출처: {item.get('source', '')}\n"
+            f"게시시간: {item.get('published', '')}\n"
+            f"원문: {item.get('link', '')}"
+        )
+
+    prompt = f"""
+당신은 금융 뉴스 분석 보조 AI입니다.
+
+종목: {asset['name']} ({asset['symbol']})
+
+아래에 실제로 수집된 뉴스만 사용하세요.
+뉴스에 없는 사실, 가격, 실적, 일정, 수급, 목표주가, 전망 등을 절대 추가하지 마세요.
+기사 원문을 길게 복사하지 말고 핵심만 요약하세요.
+근거가 부족하면 sentiment=중립, impact=낮음으로 처리하세요.
+
+반드시 아래 JSON 객체 하나만 반환하세요.
+{{
+  "summary": "핵심 내용 2~3문장",
+  "sentiment": "호재|악재|중립",
+  "impact": "높음|중간|낮음",
+  "reason": "판단 근거 한 문장"
+}}
+
+실제 수집 뉴스:
+{chr(10).join(prompt_lines)}
+""".strip()
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:generateContent"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "responseMimeType": "application/json"
+        },
+    }
+
+    try:
+        response = requests.post(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": GEMINI_API_KEY,
+                "User-Agent": "gaemiGTP/1.0",
+            },
+            json=payload,
+            timeout=25,
+        )
+
+        if not response.ok:
+            print(
+                f"[GEMINI NEWS ERROR] HTTP {response.status_code}: "
+                f"{response.text[:500]}"
+            )
+            return None
+
+        data = response.json()
+        candidates = data.get("candidates") or []
+        if not candidates:
+            print("[GEMINI NEWS ERROR] no candidates")
+            return None
+
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        text = "".join(
+            part.get("text", "")
+            for part in parts
+            if isinstance(part, dict)
+        ).strip()
+
+        if not text:
+            print("[GEMINI NEWS ERROR] empty response text")
+            return None
+
+        parsed = json.loads(text)
+
+        sentiment = parsed.get("sentiment")
+        impact = parsed.get("impact")
+        summary = str(parsed.get("summary", "")).strip()
+        reason = str(parsed.get("reason", "")).strip()
+
+        if sentiment not in {"호재", "악재", "중립"}:
+            sentiment = "중립"
+        if impact not in {"높음", "중간", "낮음"}:
+            impact = "낮음"
+        if not summary:
+            print("[GEMINI NEWS ERROR] empty summary")
+            return None
+
+        return {
+            "summary": summary,
+            "sentiment": sentiment,
+            "impact": impact,
+            "reason": reason,
+            "model": GEMINI_MODEL,
+        }
+
+    except Exception as exc:
+        print(f"[GEMINI NEWS ERROR] {asset['symbol']}: {exc}")
+        return None
+
+
+def render_gemini_news_block(analysis):
+    if not analysis:
+        return ""
+
+    return f"""
+  <div class="card">
+    <div class="section-title">AI 뉴스 요약</div>
+    <div class="meta">
+      판단: <strong>{html_escape(analysis.get("sentiment", "중립"))}</strong>
+      · 영향도: <strong>{html_escape(analysis.get("impact", "낮음"))}</strong>
+    </div>
+    <div style="margin-top:12px;line-height:1.7">
+      {html_escape(analysis.get("summary", ""))}
+    </div>
+    <div class="small">
+      판단 근거: {html_escape(analysis.get("reason", ""))}
+      · 모델: {html_escape(analysis.get("model", GEMINI_MODEL))}
+    </div>
+  </div>
+"""
+
+
+
 def render_page(query="", result=None):
     result_html = ""
     if result:
@@ -820,6 +962,7 @@ def render_page(query="", result=None):
                 '</div>'
             )
             result_html += render_news_block(result.get("news", []))
+            result_html += render_gemini_news_block(result.get("gemini_news"))
 
         else:
             result_html = f'<div class="card"><div class="title error">데이터 조회 실패</div><div class="meta">{html_escape(result.get("error", "시장 데이터를 가져오지 못했습니다."))}</div></div>'
@@ -837,6 +980,8 @@ def analyze_query(query):
         price_text, price_source = get_price(asset)
         candles, chart_source = get_history(asset)
         indicators = build_indicators(candles)
+        news = collect_free_news(asset, limit=5)
+        gemini_news = analyze_news_with_gemini(asset, news)
         return {
             "success": True,
             "name": asset["name"], "symbol": asset["symbol"], "market": asset["market"],
@@ -844,7 +989,8 @@ def analyze_query(query):
             "as_of": now_kst(), "chart_source": chart_source,
             "chart_svg": build_svg_chart(candles, asset["market"]),
             "indicators": indicators,
-            "news": collect_free_news(asset, limit=5),
+            "news": news,
+            "gemini_news": gemini_news,
         }
     except Exception as exc:
         print(f"[ANALYSIS ERROR] {asset['symbol']}: {exc}")
@@ -875,6 +1021,39 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/health":
             self.send_json(200, {"status":"ok", "service":"gaemiGTP-development"}); return
 
+
+
+
+        if parsed.path == "/api/gemini-test":
+            q = params.get("q", [""])[0].strip()
+            asset = find_asset(q) if q else None
+            if not asset:
+                self.send_json(404, {
+                    "success": False,
+                    "error": "종목명을 찾을 수 없습니다."
+                })
+                return
+
+            news = collect_free_news(asset, limit=5)
+            analysis = analyze_news_with_gemini(asset, news)
+
+            self.send_json(200, {
+                "success": True,
+                "name": asset["name"],
+                "symbol": asset["symbol"],
+                "news_count": len(news),
+                "gemini_configured": bool(GEMINI_API_KEY),
+                "model": GEMINI_MODEL,
+                "analysis": analysis,
+            })
+            return
+
+        if parsed.path == "/api/gemini-status":
+            self.send_json(200, {
+                "configured": bool(GEMINI_API_KEY),
+                "model": GEMINI_MODEL,
+            })
+            return
 
         if parsed.path == "/api/news-debug":
             q = params.get("q", [""])[0].strip()

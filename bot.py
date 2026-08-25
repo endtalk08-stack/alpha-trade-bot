@@ -194,7 +194,6 @@ def fetch_fmp_macro_and_earnings():
     return events_summary
 
 def get_foreign_rss_headlines(ticker):
-    """야후 파이낸스 실시간 영문 속보 수집"""
     headlines = []
     if not ticker or len(ticker.strip()) == 0:
         return headlines
@@ -218,7 +217,6 @@ def get_foreign_rss_headlines(ticker):
     return headlines
 
 def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domestic_stock"):
-    """금융 전문 기자 스타일의 팩트 중심 1줄 속보 합성"""
     valid_issues = [
         str(i).strip() for i in raw_issues 
         if i and len(str(i).strip()) > 5 and not str(i).strip().endswith(":") and not str(i).strip().endswith("-")
@@ -273,7 +271,6 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
     return f"{stock_name} 업황 호조 및 플랫폼 트래픽 수혜"
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
-    """자산군별 실시간 뉴스 수집 및 재무 데이터 통합"""
     macro_event = fetch_fmp_macro_and_earnings()
     raw_issues = []
     
@@ -731,77 +728,86 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>gaemiGTP - 10초 금융 퀀트 분석 엔진</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         html, body { height: 100%; background-color: #1e1f20; color: #e3e3e3; overflow: hidden; }
         
-        header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 24px; z-index: 50; }
+        header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 20px; z-index: 50; }
         .logo-top { font-weight: 700; font-size: 1.15rem; color: #e3e3e3; letter-spacing: -0.5px; cursor: pointer; }
-        .new-btn { background: #282a2c; border: none; color: #c4c7c5; font-size: 0.85rem; padding: 7px 16px; border-radius: 20px; cursor: pointer; font-weight: 500; transition: background 0.2s; }
+        .new-btn { background: #282a2c; border: none; color: #c4c7c5; font-size: 0.82rem; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-weight: 500; transition: background 0.2s; white-space: nowrap; }
         .new-btn:hover { background: #37393b; color: #fff; }
 
-        #main-view { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; transition: all 0.3s; }
+        #main-view { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; transition: all 0.3s; }
         .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
-        .hero-sub { font-size: 1.02rem; color: #8e918f; margin-bottom: 28px; font-weight: 400; }
+        .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
         
         .search-container { width: 100%; max-width: 720px; position: relative; }
-        /* 검색창 배경 및 그림자 */
-        .search-box { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 6px 8px 6px 20px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
-        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.98rem; padding: 8px 6px; }
+        /* 검색창 배경 및 모바일 반응형 flex 정돈 */
+        .search-box { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 4px 6px 4px 16px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
+        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; padding: 8px 4px; }
         .search-box input::placeholder { color: #8e918f; }
         
-        /* 3단 모델 셀렉터 드롭다운 (평소에는 투명 일체화, 호버 시 은은한 다크 톤) */
-        .model-selector-wrap { position: relative; margin-right: 6px; }
-        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 12px; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; transition: all 0.2s; }
+        /* 3단 모델 셀렉터 (모바일 겹침 방지: flex-shrink 0, white-space nowrap) */
+        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 10px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; transition: all 0.2s; white-space: nowrap; }
         .model-pill-btn:hover { background: rgba(255, 255, 255, 0.08); }
         .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
-        .model-pill-arrow { font-size: 0.62rem; color: #8e918f; transition: transform 0.2s; }
+        .model-pill-arrow { font-size: 0.6rem; color: #8e918f; transition: transform 0.2s; }
         
-        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 12px); right: 0; width: 220px; background: #282a2c; border: none; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
-        .model-dropdown-item { padding: 10px 14px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: #282a2c; border: none; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
+        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
         .model-dropdown-item:hover { background: rgba(255, 255, 255, 0.08); }
         .model-dropdown-item.active { background: rgba(255, 255, 255, 0.12); }
         .item-title { font-size: 0.88rem; font-weight: 600; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
-        .item-sub { font-size: 0.74rem; color: #8e918f; margin-top: 2px; }
+        .item-sub { font-size: 0.73rem; color: #8e918f; margin-top: 2px; }
         .item-check { color: #e3e3e3; font-weight: bold; display: none; font-size: 0.85rem; }
         .model-dropdown-item.active .item-check { display: inline; }
 
         /* 화살표 아이콘 전송 버튼 */
-        .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; transition: background 0.2s; }
+        .send-btn { width: 34px; height: 34px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; transition: background 0.2s; }
         .send-btn:hover { background: #4a4d50; }
-        .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
+        .send-btn svg { width: 17px; height: 17px; fill: currentColor; }
 
         .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 14px; font-size: 0.85rem; color: #c4c7c5; cursor: pointer; transition: background 0.2s; }
+        .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; transition: background 0.2s; white-space: nowrap; }
         .tag-btn:hover { background: #37393b; color: #fff; }
 
-        #result-scroll-view { display: none; position: absolute; top: 56px; bottom: 84px; left: 0; width: 100%; overflow-y: auto; padding: 20px; }
+        #result-scroll-view { display: none; position: absolute; top: 56px; bottom: 84px; left: 0; width: 100%; overflow-y: auto; padding: 16px; }
         .result-inner { max-width: 720px; margin: 0 auto; }
         
         .chart-img-box { width: 100%; background: #282a2c; border: none; border-radius: 16px; margin-bottom: 16px; overflow: hidden; display: flex; justify-content: center; align-items: center; }
         .chart-img-box img { width: 100%; height: auto; display: block; }
 
-        .card { background: #282a2c; border: none; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.65; }
+        .card { background: #282a2c; border: none; border-radius: 16px; padding: 20px; margin-bottom: 20px; line-height: 1.65; }
         .card-header { font-size: 1.15rem; font-weight: 600; color: #f2f2f2; margin-bottom: 14px; }
         
-        .issue-wrap { margin-bottom: 18px; }
-        .issue-title { font-size: 0.92rem; font-weight: 600; color: #c4c7c5; margin-bottom: 4px; }
-        .issue-highlight { font-size: 0.95rem; font-weight: 600; color: #fef08a; display: inline-block; animation: pulseFade 2.4s infinite ease-in-out; }
+        .issue-wrap { margin-bottom: 16px; }
+        .issue-title { font-size: 0.9rem; font-weight: 600; color: #c4c7c5; margin-bottom: 4px; }
+        .issue-highlight { font-size: 0.93rem; font-weight: 600; color: #fef08a; display: inline-block; animation: pulseFade 2.4s infinite ease-in-out; }
         @keyframes pulseFade {
             0% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
             50% { opacity: 1; transform: scale(1); filter: brightness(1.25) drop-shadow(0 0 6px rgba(254, 240, 138, 0.4)); }
             100% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
         }
 
-        .summary-body { white-space: pre-wrap; color: #e3e3e3; font-size: 0.95rem; }
-        .detail-btn { width: 100%; background: #37393b; border: none; color: #e3e3e3; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 14px; transition: background 0.2s; }
+        .summary-body { white-space: pre-wrap; color: #e3e3e3; font-size: 0.93rem; }
+        .detail-btn { width: 100%; background: #37393b; border: none; color: #e3e3e3; padding: 11px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 14px; transition: background 0.2s; font-size: 0.9rem; }
         .detail-btn:hover { background: #45484c; }
-        .detail-content { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #37393b; color: #c4c7c5; white-space: pre-wrap; font-size: 0.93rem; }
+        .detail-content { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #37393b; color: #c4c7c5; white-space: pre-wrap; font-size: 0.92rem; }
         
-        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 84px; background: linear-gradient(180deg, rgba(30,31,32,0) 0%, rgba(30,31,32,1) 40%); align-items: center; justify-content: center; padding: 0 16px 8px; z-index: 50; }
+        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 76px; background: linear-gradient(180deg, rgba(30,31,32,0) 0%, rgba(30,31,32,1) 40%); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
         .loading { display: none; text-align: center; color: #8e918f; margin: 40px 0; font-size: 0.92rem; }
+
+        @media (max-width: 600px) {
+            .hero-title { font-size: 2.6rem; }
+            .search-box { padding: 3px 5px 3px 12px; }
+            .search-box input { font-size: 0.88rem; }
+            .model-pill-name { font-size: 0.8rem; }
+            .model-pill-btn { padding: 4px 6px; }
+            .card { padding: 16px; }
+        }
     </style>
 </head>
 <body>
@@ -815,24 +821,24 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
         <div class="search-container">
             <div class="search-box">
-                <input type="text" id="centerInput" placeholder="종목명을 입력하세요 (예: SK하이닉스, 알테오젠, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
                 
                 <div class="model-selector-wrap">
                     <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
-                        <span class="model-pill-name" id="centerCurrentModel">0.1 gaemi</span>
+                        <span class="model-pill-name" id="centerCurrentModel">gaemi</span>
                         <span class="model-pill-arrow">▲</span>
                     </div>
                     <div class="model-dropdown-menu" id="centerDropdown">
-                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', '0.1 gaemi')">
-                            <div class="item-title">0.1 gaemi <span class="item-check">✓</span></div>
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                            <div class="item-title">gaemi <span class="item-check">✓</span></div>
                             <div class="item-sub">도움을 받으세요</div>
                         </div>
-                        <div class="model-dropdown-item" onclick="selectModel('info', '0.1 info')">
-                            <div class="item-title">0.1 info <span class="item-check">✓</span></div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                            <div class="item-title">info <span class="item-check">✓</span></div>
                             <div class="item-sub">정보를 확인하세요</div>
                         </div>
-                        <div class="model-dropdown-item" onclick="selectModel('pro', '0.1 pro')">
-                            <div class="item-title">0.1 pro <span class="item-check">✓</span></div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                            <div class="item-title">pro <span class="item-check">✓</span></div>
                             <div class="item-sub">실력을 키우세요</div>
                         </div>
                     </div>
@@ -878,24 +884,24 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
     <div id="bottom-bar">
         <div class="search-container">
             <div class="search-box">
-                <input type="text" id="bottomInput" placeholder="다른 종목명을 입력하세요 (예: 테슬라, 카카오)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
                 
                 <div class="model-selector-wrap">
                     <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
-                        <span class="model-pill-name" id="bottomCurrentModel">0.1 gaemi</span>
+                        <span class="model-pill-name" id="bottomCurrentModel">gaemi</span>
                         <span class="model-pill-arrow">▲</span>
                     </div>
                     <div class="model-dropdown-menu" id="bottomDropdown">
-                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', '0.1 gaemi')">
-                            <div class="item-title">0.1 gaemi <span class="item-check">✓</span></div>
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                            <div class="item-title">gaemi <span class="item-check">✓</span></div>
                             <div class="item-sub">도움을 받으세요</div>
                         </div>
-                        <div class="model-dropdown-item" onclick="selectModel('info', '0.1 info')">
-                            <div class="item-title">0.1 info <span class="item-check">✓</span></div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                            <div class="item-title">info <span class="item-check">✓</span></div>
                             <div class="item-sub">정보를 확인하세요</div>
                         </div>
-                        <div class="model-dropdown-item" onclick="selectModel('pro', '0.1 pro')">
-                            <div class="item-title">0.1 pro <span class="item-check">✓</span></div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                            <div class="item-title">pro <span class="item-check">✓</span></div>
                             <div class="item-sub">실력을 키우세요</div>
                         </div>
                     </div>

@@ -517,10 +517,26 @@ def run_full_analysis_process(query):
     }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("GAEMIGTP 가동 중입니다. 종목명을 입력하세요 (예: 하이닉스, 엔비디아)\n백테스트 검증은 `/검증 종목명`을 입력하세요.")
+    await update.message.reply_text("GAEMIGTP 가동 중입니다. 종목명을 입력하세요 (예: 하이닉스, 엔비디아)\n백테스트 검증은 '검증 종목명' (예: 검증 하이닉스)을 입력하세요.")
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
+    
+    # 🎯 '/' 없이 그냥 '검증 종목명' 입력 시 백테스트 처리
+    if query.startswith("검증 ") or query.startswith("검증") or query.startswith("/검증") or query.startswith("/verify"):
+        clean_sub = re.sub(r"^(/검증|검증|/verify)", "", query).strip()
+        if not clean_sub:
+            await update.message.reply_text("검증할 종목명을 입력해주세요.\n예: 검증 하이닉스")
+            return
+        status_msg = await update.message.reply_text(f"🔍 {clean_sub} 1년 퀀트 백테스트 검증 중...")
+        res = run_full_analysis_process(clean_sub)
+        if not res:
+            await status_msg.edit_text(f"❌ '{clean_sub}' 종목을 찾지 못했습니다.")
+            return
+        bt_text = format_backtest_text(res['formal_name'], res['symbol'], res['bt_info'], years=1)
+        await status_msg.edit_text(bt_text)
+        return
+
     status_msg = await update.message.reply_text(f"{query} 분석 중...")
     res = run_full_analysis_process(query)
     if not res:
@@ -538,21 +554,6 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     msg_text = f"**{res['formal_name']} ({res['symbol']})**\n\n{res['summary']}"
     await update.message.reply_text(msg_text, reply_markup=reply_markup)
-
-async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args).strip() if context.args else ""
-    if not query:
-        await update.message.reply_text("검증할 종목명을 입력해주세요.\n예: `/검증 하이닉스`")
-        return
-
-    status_msg = await update.message.reply_text(f"🔍 {query} 1년 퀀트 백테스트 검증 중...")
-    res = run_full_analysis_process(query)
-    if not res:
-        await status_msg.edit_text(f"❌ '{query}' 종목을 찾지 못했습니다.")
-        return
-
-    bt_text = format_backtest_text(res['formal_name'], res['symbol'], res['bt_info'], years=1)
-    await status_msg.edit_text(bt_text)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -646,7 +647,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.6; }
         .card-header { font-size: 1.35rem; font-weight: 700; color: #60a5fa; margin-bottom: 12px; }
         
-        /* 🌟 실시간 이슈 페이드 펄스(나타났다 사라지는 효과) 스타일 */
+        /* 🌟 실시간 이슈 페이드 펄스(글로우 효과) */
         .issue-box {
             background: rgba(59, 130, 246, 0.08);
             border: 1px solid rgba(96, 165, 250, 0.35);
@@ -717,7 +718,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 <div class="card">
                     <div class="card-header" id="resTitle"></div>
                     
-                    <!-- 깜빡이는 실시간 이슈 전용 하이라이트 박스 -->
                     <div class="issue-box" id="issueBox">
                         <div class="issue-title">GAEMIGTP 실시간 이슈</div>
                         <div class="issue-highlight" id="issueText"></div>
@@ -785,11 +785,9 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
 
                 document.getElementById('resTitle').innerText = data.name + ' (' + data.symbol + ')';
                 
-                // 이슈 텍스트 설정
                 const issueRaw = data.news_raw || "업황 모멘텀 및 수급 유입 지속";
                 document.getElementById('issueText').innerText = "👉 " + issueRaw;
 
-                // 요약 본문 중 'GAEMIGTP 실시간 이슈' 중복 방지 파싱
                 let cleanSummary = data.summary;
                 if (cleanSummary.includes("현재가")) {
                     cleanSummary = cleanSummary.substring(cleanSummary.indexOf("현재가"));
@@ -836,8 +834,6 @@ if __name__ == "__main__":
     t.start()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("검증", verify))
-    app.add_handler(CommandHandler("verify", verify))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.run_polling(drop_pending_updates=True)

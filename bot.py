@@ -97,6 +97,8 @@ NOISE_FILTER_KEYWORDS = [
 ]
 
 def is_noise_headline(text):
+    if not text:
+        return True
     low_t = text.lower().strip()
     return any(k in low_t for k in NOISE_FILTER_KEYWORDS)
 
@@ -194,6 +196,8 @@ def fetch_fmp_macro_and_earnings():
 def get_foreign_rss_headlines(ticker):
     """야후 파이낸스 실시간 영문 속보 수집"""
     headlines = []
+    if not ticker or len(ticker.strip()) == 0:
+        return headlines
     try:
         rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -205,7 +209,7 @@ def get_foreign_rss_headlines(ticker):
                 t = it.find('title')
                 if t is not None and t.text:
                     clean = re.sub(r'<.*?>', '', t.text).strip()
-                    if clean and not is_noise_headline(clean):
+                    if clean and len(clean) > 8 and not is_noise_headline(clean):
                         headlines.append(clean)
                     if len(headlines) >= 2:
                         break
@@ -214,11 +218,17 @@ def get_foreign_rss_headlines(ticker):
     return headlines
 
 def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domestic_stock"):
-    """금융 전문 기자 스타일의 팩트 중심 1줄 속보 합성 (외신 직역 오역 원천 차단)"""
-    if not raw_issues:
+    """금융 전문 기자 스타일의 팩트 중심 1줄 속보 합성 (외신 직역 및 결측치 원천 차단)"""
+    # 유효한 텍스트만 필터링
+    valid_issues = [
+        str(i).strip() for i in raw_issues 
+        if i and len(str(i).strip()) > 5 and not str(i).strip().endswith(":") and not str(i).strip().endswith("-")
+    ]
+
+    if not valid_issues:
         return f"{stock_name} 업황 호조 및 기관 수급 유입"
     
-    joined_issues = "\n- ".join(raw_issues)
+    joined_issues = "\n- ".join(valid_issues)
     
     prompt = f"""
 당신은 대한민국 최고 수준의 경제 일간지 금융·증권부 수석 기자입니다.
@@ -229,14 +239,15 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
 
 [필수 번역 및 작성 가이드라인]
 1. 외신(영문) 기사가 있다면 아래 금융 팩트 규칙에 맞춰 자연스러운 경제 기사체로 완벽히 번역할 것:
-   - 'Nvidia shares set for $280 billion price swing after earnings, options show' 형태의 문장은 -> '엔비디아 실적 발표 직후 2,800억 달러 규모 주가 등락 가능성 반영' 처럼 팩트 중심으로 번역.
-   - 'earnings' -> '실적 발표' (절대로 '수입'으로 번역하지 말 것)
+   - 'Nvidia shares set for $280 billion price swing after earnings, options show' -> '엔비디아 실적 발표 직후 2,800억 달러 규모 주가 등락 가능성 반영' 처럼 팩트 중심으로 번역.
+   - 'earnings' -> '실적 발표' (절대로 '수입'으로 번역 금지)
    - 'options show' -> '옵션 시장 분석' 또는 '옵션 시장 반영' ('옵션 표시' 금지)
    - 'price swing' -> '주가 등락' 또는 '주가 변동성' ('가격 변동으로 설정' 금지)
-2. 국내 주식(SK하이닉스 등)인 경우 국내 호재(HBM 수주/양산, 자사주 소각 등)를 중심으로 작성하고, 미국 파트너 동향은 팩트형으로 자연스럽게 결합할 것.
-3. '모멘텀', '지속', '전망' 같은 모호하고 상투적인 표현은 절대 배제할 것.
-4. 문장 끝은 팩트 중심의 명사형 종결(예: ~반영, ~가시화, ~순유입 가속화, ~공급 확대, ~양산 순항)로 깔끔하게 끝맺을 것.
-5. 설명이나 따옴표 없이 오직 단 1줄의 한국어 헤드라인만 출력할 것.
+2. 국내 주식(카카오, SK하이닉스 등)인 경우 국내 호재(실적 개선, 신사업, 수급 등)를 최우선으로 반영할 것.
+3. '미국 파트너()', '원문 뉴스:', '-' 같은 빈 껍데기나 미완성 기호는 절대 출력하지 말 것.
+4. '모멘텀', '지속', '전망' 같은 모호하고 상투적인 표현은 배제할 것.
+5. 문장 끝은 팩트 중심의 명사형 종결(예: ~반영, ~가시화, ~순유입 가속화, ~공급 확대, ~양산 순항, ~트래픽 증가세)로 깔끔하게 끝맺을 것.
+6. 설명이나 따옴표 없이 오직 단 1줄의 한국어 헤드라인만 출력할 것.
 """
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -248,16 +259,20 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
         res = requests.post(url, headers=headers, json=payload, timeout=3.0).json()
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         text = re.sub(r'["\'\n]', '', text).strip()
-        if text and not re.search(r'[a-zA-Z]{3,}', text):
+        if text and not re.search(r'[a-zA-Z]{3,}', text) and len(text) > 5:
             return text
     except Exception:
         pass
     
-    first = raw_issues[0]
-    if "NVDA" in first or "Nvidia" in first or "shares set for" in first:
-        return "엔비디아 실적 발표 직후 2,800억 달러 규모 주가 등락 가능성 반영"
-    clean_first = re.sub(r'[a-zA-Z]', '', first).strip()
-    return clean_first if len(clean_first) > 5 else f"{stock_name} 업황 호조 및 핵심 공급망 수혜"
+    # 예비 Fallback (결측치 정제 후 자연스러운 팩트 문구로 처리)
+    for issue in valid_issues:
+        clean_issue = re.sub(r'글로벌 빅테크\(.*?\)|원문 뉴스:|-', '', issue).strip()
+        if "NVDA" in clean_issue or "Nvidia" in clean_issue:
+            return "엔비디아 실적 발표 직후 2,800억 달러 규모 주가 등락 가능성 반영"
+        if len(clean_issue) > 8 and not clean_issue.startswith("http"):
+            return clean_issue
+            
+    return f"{stock_name} 업황 호조 및 플랫폼 트래픽 수혜"
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     """자산군별 실시간 뉴스 수집 및 재무 데이터 통합"""
@@ -271,10 +286,12 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         "macro_calendar": macro_event
     }
     
+    # 1. 미국 주식
     if asset_type == "overseas_stock":
         clean_sym = symbol.upper().strip()
         foreign_news = get_foreign_rss_headlines(clean_sym)
-        raw_issues.extend(foreign_news)
+        if foreign_news:
+            raw_issues.extend(foreign_news)
 
         try:
             fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{clean_sym}?apikey={FMP_API_KEY}"
@@ -289,18 +306,22 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
+    # 2. 암호화폐
     elif asset_type == "crypto":
         c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else "BTC-USD")
         crypto_news = get_foreign_rss_headlines(c_sym)
-        raw_issues.extend(crypto_news)
+        if crypto_news:
+            raw_issues.extend(crypto_news)
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
 
+    # 3. 국내 주식
     else:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://m.stock.naver.com/"
         }
+        # 3-1. 국내 실시간 최신 뉴스 1순위 수집
         try:
             news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=5&page=1"
             n_res = requests.get(news_url, headers=headers, timeout=2.0).json()
@@ -314,17 +335,20 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
                 for n in news_items:
                     title_txt = n.get("title") or n.get("tit") or n.get("itemTitle") or ""
                     clean_t = re.sub(r'<.*?>|&[a-z0-9]+;', '', title_txt).strip()
-                    if clean_t and not is_noise_headline(clean_t) and clean_t not in raw_issues:
+                    if clean_t and len(clean_t) > 6 and not is_noise_headline(clean_t) and clean_t not in raw_issues:
                         raw_issues.append(clean_t)
         except Exception:
             pass
 
+        # 3-2. 글로벌 파트너 미국 뉴스 (정상적인 텍스트가 있을 때만 안전하게 보조 추가)
         if symbol in GLOBAL_CORRELATION_MAP:
             global_partner = GLOBAL_CORRELATION_MAP[symbol]
-            g_news = get_foreign_rss_headlines(global_partner)
-            if g_news:
-                raw_issues.append(f"미국 파트너({global_partner}) 원문 뉴스: {g_news[0]}")
+            if global_partner:
+                g_news = get_foreign_rss_headlines(global_partner)
+                if g_news and len(g_news[0].strip()) > 8:
+                    raw_issues.append(f"글로벌 빅테크({global_partner}) 원문: {g_news[0]}")
 
+        # 3-3. 재무 및 수급
         try:
             integ_url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
             res = requests.get(integ_url, headers=headers, timeout=2.0).json()

@@ -290,110 +290,6 @@ def build_indicators(candles):
     }
 
 
-
-def make_news_query(asset):
-    if asset["market"] == "국내주식":
-        return asset["name"]
-    if asset["market"] == "미국주식":
-        return f'{asset["name"]} {asset["symbol"]}'
-    return f'{asset["name"]} {asset["symbol"]}'
-
-
-def fetch_google_news(asset, limit=5):
-    query = make_news_query(asset)
-    url = (
-        "https://news.google.com/rss/search?"
-        f"q={requests.utils.quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
-    )
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers, timeout=TIMEOUT)
-    response.raise_for_status()
-
-    root = ET.fromstring(response.content)
-    items = []
-    for item in root.findall(".//item")[:limit]:
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        pub_date = (item.findtext("pubDate") or "").strip()
-        source_node = item.find("source")
-        source = (source_node.text or "").strip() if source_node is not None else ""
-
-        if not title:
-            continue
-
-        items.append({
-            "title": title,
-            "source": source,
-            "published": pub_date,
-            "link": link,
-        })
-
-    return items
-
-
-def fetch_naver_news(asset, limit=5):
-    # Naver's public news-search endpoint is used only as a secondary source.
-    # If it is unavailable, the primary Google News RSS result remains usable.
-    query = make_news_query(asset)
-    url = (
-        "https://search.naver.com/search.naver?"
-        f"where=news&query={requests.utils.quote(query)}"
-    )
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = requests.get(url, headers=headers, timeout=TIMEOUT)
-    response.raise_for_status()
-
-    # We intentionally do not scrape arbitrary page HTML here.
-    # This function exists as a safe extension point; return empty on unexpected HTML.
-    return []
-
-
-def collect_news(asset, limit=5):
-    try:
-        items = fetch_google_news(asset, limit=limit)
-        # Deduplicate by title.
-        seen = set()
-        unique = []
-        for item in items:
-            key = re.sub(r"\s+", " ", item["title"]).strip()
-            if key and key not in seen:
-                seen.add(key)
-                unique.append(item)
-        return unique[:limit]
-    except Exception as exc:
-        print(f"[NEWS ERROR] {asset['symbol']}: {exc}")
-        return []
-
-
-def render_news_block(items):
-    if not items:
-        return ""
-
-    cards = []
-    for item in items:
-        title = html_escape(item["title"])
-        source = html_escape(item["source"] or "출처 미상")
-        published = html_escape(item["published"] or "")
-        link = item.get("link", "")
-        link_html = ""
-        if link:
-            link_html = (
-                f'<a href="{html_escape(link)}" target="_blank" '
-                'rel="noopener noreferrer">원문</a>'
-            )
-
-        cards.append(
-            '<div class="news-item">'
-            f'<div class="news-title">{title}</div>'
-            f'<div class="news-meta">{source}'
-            f'{" · " + published if published else ""}'
-            f' {link_html}</div>'
-            '</div>'
-        )
-
-    return '<div class="card"><div class="section-title">최근 뉴스</div>' + "".join(cards) + "</div>"
-
-
 def html_escape(value):
     return (str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
 
@@ -474,12 +370,222 @@ body{margin:0;min-height:100vh;background:#1f2022;color:#f3f3f3;font-family:Aria
 .logo{font-size:34px;font-weight:800;letter-spacing:-1px;margin-top:10px}.sub{margin-top:8px;color:#96999d;font-size:14px;text-align:center}
 .search{width:min(760px,100%);display:flex;gap:10px;margin-top:26px} input{flex:1;background:#2a2c2f;color:#fff;border:1px solid #3b3d40;border-radius:14px;padding:16px 18px;font-size:16px;outline:none}
 button{border:0;border-radius:14px;background:#f1f1f1;color:#111;padding:0 24px;font-size:16px;font-weight:700;cursor:pointer}
-.card{width:min(760px,100%);margin-top:22px;background:#2a2c2f;border-radius:18px;padding:24px}.title{font-size:22px;font-weight:800;margin-bottom:14px}.price{font-size:34px;font-weight:800;margin-bottom:8px}.meta{margin-top:8px;color:#a2a5aa;font-size:14px}.error{color:#ffb4b4}.section-title{font-size:17px;font-weight:800;margin-bottom:14px}.trend{margin-bottom:14px;color:#a5a9ae}.metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px}.metric{background:#222427;border-radius:12px;padding:12px}.metric span{display:block;color:#8d9298;font-size:12px;margin-bottom:6px}.metric strong{font-size:15px}.section-title{font-size:20px;font-weight:800;margin-bottom:14px}.news-item{padding:14px 0;border-top:1px solid #3a3c40}.news-item:first-child{border-top:0;padding-top:0}.news-title{font-size:15px;line-height:1.55}.news-meta{margin-top:7px;color:#8c9095;font-size:12px;line-height:1.45}.news-meta a{color:#b9c0c6;text-decoration:none;margin-left:8px}.small{margin-top:18px;color:#777b80;font-size:12px;line-height:1.6}.chart-wrap{width:min(760px,100%);margin-top:18px;background:#191a1c;border-radius:18px;padding:10px;overflow:hidden}.legend{width:min(760px,100%);display:flex;gap:16px;align-items:center;margin:14px 2px 0;color:#8f9398;font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+.card{width:min(760px,100%);margin-top:22px;background:#2a2c2f;border-radius:18px;padding:24px}.title{font-size:22px;font-weight:800;margin-bottom:14px}.price{font-size:34px;font-weight:800;margin-bottom:8px}.meta{margin-top:8px;color:#a2a5aa;font-size:14px}.error{color:#ffb4b4}.section-title{font-size:17px;font-weight:800;margin-bottom:14px}.trend{margin-bottom:14px;color:#a5a9ae}.metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px}.metric{background:#222427;border-radius:12px;padding:12px}.metric span{display:block;color:#8d9298;font-size:12px;margin-bottom:6px}.metric strong{font-size:15px}.news-item{padding:14px 0;border-top:1px solid #3a3c40}.news-item:first-child{border-top:0;padding-top:0}.news-title{font-size:15px;line-height:1.55}.news-meta{margin-top:7px;color:#8c9095;font-size:12px;line-height:1.45}.news-meta a{color:#b9c0c6;text-decoration:none;margin-left:8px}.small{margin-top:18px;color:#777b80;font-size:12px;line-height:1.6}.chart-wrap{width:min(760px,100%);margin-top:18px;background:#191a1c;border-radius:18px;padding:10px;overflow:hidden}.legend{width:min(760px,100%);display:flex;gap:16px;align-items:center;margin:14px 2px 0;color:#8f9398;font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
 </style>
 </head><body><div class="page">
 <div class="logo">gaemiGTP</div><div class="sub">종목 하나로 시작하는 금융 분석 플랫폼</div>
 <form class="search" action="/search" method="get"><input name="q" value="{QUERY}" placeholder="예: SK하이닉스, NVDA, BTC" autocomplete="off"><button type="submit">분석</button></form>
 {RESULT}</div></body></html>"""
+
+
+
+def make_news_queries(asset):
+    name = asset["name"]
+    symbol = asset["symbol"]
+    market = asset["market"]
+
+    queries = [name, f"{name} {symbol}"]
+    if market == "미국주식":
+        queries.extend([symbol, f"{symbol} stock", f"{name} stock"])
+    elif market == "암호화폐":
+        queries.extend([symbol, f"{name} crypto", f"{symbol} crypto"])
+
+    # preserve order / remove duplicates
+    result = []
+    seen = set()
+    for q in queries:
+        q = q.strip()
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            result.append(q)
+    return result
+
+
+def parse_rss_items(xml_bytes, limit=5):
+    root = ET.fromstring(xml_bytes)
+    items = []
+    for item in root.findall(".//item"):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        pub_date = (item.findtext("pubDate") or "").strip()
+        source_node = item.find("source")
+        source = (source_node.text or "").strip() if source_node is not None else ""
+
+        if not title:
+            continue
+
+        items.append({
+            "title": title,
+            "link": link,
+            "published": pub_date,
+            "source": source,
+        })
+
+        if len(items) >= limit:
+            break
+    return items
+
+
+def fetch_google_news_rss(query, limit=5):
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={requests.utils.quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
+    )
+    response = requests.get(
+        url,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    return parse_rss_items(response.content, limit=limit)
+
+
+def fetch_google_news_rss_us(query, limit=5):
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en"
+    )
+    response = requests.get(
+        url,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    return parse_rss_items(response.content, limit=limit)
+
+
+def fetch_yahoo_news_rss(ticker, limit=5):
+    url = (
+        "https://feeds.finance.yahoo.com/rss/2.0/headline?"
+        f"s={requests.utils.quote(ticker)}&region=US&lang=en-US"
+    )
+    response = requests.get(
+        url,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    return parse_rss_items(response.content, limit=limit)
+
+
+def normalize_news(items):
+    cleaned = []
+    seen = set()
+
+    for item in items:
+        title = re.sub(r"\s+", " ", item.get("title", "")).strip()
+        if not title:
+            continue
+
+        # Google News titles can contain "Title - Source".
+        source = (item.get("source") or "").strip()
+        if not source and " - " in title:
+            left, right = title.rsplit(" - ", 1)
+            if len(right) <= 80:
+                title, source = left.strip(), right.strip()
+
+        key = re.sub(r"[^0-9a-zA-Z가-힣]", "", title).lower()
+        if not key or key in seen:
+            continue
+
+        seen.add(key)
+        cleaned.append({
+            "title": title,
+            "source": source,
+            "published": item.get("published", ""),
+            "link": item.get("link", ""),
+        })
+
+    return cleaned[:5]
+
+
+def collect_free_news(asset, limit=5):
+    """
+    Free/no-key news collection.
+    Priority:
+      - US stocks: Yahoo Finance RSS first, Google News US fallback
+      - Korean stocks: Google News Korean RSS
+      - Crypto: Google News Korean RSS + US fallback
+    If all sources fail, return [] rather than inventing a headline.
+    """
+    all_items = []
+
+    try:
+        if asset["market"] == "미국주식":
+            all_items.extend(fetch_yahoo_news_rss(asset["symbol"], limit=limit))
+            if len(all_items) < limit:
+                all_items.extend(
+                    fetch_google_news_rss_us(
+                        f"{asset['symbol']} stock",
+                        limit=limit,
+                    )
+                )
+        else:
+            queries = make_news_queries(asset)
+            for q in queries:
+                try:
+                    all_items.extend(fetch_google_news_rss(q, limit=limit))
+                except Exception as exc:
+                    print(f"[NEWS SOURCE ERROR] query={q}: {exc}")
+                if len(normalize_news(all_items)) >= limit:
+                    break
+
+            # Extra English fallback for crypto / popular symbols.
+            if len(all_items) < limit and asset["market"] == "암호화폐":
+                try:
+                    all_items.extend(
+                        fetch_google_news_rss_us(
+                            f"{asset['symbol']} crypto",
+                            limit=limit,
+                        )
+                    )
+                except Exception as exc:
+                    print(f"[NEWS US FALLBACK ERROR] {asset['symbol']}: {exc}")
+
+        final_items = normalize_news(all_items)
+        print(f"[NEWS] {asset['symbol']}: {len(final_items)} items")
+        return final_items[:limit]
+
+    except Exception as exc:
+        print(f"[NEWS ERROR] {asset['symbol']}: {exc}")
+        return []
+
+
+def render_news_block(items):
+    if not items:
+        return (
+            '<div class="card">'
+            '<div class="section-title">최근 뉴스</div>'
+            '<div class="meta">현재 무료 뉴스 소스에서 확인되는 뉴스가 없습니다.</div>'
+            '</div>'
+        )
+
+    cards = []
+    for item in items:
+        title = html_escape(item["title"])
+        source = html_escape(item.get("source") or "출처 미상")
+        published = html_escape(item.get("published") or "")
+        link = item.get("link") or ""
+        link_html = (
+            f'<a href="{html_escape(link)}" target="_blank" rel="noopener noreferrer">원문</a>'
+            if link else ""
+        )
+
+        time_part = f' · {published}' if published else ""
+        cards.append(
+            '<div class="news-item">'
+            f'<div class="news-title">{title}</div>'
+            f'<div class="news-meta">{source}{time_part} {link_html}</div>'
+            '</div>'
+        )
+
+    return (
+        '<div class="card">'
+        '<div class="section-title">최근 뉴스</div>'
+        + "".join(cards)
+        + '</div>'
+    )
+
 
 
 def render_page(query="", result=None):
@@ -544,6 +650,7 @@ def render_page(query="", result=None):
                 '</div>'
             )
             result_html += render_news_block(result.get("news", []))
+
         else:
             result_html = f'<div class="card"><div class="title error">데이터 조회 실패</div><div class="meta">{html_escape(result.get("error", "시장 데이터를 가져오지 못했습니다."))}</div></div>'
     return HTML.replace("{QUERY}", html_escape(query)).replace("{RESULT}", result_html)
@@ -567,7 +674,7 @@ def analyze_query(query):
             "as_of": now_kst(), "chart_source": chart_source,
             "chart_svg": build_svg_chart(candles, asset["market"]),
             "indicators": indicators,
-            "news": collect_news(asset, limit=5),
+            "news": collect_free_news(asset, limit=5),
         }
     except Exception as exc:
         print(f"[ANALYSIS ERROR] {asset['symbol']}: {exc}")
@@ -597,14 +704,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_bytes(200 if result.get("success") else 502, "text/html; charset=utf-8", render_page(q, result).encode("utf-8")); return
         if parsed.path == "/health":
             self.send_json(200, {"status":"ok", "service":"gaemiGTP-development"}); return
+
         if parsed.path == "/api/news":
             q = params.get("q", [""])[0].strip()
             asset = find_asset(q) if q else None
             if not asset:
                 self.send_json(404, {"success": False, "news": []})
                 return
-            news = collect_news(asset, limit=5)
-            self.send_json(200, {"success": True, "name": asset["name"], "symbol": asset["symbol"], "news": news})
+            news = collect_free_news(asset, limit=5)
+            self.send_json(200, {
+                "success": True,
+                "name": asset["name"],
+                "symbol": asset["symbol"],
+                "news": news,
+            })
             return
 
         if parsed.path == "/api/price":

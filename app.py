@@ -108,7 +108,7 @@ def get_price(asset):
     return get_binance_price(asset["symbol"])
 
 
-def get_yahoo_history(ticker, range_value="3mo", interval="1d"):
+def get_yahoo_history(ticker, range_value="1y", interval="1d"):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range={range_value}&interval={interval}&includePrePost=false"
     r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=TIMEOUT)
     r.raise_for_status()
@@ -122,6 +122,7 @@ def get_yahoo_history(ticker, range_value="3mo", interval="1d"):
     h = quote.get("high") or []
     l = quote.get("low") or []
     c = quote.get("close") or []
+    v = quote.get("volume") or []
     candles = []
     for i, t in enumerate(ts):
         try:
@@ -130,7 +131,12 @@ def get_yahoo_history(ticker, range_value="3mo", interval="1d"):
             continue
         if not all(v == v for v in vals):
             continue
-        candles.append({"t": int(t), "o": vals[0], "h": vals[1], "l": vals[2], "c": vals[3]})
+        vol = 0.0
+        try:
+            vol = float(v[i]) if v[i] is not None else 0.0
+        except (IndexError, TypeError, ValueError):
+            vol = 0.0
+        candles.append({"t": int(t), "o": vals[0], "h": vals[1], "l": vals[2], "c": vals[3], "v": vol})
     if len(candles) < 10:
         raise ValueError("차트용 과거 데이터가 부족합니다.")
     return candles, "Yahoo Finance"
@@ -144,7 +150,7 @@ def get_crypto_history(symbol, limit=90):
     candles = []
     for row in rows:
         try:
-            candles.append({"t": int(row[0] // 1000), "o": float(row[1]), "h": float(row[2]), "l": float(row[3]), "c": float(row[4])})
+            candles.append({"t": int(row[0] // 1000), "o": float(row[1]), "h": float(row[2]), "l": float(row[3]), "c": float(row[4]), "v": float(row[5])})
         except (IndexError, TypeError, ValueError):
             continue
     if len(candles) < 10:
@@ -447,12 +453,14 @@ def analyze_query(query):
     try:
         price_text, price_source = get_price(asset)
         candles, chart_source = get_history(asset)
+        indicators = build_indicators(candles)
         return {
             "success": True,
             "name": asset["name"], "symbol": asset["symbol"], "market": asset["market"],
             "price_text": price_text, "price_source": price_source,
             "as_of": now_kst(), "chart_source": chart_source,
             "chart_svg": build_svg_chart(candles, asset["market"]),
+            "indicators": indicators,
         }
     except Exception as exc:
         print(f"[ANALYSIS ERROR] {asset['symbol']}: {exc}")

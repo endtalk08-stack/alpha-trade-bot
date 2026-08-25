@@ -109,7 +109,7 @@ def generate_chart_image(df, title_text=""):
         plot_df = df.tail(45).copy()
         
         mc = mpf.make_marketcolors(up='#ef4444', down='#3b82f6', edge='inherit', wick='inherit', volume='inherit')
-        s = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc, gridcolor='#333333', facecolor='#1e1e1e', edgecolor='#1e1e1e', figcolor='#1e1e1e')
+        s = mpf.make_mpf_style(base_mpf_style='nightclouds', marketcolors=mc, gridcolor='#2a2a2a', facecolor='#1e1e1e', edgecolor='#1e1e1e', figcolor='#1e1e1e')
         
         buf = io.BytesIO()
         mpf.plot(
@@ -218,8 +218,7 @@ def get_foreign_rss_headlines(ticker):
     return headlines
 
 def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domestic_stock"):
-    """금융 전문 기자 스타일의 팩트 중심 1줄 속보 합성 (외신 직역 및 결측치 원천 차단)"""
-    # 유효한 텍스트만 필터링
+    """금융 전문 기자 스타일의 팩트 중심 1줄 속보 합성"""
     valid_issues = [
         str(i).strip() for i in raw_issues 
         if i and len(str(i).strip()) > 5 and not str(i).strip().endswith(":") and not str(i).strip().endswith("-")
@@ -264,7 +263,6 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
     except Exception:
         pass
     
-    # 예비 Fallback (결측치 정제 후 자연스러운 팩트 문구로 처리)
     for issue in valid_issues:
         clean_issue = re.sub(r'글로벌 빅테크\(.*?\)|원문 뉴스:|-', '', issue).strip()
         if "NVDA" in clean_issue or "Nvidia" in clean_issue:
@@ -286,7 +284,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         "macro_calendar": macro_event
     }
     
-    # 1. 미국 주식
     if asset_type == "overseas_stock":
         clean_sym = symbol.upper().strip()
         foreign_news = get_foreign_rss_headlines(clean_sym)
@@ -306,7 +303,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-    # 2. 암호화폐
     elif asset_type == "crypto":
         c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else "BTC-USD")
         crypto_news = get_foreign_rss_headlines(c_sym)
@@ -315,13 +311,11 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
 
-    # 3. 국내 주식
     else:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://m.stock.naver.com/"
         }
-        # 3-1. 국내 실시간 최신 뉴스 1순위 수집
         try:
             news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=5&page=1"
             n_res = requests.get(news_url, headers=headers, timeout=2.0).json()
@@ -340,7 +334,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-        # 3-2. 글로벌 파트너 미국 뉴스 (정상적인 텍스트가 있을 때만 안전하게 보조 추가)
         if symbol in GLOBAL_CORRELATION_MAP:
             global_partner = GLOBAL_CORRELATION_MAP[symbol]
             if global_partner:
@@ -348,7 +341,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
                 if g_news and len(g_news[0].strip()) > 8:
                     raw_issues.append(f"글로벌 빅테크({global_partner}) 원문: {g_news[0]}")
 
-        # 3-3. 재무 및 수급
         try:
             integ_url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
             res = requests.get(integ_url, headers=headers, timeout=2.0).json()
@@ -743,71 +735,74 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
     <title>gaemiGTP - 10초 금융 퀀트 분석 엔진</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        html, body { height: 100%; background-color: #212121; color: #ececec; overflow: hidden; }
+        html, body { height: 100%; background-color: #1e1f20; color: #e3e3e3; overflow: hidden; }
         
         header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 24px; z-index: 50; }
-        .logo-top { font-weight: 800; font-size: 1.15rem; color: #e0e0e0; letter-spacing: -0.5px; cursor: pointer; }
-        .new-btn { background: #2f2f2f; border: 1px solid #424242; color: #c5c5d2; font-size: 0.82rem; padding: 6px 14px; border-radius: 12px; cursor: pointer; font-weight: 600; }
-        .new-btn:hover { background: #3e3e3e; color: #fff; }
+        .logo-top { font-weight: 700; font-size: 1.15rem; color: #e3e3e3; letter-spacing: -0.5px; cursor: pointer; }
+        .new-btn { background: #282a2c; border: none; color: #c4c7c5; font-size: 0.85rem; padding: 7px 16px; border-radius: 20px; cursor: pointer; font-weight: 500; transition: background 0.2s; }
+        .new-btn:hover { background: #37393b; color: #fff; }
 
         #main-view { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; transition: all 0.3s; }
-        .hero-title { font-size: 3.4rem; font-weight: 800; margin-bottom: 8px; letter-spacing: -1.5px; color: #f5f5f5; }
-        .hero-sub { font-size: 1.05rem; color: #8e8ea0; margin-bottom: 28px; font-weight: 400; }
+        .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
+        .hero-sub { font-size: 1.02rem; color: #8e918f; margin-bottom: 28px; font-weight: 400; }
         
         .search-container { width: 100%; max-width: 720px; position: relative; }
-        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 6px 8px 6px 20px; display: flex; align-items: center; box-shadow: 0 6px 24px rgba(0,0,0,0.3); position: relative; }
-        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 0.98rem; padding: 8px 6px; }
-        .search-box input::placeholder { color: #737380; }
+        /* 테두리 제거 및 Gemini 고유 다크 톤 일체화 */
+        .search-box { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 6px 8px 6px 20px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
+        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.98rem; padding: 8px 6px; }
+        .search-box input::placeholder { color: #8e918f; }
         
         /* 3단 모델 셀렉터 드롭다운 */
-        .model-selector-wrap { position: relative; margin-right: 8px; }
-        .model-pill-btn { background: #383838; border: 1px solid #4a4a4a; border-radius: 20px; padding: 6px 12px; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; transition: all 0.2s; }
-        .model-pill-btn:hover { background: #444444; border-color: #60a5fa; }
-        .model-pill-name { font-size: 0.85rem; font-weight: 700; color: #60a5fa; }
-        .model-pill-arrow { font-size: 0.65rem; color: #9ca3af; transition: transform 0.2s; }
+        .model-selector-wrap { position: relative; margin-right: 6px; }
+        .model-pill-btn { background: #1e1f20; border: none; border-radius: 20px; padding: 6px 12px; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; transition: all 0.2s; }
+        .model-pill-btn:hover { background: #333538; }
+        .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
+        .model-pill-arrow { font-size: 0.62rem; color: #8e918f; transition: transform 0.2s; }
         
-        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 12px); right: 0; width: 220px; background: #2a2a2a; border: 1px solid #424242; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 12px); right: 0; width: 220px; background: #282a2c; border: none; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
         .model-dropdown-item { padding: 10px 14px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
-        .model-dropdown-item:hover { background: #383838; }
-        .model-dropdown-item.active { background: #343434; }
-        .item-title { font-size: 0.88rem; font-weight: 700; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
-        .item-sub { font-size: 0.73rem; color: #8e8ea0; margin-top: 2px; }
-        .item-check { color: #60a5fa; font-weight: bold; display: none; font-size: 0.85rem; }
+        .model-dropdown-item:hover { background: #333538; }
+        .model-dropdown-item.active { background: #37393b; }
+        .item-title { font-size: 0.88rem; font-weight: 600; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
+        .item-sub { font-size: 0.74rem; color: #8e918f; margin-top: 2px; }
+        .item-check { color: #e3e3e3; font-weight: bold; display: none; font-size: 0.85rem; }
         .model-dropdown-item.active .item-check { display: inline; }
 
         /* 화살표 아이콘 전송 버튼 */
-        .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
-        .send-btn:hover { background: #606060; }
+        .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; transition: background 0.2s; }
+        .send-btn:hover { background: #4a4d50; }
         .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
 
         .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 6px 13px; font-size: 0.85rem; color: #c5c5d2; cursor: pointer; }
-        .tag-btn:hover { background: #3a3a3a; color: #fff; }
+        .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 14px; font-size: 0.85rem; color: #c4c7c5; cursor: pointer; transition: background 0.2s; }
+        .tag-btn:hover { background: #37393b; color: #fff; }
 
         #result-scroll-view { display: none; position: absolute; top: 56px; bottom: 84px; left: 0; width: 100%; overflow-y: auto; padding: 20px; }
         .result-inner { max-width: 720px; margin: 0 auto; }
         
-        .chart-img-box { width: 100%; background: #1e1e1e; border: 1px solid #3e3e3e; border-radius: 16px; margin-bottom: 16px; overflow: hidden; display: flex; justify-content: center; align-items: center; }
+        .chart-img-box { width: 100%; background: #282a2c; border: none; border-radius: 16px; margin-bottom: 16px; overflow: hidden; display: flex; justify-content: center; align-items: center; }
         .chart-img-box img { width: 100%; height: auto; display: block; }
 
-        .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.6; }
-        .card-header { font-size: 1.35rem; font-weight: 700; color: #60a5fa; margin-bottom: 14px; }
+        .card { background: #282a2c; border: none; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.65; }
+        /* 종목명 크기 다운 및 차분한 화이트 톤 */
+        .card-header { font-size: 1.15rem; font-weight: 600; color: #f2f2f2; margin-bottom: 14px; }
         
         .issue-wrap { margin-bottom: 18px; }
-        .issue-title { font-size: 0.95rem; font-weight: 700; color: #ececec; margin-bottom: 4px; }
-        .issue-highlight { font-size: 0.96rem; font-weight: 600; color: #fef08a; display: inline-block; animation: pulseFade 2.4s infinite ease-in-out; }
+        .issue-title { font-size: 0.92rem; font-weight: 600; color: #c4c7c5; margin-bottom: 4px; }
+        .issue-highlight { font-size: 0.95rem; font-weight: 600; color: #fef08a; display: inline-block; animation: pulseFade 2.4s infinite ease-in-out; }
         @keyframes pulseFade {
             0% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
             50% { opacity: 1; transform: scale(1); filter: brightness(1.25) drop-shadow(0 0 6px rgba(254, 240, 138, 0.4)); }
             100% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
         }
 
-        .summary-body { white-space: pre-wrap; color: #ececec; }
-        .detail-btn { width: 100%; background: #374151; border: 1px solid #4b5563; color: #e5e7eb; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 14px; }
-        .detail-content { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #444; color: #d1d5db; white-space: pre-wrap; }
+        .summary-body { white-space: pre-wrap; color: #e3e3e3; font-size: 0.95rem; }
+        .detail-btn { width: 100%; background: #37393b; border: none; color: #e3e3e3; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 14px; transition: background 0.2s; }
+        .detail-btn:hover { background: #45484c; }
+        .detail-content { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #37393b; color: #c4c7c5; white-space: pre-wrap; font-size: 0.93rem; }
         
-        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 84px; background: linear-gradient(180deg, rgba(33,33,33,0) 0%, rgba(33,33,33,1) 40%); align-items: center; justify-content: center; padding: 0 16px 8px; z-index: 50; }
-        .loading { display: none; text-align: center; color: #9ca3af; margin: 40px 0; }
+        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 84px; background: linear-gradient(180deg, rgba(30,31,32,0) 0%, rgba(30,31,32,1) 40%); align-items: center; justify-content: center; padding: 0 16px 8px; z-index: 50; }
+        .loading { display: none; text-align: center; color: #8e918f; margin: 40px 0; font-size: 0.92rem; }
     </style>
 </head>
 <body>
@@ -994,7 +989,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
 
                 document.getElementById('resTitle').innerText = data.name + ' (' + data.symbol + ')';
                 
-                const issueRaw = data.news_raw || "업황 호조 및 핵심 공급망 수혜";
+                const issueRaw = data.news_raw || "업황 호조 및 플랫폼 트래픽 수혜";
                 document.getElementById('issueText').innerText = "👉 " + issueRaw;
 
                 let cleanSummary = data.summary;

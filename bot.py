@@ -213,58 +213,40 @@ def get_foreign_rss_headlines(ticker):
         pass
     return headlines
 
-def translate_mymemory_api(text):
-    """차단 없는 MyMemory 글로벌 API를 이용한 정밀 영한 번역"""
-    try:
-        if not text or not re.search(r'[a-zA-Z]{2,}', text):
-            return text
-        url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=en|ko"
-        res = requests.get(url, timeout=2.5).json()
-        match_trans = res.get("responseData", {}).get("translatedText", "")
-        if match_trans and not match_trans.startswith("MYMEMORY WARNING"):
-            clean_res = match_trans.replace("모멘텀", "").replace("지속", "").strip()
-            return clean_res
-    except Exception:
-        pass
-    return text
-
-def synthesize_issue_headline_gemini(stock_name, raw_issues):
-    """다중 이슈 종합 및 100% 한국어 명사형 종결 속보 생성"""
+def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domestic_stock"):
+    """금융 전문 문맥 반영 및 100% 한국어 명사형 종결 속보 생성"""
     if not raw_issues:
         return f"{stock_name} 업황 호조 및 기관 수급 유입"
     
-    # 1차: 만약 영문 기사가 섞여 있다면 먼저 개별 번역 수행
-    processed_issues = []
-    for issue in raw_issues:
-        if re.search(r'[a-zA-Z]{3,}', issue):
-            translated = translate_mymemory_api(issue)
-            processed_issues.append(translated)
-        else:
-            processed_issues.append(issue)
-            
-    joined_issues = " / ".join(processed_issues)
+    joined_issues = " / ".join(raw_issues)
     
-    # 2차: Gemini AI를 통한 1줄 핵심 맥락 합성
     prompt = f"""
-다음은 '{stock_name}' 종목의 실시간 뉴스 및 이슈 재료들입니다:
+당신은 베테랑 글로벌 금융 전문 기자이자 퀀트 애널리스트입니다.
+다음은 '{stock_name}' 종목의 실시간 뉴스 및 이슈 데이터입니다:
 [{joined_issues}]
 
-위 재료들의 핵심 원인과 결과를 파악하여 개미 투자자가 1초 만에 이해할 수 있도록 단 1줄의 완성된 '한국어' 속보 문장으로 요약 작성하세요.
+위 재료를 바탕으로 개미 투자자가 1초 만에 주가 영향 요인을 파악할 수 있도록 단 1줄의 완성된 '한국어 속보' 문장으로 작성하세요.
 
-[규칙]
-1. 반드시 100% 한국어로만 작성할 것. (영문 단어 노출 금지)
-2. '모멘텀', '지속', '전망' 같은 상투적인 단어는 절대 사용하지 말 것.
-3. 문장은 반드시 사실 중심의 간결한 명사형 종결(예: ~상회, ~가시화, ~순유입 가속화, ~공급 확대, ~기대감 고조)로 끝맺을 것.
-4. 설명이나 따옴표 없이 단 1줄의 문장만 출력할 것.
+[금융 전문 번역 및 요약 지침]
+1. 영문 금융 용어 직역 절대 금지:
+   - 'earnings' -> '실적 발표' (수입 절대 금지)
+   - 'options show' -> '옵션 시장 분석' (옵션 표시 금지)
+   - 'price swing' -> '주가 변동성' (가격 변동 금지)
+   - 'is set for / on track' -> '~예고 / ~순항' (설정됩니다 금지)
+   - 'revenue / top-line' -> '매출'
+2. 상투적이고 추상적인 단어('모멘텀', '지속', '전망' 등)는 절대 배제할 것.
+3. 문장 끝은 반드시 사실 중심의 간결한 명사형 종결(예: ~상회, ~가시화, ~순유입 가속화, ~공급 확대, ~기대감 고조, ~주가 변동성 예고)로 끝맺을 것.
+4. 어떤 영어 알파벳도 남기지 말고 100% 자연스러운 한국어 문장으로만 출력할 것.
+5. 따옴표나 기타 설명 없이 단 1줄의 문장만 출력할 것.
 """
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 100}
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 120}
         }
-        res = requests.post(url, headers=headers, json=payload, timeout=2.5).json()
+        res = requests.post(url, headers=headers, json=payload, timeout=3.0).json()
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         text = re.sub(r'["\'\n]', '', text).strip()
         if text and not re.search(r'[a-zA-Z]{3,}', text):
@@ -272,12 +254,12 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues):
     except Exception:
         pass
     
-    # 예비 Fallback: 번역된 첫 번째 이슈 사용
-    first = processed_issues[0]
-    return first.replace("모멘텀", "").strip()
+    # 예비 Fallback
+    first = raw_issues[0]
+    return first.replace("모멘텀", "").replace("수입", "실적").replace("옵션 표시", "옵션 시장").strip()
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
-    """전 자산군 실시간 뉴스 종합 및 재무 데이터 통합 수집"""
+    """자산군별 최적화된 실시간 뉴스 수집 및 재무 데이터 통합"""
     macro_event = fetch_fmp_macro_and_earnings()
     raw_issues = []
     
@@ -288,7 +270,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         "macro_calendar": macro_event
     }
     
-    # 1. 미국 주식 실시간 RSS 뉴스 및 재무
+    # 1. 미국 주식 (외신 속보 1순위 최우선)
     if asset_type == "overseas_stock":
         clean_sym = symbol.upper().strip()
         foreign_news = get_foreign_rss_headlines(clean_sym)
@@ -307,7 +289,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-    # 2. 암호화폐 실시간 RSS 뉴스 및 온체인
+    # 2. 암호화폐 (외신 속보 및 온체인 1순위)
     elif asset_type == "crypto":
         c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else "BTC-USD")
         crypto_news = get_foreign_rss_headlines(c_sym)
@@ -315,12 +297,13 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
 
-    # 3. 국내 주식 네이버 실시간 뉴스 + 글로벌 상관관계 미국 주식 뉴스 융합
+    # 3. 국내 주식 (국내 실시간 뉴스 1순위 최우선 고정)
     else:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://m.stock.naver.com/"
         }
+        # 3-1. 네이버 실시간 국내 뉴스 1순위 수집
         try:
             news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=5&page=1"
             n_res = requests.get(news_url, headers=headers, timeout=2.0).json()
@@ -339,11 +322,14 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
+        # 3-2. 글로벌 파트너 미국 뉴스 (보조 재료로 2순위 추가)
         if symbol in GLOBAL_CORRELATION_MAP:
             global_partner = GLOBAL_CORRELATION_MAP[symbol]
             g_news = get_foreign_rss_headlines(global_partner)
-            raw_issues.extend(g_news[:1])
+            if g_news:
+                raw_issues.append(f"미국 {global_partner} 관련: {g_news[0]}")
 
+        # 3-3. 재무 및 수급
         try:
             integ_url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
             res = requests.get(integ_url, headers=headers, timeout=2.0).json()
@@ -361,7 +347,8 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-    info["recent_news"] = synthesize_issue_headline_gemini(stock_name, raw_issues)
+    # 금융 전문 AI 엔진을 통해 100% 매끄러운 한글 속보로 종합
+    info["recent_news"] = synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type=asset_type)
     return info
 
 def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):

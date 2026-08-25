@@ -89,7 +89,6 @@ GLOBAL_CORRELATION_MAP = {
     "035720": "META"
 }
 
-# 단순 시황 및 무의미한 노이즈 기사 필터링 블랙리스트
 NOISE_FILTER_KEYWORDS = [
     "will s&p", "open up or down", "market wrap", "stock market:", 
     "pre-market", "futures slide", "futures rise", "what to watch", 
@@ -193,12 +192,12 @@ def fetch_fmp_macro_and_earnings():
     return events_summary
 
 def get_foreign_rss_headlines(ticker):
-    """야후 파이낸스 실시간 속보 수집 (노이즈 자동 스킵 및 2~3위 알짜 기사 추출)"""
+    """야후 파이낸스 실시간 속보 수집 (노이즈 자동 스킵)"""
     headlines = []
     try:
         rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(rss_url, headers=headers, timeout=2.0)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        r = requests.get(rss_url, headers=headers, timeout=2.5)
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             items = root.findall('.//item')
@@ -206,7 +205,6 @@ def get_foreign_rss_headlines(ticker):
                 t = it.find('title')
                 if t is not None and t.text:
                     clean = re.sub(r'<.*?>', '', t.text).strip()
-                    # 단순 시황 질문글이 아니면 유효 기사로 담기
                     if clean and not is_noise_headline(clean):
                         headlines.append(clean)
                     if len(headlines) >= 2:
@@ -215,18 +213,17 @@ def get_foreign_rss_headlines(ticker):
         pass
     return headlines
 
-def direct_translate_to_ko(text):
-    """Google 다이렉트 번역기 (영문 -> 100% 한글 변환 보조 안전망)"""
+def translate_mymemory_api(text):
+    """차단 없는 MyMemory 글로벌 API를 이용한 정밀 영한 번역"""
     try:
-        if not re.search(r'[a-zA-Z]', text):
+        if not text or not re.search(r'[a-zA-Z]{2,}', text):
             return text
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ko&dt=t&q={urllib.parse.quote(text)}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=2.0).json()
-        if res and isinstance(res, list) and len(res) > 0 and res[0]:
-            translated = "".join([part[0] for part in res[0] if part and part[0]]).strip()
-            translated = translated.replace("모멘텀", "").replace("지속", "").strip()
-            return translated
+        url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=en|ko"
+        res = requests.get(url, timeout=2.5).json()
+        match_trans = res.get("responseData", {}).get("translatedText", "")
+        if match_trans and not match_trans.startswith("MYMEMORY WARNING"):
+            clean_res = match_trans.replace("모멘텀", "").replace("지속", "").strip()
+            return clean_res
     except Exception:
         pass
     return text
@@ -236,18 +233,29 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues):
     if not raw_issues:
         return f"{stock_name} 업황 호조 및 기관 수급 유입"
     
-    joined_issues = " / ".join(raw_issues)
+    # 1차: 만약 영문 기사가 섞여 있다면 먼저 개별 번역 수행
+    processed_issues = []
+    for issue in raw_issues:
+        if re.search(r'[a-zA-Z]{3,}', issue):
+            translated = translate_mymemory_api(issue)
+            processed_issues.append(translated)
+        else:
+            processed_issues.append(issue)
+            
+    joined_issues = " / ".join(processed_issues)
+    
+    # 2차: Gemini AI를 통한 1줄 핵심 맥락 합성
     prompt = f"""
-다음은 '{stock_name}' 종목과 관련된 실시간 뉴스 및 글로벌 상관관계 재료들입니다:
+다음은 '{stock_name}' 종목의 실시간 뉴스 및 이슈 재료들입니다:
 [{joined_issues}]
 
-위 재료들을 바탕으로 개미 투자자가 1초 만에 주가 변동 원인을 이해할 수 있도록 가장 중요한 핵심 인과관계를 종합하여 단 1줄의 완성된 '한국어' 속보 문장으로 작성하세요.
+위 재료들의 핵심 원인과 결과를 파악하여 개미 투자자가 1초 만에 이해할 수 있도록 단 1줄의 완성된 '한국어' 속보 문장으로 요약 작성하세요.
 
 [규칙]
-1. 영문 외신이 포함되어 있다면 반드시 완벽하고 매끄러운 한국어로 번역할 것. (영문 알파벳 노출 절대 금지)
-2. '모멘텀', '지속', '전망' 같은 상투적이고 추상적인 단어는 절대 사용하지 말 것.
+1. 반드시 100% 한국어로만 작성할 것. (영문 단어 노출 금지)
+2. '모멘텀', '지속', '전망' 같은 상투적인 단어는 절대 사용하지 말 것.
 3. 문장은 반드시 사실 중심의 간결한 명사형 종결(예: ~상회, ~가시화, ~순유입 가속화, ~공급 확대, ~기대감 고조)로 끝맺을 것.
-4. 설명이나 따옴표 없이 단 1줄의 한국어 문장만 출력할 것.
+4. 설명이나 따옴표 없이 단 1줄의 문장만 출력할 것.
 """
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -261,14 +269,12 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues):
         text = re.sub(r'["\'\n]', '', text).strip()
         if text and not re.search(r'[a-zA-Z]{3,}', text):
             return text
-        elif text:
-            return direct_translate_to_ko(text)
     except Exception:
         pass
     
-    first_issue = raw_issues[0]
-    translated_first = direct_translate_to_ko(first_issue)
-    return translated_first
+    # 예비 Fallback: 번역된 첫 번째 이슈 사용
+    first = processed_issues[0]
+    return first.replace("모멘텀", "").strip()
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     """전 자산군 실시간 뉴스 종합 및 재무 데이터 통합 수집"""
@@ -355,7 +361,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-    # 다중 이슈를 100% 한국어 명사형 속보로 종합
     info["recent_news"] = synthesize_issue_headline_gemini(stock_name, raw_issues)
     return info
 

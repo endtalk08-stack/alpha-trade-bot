@@ -1,18 +1,3 @@
-**추천 종목 태그 유지 여부 분석**
-
-| 구분 | 추천 태그 포함 (기존) | 검색창 단독 (태그 제거) |
-| --- | --- | --- |
-| **UX 장점** | 무엇을 칠지 모르는 사용자에게 원클릭 체험 유도 (이탈률 감소) | Google/Perplexity처럼 시선 분산 없는 극강의 미니멀리즘 |
-| **UX 단점** | 시각적 요소가 늘어나 정중앙 비율이 약간 깨져 보일 수 있음 | 직접 입력해야만 결과를 볼 수 있어 초기 허들이 생김 |
-| **결론 권장** | **유지 권장**: 금융 서비스 특성상 원클릭 테스트가 체류 시간 및 호기심 유발에 결정적인 역할을 합니다. |  |
-
-초기 화면에서는 **검색창을 기준으로 완벽한 화면 정중앙**에 고정되고, 검색 결과를 호출했을 때만 부드럽게 상단으로 이동하도록 레이아웃을 전면 개편했습니다.
-
----
-
-### 🛠️ `bot.py` 전체 코드 (정중앙 고정 + 동적 전환 레이아웃)
-
-```python
 import os
 import re
 import io
@@ -1135,59 +1120,69 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
     <title>gaemiGTP - 10초 금융 퀀트 분석 엔진</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        html, body { height: 100%; background-color: #212121; color: #ececec; }
-        body { display: flex; flex-direction: column; }
+        html, body { height: 100%; background-color: #212121; color: #ececec; overflow: hidden; }
         
-        header { width: 100%; position: absolute; top: 0; left: 0; display: flex; justify-content: flex-start; align-items: center; padding: 22px 28px; z-index: 10; }
-        .logo-top { font-weight: 800; font-size: 1.15rem; color: #e0e0e0; letter-spacing: -0.5px; cursor: pointer; }
-        
-        main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; max-width: 740px; margin: 0 auto; width: 100%; transition: all 0.3s ease; }
-        main.searched { justify-content: flex-start; padding-top: 80px; }
-        
-        .center-wrap { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; }
-        .hero-title { font-size: 3.4rem; font-weight: 800; margin-bottom: 8px; letter-spacing: -1.5px; color: #f5f5f5; cursor: pointer; }
-        .hero-sub { font-size: 1.05rem; color: #8e8ea0; margin-bottom: 26px; font-weight: 400; }
-        
-        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 8px 10px 8px 20px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.3); transition: border-color 0.2s; }
-        .search-box:focus-within { border-color: #777; }
-        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 1rem; padding: 6px 8px; }
-        .search-box input::placeholder { color: #737380; font-size: 0.95rem; }
-        
-        .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; flex-shrink: 0; }
-        .send-btn:hover { background: #606060; transform: scale(1.04); }
-        .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
+        /* 최상단 네비게이션 */
+        header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 20px; z-index: 50; background: rgba(33, 33, 33, 0.95); backdrop-filter: blur(8px); border-bottom: 1px solid #2f2f2f; }
+        .logo-wrap { display: flex; align-items: center; gap: 12px; }
+        .logo-top { font-weight: 800; font-size: 1.15rem; color: #f3f4f6; letter-spacing: -0.5px; cursor: pointer; }
+        .mode-select { background: #2f2f2f; border: 1px solid #444; color: #9ca3af; font-size: 0.82rem; padding: 4px 8px; border-radius: 8px; outline: none; cursor: pointer; font-weight: 600; }
+        .mode-select option { background: #212121; color: #ececec; }
+        .new-btn { background: #2f2f2f; border: 1px solid #424242; color: #c5c5d2; font-size: 0.8rem; padding: 5px 12px; border-radius: 12px; cursor: pointer; font-weight: 600; transition: 0.2s; }
+        .new-btn:hover { background: #3e3e3e; color: #fff; }
 
-        .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
+        /* 메인 스크롤 영역 */
+        #content-wrapper { position: absolute; top: 56px; bottom: 84px; left: 0; width: 100%; overflow-y: auto; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        
+        /* 초기 중앙 인트로 */
+        .intro-container { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; max-width: 720px; text-align: center; margin: auto 0; }
+        .hero-title { font-size: 3.4rem; font-weight: 800; margin-bottom: 8px; letter-spacing: -1.5px; color: #f5f5f5; }
+        .hero-sub { font-size: 1.05rem; color: #8e8ea0; margin-bottom: 24px; font-weight: 400; }
+        
+        /* 추천 태그 */
+        .popular-tags { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: 600px; }
         .tag-btn { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 6px 13px; font-size: 0.85rem; color: #c5c5d2; cursor: pointer; transition: 0.2s; }
         .tag-btn:hover { background: #3a3a3a; color: #fff; border-color: #555; }
-        
-        #result-container { width: 100%; margin-top: 28px; display: none; text-align: left; }
+
+        /* 결과 카드 컨테이너 */
+        #result-container { width: 100%; max-width: 720px; display: none; margin-bottom: 20px; text-align: left; }
         .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; white-space: pre-wrap; line-height: 1.6; }
-        .card-header { font-size: 1.3rem; font-weight: 700; color: #60a5fa; margin-bottom: 12px; }
+        .card-header { font-size: 1.35rem; font-weight: 700; color: #60a5fa; margin-bottom: 12px; }
         .detail-btn { width: 100%; background: #374151; border: 1px solid #4b5563; color: #e5e7eb; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 14px; transition: 0.2s; }
         .detail-btn:hover { background: #4b5563; }
         .detail-content { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #444; color: #d1d5db; font-size: 0.95rem; }
         .loading { display: none; margin: 24px 0; text-align: center; color: #9ca3af; font-size: 0.95rem; }
+
+        /* 하단 고정 입력 바 (ChatGPT Bottom Bar) */
+        footer { position: fixed; bottom: 0; left: 0; width: 100%; height: 84px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 16px 8px; z-index: 50; background: linear-gradient(180deg, rgba(33,33,33,0) 0%, rgba(33,33,33,1) 40%); }
+        .search-box { width: 100%; max-width: 720px; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 6px 8px 6px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.4); transition: border-color 0.2s; }
+        .search-box:focus-within { border-color: #777; }
+        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 0.98rem; padding: 6px 8px; }
+        .search-box input::placeholder { color: #737380; font-size: 0.92rem; }
         
-        footer { text-align: center; padding: 20px 18px; color: #555; font-size: 0.8rem; }
+        .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; flex-shrink: 0; }
+        .send-btn:hover { background: #606060; transform: scale(1.04); }
+        .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
+        
+        .disclaimer { font-size: 0.72rem; color: #555; margin-top: 5px; }
     </style>
 </head>
 <body>
     <header>
-        <div class="logo-top" onclick="resetHome()">gaemiGTP</div>
+        <div class="logo-wrap">
+            <div class="logo-top" onclick="resetHome()">gaemiGTP</div>
+            <select class="mode-select">
+                <option value="spot">⚡ 10초 핵심 타점</option>
+                <option value="report">📑 심층 퀀트 리포트</option>
+            </select>
+        </div>
+        <button class="new-btn" onclick="resetHome()">+ 새 검색</button>
     </header>
-    <main id="mainContainer">
-        <div class="center-wrap">
-            <div class="hero-title" onclick="resetHome()">gaemiGTP</div>
+
+    <div id="content-wrapper">
+        <div class="intro-container" id="introContainer">
+            <div class="hero-title">gaemiGTP</div>
             <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
-            <div class="search-box">
-                <input type="text" id="queryInput" placeholder="종목명 또는 티커를 입력하세요 (예: 알테오젠, 에코프로, BTC)" onkeypress="if(event.keyCode==13) doSearch();">
-                <button class="send-btn" onclick="doSearch()" title="분석 시작">
-                    <svg viewBox="0 0 24 24">
-                        <path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-                    </svg>
-                </button>
-            </div>
             <div class="popular-tags">
                 <button class="tag-btn" onclick="searchStock('SK하이닉스')">🔥 SK하이닉스</button>
                 <button class="tag-btn" onclick="searchStock('알테오젠')">🧬 알테오젠</button>
@@ -1196,25 +1191,39 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 <button class="tag-btn" onclick="searchStock('테슬라')">🚗 테슬라</button>
                 <button class="tag-btn" onclick="searchStock('비트코인')">₿ 비트코인</button>
             </div>
-            <div class="loading" id="loading">⚡ 실시간 수급/재무/뉴스 및 퀀트 팩터를 분석 중입니다...</div>
-            <div id="result-container">
-                <div class="card">
-                    <div class="card-header" id="resTitle"></div>
-                    <div id="resSummary"></div>
-                    <button class="detail-btn" id="toggleDetailBtn" onclick="toggleDetail()">심층 분석 및 근거 보기</button>
-                    <div class="detail-content" id="resDetail"></div>
-                </div>
+        </div>
+
+        <div class="loading" id="loading">⚡ 실시간 수급/재무/뉴스 및 퀀트 팩터를 분석 중입니다...</div>
+        
+        <div id="result-container">
+            <div class="card">
+                <div class="card-header" id="resTitle"></div>
+                <div id="resSummary"></div>
+                <button class="detail-btn" id="toggleDetailBtn" onclick="toggleDetail()">심층 분석 및 근거 보기</button>
+                <div class="detail-content" id="resDetail"></div>
             </div>
         </div>
-    </main>
-    <footer>본 서비스는 금융데이터 기반 기술적 분석 도구이며 투자 권유가 아닙니다.</footer>
+    </div>
+
+    <footer>
+        <div class="search-box">
+            <input type="text" id="queryInput" placeholder="종목명 또는 티커를 입력하세요 (예: 알테오젠, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch();" autocomplete="off">
+            <button class="send-btn" onclick="doSearch()" title="분석 시작">
+                <svg viewBox="0 0 24 24">
+                    <path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                </svg>
+            </button>
+        </div>
+        <div class="disclaimer">본 서비스는 금융데이터 기반 퀀트 도구이며 투자 권유가 아닙니다.</div>
+    </footer>
+
     <script>
         function resetHome() {
             document.getElementById('queryInput').value = '';
             document.getElementById('result-container').style.display = 'none';
             document.getElementById('loading').style.display = 'none';
-            document.getElementById('mainContainer').classList.remove('searched');
-            window.scrollTo({top: 0, behavior: 'smooth'});
+            document.getElementById('introContainer').style.display = 'flex';
+            document.getElementById('content-wrapper').scrollTo({top: 0, behavior: 'smooth'});
         }
         function searchStock(name) {
             document.getElementById('queryInput').value = name;
@@ -1223,11 +1232,13 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         async function doSearch() {
             const query = document.getElementById('queryInput').value.trim();
             if (!query) return;
-            document.getElementById('mainContainer').classList.add('searched');
+            
+            document.getElementById('introContainer').style.display = 'none';
             document.getElementById('loading').style.display = 'block';
             document.getElementById('result-container').style.display = 'none';
             document.getElementById('resDetail').style.display = 'none';
             document.getElementById('toggleDetailBtn').innerText = '심층 분석 및 근거 보기';
+            
             try {
                 const response = await fetch('/api/analyze?q=' + encodeURIComponent(query));
                 const data = await response.json();
@@ -1241,6 +1252,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 document.getElementById('resDetail').innerText = data.detail;
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-container').style.display = 'block';
+                document.getElementById('content-wrapper').scrollTo({top: 0, behavior: 'smooth'});
             } catch (err) {
                 alert('서버와 통신할 수 없습니다.');
                 document.getElementById('loading').style.display = 'none';
@@ -1286,5 +1298,3 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handle_button))
     
     app.run_polling(drop_pending_updates=True)
-
-```

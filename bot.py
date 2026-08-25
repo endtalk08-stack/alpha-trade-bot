@@ -747,22 +747,22 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .hero-sub { font-size: 1.02rem; color: #8e918f; margin-bottom: 28px; font-weight: 400; }
         
         .search-container { width: 100%; max-width: 720px; position: relative; }
-        /* 테두리 제거 및 Gemini 고유 다크 톤 일체화 */
+        /* 검색창 배경 및 그림자 */
         .search-box { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 6px 8px 6px 20px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
         .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.98rem; padding: 8px 6px; }
         .search-box input::placeholder { color: #8e918f; }
         
-        /* 3단 모델 셀렉터 드롭다운 */
+        /* 3단 모델 셀렉터 드롭다운 (평소에는 투명 일체화, 호버 시 은은한 다크 톤) */
         .model-selector-wrap { position: relative; margin-right: 6px; }
-        .model-pill-btn { background: #1e1f20; border: none; border-radius: 20px; padding: 6px 12px; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; transition: all 0.2s; }
-        .model-pill-btn:hover { background: #333538; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 12px; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; transition: all 0.2s; }
+        .model-pill-btn:hover { background: rgba(255, 255, 255, 0.08); }
         .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
         .model-pill-arrow { font-size: 0.62rem; color: #8e918f; transition: transform 0.2s; }
         
         .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 12px); right: 0; width: 220px; background: #282a2c; border: none; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
         .model-dropdown-item { padding: 10px 14px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
-        .model-dropdown-item:hover { background: #333538; }
-        .model-dropdown-item.active { background: #37393b; }
+        .model-dropdown-item:hover { background: rgba(255, 255, 255, 0.08); }
+        .model-dropdown-item.active { background: rgba(255, 255, 255, 0.12); }
         .item-title { font-size: 0.88rem; font-weight: 600; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
         .item-sub { font-size: 0.74rem; color: #8e918f; margin-top: 2px; }
         .item-check { color: #e3e3e3; font-weight: bold; display: none; font-size: 0.85rem; }
@@ -784,7 +784,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .chart-img-box img { width: 100%; height: auto; display: block; }
 
         .card { background: #282a2c; border: none; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.65; }
-        /* 종목명 크기 다운 및 차분한 화이트 톤 */
         .card-header { font-size: 1.15rem; font-weight: 600; color: #f2f2f2; margin-bottom: 14px; }
         
         .issue-wrap { margin-bottom: 18px; }

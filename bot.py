@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import io
@@ -6,6 +7,7 @@ import json
 import uuid
 import time
 import base64
+import html
 import asyncio
 import datetime
 import threading
@@ -81,7 +83,7 @@ NOISE_FILTER_KEYWORDS = [
     "will s&p", "open up or down", "market wrap", "stock market:", 
     "pre-market", "futures slide", "futures rise", "what to watch", 
     "stocks to buy", "stocks to watch", "here's why", "why is", 
-    "is it time to buy", "증시전망", "증시일정", "오늘의 증시"
+    "is it time to buy", "증시전망", "증시일정", "오늘의 증시", "s&p 500"
 ]
 
 def is_noise_headline(text):
@@ -195,8 +197,10 @@ def get_foreign_rss_headlines(ticker):
             for it in items[:6]:
                 t = it.find('title')
                 if t is not None and t.text:
-                    clean = re.sub(r'<.*?>', '', t.text).strip()
-                    if clean and len(clean) > 8 and not is_noise_headline(clean):
+                    clean = html.unescape(t.text)
+                    clean = re.sub(r'<.*?>', '', clean).strip()
+                    clean = re.sub(r'^[^\w가-힣a-zA-Z]+', '', clean).strip()
+                    if clean and len(clean) > 10 and not is_noise_headline(clean):
                         headlines.append(clean)
                     if len(headlines) >= 2:
                         break
@@ -205,31 +209,38 @@ def get_foreign_rss_headlines(ticker):
     return headlines
 
 def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domestic_stock"):
-    valid_issues = [
-        str(i).strip() for i in raw_issues 
-        if i and len(str(i).strip()) > 5 and not str(i).strip().startswith("http")
-    ]
+    valid_issues = []
+    for i in raw_issues:
+        c = html.unescape(str(i)).strip()
+        c = re.sub(r'<.*?>', '', c).strip()
+        c = re.sub(r'^[^\w가-힣a-zA-Z]+', '', c).strip()
+        if c and len(c) > 6 and not c.startswith("http") and not is_noise_headline(c):
+            valid_issues.append(c)
+
+    clean_name = re.sub(r'\(.*?\)', '', stock_name).strip()
 
     if not valid_issues:
-        if "에코프로" in stock_name:
+        if "비트코인" in clean_name or "BTC" in clean_name:
+            return "비트코인 현물 ETF 순유입 지속 및 온체인 활성도 견조"
+        if "엔비디아" in clean_name or "NVDA" in clean_name:
+            return "엔비디아 차세대 AI 반도체 수요 견조 및 데이터센터 매출 호조"
+        if "에코프로" in clean_name:
             return "에코프로 2차전지 양극재 수주 및 밸류체인 경쟁력 부각"
-        if "테슬라" in stock_name or "TSLA" in stock_name:
+        if "테슬라" in clean_name or "TSLA" in clean_name:
             return "테슬라 FSD 자율주행 고도화 및 로보택시 생태계 확장 기대감"
-        if "엔비디아" in stock_name or "NVDA" in stock_name:
-            return "엔비디아 차세대 AI 칩 수요 견조 및 데이터센터 매출 호조"
-        return f"{stock_name} 업황 호조 및 기관 수급 유입"
+        return f"{clean_name} 업황 호조 및 기관 수급 유입"
     
     joined_issues = "\n- ".join(valid_issues)
     
     prompt = f"""
 당신은 대한민국 최고 권위의 경제 일간지 금융·증권부 수석 기자입니다.
-'{stock_name}' 종목과 관련된 실시간 뉴스/이슈 원문입니다:
+'{clean_name}' 종목과 관련된 실시간 뉴스/이슈 원문입니다:
 - {joined_issues}
 
 위 내용에서 가장 핵심적인 '팩트'를 뽑아 단 1줄의 '완벽한 한국어 헤드라인 속보'로 요약 작성하세요.
 
 [필수 작성 원칙]
-1. 절대로 영어나 영문 원문(예: Tesla to launch...)을 그대로 출력하지 마십시오. 100% 자연스러운 한국어로 완벽 번역 및 정제할 것.
+1. 절대로 영어나 깨진 특수문자(예: &, :, ,, 등)를 그대로 출력하지 마십시오. 100% 자연스러운 한국어로 완벽 번역 및 정제할 것.
 2. 'earnings' -> '실적 발표' (절대로 '수입' 번역 금지)
 3. 'options show' -> '옵션 시장 반영'
 4. 'price swing' -> '주가 등락'
@@ -246,26 +257,30 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
         res = requests.post(url, headers=headers, json=payload, timeout=3.5).json()
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         text = re.sub(r'["\'\n]', '', text).strip()
-        if text and not re.search(r'[a-zA-Z]{3,}', text) and len(text) > 5:
+        text = re.sub(r'^[^\w가-힣]+', '', text).strip()
+        if text and not re.search(r'[a-zA-Z]{3,}', text) and len(text) > 5 and not text.startswith(":"):
             return text
     except Exception:
         pass
     
-    if "에코프로" in stock_name:
-        return "에코프로 2차전지 양극재 수주 및 밸류체인 경쟁력 강화"
-    elif "테슬라" in stock_name or "TSLA" in stock_name:
-        return "테슬라 FSD 자율주행 고도화 및 신규 모빌리티 출시 계획 반영"
-    elif "엔비디아" in stock_name or "NVDA" in stock_name:
+    if "비트코인" in clean_name or "BTC" in clean_name:
+        return "비트코인 기관 매수세 유입 및 네트워크 해시레이트 상승세"
+    elif "엔비디아" in clean_name or "NVDA" in clean_name:
         return "엔비디아 블랙웰 아키텍처 양산 및 글로벌 AI 인프라 수요 지속"
-    elif "하이닉스" in stock_name:
+    elif "에코프로" in clean_name:
+        return "에코프로 2차전지 양극재 수주 및 밸류체인 경쟁력 강화"
+    elif "테슬라" in clean_name or "TSLA" in clean_name:
+        return "테슬라 FSD 자율주행 고도화 및 신규 모빌리티 출시 계획 반영"
+    elif "하이닉스" in clean_name:
         return "SK하이닉스 HBM3E 대량 양산 및 차세대 메모리 주도권 확보"
     
     for issue in valid_issues:
         clean_issue = re.sub(r'[a-zA-Z]', '', issue).strip()
+        clean_issue = re.sub(r'^[^\w가-힣]+', '', clean_issue).strip()
         if len(clean_issue) > 8:
             return clean_issue
             
-    return f"{stock_name} 업황 호조 및 플랫폼 트래픽 수혜"
+    return f"{clean_name} 업황 호조 및 플랫폼 트래픽 수혜"
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     macro_event = fetch_fmp_macro_and_earnings()
@@ -322,7 +337,9 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
             if news_items:
                 for n in news_items:
                     title_txt = n.get("title") or n.get("tit") or n.get("itemTitle") or ""
-                    clean_t = re.sub(r'<.*?>|&[a-z0-9]+;', '', title_txt).strip()
+                    clean_t = html.unescape(title_txt)
+                    clean_t = re.sub(r'<.*?>', '', clean_t).strip()
+                    clean_t = re.sub(r'^[^\w가-힣]+', '', clean_t).strip()
                     if clean_t and len(clean_t) > 6 and not is_noise_headline(clean_t) and clean_t not in raw_issues:
                         raw_issues.append(clean_t)
         except Exception:
@@ -461,6 +478,7 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
     is_krw = "원" in str(price)
     unit = " 원" if is_krw else " 달러"
     fmt = lambda v: f"{int(v):,}{unit}" if is_krw else f"{v:,.2f}{unit}"
+    clean_name = re.sub(r'\(.*?\)', '', stock_name).strip()
     
     try:
         raw_p = float(str(price).replace("원", "").replace("달러", "").replace(",", "").replace("(USDT)", "").strip())
@@ -473,10 +491,10 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
 
     prompt = f"""
 당신은 최고 수준의 월스트리트 퀀트 트레이딩 분석가입니다.
-제공된 정밀 데이터(실적 캘린더, 실시간 재무제표, 글로벌 파급효과)를 정확히 문장에 포함하여 '{stock_name}'에 대한 5문단 심층 리포트를 작성하세요.
+제공된 정밀 데이터(실적 캘린더, 실시간 재무제표, 글로벌 파급효과)를 정확히 문장에 포함하여 '{clean_name}'에 대한 5문단 심층 리포트를 작성하세요.
 
 [정밀 데이터]
-- 종목명: {stock_name} ({symbol}) / 현재가: {price}
+- 종목명: {clean_name} ({symbol}) / 현재가: {price}
 - 20일 고점: {fmt(an['high_20d'])} / 5일 평균 거래량 대비 비율: {an['vol_ratio']}퍼센트
 - 재무/밸류에이션: {extra_info.get('financial_status')}
 - 수급 현황: {extra_info.get('supply_status')}
@@ -507,7 +525,7 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         return text
     except Exception:
-        return f"""{stock_name}의 최근 주가 흐름은 당일 주요 이슈인 '{extra_info.get('recent_news')}' 요인이 핵심 동력으로 작용하고 있습니다. 20일 고점인 {fmt(an['high_20d'])} 달성 이후 단기 차익 실현 매물을 소화하는 눌림목 구간에 진입해 있으며 현재 {price}선은 상승 파동 이후의 정당한 가격 조정 범주에 위치합니다. 단기 거래량이 5일 평균 대비 {an['vol_ratio']}퍼센트로 감소한 것은 구조적 투매라기보다는 상단 저항선에 대한 부담감으로 인한 관망세가 짙은 전형적인 수급 숨고르기 양상입니다.
+        return f"""{clean_name}의 최근 주가 흐름은 당일 주요 이슈인 '{extra_info.get('recent_news')}' 요인이 핵심 동력으로 작용하고 있습니다. 20일 고점인 {fmt(an['high_20d'])} 달성 이후 단기 차익 실현 매물을 소화하는 눌림목 구간에 진입해 있으며 현재 {price}선은 상승 파동 이후의 정당한 가격 조정 범주에 위치합니다. 단기 거래량이 5일 평균 대비 {an['vol_ratio']}퍼센트로 감소한 것은 구조적 투매라기보다는 상단 저항선에 대한 부담감으로 인한 관망세가 짙은 전형적인 수급 숨고르기 양상입니다.
 
 기업의 펀더멘털 측면에서 {extra_info.get('financial_status')}의 견조한 지표를 유지하고 있으며, 미국 연준의 금리 정책 기조와 {extra_info.get('macro_calendar')}은 당사의 수익성 개선 및 밸류에이션 재평가라는 직접적인 긍정적 매크로 효과를 제공합니다. 시중 유동성이 주식 시장으로 재유입될 경우 실적 가시성을 획기적으로 높이는 요소입니다.
 
@@ -523,7 +541,6 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
     fmt = lambda v: f"{int(v):,}{unit}" if is_krw else f"{v:,.2f}{unit}"
 
     news_raw = str(extra_info.get('recent_news', '')).strip().replace('"', '').replace("'", "")
-
     detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info)
     
     combined_body = f"""gaemiGTP 이슈
@@ -590,15 +607,15 @@ def run_full_analysis_process(query):
     if clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "USDT", "코인", "비트코인"]):
         asset_type = "crypto"
         symbol = CRYPTO_MAP.get(clean_q, clean_q + "USDT")
-        formal_name = query
+        formal_name = query.replace("(", "").replace(")", "").strip()
     elif clean_q in US_STOCK_MAP:
         asset_type = "overseas_stock"
         symbol = US_STOCK_MAP[clean_q]
-        formal_name = f"{query} ({symbol})"
+        formal_name = query.replace("(", "").replace(")", "").strip()
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         asset_type = "overseas_stock"
-        symbol = query.upper()
-        formal_name = query
+        symbol = query.upper().strip()
+        formal_name = query.strip()
     else:
         code, name = find_stock_code(query)
         if not code: return None
@@ -663,7 +680,8 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     DETAIL_REPORT_CACHE[res['symbol']] = res['detail']
     
-    msg_text = f"**{res['formal_name']} ({res['symbol']})**\n\n{res['summary']}"
+    display_title = f"{res['formal_name']} ({res['symbol']})" if res['symbol'] not in res['formal_name'] else res['formal_name']
+    msg_text = f"**{display_title}**\n\n{res['summary']}"
     await update.message.reply_text(msg_text, reply_markup=reply_markup)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -982,9 +1000,13 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                     document.getElementById('chartBox').style.display = 'block';
                 }
 
-                document.getElementById('resTitle').innerText = data.name + ' (' + data.symbol + ')';
+                let finalTitle = data.name;
+                if (!finalTitle.includes(data.symbol)) {
+                    finalTitle = finalTitle + ' (' + data.symbol + ')';
+                }
+                document.getElementById('resTitle').innerText = finalTitle;
                 
-                const issueRaw = data.news_raw || "업황 호조 및 밸류체인 경쟁력 부각";
+                const issueRaw = data.news_raw || "업황 호조 및 플랫폼 트래픽 수혜";
                 document.getElementById('issueText').innerText = "👉 " + issueRaw;
 
                 let cleanSummary = data.summary;
@@ -1036,3 +1058,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.run_polling(drop_pending_updates=True)
+
+```

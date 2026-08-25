@@ -1,4 +1,3 @@
-```python
 import os
 import re
 import io
@@ -47,7 +46,8 @@ CRYPTO_MAP = {
     "DOGE": "DOGEUSDT", "도지코인": "DOGEUSDT", "도지": "DOGEUSDT",
     "SOL": "SOLUSDT", "솔라나": "SOLUSDT",
     "ADA": "ADAUSDT", "에이다": "ADAUSDT",
-    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT"
+    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT",
+    "SKY": "SKYUSDT", "스카이": "SKYUSDT"
 }
 
 US_STOCK_MAP = {
@@ -228,6 +228,8 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
             return "에코프로 2차전지 양극재 수주 및 밸류체인 경쟁력 부각"
         if "테슬라" in clean_name or "TSLA" in clean_name:
             return "테슬라 FSD 자율주행 고도화 및 로보택시 생태계 확장 기대감"
+        if "USDT" in clean_name.upper():
+            return f"{clean_name} 파생상품 시장 수급 유입 및 변동성 확대"
         return f"{clean_name} 업황 호조 및 기관 수급 유입"
     
     joined_issues = "\n- ".join(valid_issues)
@@ -313,12 +315,12 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
             pass
 
     elif asset_type == "crypto":
-        c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else "BTC-USD")
+        c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else f"{symbol.replace('USDT','')}-USD")
         crypto_news = get_foreign_rss_headlines(c_sym)
         if crypto_news:
             raw_issues.extend(crypto_news)
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
-        info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
+        info["supply_status"] = "선물 미결제약정 및 거래소 유동성 수급 유입 구간"
 
     else:
         headers = {
@@ -366,12 +368,17 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     return info
 
 def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
+    """바이낸스 현물 및 USDT 선물(Futures) 통합 조회"""
     clean_sym = symbol.replace("KRW-", "").replace("-", "").upper()
     if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
         clean_sym = f"{clean_sym}USDT"
+    
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    # 1. 바이낸스 현물(Spot) 조회
     try:
         b_url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit={limit}"
-        res = requests.get(b_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+        res = requests.get(b_url, headers=headers, timeout=2.5).json()
         if isinstance(res, list) and len(res) > 5:
             records = [{"Date": pd.to_datetime(int(item[0]), unit='ms'), "Open": float(item[1]), "High": float(item[2]), "Low": float(item[3]), "Close": float(item[4]), "Volume": float(item[5])} for item in res]
             df = pd.DataFrame(records).set_index("Date").sort_index()
@@ -379,6 +386,19 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
             return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
     except Exception:
         pass
+
+    # 2. 바이낸스 USDT 선물(Futures) 교차 조회
+    try:
+        f_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_sym}&interval=1d&limit={limit}"
+        res = requests.get(f_url, headers=headers, timeout=2.5).json()
+        if isinstance(res, list) and len(res) > 5:
+            records = [{"Date": pd.to_datetime(int(item[0]), unit='ms'), "Open": float(item[1]), "High": float(item[2]), "Low": float(item[3]), "Close": float(item[4]), "Volume": float(item[5])} for item in res]
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            curr_p = float(df['Close'].iloc[-1])
+            return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
+    except Exception:
+        pass
+
     return None, None, None
 
 def get_us_stock_fmp_data(symbol, years=1):
@@ -604,18 +624,23 @@ def fetch_technical_quant_data(symbol, asset_type, stock_name=""):
 
 def run_full_analysis_process(query):
     clean_q = query.replace(" ", "").upper()
-    if clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "USDT", "코인", "비트코인"]):
+    
+    # 1. 암호화폐 및 바이낸스 USDT 페어 (sndkusdt, qqqusdt, skyusdt 등 포함)
+    if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트코인"]):
         asset_type = "crypto"
-        symbol = CRYPTO_MAP.get(clean_q, clean_q + "USDT")
-        formal_name = query.replace("(", "").replace(")", "").strip()
+        symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
+        formal_name = clean_q
+    # 2. 미국 대표 주식/ETF
     elif clean_q in US_STOCK_MAP:
         asset_type = "overseas_stock"
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.replace("(", "").replace(")", "").strip()
+    # 3. 일반 미국 주식 티커
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         asset_type = "overseas_stock"
         symbol = query.upper().strip()
         formal_name = query.strip()
+    # 4. 국내 주식
     else:
         code, name = find_stock_code(query)
         if not code: return None
@@ -829,7 +854,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
         <div class="search-container">
             <div class="search-box">
-                <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, NVDA, BTC, QQQUSDT)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
                 
                 <div class="model-selector-wrap">
                     <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
@@ -892,7 +917,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
     <div id="bottom-bar">
         <div class="search-container">
             <div class="search-box">
-                <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, SKYUSDT)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
                 
                 <div class="model-selector-wrap">
                     <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
@@ -1006,7 +1031,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 }
                 document.getElementById('resTitle').innerText = finalTitle;
                 
-                const issueRaw = data.news_raw || "업황 호조 및 플랫폼 트래픽 수혜";
+                const issueRaw = data.news_raw || "업황 호조 및 밸류체인 경쟁력 부각";
                 document.getElementById('issueText').innerText = "👉 " + issueRaw;
 
                 let cleanSummary = data.summary;
@@ -1058,5 +1083,3 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.run_polling(drop_pending_updates=True)
-
-```

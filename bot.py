@@ -34,8 +34,6 @@ from telegram.ext import (
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8942728358:AAEUYwitOIyMAeF_FD_kWKky4m9FwjApLR8")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
-TOSS_API_KEY = os.getenv("TOSS_API_KEY", "")
-TOSS_API_SECRET = os.getenv("TOSS_API_SECRET", "")
 
 DETAIL_REPORT_CACHE = {}
 
@@ -87,8 +85,7 @@ NOISE_FILTER_KEYWORDS = [
 ]
 
 def is_noise_headline(text):
-    if not text:
-        return True
+    if not text: return True
     low_t = text.lower().strip()
     return any(k in low_t for k in NOISE_FILTER_KEYWORDS)
 
@@ -174,7 +171,7 @@ def get_foreign_rss_headlines(ticker):
         return headlines
     try:
         rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(rss_url, headers=headers, timeout=2.5)
         if r.status_code == 200:
             root = ET.fromstring(r.content)
@@ -343,7 +340,6 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
         clean_sym = f"{clean_sym}USDT"
     
     headers = {"User-Agent": "Mozilla/5.0"}
-
     try:
         b_url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit={limit}"
         res = requests.get(b_url, headers=headers, timeout=2.5).json()
@@ -354,18 +350,6 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
             return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
     except Exception:
         pass
-
-    try:
-        f_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_sym}&interval=1d&limit={limit}"
-        res = requests.get(f_url, headers=headers, timeout=2.5).json()
-        if isinstance(res, list) and len(res) > 5:
-            records = [{"Date": pd.to_datetime(int(item[0]), unit='ms'), "Open": float(item[1]), "High": float(item[2]), "Low": float(item[3]), "Close": float(item[4]), "Volume": float(item[5])} for item in res]
-            df = pd.DataFrame(records).set_index("Date").sort_index()
-            curr_p = float(df['Close'].iloc[-1])
-            return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
-    except Exception:
-        pass
-
     return None, None, None
 
 def get_us_stock_fmp_data(symbol, years=1):
@@ -484,8 +468,8 @@ def format_backtest_text(formal_name, symbol, bt, years=1):
 def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     """
     [이원화 퀀트 연산 엔진]
-    - 상단 리포트용: 중장기 정통 추세추종 (20/60일선, 대파동 확장 목표가)
-    - 하단 시그널용: 실전 단기 ICT 타점 (오더블록 매집 밴드, 단기 청산 목표가)
+    - 상단: 중장기 정통 추세추종 (20/60일선, 대파동 확장 목표가)
+    - 하단: 실전 단기 ICT 타점 (오더블록 매집 밴드, 단기 청산 목표가)
     """
     is_krw = "domestic" in asset_type
     round_fn = (lambda v: round(float(v), 0)) if is_krw else (lambda v: round(float(v), 2))
@@ -507,11 +491,8 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     ict_entry2_high = round_fn(raw_price - (atr_val * 0.8))
     ict_stop = round_fn(ict_entry2_low - (atr_val * 0.6))
     
-    # 단기 1차/2차 목표가 (+6% ~ +12% 단기 청산)
     ict_target1 = round_fn(raw_price + (atr_val * 1.8))
     ict_target2 = round_fn(raw_price + (atr_val * 3.0))
-
-    # 2. 상단 중장기 추세추종 목표가 (대파동 확장 +25% ~ +45%)
     trend_target_mid = round_fn(max(high_20d * 1.15, raw_price * 1.30))
 
     if df is not None and len(df) >= 20:
@@ -571,10 +552,8 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             ict_target1 = round_fn(avg_e + (risk_dist * 2.0))
             ict_target2 = round_fn(avg_e + (risk_dist * 3.5))
 
-            # 중장기 추세추종 확장 목표치
             trend_target_mid = round_fn(max(high_20d * 1.18, raw_price + (risk_dist * 6.5)))
 
-            # 4대 국면(Regime) 자동 판별
             curr_close = float(df['Close'].iloc[-1])
             if (curr_close >= high_20d * 0.98 and rsi_val >= 62) or (vol_ratio >= 150 and curr_close > ma20):
                 regime_key = "BREAKOUT"
@@ -585,7 +564,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             else:
                 regime_key = "PULLBACK"
 
-            # 퀀트 스코어링 (5.0 만점)
             base_score = 2.0
             if curr_close >= ma20: base_score += 0.9
             if curr_close >= ma60: base_score += 0.6
@@ -613,42 +591,42 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     REGIME_META = {
         "BREAKOUT": {
             "pattern_name": "강력한 상승 모멘텀 돌파형",
-            "direction": "롱 (상승 모멘텀 돌파 추종)",
-            "entry1_label": "돌파 후 안착 확인 1차 진입",
-            "entry2_label": "돌파 기준봉 상단 FVG 지지 밴드",
-            "target1_label": "단기 1차 고점 유동성 분할 청산",
-            "target2_label": "상단 저항선 2차 전량 청산",
-            "stop_label": "돌파 기준봉 시가 훼손 손절",
+            "direction": "단기 롱 (상승 모멘텀 돌파)",
+            "entry1_label": "기관 1차 지지 밴드",
+            "entry2_label": "하단 방어 마지노선",
+            "target1_label": "직전 고점 유동성 청산",
+            "target2_label": "상단 저항선 전량 청산",
+            "stop_label": "기준봉 훼손 손절",
             "guide": f"5일 평균 대비 거래량 {vol_ratio}퍼센트 급증 확인 시 1차 분할 착수하며 장중 변동폭 {atr_display} 내외의 저항 돌파 시 매수세 유입 확인 후 집행"
         },
         "PULLBACK": {
             "pattern_name": "정석적인 우상향 눌림목 안착형",
-            "direction": "롱 (단기 눌림목 반등 매수)",
-            "entry1_label": "기관 오더블록 1차 매집 지지 밴드",
-            "entry2_label": "세력 핵심 매집대 하단 안전 마지노선",
-            "target1_label": "단기 1차 매물벽 도달 시 50% 분할 익절",
-            "target2_label": "상단 저항 밴드 터치 시 전량 청산",
-            "stop_label": "오더블록 지지선 붕괴 시 즉시 손절",
+            "direction": "단기 롱 (세력 매집 눌림목)",
+            "entry1_label": "기관 1차 지지 밴드",
+            "entry2_label": "하단 방어 마지노선",
+            "target1_label": "직전 고점 유동성 청산",
+            "target2_label": "상단 저항선 전량 청산",
+            "stop_label": "지지선 붕괴 손절",
             "guide": f"20일선 지지 확인 및 체결강도 105퍼센트 회복 시 1차 착수하며 장중 변동폭 {atr_display} 내외의 단기 음봉에서 지지대 안착 확인 후 집행"
         },
         "OVERSOLD": {
             "pattern_name": "낙폭과대 단기 기술적 반등형",
-            "direction": "롱 (낙폭과대 기술적 반등)",
-            "entry1_label": "하단 지지선 되돌림 1차 착수",
-            "entry2_label": "구조적 최하단 패닉셀 소화 밴드",
-            "target1_label": "20일 이평선 이격 좁히기 1차 분할 청산",
-            "target2_label": "단기 평균 회귀 저항선 전량 청산",
-            "stop_label": "직전 최저점 이탈 시 리스크 관리 손절",
+            "direction": "단기 롱 (과매도 기술적 반등)",
+            "entry1_label": "기관 1차 지지 밴드",
+            "entry2_label": "하단 방어 마지노선",
+            "target1_label": "직전 고점 유동성 청산",
+            "target2_label": "상단 저항선 전량 청산",
+            "stop_label": "최저점 이탈 손절",
             "guide": f"실시간 RSI {rsi_val} 침체권 매물 소화 확인 후 2차 지지 밴드 중심 분할 접근하며 변동폭 {atr_display} 수준의 하방 경직성 확인 후 집행"
         },
         "BOX": {
             "pattern_name": "박스권 횡보 수렴형",
-            "direction": "롱 (박스권 하단 지지 매수)",
-            "entry1_label": "박스권 중심값 지지력 테스트 1차 진입",
-            "entry2_label": "박스권 최하단 매물대 반등 지점",
-            "target1_label": "박스권 상단 저항선 도달 시 50% 분할 익절",
-            "target2_label": "박스권 상단 돌파 오버슈팅 전량 청산",
-            "stop_label": "박스권 하단 이탈 시 추가 하락 방어 손절",
+            "direction": "단기 롱 (박스권 하단 반등)",
+            "entry1_label": "기관 1차 지지 밴드",
+            "entry2_label": "하단 방어 마지노선",
+            "target1_label": "직전 고점 유동성 청산",
+            "target2_label": "상단 저항선 전량 청산",
+            "stop_label": "박스권 이탈 손절",
             "guide": f"거래량 {vol_ratio}퍼센트 수준의 수급 숨고르기 국면이므로 1차 밴드 하단 지지 여부 및 호가창 매도벽 소화 확인 후 집행"
         }
     }
@@ -689,12 +667,10 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
     fmt = lambda v: f"{int(v):,}{unit}" if is_krw else f"{v:,.2f}{unit}"
     clean_name = re.sub(r'\(.*?\)', '', stock_name).strip()
     
-    # 중장기 기대 수익률 및 단기 타점 수익률 계산
     curr_num = an['ict_entry1_high']
     trend_mid_ret = ((an['trend_target_mid'] - curr_num) / curr_num) * 100
     ict_target1_ret = ((an['ict_target1'] - curr_num) / curr_num) * 100
     stop_risk = ((curr_num - an['ict_stop']) / curr_num) * 100
-    rr_ratio = (an['ict_target1'] - curr_num) / (curr_num - an['ict_stop']) if (curr_num - an['ict_stop']) > 0 else 2.5
 
     pattern_name = an.get('pattern_name', '우상향 눌림목 안착형')
 
@@ -733,10 +709,8 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
             "generationConfig": {"temperature": 0.25, "maxOutputTokens": 1500}
         }
         res = requests.post(url, headers=headers, json=payload, timeout=5.0).json()
-        text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
-        return text
+        return res["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
-        # Fallback 백업 문단
         return f"""{clean_name}의 최근 주가 흐름은 시장 핵심 이슈인 '{extra_info.get('recent_news')}' 모멘텀을 바탕으로 견조한 추세를 형성하고 있습니다. 직전 20일 고점인 {fmt(an['high_20d'])} 부근에서 매물을 소화하는 {pattern_name}을 나타내고 있으며 현재 {price}선은 안정적인 가격 조정 범주에 속합니다. 5일 평균 대비 {an['vol_ratio']}퍼센트 수준의 거래량은 구조적 투매가 아닌 상단 저항 소화를 위한 전형적인 관망세로 해석됩니다.
 
 기업의 펀더멘털 측면에서 {extra_info.get('financial_status')} 지표를 유지하고 있어 밸류에이션 매력이 충분하며, 실시간 수급 현황인 {extra_info.get('supply_status')}는 향후 주가 상승을 견인할 주요 수급 모멘텀입니다.
@@ -755,6 +729,11 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
     news_raw = str(extra_info.get('recent_news', '')).strip().replace('"', '').replace("'", "")
     detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info)
 
+    curr_p = an['ict_entry1_high']
+    ret1 = ((an['ict_target1'] - curr_p) / curr_p) * 100
+    ret2 = ((an['ict_target2'] - curr_p) / curr_p) * 100
+    risk = ((curr_p - an['ict_stop']) / curr_p) * 100
+
     combined_body = f"""gaemiGTP 이슈
 👉 {news_raw}
 
@@ -764,7 +743,7 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
 
 {detail}""".strip()
 
-    signal_only = f"""gaemiGTP 시그널 🎯 [실전 단기 ICT 타점]
+    signal_only = f"""[스마트머니 퀀트 타점]
 
 방향성: {an['direction']}
 
@@ -775,13 +754,13 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
 👉 {fmt(an['ict_entry2_low'])} ~ {fmt(an['ict_entry2_high'])}
 
 1차 목표: {an['target1_label']}
-👉 {fmt(an['ict_target1'])}
+👉 {fmt(an['ict_target1'])} (+{ret1:.1f}%)
 
 2차 목표: {an['target2_label']}
-👉 {fmt(an['ict_target2'])}
+👉 {fmt(an['ict_target2'])} (+{ret2:.1f}%)
 
 칼손절: {an['stop_label']}
-👉 {fmt(an['ict_stop'])}
+👉 {fmt(an['ict_stop'])} (-{risk:.1f}%)
 
 gaemiGTP 가이드
 {an['guide_text']}""".strip()

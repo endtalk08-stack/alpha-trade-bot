@@ -27,7 +27,7 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. 환경 변수 및 인증 키 (새 텔레그램 봇 토큰 적용)
+# 1. 환경 변수 및 인증 키 (gaemiGTP 봇 토큰 적용)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8942728358:AAEUYwitOIyMAeF_FD_kWKky4m9FwjApLR8")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
@@ -242,7 +242,7 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
                 records.append({
                     "Date": pd.to_datetime(item["candle_date_time_kst"]),
                     "Open": float(item["opening_price"]),
-                    "High": float(item["high_price"]),
+                    "High": float(item["highPrice"]),
                     "Low": float(item["low_price"]),
                     "Close": float(item["trade_price"]),
                     "Volume": float(item["candle_acc_trade_volume"])
@@ -1084,6 +1084,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
                 return
 
+            # 정중앙 황금비율 레이아웃 보정 완료된 HTML
             html_content = """<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -1092,32 +1093,43 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
     <title>gaemiGTP - 10초 금융 퀀트 분석 엔진</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background-color: #212121; color: #ececec; min-height: 100vh; display: flex; flex-direction: column; justify-content: space-between; }
-        header { display: flex; justify-content: space-between; align-items: center; padding: 18px 28px; }
+        html, body { height: 100%; background-color: #212121; color: #ececec; }
+        body { display: flex; flex-direction: column; justify-content: space-between; position: relative; }
+        header { position: absolute; top: 0; left: 0; width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 24px 32px; z-index: 10; }
         .logo-top { font-weight: 800; font-size: 1.15rem; color: #e0e0e0; letter-spacing: -0.5px; }
-        .badge-link { font-size: 0.8rem; color: #9ca3af; text-decoration: none; border: 1px solid #4b5563; padding: 5px 12px; border-radius: 14px; transition: 0.2s; }
+        .badge-link { font-size: 0.8rem; color: #9ca3af; text-decoration: none; border: 1px solid #4b5563; padding: 6px 14px; border-radius: 14px; transition: 0.2s; }
         .badge-link:hover { background: #374151; color: #fff; border-color: #6b7280; }
-        main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; max-width: 750px; margin: 0 auto; width: 100%; }
-        .hero-title { font-size: 3.4rem; font-weight: 800; margin-bottom: 6px; letter-spacing: -1.5px; color: #f5f5f5; }
-        .hero-sub { font-size: 1.1rem; color: #8e8ea0; margin-bottom: 34px; font-weight: 400; }
-        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 8px 10px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
+        
+        /* 세로 완벽 정중앙 배치 영역 */
+        main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; max-width: 720px; margin: 0 auto; width: 100%; min-height: 100vh; }
+        .center-wrap { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; }
+        .hero-title { font-size: 3.6rem; font-weight: 800; margin-bottom: 12px; letter-spacing: -1.5px; color: #f5f5f5; }
+        .hero-sub { font-size: 1.05rem; color: #8e8ea0; margin-bottom: 30px; font-weight: 400; }
+        
+        /* 미니멀 검색 바 */
+        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 8px 10px 8px 20px; display: flex; align-items: center; box-shadow: 0 8px 24px rgba(0,0,0,0.3); transition: border-color 0.2s; }
         .search-box:focus-within { border-color: #777; }
         .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 1rem; padding: 6px 8px; }
         .search-box input::placeholder { color: #737380; font-size: 0.95rem; }
+        
+        /* 그레이 원형 전송 버튼 */
         .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; flex-shrink: 0; }
         .send-btn:hover { background: #606060; transform: scale(1.04); }
         .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
-        .popular-tags { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 6px 14px; font-size: 0.85rem; color: #c5c5d2; cursor: pointer; transition: 0.2s; }
+
+        .popular-tags { display: flex; gap: 8px; margin-top: 24px; flex-wrap: wrap; justify-content: center; }
+        .tag-btn { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 7px 14px; font-size: 0.85rem; color: #c5c5d2; cursor: pointer; transition: 0.2s; }
         .tag-btn:hover { background: #3a3a3a; color: #fff; border-color: #555; }
-        #result-container { width: 100%; margin-top: 24px; display: none; }
-        .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 22px; margin-bottom: 20px; white-space: pre-wrap; line-height: 1.6; }
-        .card-header { font-size: 1.25rem; font-weight: 700; color: #60a5fa; margin-bottom: 12px; }
-        .detail-btn { width: 100%; background: #374151; border: 1px solid #4b5563; color: #e5e7eb; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 12px; }
+        
+        #result-container { width: 100%; margin-top: 30px; display: none; text-align: left; }
+        .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; white-space: pre-wrap; line-height: 1.6; }
+        .card-header { font-size: 1.3rem; font-weight: 700; color: #60a5fa; margin-bottom: 12px; }
+        .detail-btn { width: 100%; background: #374151; border: 1px solid #4b5563; color: #e5e7eb; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 14px; }
         .detail-btn:hover { background: #4b5563; }
         .detail-content { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #444; color: #d1d5db; font-size: 0.95rem; }
         .loading { display: none; margin: 24px 0; text-align: center; color: #9ca3af; font-size: 0.95rem; }
-        footer { text-align: center; padding: 18px; color: #666; font-size: 0.8rem; }
+        
+        footer { position: absolute; bottom: 0; left: 0; width: 100%; text-align: center; padding: 18px; color: #555; font-size: 0.8rem; }
     </style>
 </head>
 <body>
@@ -1126,31 +1138,33 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         <a class="badge-link" href="https://t.me/gaemiGTP_bot" target="_blank">📱 텔레그램 VIP 알림</a>
     </header>
     <main>
-        <div class="hero-title">gaemiGTP</div>
-        <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
-        <div class="search-box">
-            <input type="text" id="queryInput" placeholder="종목명 또는 티커를 입력하세요 (예: 하이닉스, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch();">
-            <button class="send-btn" onclick="doSearch()" title="분석 시작">
-                <svg viewBox="0 0 24 24">
-                    <path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-                </svg>
-            </button>
-        </div>
-        <div class="popular-tags">
-            <button class="tag-btn" onclick="searchStock('SK하이닉스')">🔥 SK하이닉스</button>
-            <button class="tag-btn" onclick="searchStock('삼성전자')">📈 삼성전자</button>
-            <button class="tag-btn" onclick="searchStock('엔비디아')">🚀 엔비디아</button>
-            <button class="tag-btn" onclick="searchStock('테슬라')">🚗 테슬라</button>
-            <button class="tag-btn" onclick="searchStock('비트코인')">₿ 비트코인</button>
-            <button class="tag-btn" onclick="searchStock('QQQ')">📊 QQQ</button>
-        </div>
-        <div class="loading" id="loading">⚡ 실시간 수급/재무/뉴스 및 퀀트 팩터를 분석 중입니다...</div>
-        <div id="result-container">
-            <div class="card">
-                <div class="card-header" id="resTitle"></div>
-                <div id="resSummary"></div>
-                <button class="detail-btn" id="toggleDetailBtn" onclick="toggleDetail()">심층 분석 및 근거 보기</button>
-                <div class="detail-content" id="resDetail"></div>
+        <div class="center-wrap">
+            <div class="hero-title">gaemiGTP</div>
+            <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
+            <div class="search-box">
+                <input type="text" id="queryInput" placeholder="종목명 또는 티커를 입력하세요 (예: 하이닉스, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch();">
+                <button class="send-btn" onclick="doSearch()" title="분석 시작">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="popular-tags">
+                <button class="tag-btn" onclick="searchStock('SK하이닉스')">🔥 SK하이닉스</button>
+                <button class="tag-btn" onclick="searchStock('삼성전자')">📈 삼성전자</button>
+                <button class="tag-btn" onclick="searchStock('엔비디아')">🚀 엔비디아</button>
+                <button class="tag-btn" onclick="searchStock('테슬라')">🚗 테슬라</button>
+                <button class="tag-btn" onclick="searchStock('비트코인')">₿ 비트코인</button>
+                <button class="tag-btn" onclick="searchStock('QQQ')">📊 QQQ</button>
+            </div>
+            <div class="loading" id="loading">⚡ 실시간 수급/재무/뉴스 및 퀀트 팩터를 분석 중입니다...</div>
+            <div id="result-container">
+                <div class="card">
+                    <div class="card-header" id="resTitle"></div>
+                    <div id="resSummary"></div>
+                    <button class="detail-btn" id="toggleDetailBtn" onclick="toggleDetail()">심층 분석 및 근거 보기</button>
+                    <div class="detail-content" id="resDetail"></div>
+                </div>
             </div>
         </div>
     </main>

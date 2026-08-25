@@ -1,14 +1,3 @@
-ChatGPT/Gemini 스타일의 깔끔한 그레이 원형 전송 버튼(동그라미 + 위쪽 화살표 `↑`)으로 교체했습니다.
-
-텍스트 버튼보다 시각적으로 훨씬 정돈되어 검색창의 미니멀한 느낌이 살아납니다.
-
----
-
-### 💻 수정된 `bot.py` 전체 코드
-
-GitHub의 `bot.py`에 그대로 덮어씌워 주시면 됩니다.
-
-```python
 import os
 import re
 import io
@@ -1047,10 +1036,56 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
         await query.message.edit_text(text=data['summary'], reply_markup=InlineKeyboardMarkup(keyboard))
 
-# =========================================================================
-# 🌐 통합 웹 서버 (미니멀 그레이 원형 전송 버튼 적용)
-# =========================================================================
-WEB_HTML_TEMPLATE = """<!DOCTYPE html>
+class ApiAndWebServer(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
+    def do_GET(self):
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+
+            if parsed.path == "/api/analyze":
+                q = params.get('q', [''])[0].strip()
+                if not q:
+                    self.send_response(400)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": "종목명을 입력하세요."}, ensure_ascii=False).encode('utf-8'))
+                    return
+
+                res = run_full_analysis_process(q)
+                if not res:
+                    self.send_response(404)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"error": f"'{q}' 종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
+                    return
+
+                response_payload = {
+                    "success": True,
+                    "name": res["formal_name"],
+                    "symbol": res["symbol"],
+                    "price": res["price"],
+                    "summary": res["summary"],
+                    "detail": res["detail"]
+                }
+
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
+                return
+
+            # 웹 메인 화면 (UTF-8 인코딩 안전 렌더링)
+            html_content = """<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
@@ -1066,18 +1101,13 @@ WEB_HTML_TEMPLATE = """<!DOCTYPE html>
         main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; max-width: 750px; margin: 0 auto; width: 100%; }
         .hero-title { font-size: 3.4rem; font-weight: 800; margin-bottom: 6px; letter-spacing: -1.5px; color: #f5f5f5; }
         .hero-sub { font-size: 1.1rem; color: #8e8ea0; margin-bottom: 34px; font-weight: 400; }
-        
-        /* 미니멀 검색 바 */
         .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 8px 10px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
         .search-box:focus-within { border-color: #777; }
         .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 1rem; padding: 6px 8px; }
         .search-box input::placeholder { color: #737380; font-size: 0.95rem; }
-        
-        /* 그레이 원형 위쪽 화살표 버튼 */
         .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; flex-shrink: 0; }
         .send-btn:hover { background: #606060; transform: scale(1.04); }
         .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
-
         .popular-tags { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; justify-content: center; }
         .tag-btn { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 6px 14px; font-size: 0.85rem; color: #c5c5d2; cursor: pointer; transition: 0.2s; }
         .tag-btn:hover { background: #3a3a3a; color: #fff; border-color: #555; }
@@ -1139,14 +1169,14 @@ WEB_HTML_TEMPLATE = """<!DOCTYPE html>
             document.getElementById('resDetail').style.display = 'none';
             document.getElementById('toggleDetailBtn').innerText = '심층 분석 및 근거 보기';
             try {
-                const response = await fetch(`/api/analyze?q=${encodeURIComponent(query)}`);
+                const response = await fetch('/api/analyze?q=' + encodeURIComponent(query));
                 const data = await response.json();
                 if (!response.ok || data.error) {
                     alert(data.error || '분석 중 오류가 발생했습니다.');
                     document.getElementById('loading').style.display = 'none';
                     return;
                 }
-                document.getElementById('resTitle').innerText = `${data.name} (${data.symbol})`;
+                document.getElementById('resTitle').innerText = data.name + ' (' + data.symbol + ')';
                 document.getElementById('resSummary').innerText = data.summary;
                 document.getElementById('resDetail').innerText = data.detail;
                 document.getElementById('loading').style.display = 'none';
@@ -1170,72 +1200,29 @@ WEB_HTML_TEMPLATE = """<!DOCTYPE html>
     </script>
 </body>
 </html>"""
-
-class ApiAndWebServer(BaseHTTPRequestHandler):
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
-
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-
-        if parsed.path == "/api/analyze":
-            q = params.get('q', [''])[0].strip()
-            if not q:
-                self.send_response(400)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": "종목명을 입력하세요."}, ensure_ascii=False).encode('utf-8'))
-                return
-
-            res = run_full_analysis_process(q)
-            if not res:
-                self.send_response(404)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": f"'{q}' 종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
-                return
-
-            response_payload = {
-                "success": True,
-                "name": res["formal_name"],
-                "symbol": res["symbol"],
-                "price": res["price"],
-                "summary": res["summary"],
-                "detail": res["detail"]
-            }
-
             self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
-            return
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.end_headers()
-        self.wfile.write(WEB_HTML_TEMPLATE.encode('utf-8'))
+            self.wfile.write(html_content.encode('utf-8'))
+        except Exception:
+            pass
 
 def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), ApiAndWebServer)
-    server.serve_forever()
+    try:
+        port = int(os.environ.get("PORT", 10000))
+        server = HTTPServer(("0.0.0.0", port), ApiAndWebServer)
+        server.serve_forever()
+    except Exception:
+        pass
 
 if __name__ == "__main__":
-    threading.Thread(target=run_web_server, daemon=True).start()
+    t = threading.Thread(target=run_web_server, daemon=True)
+    t.start()
+    
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(handle_button))
     
     app.run_polling(drop_pending_updates=True)
-
-```

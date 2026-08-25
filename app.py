@@ -763,6 +763,74 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash").strip()
 
 
+
+def gemini_raw_test():
+    """
+    Make a minimal Gemini call and return a safe, non-secret diagnostic.
+    The API key is never included in the response.
+    """
+    if not GEMINI_API_KEY:
+        return {"success": False, "stage": "config", "error": "GEMINI_API_KEY가 없습니다."}
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:generateContent"
+    )
+    payload = {
+        "contents": [{
+            "parts": [{"text": "한국어로 '연결 테스트 성공'이라고 한 문장으로만 답하세요."}]
+        }]
+    }
+
+    try:
+        response = requests.post(
+            url,
+            headers={
+                "x-goog-api-key": GEMINI_API_KEY,
+                "Content-Type": "application/json",
+                "User-Agent": "gaemiGTP/1.0",
+            },
+            json=payload,
+            timeout=20,
+        )
+
+        result = {
+            "success": response.ok,
+            "http_status": response.status_code,
+            "model": GEMINI_MODEL,
+        }
+
+        if response.ok:
+            body = response.json()
+            text_parts = []
+            for candidate in body.get("candidates", [])[:1]:
+                for part in candidate.get("content", {}).get("parts", []):
+                    if isinstance(part, dict) and part.get("text"):
+                        text_parts.append(part["text"])
+            result["text"] = "".join(text_parts).strip()
+        else:
+            # Return only Google's error message fields; never return the key or request URL.
+            try:
+                body = response.json()
+                err = body.get("error", {})
+                result["error_code"] = err.get("code")
+                result["error_status"] = err.get("status")
+                result["error_message"] = str(err.get("message", ""))[:500]
+            except Exception:
+                result["error_message"] = response.text[:500]
+
+        return result
+
+    except Exception as exc:
+        return {
+            "success": False,
+            "stage": "network_or_request",
+            "model": GEMINI_MODEL,
+            "error": str(exc)[:500],
+        }
+
+
+
 def analyze_news_with_gemini(asset, news_items):
     """
     Analyze only the real news items already collected by the server.
@@ -1046,6 +1114,11 @@ class Handler(BaseHTTPRequestHandler):
                 "model": GEMINI_MODEL,
                 "analysis": analysis,
             })
+            return
+
+
+        if parsed.path == "/api/gemini-debug":
+            self.send_json(200, gemini_raw_test())
             return
 
         if parsed.path == "/api/gemini-status":

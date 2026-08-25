@@ -129,7 +129,7 @@ def find_stock_code(query):
 
     try:
         url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=2.5).json()
         items = res.get("result", {}).get("items", [])
         if items:
@@ -145,7 +145,7 @@ def find_stock_code(query):
 
     try:
         url = f"https://ac.finance.naver.com/ac?q={urllib.parse.quote(query.strip())}&target=stock"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=2.5).json()
         items_list = res.get("items", [])
         if items_list and isinstance(items_list, list) and len(items_list) > 0:
@@ -255,7 +255,6 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     raw_issues = []
-    
     info = {
         "supply_status": "기관 및 외국인 수급 변곡점 형성 구간",
         "financial_status": "견조한 펀더멘털 및 실적 가시성 유지",
@@ -265,8 +264,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     if asset_type == "overseas_stock":
         clean_sym = symbol.upper().strip()
         foreign_news = get_foreign_rss_headlines(clean_sym)
-        if foreign_news:
-            raw_issues.extend(foreign_news)
+        if foreign_news: raw_issues.extend(foreign_news)
 
         try:
             fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{clean_sym}?apikey={FMP_API_KEY}"
@@ -284,16 +282,12 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     elif asset_type == "crypto":
         c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else f"{symbol.replace('USDT','')}-USD")
         crypto_news = get_foreign_rss_headlines(c_sym)
-        if crypto_news:
-            raw_issues.extend(crypto_news)
+        if crypto_news: raw_issues.extend(crypto_news)
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "선물 미결제약정 및 거래소 유동성 유입 구간"
 
     else:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://m.stock.naver.com/"
-        }
+        headers = {"User-Agent": "Mozilla/5.0"}
         try:
             news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=5&page=1"
             n_res = requests.get(news_url, headers=headers, timeout=2.0).json()
@@ -384,9 +378,11 @@ def get_naver_realtime_price(code):
         pass
     return None, None
 
-def fetch_domestic_stock_candles(code, years=1):
+def fetch_domestic_stock_candles(code, anchor_price=None, years=1):
+    """국내 주식 캔들 수집 및 실시간 앵커 가격 기반 스케일링 보정 엔진"""
     headers = {"User-Agent": "Mozilla/5.0"}
-    for suffix in [".KQ", ".KS"]:
+    df_result = None
+    for suffix in [".KS", ".KQ"]:
         try:
             y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range={years}y&interval=1d"
             y_res = requests.get(y_url, headers=headers, timeout=2.5).json()
@@ -396,13 +392,25 @@ def fetch_domestic_stock_candles(code, years=1):
                 quote = result[0].get("indicators", {}).get("quote", [{}])[0]
                 records = [{"Date": pd.to_datetime(ts[i], unit='s'), "Open": float(quote['open'][i]), "High": float(quote['high'][i]), "Low": float(quote['low'][i]), "Close": float(quote['close'][i]), "Volume": float(quote['volume'][i] or 0.0)} for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
                 if len(records) >= 30:
-                    return pd.DataFrame(records).set_index("Date").sort_index()
+                    df_result = pd.DataFrame(records).set_index("Date").sort_index()
+                    break
         except Exception:
             pass
-    return None
+
+    if df_result is not None and anchor_price is not None and anchor_price > 0:
+        last_close = float(df_result['Close'].iloc[-1])
+        # 가격 단위 꼬임 발생 시 (예: 10배 차이) 정밀 비율 보정
+        if abs(last_close - anchor_price) / anchor_price > 0.3:
+            scale_ratio = anchor_price / last_close
+            df_result['Open'] = df_result['Open'] * scale_ratio
+            df_result['High'] = df_result['High'] * scale_ratio
+            df_result['Low'] = df_result['Low'] * scale_ratio
+            df_result['Close'] = df_result['Close'] * scale_ratio
+
+    return df_result
 
 def backtest_alpha_strategy(df, years=1, asset_type="domestic_stock"):
-    """과거 캔들 전수 순회 기반 퀀트 시뮬레이션 엔진 (/검증 전용)"""
+    """텔레그램 /검증 전용 퀀트 시뮬레이션"""
     if df is None or len(df) < 50:
         return {"total": 14, "win": 9, "loss": 5, "win_rate": 64.3, "cum_ret": 28.5, "pf": 1.75}
 
@@ -439,24 +447,14 @@ def backtest_alpha_strategy(df, years=1, asset_type="domestic_stock"):
         if len(trades) >= 5:
             win_trades = [t[1] for t in trades if t[0] == "WIN"]
             loss_trades = [abs(t[1]) for t in trades if t[0] == "LOSS"]
-            
             total_cnt = len(trades)
             win_cnt = len(win_trades)
             win_rate = round((win_cnt / total_cnt) * 100, 1)
             cum_ret = round(float(sum([t[1] for t in trades]) * 100), 1)
-            
             sum_win = sum(win_trades)
             sum_loss = sum(loss_trades)
             pf = round(sum_win / sum_loss, 2) if sum_loss > 0 else 2.10
-            
-            return {
-                "total": total_cnt,
-                "win": win_cnt,
-                "loss": total_cnt - win_cnt,
-                "win_rate": win_rate,
-                "cum_ret": cum_ret,
-                "pf": pf
-            }
+            return {"total": total_cnt, "win": win_cnt, "loss": total_cnt - win_cnt, "win_rate": win_rate, "cum_ret": cum_ret, "pf": pf}
     except Exception:
         pass
 
@@ -467,9 +465,7 @@ def format_backtest_text(formal_name, symbol, bt, years=1):
 
 def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     """
-    [이원화 퀀트 연산 엔진]
-    - 상단: 중장기 정통 추세추종 (20/60일선, 대파동 확장 목표가)
-    - 하단: 실전 단기 ICT 타점 (스마트머니 유동성 지지 밴드, 단기 청산 목표가)
+    [정밀 퀀트 분석 및 이평선 위치 관계 판별]
     """
     is_krw = "domestic" in asset_type
     round_fn = (lambda v: round(float(v), 0)) if is_krw else (lambda v: round(float(v), 2))
@@ -478,13 +474,12 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     atr_val = round_fn(raw_price * 0.035)
     high_20d = round_fn(raw_price * 1.08)
     ma20 = round_fn(raw_price * 0.99)
-    ma60 = round_fn(raw_price * 1.12)
+    ma60 = round_fn(raw_price * 1.05)
     vol_ratio = 85
     rsi_val = 52.0
     score_val = 4.2
     regime_key = "PULLBACK"
 
-    # 1. 하단 ICT 스마트머니 단기 타점 기본값
     ict_entry1_low = round_fn(raw_price - (atr_val * 0.6))
     ict_entry1_high = round_fn(raw_price)
     ict_entry2_low = round_fn(raw_price - (atr_val * 1.4))
@@ -493,7 +488,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     
     ict_target1 = round_fn(raw_price + (atr_val * 1.8))
     ict_target2 = round_fn(raw_price + (atr_val * 3.0))
-    trend_target_mid = round_fn(max(high_20d * 1.15, raw_price * 1.30))
 
     if df is not None and len(df) >= 20:
         try:
@@ -520,7 +514,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             if not np.isnan(calc_rsi):
                 rsi_val = round(float(calc_rsi), 1)
 
-            # --- 스마트머니 오더블록(OB) 지지대 탐색 ---
+            # 스마트머니 오더블록(OB) 탐색
             ob_found = False
             for idx in range(len(df) - 2, max(0, len(df) - 22), -1):
                 c_prev = df['Close'].iloc[idx]
@@ -552,8 +546,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             ict_target1 = round_fn(avg_e + (risk_dist * 2.0))
             ict_target2 = round_fn(avg_e + (risk_dist * 3.5))
 
-            trend_target_mid = round_fn(max(high_20d * 1.18, raw_price + (risk_dist * 6.5)))
-
             curr_close = float(df['Close'].iloc[-1])
             if (curr_close >= high_20d * 0.98 and rsi_val >= 62) or (vol_ratio >= 150 and curr_close > ma20):
                 regime_key = "BREAKOUT"
@@ -580,6 +572,17 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
         except Exception:
             pass
 
+    # [핵심 결함 방지] 현재가와 이평선의 실제 팩트 위치 관계 도출
+    unit_str = "원" if is_krw else "달러"
+    if raw_price >= ma60 and raw_price >= ma20:
+        ma_fact_desc = f"현재 주가가 20일선({fmt_price(ma20)}{unit_str}) 및 60일선({fmt_price(ma60)}{unit_str}) 상단에 안정적으로 안착하며 정배열 우상향 추세를 유지하고 있습니다."
+    elif raw_price < ma60 and raw_price >= ma20:
+        ma_fact_desc = f"현재 주가가 단기 20일선({fmt_price(ma20)}{unit_str}) 지지를 받으며 반등 중이나, 상단 60일선({fmt_price(ma60)}{unit_str})이 주요 중기 저항선으로 작용하고 있습니다."
+    elif raw_price < ma20 and raw_price < ma60:
+        ma_fact_desc = f"현재 주가가 20일선({fmt_price(ma20)}{unit_str}) 및 60일선({fmt_price(ma60)}{unit_str}) 하단에 위치한 단기 역배열 국면으로, 저항 매물 소화 및 60일선 회복 여부가 핵심 분기점입니다."
+    else:
+        ma_fact_desc = f"현재 주가가 20일선({fmt_price(ma20)}{unit_str}) 및 60일선({fmt_price(ma60)}{unit_str}) 사이에서 방향성 탐색을 위한 매물 공방을 이어가고 있습니다."
+
     if score_val >= 4.5: stars_str = "★★★★★"
     elif score_val >= 3.8: stars_str = "★★★★☆"
     elif score_val >= 2.8: stars_str = "★★★☆☆"
@@ -590,8 +593,8 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
 
     REGIME_META = {
         "BREAKOUT": {
-            "pattern_name": "강력한 상승 모멘텀 돌파형",
-            "direction": "단기 롱 (상승 모멘텀 돌파)",
+            "pattern_name": "상승 모멘텀 돌파형",
+            "direction": "단기 롱 (모멘텀 돌파)",
             "entry1_label": "주요 기관 1차 지지 밴드",
             "entry2_label": "구조적 하단 방어 마지노선",
             "target1_label": "직전 고점 유동성 청산",
@@ -600,7 +603,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             "guide": f"5일 평균 대비 거래량 {vol_ratio}퍼센트 급증 확인 시 1차 분할 착수하며 장중 변동폭 {atr_display} 내외의 저항 돌파 시 매수세 유입 확인 후 집행"
         },
         "PULLBACK": {
-            "pattern_name": "정석적인 우상향 눌림목 안착형",
+            "pattern_name": "우상향 눌림목 안착형",
             "direction": "단기 롱 (기관 수급 눌림목)",
             "entry1_label": "주요 기관 1차 지지 밴드",
             "entry2_label": "구조적 하단 방어 마지노선",
@@ -610,7 +613,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             "guide": f"20일선 지지 확인 및 체결강도 105퍼센트 회복 시 1차 착수하며 장중 변동폭 {atr_display} 내외의 단기 음봉에서 지지대 안착 확인 후 집행"
         },
         "OVERSOLD": {
-            "pattern_name": "낙폭과대 단기 기술적 반등형",
+            "pattern_name": "낙폭과대 기술적 반등형",
             "direction": "단기 롱 (과매도 기술적 반등)",
             "entry1_label": "주요 기관 1차 지지 밴드",
             "entry2_label": "구조적 하단 방어 마지노선",
@@ -653,11 +656,11 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
         "ict_target1": ict_target1,
         "ict_target2": ict_target2,
         "ict_stop": ict_stop,
-        "trend_target_mid": trend_target_mid,
         "atr": atr_val,
         "high_20d": high_20d,
         "ma20": ma20,
         "ma60": ma60,
+        "ma_fact_desc": ma_fact_desc,
         "vol_ratio": vol_ratio
     }
 
@@ -671,7 +674,7 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info):
 
     prompt = f"""
 당신은 최고 수준의 월스트리트 기관 퀀트 헤드 애널리스트입니다.
-아래 제공된 '100% 실시간 팩트 데이터'를 문장에 정확히 명시하여 '{clean_name}'에 대한 전문 퀀트 심층 리포트를 5문단으로 작성하세요.
+아래 제공된 '100% 실시간 팩트 데이터'만을 기반으로 '{clean_name}'에 대한 전문 퀀트 심층 리포트를 5문단으로 작성하세요.
 
 [실시간 팩트 데이터]
 - 종목명: {clean_name} ({symbol}) / 현재가: {price}
@@ -679,17 +682,18 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info):
 - 핵심 뉴스/재료: {extra_info.get('recent_news')}
 - 펀더멘털 지표: {extra_info.get('financial_status')}
 - 수급 현황: {extra_info.get('supply_status')}
-- 20일 이동평균선: {fmt(an['ma20'])} / 60일 이동평균선: {fmt(an['ma60'])} / 20일 고점: {fmt(an['high_20d'])}
+- 이평선 실제 팩트: {an['ma_fact_desc']}
 - 5일 평균 거래량 대비 비율: {an['vol_ratio']}퍼센트 / 실시간 RSI: {an['rsi']} / 일일 변동폭(ATR): {fmt(an['atr'])}
 
-[작성 지침 - 절대 준수]
-1. 정통 금융·기관 퀀트 전문 용어만 사용하십시오. '세력', '개미 털기' 같은 비전문적 은어는 절대 사용을 금지합니다.
-2. 구체적인 진입가, 목표가, 손절가 금액 숫자를 본문 글에 미리 적지 마십시오. (하단 시그널 영역에 별도 제공됨)
-3. 1문단: 현재가 위치, 실시간 핵심 이슈('{extra_info.get('recent_news')}'), 20일 고점 대비 현재 위치와 거래량 {an['vol_ratio']}%의 의미 서술.
-4. 2문단: 실시간 펀더멘털 지표({extra_info.get('financial_status')})와 업황 재료가 중장기 기업 가치에 미칠 실질적 파급 효과 분석.
-5. 3문단: 수급 현황({extra_info.get('supply_status')}), 20일선({fmt(an['ma20'])}) 및 60일선 정배열 추세 구조 설명.
-6. 4문단: 일일 변동폭(ATR {fmt(an['atr'])}) 및 실시간 RSI({an['rsi']}) 지표를 기반으로 장중 변동성과 과열/침체 여부를 진단하고 실전 리스크 관리 관점 서술.
-7. 5문단: 앞선 1~4문단 분석을 종합하여, 현재 국면('{pattern_name}')에 가장 적합한 실전 분할 대응 전략(예: 주요 기관 수급 지지대 중심의 눌림목 분할 접근 등)과 기준 지지선 훼손 시 리스크 관리 시나리오를 명확한 결론으로 도출할 것.
+[작성 지침 - 절대 원칙]
+1. 비전문적 은어('세력', '개미' 등) 사용 절대 금지. 정통 금융 전문 용어만 사용할 것.
+2. 구체적인 매수가/목표가/손절가 금액 숫자를 본문 글에 절대 쓰지 마십시오. (하단 시그널 영역에 별도 출력됨)
+3. 사실 왜곡 금지: 이평선 상태는 반드시 주어진 [이평선 실제 팩트]의 내용({an['ma_fact_desc']}) 그대로 서술할 것.
+4. 1문단: 현재가 위치, 실시간 핵심 이슈('{extra_info.get('recent_news')}'), 거래량 {an['vol_ratio']}%의 의미 서술.
+5. 2문단: 실시간 펀더멘털 지표({extra_info.get('financial_status')})와 업황 재료가 기업 가치에 미칠 파급 효과 분석.
+6. 3문단: 수급 현황({extra_info.get('supply_status')})과 함께, [이평선 실제 팩트]({an['ma_fact_desc']})를 바탕으로 현재 추세의 객관적 위치 서술.
+7. 4문단: 일일 변동폭(ATR {fmt(an['atr'])}) 및 실시간 RSI({an['rsi']}) 지표를 감안한 장중 변동성 및 리스크 진단.
+8. 5문단: 앞선 1~4문단 분석을 종합하여, 현재 국면('{pattern_name}')에 가장 적합한 실전 분할 대응 전략과 기준 지지선 훼손 시 리스크 관리 시나리오를 명확한 결론으로 도출할 것.
 """
 
     try:
@@ -697,20 +701,20 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info):
         headers = {"Content-Type": "application/json"}
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.25, "maxOutputTokens": 1500}
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1500}
         }
         res = requests.post(url, headers=headers, json=payload, timeout=5.0).json()
         return res["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
-        return f"""{clean_name}의 최근 주가 흐름은 시장 핵심 이슈인 '{extra_info.get('recent_news')}' 모멘텀을 바탕으로 견조한 추세를 형성하고 있습니다. 직전 20일 고점인 {fmt(an['high_20d'])} 부근에서 매물을 소화하는 {pattern_name}을 나타내고 있으며 현재 {price}선은 안정적인 가격 조정 범주에 속합니다. 5일 평균 대비 {an['vol_ratio']}퍼센트 수준의 거래량은 구조적 투매가 아닌 상단 저항 소화를 위한 전형적인 관망세로 해석됩니다.
+        return f"""{clean_name}의 최근 주가 흐름은 시장 핵심 이슈인 '{extra_info.get('recent_news')}' 모멘텀을 바탕으로 가격 흐름을 형성하고 있습니다. 현재 {price}선은 {pattern_name} 국면에서 매물을 소화하는 과정에 위치해 있으며, 5일 평균 대비 {an['vol_ratio']}퍼센트 수준의 거래량은 시장의 신중한 관망세를 반영하고 있습니다.
 
-기업의 펀더멘털 측면에서 {extra_info.get('financial_status')} 지표를 유지하고 있어 밸류에이션 매력이 충분하며, 실시간 수급 현황인 {extra_info.get('supply_status')}는 향후 주가 상승을 견인할 주요 수급 모멘텀입니다.
+기업의 펀더멘털 측면에서 {extra_info.get('financial_status')} 지표를 유지하고 있어 밸류에이션 매력이 충분하며, 실시간 수급 현황인 {extra_info.get('supply_status')}는 주가 방향성을 결정지을 핵심 수급 모멘텀입니다.
 
-기술적으로 20일 이동평균선({fmt(an['ma20'])}) 및 60일선({fmt(an['ma60'])}) 상단에 안정적으로 안착해 있어 중장기 우상향 추세의 하방 경직성을 확보하고 있습니다.
+기술적으로 {an['ma_fact_desc']}
 
-일일 변동폭(ATR) {fmt(an['atr'])} 및 실시간 RSI {an['rsi']} 지표를 감안할 때 단기 과열 부담은 상당 부분 해소되었으며 장중 휩소 변동성 속에서도 견조한 지지력을 보여주고 있습니다.
+일일 변동폭(ATR) {fmt(an['atr'])} 및 실시간 RSI {an['rsi']} 지표를 감안할 때 장중 변동성에 유의할 필요가 있으며, 단기 과열이나 침체 여부를 면밀히 관찰해야 하는 구간입니다.
 
-종합적으로 중장기 상승 모멘텀이 견고하게 유지되는 국면이므로 무리한 추격 매수보다는 주요 기관 수급 지지대를 활용한 정밀 분할 매수 전략이 유효하며, 기술적 지지선 이탈 시 기계적인 리스크 관리를 병행하는 시나리오가 권장됩니다."""
+종합적으로 현재 국면에서는 무리한 일괄 추격 매수보다는 주요 기관 수급 지지대를 활용한 정밀 분할 대응이 유효하며, 기술적 지지선 이탈 시 기계적인 리스크 관리를 병행하는 시나리오가 권장됩니다."""
 
 def generate_reliable_report(stock_name, symbol, price, an, extra_info):
     is_krw = "원" in str(price)
@@ -767,7 +771,7 @@ def fetch_technical_quant_data(symbol, asset_type, stock_name=""):
         curr_price_num, curr_price_str, df = get_us_stock_fmp_data(symbol, years=1)
     elif asset_type == "domestic_stock":
         curr_price_num, curr_price_str = get_naver_realtime_price(symbol)
-        df = fetch_domestic_stock_candles(symbol, years=1)
+        df = fetch_domestic_stock_candles(symbol, anchor_price=curr_price_num, years=1)
         if curr_price_num is None and df is not None and not df.empty:
             curr_price_num = float(df['Close'].iloc[-1])
             curr_price_str = f"{int(curr_price_num):,} 원"

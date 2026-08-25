@@ -499,6 +499,81 @@ def normalize_news(items):
     return cleaned[:5]
 
 
+
+HANKYUNG_FINANCE_RSS = "https://www.hankyung.com/feed/finance"
+HANKYUNG_ALL_RSS = "https://www.hankyung.com/feed/all-news"
+
+
+def fetch_hankyung_rss(feed_url, limit=50):
+    response = requests.get(
+        feed_url,
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=TIMEOUT,
+    )
+    response.raise_for_status()
+    return parse_rss_items(response.content, limit=limit)
+
+
+def get_asset_news_keywords(asset):
+    name = asset["name"].strip()
+    symbol = asset["symbol"].strip()
+    keywords = {name.lower(), symbol.lower()}
+
+    aliases = {
+        "000660": {"sk하이닉스", "하이닉스", "hbm", "메모리", "dram"},
+        "005930": {"삼성전자", "samsung", "반도체"},
+    }
+    keywords.update(x.lower() for x in aliases.get(symbol, set()))
+
+    # Exact company/ticker matches get the strongest priority.
+    return [k for k in keywords if k]
+
+
+def filter_news_for_asset(items, asset, limit=5):
+    keywords = get_asset_news_keywords(asset)
+
+    def score(item):
+        title = (item.get("title") or "").lower()
+        matched = sum(1 for k in keywords if k in title)
+        return matched
+
+    ranked = [item for item in items if score(item) > 0]
+    ranked.sort(key=lambda x: score(x), reverse=True)
+
+    return normalize_news(ranked)[:limit]
+
+
+def collect_hankyung_news(asset, limit=5):
+    """
+    Free Korean news source.
+    Uses Hankyung's official public RSS feeds and filters titles locally
+    so unrelated finance headlines are not shown as company news.
+    """
+    all_items = []
+    source_errors = []
+
+    for feed_name, feed_url in (
+        ("hankyung-finance", HANKYUNG_FINANCE_RSS),
+        ("hankyung-all", HANKYUNG_ALL_RSS),
+    ):
+        try:
+            items = fetch_hankyung_rss(feed_url, limit=50)
+            all_items.extend(items)
+            if len(all_items) >= 50:
+                break
+        except Exception as exc:
+            source_errors.append(f"{feed_name}: {exc}")
+
+    filtered = filter_news_for_asset(all_items, asset, limit=limit)
+
+    if source_errors:
+        print(f"[HANKYUNG RSS WARN] {asset['symbol']}: {' | '.join(source_errors)}")
+
+    print(f"[HANKYUNG NEWS] {asset['symbol']}: {len(filtered)} items")
+    return filtered
+
+
+
 def collect_free_news(asset, limit=5):
     """
     Free/no-key news collection.
@@ -520,6 +595,20 @@ def collect_free_news(asset, limit=5):
                         limit=limit,
                     )
                 )
+        elif asset["market"] == "국내주식":
+            hankyung_items = collect_hankyung_news(asset, limit=limit)
+            all_items.extend(hankyung_items)
+
+            # Google RSS fallback only if Hankyung did not provide enough.
+            if len(normalize_news(all_items)) < limit:
+                for q in make_news_queries(asset):
+                    try:
+                        all_items.extend(fetch_google_news_rss(q, limit=limit))
+                    except Exception as exc:
+                        print(f"[NEWS SOURCE ERROR] query={q}: {exc}")
+                    if len(normalize_news(all_items)) >= limit:
+                        break
+
         else:
             queries = make_news_queries(asset)
             for q in queries:
@@ -716,7 +805,7 @@ class Handler(BaseHTTPRequestHandler):
                 "success": True,
                 "name": asset["name"],
                 "symbol": asset["symbol"],
-                "news": news,
+                "news": news, "source": "Hankyung RSS / free fallback",
             })
             return
 

@@ -27,8 +27,8 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. 환경 변수 및 인증 키
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8980819571:AAHyzm6KjZ0rKocObWoS28ThBbVGhJ5TfUs")
+# 1. 환경 변수 및 인증 키 (새 텔레그램 봇 토큰 적용)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8942728358:AAEUYwitOIyMAeF_FD_kWKky4m9FwjApLR8")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AQ.Ab8RN6KisWMYVxgBBJmBW3SgOAT9aJYvOPiWj42H4WR_Y56kRA")
 FMP_API_KEY = os.getenv("FMP_API_KEY", "YUVC3My39vzjHpkj0SwNyHp1hXn6Q1IN")
 TOSS_API_KEY = os.getenv("TOSS_API_KEY", "")
@@ -1084,7 +1084,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
                 return
 
-            # 웹 메인 화면 (UTF-8 인코딩 안전 렌더링)
             html_content = """<!DOCTYPE html>
 <html lang="ko">
 <head>

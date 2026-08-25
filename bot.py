@@ -1,3 +1,4 @@
+```python
 import os
 import re
 import io
@@ -368,14 +369,12 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
     return info
 
 def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
-    """바이낸스 현물 및 USDT 선물(Futures) 통합 조회"""
     clean_sym = symbol.replace("KRW-", "").replace("-", "").upper()
     if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
         clean_sym = f"{clean_sym}USDT"
     
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    # 1. 바이낸스 현물(Spot) 조회
     try:
         b_url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit={limit}"
         res = requests.get(b_url, headers=headers, timeout=2.5).json()
@@ -387,7 +386,6 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
     except Exception:
         pass
 
-    # 2. 바이낸스 USDT 선물(Futures) 교차 조회
     try:
         f_url = f"https://fapi.binance.com/fapi/v1/klines?symbol={clean_sym}&interval=1d&limit={limit}"
         res = requests.get(f_url, headers=headers, timeout=2.5).json()
@@ -462,6 +460,8 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     ma20 = raw_price * 0.99
     ma60 = raw_price * 1.12
     vol_ratio = 85
+    rsi_val = 52.5
+    score_val = 4.2
     
     if df is not None and len(df) >= 20:
         try:
@@ -473,13 +473,59 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
             v_mean5 = df['Volume'].tail(5).mean()
             v_curr = df['Volume'].iloc[-1]
             vol_ratio = int((v_curr / v_mean5) * 100) if v_mean5 > 0 else 85
+            
+            # 1. RSI(14) 실시간 지표 계산
+            delta = df['Close'].diff()
+            gain = delta.where(delta > 0, 0.0)
+            loss = -delta.where(delta < 0, 0.0)
+            avg_gain = gain.rolling(window=14, min_periods=14).mean()
+            avg_loss = loss.rolling(window=14, min_periods=14).mean()
+            rs = avg_gain / avg_loss
+            rsi_series = 100 - (100 / (1 + rs))
+            calc_rsi = rsi_series.iloc[-1]
+            if not np.isnan(calc_rsi):
+                rsi_val = round(float(calc_rsi), 1)
+
+            # 2. 퀀트 다이나믹 스코어링 (5.0 만점)
+            base_score = 2.0
+            
+            # 추세 및 이평선 정배열
+            curr_c = float(df['Close'].iloc[-1])
+            if curr_c >= ma20: base_score += 0.8
+            if curr_c >= ma60: base_score += 0.6
+            
+            # RSI 적합도 (40~60 건강한 눌림목 / 30이하 과매도 반등)
+            if 42 <= rsi_val <= 58: base_score += 0.9
+            elif 30 <= rsi_val < 42: base_score += 0.7
+            elif 58 < rsi_val <= 68: base_score += 0.4
+            
+            # 거래량 수급 강도
+            if vol_ratio >= 120: base_score += 0.5
+            elif 70 <= vol_ratio < 120: base_score += 0.3
+            
+            # 변동성 여유
+            if atr_val > 0: base_score += 0.4
+            
+            score_val = round(min(5.0, max(1.0, base_score)), 1)
         except Exception:
             pass
 
+    # 3. 별점 매칭
+    if score_val >= 4.5:
+        stars_str = "★★★★★"
+    elif score_val >= 3.8:
+        stars_str = "★★★★☆"
+    elif score_val >= 2.8:
+        stars_str = "★★★☆☆"
+    elif score_val >= 1.8:
+        stars_str = "★★☆☆☆"
+    else:
+        stars_str = "★☆☆☆☆"
+
     return {
-        "rsi": 55.0,
-        "score": "4.2",
-        "stars": "★★★★☆",
+        "rsi": rsi_val,
+        "score": f"{score_val:.1f}",
+        "stars": stars_str,
         "entry1_low": round(raw_price * 0.9665, 0) if "domestic" in asset_type else round(raw_price * 0.9665, 2),
         "entry1_high": raw_price,
         "entry2_low": round(raw_price * 0.9197, 0) if "domestic" in asset_type else round(raw_price * 0.9197, 2),
@@ -625,22 +671,18 @@ def fetch_technical_quant_data(symbol, asset_type, stock_name=""):
 def run_full_analysis_process(query):
     clean_q = query.replace(" ", "").upper()
     
-    # 1. 암호화폐 및 바이낸스 USDT 페어 (sndkusdt, qqqusdt, skyusdt 등 포함)
     if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트코인"]):
         asset_type = "crypto"
         symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
         formal_name = clean_q
-    # 2. 미국 대표 주식/ETF
     elif clean_q in US_STOCK_MAP:
         asset_type = "overseas_stock"
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.replace("(", "").replace(")", "").strip()
-    # 3. 일반 미국 주식 티커
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         asset_type = "overseas_stock"
         symbol = query.upper().strip()
         formal_name = query.strip()
-    # 4. 국내 주식
     else:
         code, name = find_stock_code(query)
         if not code: return None
@@ -1083,3 +1125,5 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.run_polling(drop_pending_updates=True)
+
+```

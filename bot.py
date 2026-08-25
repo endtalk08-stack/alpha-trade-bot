@@ -89,6 +89,18 @@ GLOBAL_CORRELATION_MAP = {
     "035720": "META"
 }
 
+# 단순 시황 및 무의미한 노이즈 기사 필터링 블랙리스트
+NOISE_FILTER_KEYWORDS = [
+    "will s&p", "open up or down", "market wrap", "stock market:", 
+    "pre-market", "futures slide", "futures rise", "what to watch", 
+    "stocks to buy", "stocks to watch", "here's why", "why is", 
+    "is it time to buy", "증시전망", "증시일정", "오늘의 증시"
+]
+
+def is_noise_headline(text):
+    low_t = text.lower().strip()
+    return any(k in low_t for k in NOISE_FILTER_KEYWORDS)
+
 def generate_chart_image(df, title_text=""):
     try:
         if df is None or df.empty or len(df) < 5:
@@ -181,6 +193,7 @@ def fetch_fmp_macro_and_earnings():
     return events_summary
 
 def get_foreign_rss_headlines(ticker):
+    """야후 파이낸스 실시간 속보 수집 (노이즈 자동 스킵 및 2~3위 알짜 기사 추출)"""
     headlines = []
     try:
         rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
@@ -189,12 +202,15 @@ def get_foreign_rss_headlines(ticker):
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             items = root.findall('.//item')
-            for it in items[:2]:
+            for it in items[:6]:
                 t = it.find('title')
                 if t is not None and t.text:
                     clean = re.sub(r'<.*?>', '', t.text).strip()
-                    if clean:
+                    # 단순 시황 질문글이 아니면 유효 기사로 담기
+                    if clean and not is_noise_headline(clean):
                         headlines.append(clean)
+                    if len(headlines) >= 2:
+                        break
     except Exception:
         pass
     return headlines
@@ -243,7 +259,6 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues):
         res = requests.post(url, headers=headers, json=payload, timeout=2.5).json()
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         text = re.sub(r'["\'\n]', '', text).strip()
-        # 영어가 포함되어 있다면 번역 안전망 통과
         if text and not re.search(r'[a-zA-Z]{3,}', text):
             return text
         elif text:
@@ -251,7 +266,6 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues):
     except Exception:
         pass
     
-    # 예비 Fallback: 구글 번역 안전망 직접 가동
     first_issue = raw_issues[0]
     translated_first = direct_translate_to_ko(first_issue)
     return translated_first
@@ -302,7 +316,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
             "Referer": "https://m.stock.naver.com/"
         }
         try:
-            news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=4&page=1"
+            news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=5&page=1"
             n_res = requests.get(news_url, headers=headers, timeout=2.0).json()
             news_items = []
             if isinstance(n_res, dict):
@@ -314,7 +328,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
                 for n in news_items:
                     title_txt = n.get("title") or n.get("tit") or n.get("itemTitle") or ""
                     clean_t = re.sub(r'<.*?>|&[a-z0-9]+;', '', title_txt).strip()
-                    if clean_t and clean_t not in raw_issues:
+                    if clean_t and not is_noise_headline(clean_t) and clean_t not in raw_issues:
                         raw_issues.append(clean_t)
         except Exception:
             pass

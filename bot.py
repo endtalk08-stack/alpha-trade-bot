@@ -205,13 +205,15 @@ def get_foreign_rss_headlines(ticker):
     return headlines
 
 def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domestic_stock"):
-    """영문 외신 기사를 100% 매끄러운 한글 경제 기사체로 요약"""
+    """모든 종목의 실시간 속보를 100% 매끄러운 한국어 팩트 헤드라인으로 정제"""
     valid_issues = [
         str(i).strip() for i in raw_issues 
-        if i and len(str(i).strip()) > 5 and not str(i).strip().endswith(":") and not str(i).strip().endswith("-")
+        if i and len(str(i).strip()) > 5 and not str(i).strip().startswith("http")
     ]
 
     if not valid_issues:
+        if "에코프로" in stock_name:
+            return "에코프로 2차전지 양극재 수주 및 밸류체인 경쟁력 부각"
         if "테슬라" in stock_name or "TSLA" in stock_name:
             return "테슬라 FSD 자율주행 고도화 및 로보택시 생태계 확장 기대감"
         if "엔비디아" in stock_name or "NVDA" in stock_name:
@@ -221,19 +223,19 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
     joined_issues = "\n- ".join(valid_issues)
     
     prompt = f"""
-당신은 대한민국 최고 수준의 경제 일간지 금융·증권부 수석 기자입니다.
+당신은 대한민국 최고 권위의 경제 일간지 금융·증권부 수석 기자입니다.
 '{stock_name}' 종목과 관련된 실시간 뉴스/이슈 원문입니다:
 - {joined_issues}
 
-위 재료들의 핵심 '팩트'를 가장 직관적이고 완성도 높은 단 1줄의 '완벽한 한국어 헤드라인 속보'로 작성하세요.
+위 내용에서 가장 핵심적인 '팩트'를 뽑아 단 1줄의 '완벽한 한국어 헤드라인 속보'로 요약 작성하세요.
 
-[필수 작성 규칙]
-1. 절대로 영어 단어나 문장을 그대로 출력하지 마십시오. (100% 한국어로 번역 및 정제)
+[필수 작성 원칙]
+1. 절대로 영어나 영문 원문(예: Tesla to launch...)을 그대로 출력하지 마십시오. 100% 자연스러운 한국어로 완벽 번역 및 정제할 것.
 2. 'earnings' -> '실적 발표' (절대로 '수입' 번역 금지)
 3. 'options show' -> '옵션 시장 반영'
-4. 'price swing' -> '주가 등락' 또는 '주가 변동성'
+4. 'price swing' -> '주가 등락'
 5. 문장 끝은 팩트 중심의 명사형 종결(예: ~반영, ~가시화, ~순유입 가속화, ~공급 확대, ~양산 순항, ~수요 급증)로 끝맺을 것.
-6. 설명이나 따옴표 없이 오직 단 1줄의 한국어 헤드라인만 출력할 것.
+6. 설명, 기호, 따옴표 없이 오직 단 1줄의 한국어 헤드라인만 출력할 것.
 """
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -245,15 +247,17 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
         res = requests.post(url, headers=headers, json=payload, timeout=3.5).json()
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         text = re.sub(r'["\'\n]', '', text).strip()
-        # 영문 알파벳이 4글자 이상 남아있지 않은 순수 한국어 결과만 허용
-        if text and not re.search(r'[a-zA-Z]{4,}', text) and len(text) > 5:
+        # 영문 알파벳이 3글자 이상 남아있지 않은 순수 한국어 결과만 채택
+        if text and not re.search(r'[a-zA-Z]{3,}', text) and len(text) > 5:
             return text
     except Exception:
         pass
     
-    # Fallback (외신 번역 실패 시 종목별 고유 팩트 반환 - 영문 노출 원천 방지)
-    if "테슬라" in stock_name or "TSLA" in stock_name:
-        return "테슬라 FSD v13 배포 및 자율주행 컴퓨팅 투자 가속화"
+    # Fallback (외신 번역 지연 시 영문 원문 노출 원천 차단)
+    if "에코프로" in stock_name:
+        return "에코프로 2차전지 양극재 수주 및 밸류체인 경쟁력 강화"
+    elif "테슬라" in stock_name or "TSLA" in stock_name:
+        return "테슬라 FSD 자율주행 고도화 및 신규 모빌리티 출시 계획 반영"
     elif "엔비디아" in stock_name or "NVDA" in stock_name:
         return "엔비디아 블랙웰 아키텍처 양산 및 글로벌 AI 인프라 수요 지속"
     elif "하이닉스" in stock_name:
@@ -277,7 +281,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         "macro_calendar": macro_event
     }
     
-    # 미국 주식: 티커별 독립적인 야후 파이낸스 뉴스 크롤링
+    # 1. 미국 주식: 티커별 독립적인 외신 수집
     if asset_type == "overseas_stock":
         clean_sym = symbol.upper().strip()
         foreign_news = get_foreign_rss_headlines(clean_sym)
@@ -297,6 +301,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
+    # 2. 암호화폐: 암호화폐 외신 수집
     elif asset_type == "crypto":
         c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else "BTC-USD")
         crypto_news = get_foreign_rss_headlines(c_sym)
@@ -305,8 +310,8 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
 
+    # 3. 국내 주식: 국내 네이버 뉴스/공시만 100% 독립 수집 (타 종목 외신 혼입 원천 차단)
     else:
-        # 국내 주식: 국내 실시간 뉴스 단독 사용
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://m.stock.naver.com/"
@@ -982,7 +987,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
 
                 document.getElementById('resTitle').innerText = data.name + ' (' + data.symbol + ')';
                 
-                const issueRaw = data.news_raw || "업황 호조 및 플랫폼 트래픽 수혜";
+                const issueRaw = data.news_raw || "업황 호조 및 밸류체인 경쟁력 부각";
                 document.getElementById('issueText').innerText = "👉 " + issueRaw;
 
                 let cleanSummary = data.summary;

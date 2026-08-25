@@ -153,7 +153,6 @@ def find_stock_code(query):
     return None, query.strip()
 
 def fetch_fmp_macro_and_earnings():
-    """FMP 경제 캘린더 및 빅테크 실적 일정 수집"""
     events_summary = "미국 FOMC 금리 발표 및 주요 물가지표(CPI) 일정 대기 중"
     try:
         today = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -169,7 +168,6 @@ def fetch_fmp_macro_and_earnings():
     return events_summary
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
-    """실시간 재무제표(FMP/네이버) 및 거시 캘린더 데이터 통합 수집"""
     macro_event = fetch_fmp_macro_and_earnings()
     
     info = {
@@ -179,7 +177,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         "macro_calendar": macro_event
     }
     
-    # 1. 미국 주식 실시간 FMP 재무제표 연동
     if asset_type == "overseas_stock":
         try:
             fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{symbol}?apikey={FMP_API_KEY}"
@@ -196,14 +193,12 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
             pass
         return info
 
-    # 2. 암호화폐 매크로 연동
     elif asset_type == "crypto":
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
         info["recent_news"] = f"{stock_name} 반감기 사이클 및 글로벌 유동성 확장 모멘텀"
         return info
 
-    # 3. 국내 주식 네이버 재무/수급 연동
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://m.stock.naver.com/"
@@ -418,11 +413,16 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
     unit = " 원" if is_krw else " 달러"
     fmt = lambda v: f"{int(v):,}{unit}" if is_krw else f"{v:,.2f}{unit}"
 
-    summary = f"""현재가 {price}
+    news_raw = str(extra_info.get('recent_news', '')).strip().replace('"', '').replace("'", "")
+
+    summary = f"""GAEMIGTP 실시간 이슈
+👉 {news_raw}
+
+현재가 {price}
 
 현재 트레이딩 적합도 {an['stars']} (점수 {an['score']})
 
-gaemiGTP 액션 플랜
+GAEMIGTP 시그널
 
 방향성: 롱 (단기 눌림목 매수)
 
@@ -441,11 +441,11 @@ gaemiGTP 액션 플랜
 칼손절: 지지선 붕괴 및 시나리오 무효화 기준가
 👉 {fmt(an['stop'])}
 
-트리거 조건 및 행동 요령
+GAEMIGTP 가이드
 당일 체결강도 110퍼센트 이상 유지 시 1차 구간 착수하며 장중 변동폭 {fmt(an['atr'])} 내외의 단기 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행""".strip()
 
     detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info)
-    return summary, detail
+    return summary, detail, news_raw
 
 def fetch_technical_quant_data(symbol, asset_type, stock_name=""):
     quant_info = {}
@@ -495,7 +495,7 @@ def run_full_analysis_process(query):
     quant_data = fetch_technical_quant_data(symbol, asset_type, formal_name)
     if not quant_data: return None
 
-    summary_text, detail_text = generate_reliable_report(
+    summary_text, detail_text, news_raw = generate_reliable_report(
         formal_name, symbol, quant_data['current_price'],
         quant_data['analysis'], quant_data['extra_info'], quant_data['bt_info']
     )
@@ -510,13 +510,14 @@ def run_full_analysis_process(query):
         "price": quant_data['current_price'],
         "summary": summary_text,
         "detail": detail_text,
+        "news_raw": news_raw,
         "chart_bytes": quant_data.get('chart_bytes'),
         "chart_b64": chart_b64,
         "bt_info": quant_data['bt_info']
     }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("gaemiGTP 가동 중입니다. 종목명을 입력하세요 (예: 하이닉스, 엔비디아)\n백테스트 검증은 `/검증 종목명`을 입력하세요.")
+    await update.message.reply_text("GAEMIGTP 가동 중입니다. 종목명을 입력하세요 (예: 하이닉스, 엔비디아)\n백테스트 검증은 `/검증 종목명`을 입력하세요.")
 
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
@@ -596,6 +597,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 "price": res["price"],
                 "summary": res["summary"],
                 "detail": res["detail"],
+                "news_raw": res.get("news_raw", ""),
                 "chart": res["chart_b64"],
                 "win_rate": res["bt_info"]["win_rate"],
                 "cum_ret": res["bt_info"]["cum_ret"],
@@ -641,10 +643,39 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .chart-img-box { width: 100%; background: #1e1e1e; border: 1px solid #3e3e3e; border-radius: 16px; margin-bottom: 16px; overflow: hidden; display: flex; justify-content: center; align-items: center; }
         .chart-img-box img { width: 100%; height: auto; display: block; }
 
-        .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; white-space: pre-wrap; line-height: 1.6; }
+        .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.6; }
         .card-header { font-size: 1.35rem; font-weight: 700; color: #60a5fa; margin-bottom: 12px; }
+        
+        /* 🌟 실시간 이슈 페이드 펄스(나타났다 사라지는 효과) 스타일 */
+        .issue-box {
+            background: rgba(59, 130, 246, 0.08);
+            border: 1px solid rgba(96, 165, 250, 0.35);
+            border-radius: 12px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+        }
+        .issue-title {
+            font-size: 0.88rem;
+            font-weight: 700;
+            color: #93c5fd;
+            margin-bottom: 4px;
+        }
+        .issue-highlight {
+            font-size: 0.96rem;
+            font-weight: 600;
+            color: #fef08a;
+            display: inline-block;
+            animation: pulseFade 2.4s infinite ease-in-out;
+        }
+        @keyframes pulseFade {
+            0% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
+            50% { opacity: 1; transform: scale(1); filter: brightness(1.25) drop-shadow(0 0 6px rgba(254, 240, 138, 0.5)); }
+            100% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
+        }
+
+        .summary-body { white-space: pre-wrap; color: #ececec; }
         .detail-btn { width: 100%; background: #374151; border: 1px solid #4b5563; color: #e5e7eb; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 14px; }
-        .detail-content { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #444; color: #d1d5db; }
+        .detail-content { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #444; color: #d1d5db; white-space: pre-wrap; }
         
         #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 84px; background: linear-gradient(180deg, rgba(33,33,33,0) 0%, rgba(33,33,33,1) 40%); align-items: center; justify-content: center; padding: 0 16px 8px; z-index: 50; }
         .loading { display: none; text-align: center; color: #9ca3af; margin: 40px 0; }
@@ -685,7 +716,14 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 </div>
                 <div class="card">
                     <div class="card-header" id="resTitle"></div>
-                    <div id="resSummary"></div>
+                    
+                    <!-- 깜빡이는 실시간 이슈 전용 하이라이트 박스 -->
+                    <div class="issue-box" id="issueBox">
+                        <div class="issue-title">GAEMIGTP 실시간 이슈</div>
+                        <div class="issue-highlight" id="issueText"></div>
+                    </div>
+
+                    <div class="summary-body" id="resSummary"></div>
                     <button class="detail-btn" id="toggleDetailBtn" onclick="toggleDetail()">심층 분석 및 근거 보기</button>
                     <div class="detail-content" id="resDetail"></div>
                 </div>
@@ -746,7 +784,18 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 }
 
                 document.getElementById('resTitle').innerText = data.name + ' (' + data.symbol + ')';
-                document.getElementById('resSummary').innerText = data.summary;
+                
+                // 이슈 텍스트 설정
+                const issueRaw = data.news_raw || "업황 모멘텀 및 수급 유입 지속";
+                document.getElementById('issueText').innerText = "👉 " + issueRaw;
+
+                // 요약 본문 중 'GAEMIGTP 실시간 이슈' 중복 방지 파싱
+                let cleanSummary = data.summary;
+                if (cleanSummary.includes("현재가")) {
+                    cleanSummary = cleanSummary.substring(cleanSummary.indexOf("현재가"));
+                }
+                document.getElementById('resSummary').innerText = cleanSummary;
+
                 document.getElementById('resDetail').innerText = data.detail;
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';

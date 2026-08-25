@@ -1,3 +1,12 @@
+상단 우측 링크를 `📱 텔레그램 공식 봇`으로 변경하고, 최신 AI 챗 인터페이스의 규격(단정한 캡슐형 뱃지, 부드러운 패딩 및 테두리 반경)에 맞춰 레이아웃과 크기를 정밀하게 다듬었습니다.
+
+---
+
+### 🛠️ `bot.py` 전체 코드
+
+GitHub의 `bot.py` 내용을 전체 삭제 후 아래 코드를 붙여넣어 주세요.
+
+```python
 import os
 import re
 import io
@@ -1239,3 +1248,5 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handle_button))
     
     app.run_polling(drop_pending_updates=True)
+
+```

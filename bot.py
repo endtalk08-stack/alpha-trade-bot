@@ -1,3 +1,14 @@
+ChatGPT/Gemini 스타일의 깔끔한 그레이 원형 전송 버튼(동그라미 + 위쪽 화살표 `↑`)으로 교체했습니다.
+
+텍스트 버튼보다 시각적으로 훨씬 정돈되어 검색창의 미니멀한 느낌이 살아납니다.
+
+---
+
+### 💻 수정된 `bot.py` 전체 코드
+
+GitHub의 `bot.py`에 그대로 덮어씌워 주시면 됩니다.
+
+```python
 import os
 import re
 import io
@@ -64,7 +75,7 @@ US_STOCK_MAP = {
 
 DOMESTIC_FAST_MAP = {
     "SK하이닉스": "000660", "하이닉스": "000660",
-    "삼성전자": "005930", "삼성전기": "009150", "삼성중공업": "010140",
+    "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150", "삼성중공업": "010140",
     "SK증권": "001510", "SK스퀘어": "402340", "솔트룩스": "304100",
     "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
     "레인보우로보틱스": "277810", "카카오": "035720", "네이버": "035420",
@@ -879,8 +890,8 @@ def run_full_analysis_process(query):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "gaemiGTP 올인원 퀀트 봇 가동 중입니다\n\n"
-        "• 종목 실시간 타점 + 심층 리포트: 종목명 입력 (예: 삼성전자, SK증권, 엔비디아, QQQ, 비트코인)\n"
-        "• 실전 백테스팅 검증표: '검증 종목명' (예: 검증 엔비디아, 검증 비트코인, 검증 삼성전자)\n"
+        "• 종목 실시간 타점 + 심층 리포트: 종목명 입력 (예: SK하이닉스, 삼성전자, 엔비디아, QQQ, 비트코인)\n"
+        "• 실전 백테스팅 검증표: '검증 종목명' (예: 검증 엔비디아, 검증 비트코인, 검증 하이닉스)\n"
         "(분석 메시지는 15분 후 자동 정리됩니다)"
     )
 
@@ -1037,32 +1048,39 @@ async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(text=data['summary'], reply_markup=InlineKeyboardMarkup(keyboard))
 
 # =========================================================================
-# 🌐 통합 웹 서버 (HTML 웹페이지 화면 자동 출력 + 검색 API)
+# 🌐 통합 웹 서버 (미니멀 그레이 원형 전송 버튼 적용)
 # =========================================================================
 WEB_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>gaemiGTP - 10초 금융 분석 엔진</title>
+    <title>gaemiGTP - 10초 금융 퀀트 분석 엔진</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         body { background-color: #212121; color: #ececec; min-height: 100vh; display: flex; flex-direction: column; justify-content: space-between; }
-        header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; }
-        .logo-top { font-weight: 700; font-size: 1.1rem; color: #b4b4b4; letter-spacing: -0.5px; }
-        .user-icon { width: 32px; height: 32px; border-radius: 50%; background: #343541; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: bold; color: #fff; }
+        header { display: flex; justify-content: space-between; align-items: center; padding: 18px 28px; }
+        .logo-top { font-weight: 800; font-size: 1.15rem; color: #e0e0e0; letter-spacing: -0.5px; }
+        .badge-link { font-size: 0.8rem; color: #9ca3af; text-decoration: none; border: 1px solid #4b5563; padding: 5px 12px; border-radius: 14px; transition: 0.2s; }
+        .badge-link:hover { background: #374151; color: #fff; border-color: #6b7280; }
         main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; max-width: 750px; margin: 0 auto; width: 100%; }
-        .hero-title { font-size: 3.2rem; font-weight: 800; margin-bottom: 6px; letter-spacing: -1.5px; color: #f5f5f5; }
-        .hero-sub { font-size: 1.1rem; color: #8e8ea0; margin-bottom: 32px; font-weight: 400; }
-        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 28px; padding: 10px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
+        .hero-title { font-size: 3.4rem; font-weight: 800; margin-bottom: 6px; letter-spacing: -1.5px; color: #f5f5f5; }
+        .hero-sub { font-size: 1.1rem; color: #8e8ea0; margin-bottom: 34px; font-weight: 400; }
+        
+        /* 미니멀 검색 바 */
+        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 8px 10px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
         .search-box:focus-within { border-color: #777; }
-        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 1rem; padding: 6px 12px; }
-        .search-box input::placeholder { color: #8e8ea0; }
-        .search-btn { background: #3b82f6; color: white; border: none; border-radius: 20px; padding: 8px 18px; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
-        .search-btn:hover { background: #2563eb; }
+        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 1rem; padding: 6px 8px; }
+        .search-box input::placeholder { color: #737380; font-size: 0.95rem; }
+        
+        /* 그레이 원형 위쪽 화살표 버튼 */
+        .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; flex-shrink: 0; }
+        .send-btn:hover { background: #606060; transform: scale(1.04); }
+        .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
+
         .popular-tags { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: #2f2f2f; border: 1px solid #3e3e3e; border-radius: 16px; padding: 6px 14px; font-size: 0.85rem; color: #c5c5d2; cursor: pointer; }
-        .tag-btn:hover { background: #3a3a3a; color: #fff; }
+        .tag-btn { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 6px 14px; font-size: 0.85rem; color: #c5c5d2; cursor: pointer; transition: 0.2s; }
+        .tag-btn:hover { background: #3a3a3a; color: #fff; border-color: #555; }
         #result-container { width: 100%; margin-top: 24px; display: none; }
         .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 22px; margin-bottom: 20px; white-space: pre-wrap; line-height: 1.6; }
         .card-header { font-size: 1.25rem; font-weight: 700; color: #60a5fa; margin-bottom: 12px; }
@@ -1076,21 +1094,26 @@ WEB_HTML_TEMPLATE = """<!DOCTYPE html>
 <body>
     <header>
         <div class="logo-top">gaemiGTP</div>
-        <div class="user-icon">민</div>
+        <a class="badge-link" href="https://t.me/gaemiGTP_bot" target="_blank">📱 텔레그램 VIP 알림</a>
     </header>
     <main>
         <div class="hero-title">gaemiGTP</div>
         <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
         <div class="search-box">
-            <input type="text" id="queryInput" placeholder="무엇이든 물어보세요 (예: 삼성전자, 엔비디아, 비트코인)" onkeypress="if(event.keyCode==13) doSearch();">
-            <button class="search-btn" onclick="doSearch()">✨ AI 모드</button>
+            <input type="text" id="queryInput" placeholder="종목명 또는 티커를 입력하세요 (예: 하이닉스, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch();">
+            <button class="send-btn" onclick="doSearch()" title="분석 시작">
+                <svg viewBox="0 0 24 24">
+                    <path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                </svg>
+            </button>
         </div>
         <div class="popular-tags">
+            <button class="tag-btn" onclick="searchStock('SK하이닉스')">🔥 SK하이닉스</button>
             <button class="tag-btn" onclick="searchStock('삼성전자')">📈 삼성전자</button>
-            <button class="tag-btn" onclick="searchStock('엔비디아')">🔥 엔비디아</button>
+            <button class="tag-btn" onclick="searchStock('엔비디아')">🚀 엔비디아</button>
             <button class="tag-btn" onclick="searchStock('테슬라')">🚗 테슬라</button>
             <button class="tag-btn" onclick="searchStock('비트코인')">₿ 비트코인</button>
-            <button class="tag-btn" onclick="searchStock('SK증권')">📊 SK증권</button>
+            <button class="tag-btn" onclick="searchStock('QQQ')">📊 QQQ</button>
         </div>
         <div class="loading" id="loading">⚡ 실시간 수급/재무/뉴스 및 퀀트 팩터를 분석 중입니다...</div>
         <div id="result-container">
@@ -1160,7 +1183,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
 
-        # 1. 웹 검색 API 요청 처리
         if parsed.path == "/api/analyze":
             q = params.get('q', [''])[0].strip()
             if not q:
@@ -1196,7 +1218,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
             self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
             return
 
-        # 2. 브라우저로 접속했을 때 웹 화면 자동 출력
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -1216,3 +1237,5 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handle_button))
     
     app.run_polling(drop_pending_updates=True)
+
+```

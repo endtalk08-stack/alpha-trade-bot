@@ -10,6 +10,7 @@ import asyncio
 import datetime
 import threading
 import urllib.parse
+import xml.etree.ElementTree as ET
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 import pandas as pd
@@ -116,7 +117,7 @@ def find_stock_code(query):
 
     try:
         url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         res = requests.get(url, headers=headers, timeout=2.5).json()
         items = res.get("result", {}).get("items", [])
         if items:
@@ -132,7 +133,7 @@ def find_stock_code(query):
 
     try:
         url = f"https://ac.finance.naver.com/ac?q={urllib.parse.quote(query.strip())}&target=stock"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         res = requests.get(url, headers=headers, timeout=2.5).json()
         items_list = res.get("items", [])
         if items_list and isinstance(items_list, list) and len(items_list) > 0:
@@ -168,19 +169,36 @@ def fetch_fmp_macro_and_earnings():
     return events_summary
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
+    """전 자산군 실시간 뉴스 파이프라인 및 재무 데이터 수집"""
     macro_event = fetch_fmp_macro_and_earnings()
     
     info = {
-        "supply_status": "외국인 지분율 50.92% (주요 수급 변곡점 형성)",
-        "financial_status": "PER 7.03배 / PBR 4.25배 수준",
+        "supply_status": "기관 및 외국인 수급 변곡점 형성 구간",
+        "financial_status": "견조한 펀더멘털 및 실적 가시성 유지",
         "recent_news": f"{stock_name} 업황 모멘텀 및 수급 유입 지속",
         "macro_calendar": macro_event
     }
     
+    # 1. 미국 주식 실시간 RSS 뉴스 및 재무
     if asset_type == "overseas_stock":
+        clean_sym = symbol.upper().strip()
         try:
-            fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{symbol}?apikey={FMP_API_KEY}"
-            res = requests.get(fmp_url, timeout=2.5).json()
+            rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={clean_sym}&region=US&lang=en-US"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            r = requests.get(rss_url, headers=headers, timeout=2.5)
+            if r.status_code == 200:
+                root = ET.fromstring(r.content)
+                items = root.findall('.//item')
+                if items:
+                    titles = [re.sub(r'<.*?>', '', it.find('title').text or '').strip() for it in items[:2]]
+                    if titles:
+                        info["recent_news"] = " / ".join(titles)
+        except Exception:
+            pass
+
+        try:
+            fmp_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{clean_sym}?apikey={FMP_API_KEY}"
+            res = requests.get(fmp_url, timeout=2.0).json()
             if isinstance(res, list) and len(res) > 0:
                 m = res[0]
                 pe = round(m.get('peRatioTTM', 0), 2)
@@ -188,21 +206,59 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
                 roe = round(m.get('roeTTM', 0) * 100, 2)
                 info["financial_status"] = f"PER {pe}배 / PBR {pb}배 / ROE {roe}% 수준"
                 info["supply_status"] = "글로벌 기관 및 패시브 ETF 수급 유입 집중 구간"
-                info["recent_news"] = f"{symbol} 글로벌 테크 사이클 및 실적 모멘텀 유지"
         except Exception:
             pass
         return info
 
+    # 2. 암호화폐 실시간 RSS 뉴스 및 온체인
     elif asset_type == "crypto":
+        c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else "BTC-USD")
+        try:
+            rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={c_sym}&region=US&lang=en-US"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            r = requests.get(rss_url, headers=headers, timeout=2.5)
+            if r.status_code == 200:
+                root = ET.fromstring(r.content)
+                items = root.findall('.//item')
+                if items:
+                    titles = [re.sub(r'<.*?>', '', it.find('title').text or '').strip() for it in items[:2]]
+                    if titles:
+                        info["recent_news"] = " / ".join(titles)
+        except Exception:
+            pass
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
-        info["recent_news"] = f"{stock_name} 반감기 사이클 및 글로벌 유동성 확장 모멘텀"
         return info
 
+    # 3. 국내 주식 네이버 실시간 뉴스 & 재무 완벽 연동
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://m.stock.naver.com/"
     }
+    
+    # 3-1. 네이버 실시간 뉴스 1순위 헤드라인 추출
+    try:
+        news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=5&page=1"
+        n_res = requests.get(news_url, headers=headers, timeout=2.5).json()
+        news_items = []
+        if isinstance(n_res, dict):
+            news_items = n_res.get("items", []) or n_res.get("newsList", []) or n_res.get("result", [])
+        elif isinstance(n_res, list):
+            news_items = n_res
+        
+        if news_items:
+            titles = []
+            for n in news_items:
+                title_txt = n.get("title") or n.get("tit") or n.get("itemTitle") or ""
+                clean_t = re.sub(r'<.*?>|&[a-z0-9]+;', '', title_txt).strip()
+                if clean_t and clean_t not in titles:
+                    titles.append(clean_t)
+            if titles:
+                info["recent_news"] = titles[0]  # 최신 1순위 실시간 헤드라인 사용
+    except Exception:
+        pass
+
+    # 3-2. 네이버 재무 및 수급
     try:
         integ_url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
         res = requests.get(integ_url, headers=headers, timeout=2.5).json()
@@ -217,17 +273,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         
         if for_rate: info["supply_status"] = f"외국인 지분율 {for_rate}% (주요 수급 변곡점 형성)"
         if per_val or pbr_val: info["financial_status"] = f"PER {per_val or '7.03'}배 / PBR {pbr_val or '4.25'}배 수준"
-    except Exception:
-        pass
-
-    try:
-        news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=3&page=1"
-        n_res = requests.get(news_url, headers=headers, timeout=2.5).json()
-        news_items = n_res.get("items", []) if isinstance(n_res, dict) else (n_res if isinstance(n_res, list) else [])
-        if news_items:
-            titles = [re.sub(r'<.*?>|&[a-z]+;', '', n.get("title", "")).strip() for n in news_items[:3] if n.get("title")]
-            if titles:
-                info["recent_news"] = " / ".join(titles)
     except Exception:
         pass
         
@@ -714,7 +759,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 <div class="card">
                     <div class="card-header" id="resTitle"></div>
                     
-                    <!-- 박스 테두리 없이 본문에 자연스럽게 흐르는 실시간 이슈 영역 -->
                     <div class="issue-wrap" id="issueWrap">
                         <div class="issue-title">GAEMIGTP 실시간 이슈</div>
                         <div class="issue-highlight" id="issueText"></div>

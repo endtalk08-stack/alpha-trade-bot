@@ -522,7 +522,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text.strip()
     
-    # 🎯 '/' 없이 그냥 '검증 종목명' 입력 시 백테스트 처리
+    # '/' 없이 그냥 '검증 종목명' 입력 시 백테스트 처리
     if query.startswith("검증 ") or query.startswith("검증") or query.startswith("/검증") or query.startswith("/verify"):
         clean_sub = re.sub(r"^(/검증|검증|/verify)", "", query).strip()
         if not clean_sub:
@@ -645,20 +645,16 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .chart-img-box img { width: 100%; height: auto; display: block; }
 
         .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.6; }
-        .card-header { font-size: 1.35rem; font-weight: 700; color: #60a5fa; margin-bottom: 12px; }
+        .card-header { font-size: 1.35rem; font-weight: 700; color: #60a5fa; margin-bottom: 14px; }
         
-        /* 🌟 실시간 이슈 페이드 펄스(글로우 효과) */
-        .issue-box {
-            background: rgba(59, 130, 246, 0.08);
-            border: 1px solid rgba(96, 165, 250, 0.35);
-            border-radius: 12px;
-            padding: 12px 16px;
-            margin-bottom: 16px;
+        /* 🌟 테두리 박스 없이 카드 본문 위에 깔끔하게 녹아드는 실시간 이슈 스타일 */
+        .issue-wrap {
+            margin-bottom: 18px;
         }
         .issue-title {
-            font-size: 0.88rem;
+            font-size: 0.95rem;
             font-weight: 700;
-            color: #93c5fd;
+            color: #ececec;
             margin-bottom: 4px;
         }
         .issue-highlight {
@@ -670,7 +666,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         }
         @keyframes pulseFade {
             0% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
-            50% { opacity: 1; transform: scale(1); filter: brightness(1.25) drop-shadow(0 0 6px rgba(254, 240, 138, 0.5)); }
+            50% { opacity: 1; transform: scale(1); filter: brightness(1.25) drop-shadow(0 0 6px rgba(254, 240, 138, 0.4)); }
             100% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
         }
 
@@ -718,7 +714,8 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 <div class="card">
                     <div class="card-header" id="resTitle"></div>
                     
-                    <div class="issue-box" id="issueBox">
+                    <!-- 박스 테두리 없이 본문에 자연스럽게 흐르는 실시간 이슈 영역 -->
+                    <div class="issue-wrap" id="issueWrap">
                         <div class="issue-title">GAEMIGTP 실시간 이슈</div>
                         <div class="issue-highlight" id="issueText"></div>
                     </div>

@@ -1,12 +1,3 @@
-상단 우측 링크를 `📱 텔레그램 공식 봇`으로 변경하고, 최신 AI 챗 인터페이스의 규격(단정한 캡슐형 뱃지, 부드러운 패딩 및 테두리 반경)에 맞춰 레이아웃과 크기를 정밀하게 다듬었습니다.
-
----
-
-### 🛠️ `bot.py` 전체 코드
-
-GitHub의 `bot.py` 내용을 전체 삭제 후 아래 코드를 붙여넣어 주세요.
-
-```python
 import os
 import re
 import io
@@ -1093,6 +1084,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
                 return
 
+            # 상단 텔레그램 링크 제거 및 깔끔한 단일 뷰 HTML
             html_content = """<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -1103,12 +1095,8 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
         html, body { height: 100%; background-color: #212121; color: #ececec; }
         body { display: flex; flex-direction: column; justify-content: space-between; position: relative; }
-        header { position: absolute; top: 0; left: 0; width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 24px 32px; z-index: 10; }
+        header { position: absolute; top: 0; left: 0; width: 100%; display: flex; justify-content: flex-start; align-items: center; padding: 24px 32px; z-index: 10; }
         .logo-top { font-weight: 800; font-size: 1.15rem; color: #e0e0e0; letter-spacing: -0.5px; }
-        
-        /* 텔레그램 공식 봇 캡슐형 뱃지 링크 */
-        .badge-link { font-size: 0.85rem; font-weight: 500; color: #d1d5db; text-decoration: none; border: 1px solid #404040; background-color: #2b2b2b; padding: 7px 15px; border-radius: 20px; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 6px; }
-        .badge-link:hover { background-color: #383838; color: #ffffff; border-color: #555555; }
         
         main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; max-width: 720px; margin: 0 auto; width: 100%; min-height: 100vh; }
         .center-wrap { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; }
@@ -1144,7 +1132,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
 <body>
     <header>
         <div class="logo-top">gaemiGTP</div>
-        <a class="badge-link" href="https://t.me/gaemiGTP_bot" target="_blank">📱 텔레그램 공식 봇</a>
     </header>
     <main>
         <div class="center-wrap">
@@ -1248,5 +1235,3 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(handle_button))
     
     app.run_polling(drop_pending_updates=True)
-
-```

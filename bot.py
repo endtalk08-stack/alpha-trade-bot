@@ -798,10 +798,8 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info, bt_info)
         st = f"{an['stop']:,.2f}{unit}"
         atr_str = f"{an['atr']:,.2f}{unit}"
 
-    summary = f"""
-{stock_name} ({symbol})
-
-현재가 {price}
+    # 첫 줄 중복 종목명 제거 (웹에서는 card-header가 제목 역할을 함)
+    summary = f"""현재가 {price}
 
 현재 트레이딩 적합도 {an['stars']} (점수 {an['score']})
 
@@ -825,8 +823,7 @@ gaemiGTP 액션 플랜
 👉 {st}
 
 트리거 조건 및 행동 요령
-당일 체결강도 110퍼센트 이상 유지 시 1차 구간 착수하며 장중 변동폭 {atr_str} 내외의 단기 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행
-""".strip()
+당일 체결강도 110퍼센트 이상 유지 시 1차 구간 착수하며 장중 변동폭 {atr_str} 내외의 단기 음봉 파동에서 호가창 잔량 비대칭성을 확인 후 집행""".strip()
 
     detail = generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_info)
     return summary, detail
@@ -998,7 +995,9 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report_id = str(uuid.uuid4())[:8]
         if len(REPORT_CACHE) > 30:
             REPORT_CACHE.clear()
-        REPORT_CACHE[report_id] = {"summary": res["summary"], "detail": res["detail"]}
+        
+        tele_summary = f"{res['formal_name']} ({res['symbol']})\n\n{res['summary']}"
+        REPORT_CACHE[report_id] = {"summary": tele_summary, "detail": res["detail"]}
 
         keyboard = [[InlineKeyboardButton("심층 분석 및 근거 보기", callback_data=f"show_detail:{report_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1017,7 +1016,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-        sent_msg = await context.bot.send_message(chat_id=chat_id, text=res["summary"], reply_markup=reply_markup)
+        sent_msg = await context.bot.send_message(chat_id=chat_id, text=tele_summary, reply_markup=reply_markup)
         new_msg_ids.append(sent_msg.message_id)
 
         if new_msg_ids:
@@ -1115,7 +1114,6 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
                 return
 
-            # 검색창 상시 유지 및 부드러운 스크롤 레이아웃 적용
             html_content = """<!DOCTYPE html>
 <html lang="ko">
 <head>

@@ -253,7 +253,6 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
     except Exception:
         pass
     
-    # 예비 Fallback (기계 직역 대신 자연스러운 팩트 문구로 처리)
     first = raw_issues[0]
     if "NVDA" in first or "Nvidia" in first or "shares set for" in first:
         return "엔비디아 실적 발표 직후 2,800억 달러 규모 주가 등락 가능성 반영"
@@ -272,7 +271,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         "macro_calendar": macro_event
     }
     
-    # 1. 미국 주식 (외신 속보 수집)
     if asset_type == "overseas_stock":
         clean_sym = symbol.upper().strip()
         foreign_news = get_foreign_rss_headlines(clean_sym)
@@ -291,7 +289,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-    # 2. 암호화폐 (외신 속보 및 온체인)
     elif asset_type == "crypto":
         c_sym = "BTC-USD" if "BTC" in symbol else ("ETH-USD" if "ETH" in symbol else "BTC-USD")
         crypto_news = get_foreign_rss_headlines(c_sym)
@@ -299,13 +296,11 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         info["financial_status"] = "온체인 활성 주소 수 및 네트워크 해시레이트 견조"
         info["supply_status"] = "현물 ETF 순유입 지속 및 거래소 보유 잔고 감소(공급 충격 국면)"
 
-    # 3. 국내 주식 (국내 실시간 뉴스 1순위 최우선 고정)
     else:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://m.stock.naver.com/"
         }
-        # 3-1. 국내 실시간 최신 뉴스 1순위
         try:
             news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=5&page=1"
             n_res = requests.get(news_url, headers=headers, timeout=2.0).json()
@@ -324,14 +319,12 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-        # 3-2. 글로벌 파트너 미국 뉴스 (보조 재료로 추가)
         if symbol in GLOBAL_CORRELATION_MAP:
             global_partner = GLOBAL_CORRELATION_MAP[symbol]
             g_news = get_foreign_rss_headlines(global_partner)
             if g_news:
                 raw_issues.append(f"미국 파트너({global_partner}) 원문 뉴스: {g_news[0]}")
 
-        # 3-3. 재무 및 수급
         try:
             integ_url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
             res = requests.get(integ_url, headers=headers, timeout=2.0).json()
@@ -349,7 +342,6 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-    # 금융 전문 팩트 속보로 1줄 종합
     info["recent_news"] = synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type=asset_type)
     return info
 
@@ -474,37 +466,31 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info, bt_in
         stop_risk = ((avg_entry - an['stop']) / avg_entry) * 100
         rr_ratio = (an['target1'] - avg_entry) / (avg_entry - an['stop']) if (avg_entry - an['stop']) > 0 else 2.0
     except Exception:
-        target1_ret, stop_risk, rr_ratio = 15.3, 5.5, 2.0
+        avg_entry, target1_ret, stop_risk, rr_ratio = 100000, 15.3, 5.5, 2.0
 
     prompt = f"""
 당신은 최고 수준의 월스트리트 퀀트 트레이딩 분석가입니다.
 제공된 정밀 데이터(실적 캘린더, 실시간 재무제표, 글로벌 파급효과)를 정확히 문장에 포함하여 '{stock_name}'에 대한 5문단 심층 리포트를 작성하세요.
 
 [정밀 데이터]
-- 종목명: {stock_name} ({symbol})
-- 현재가: {price}
-- 20일 고점: {fmt(an['high_20d'])}
-- 5일 평균 거래량 대비 비율: {an['vol_ratio']}퍼센트
+- 종목명: {stock_name} ({symbol}) / 현재가: {price}
+- 20일 고점: {fmt(an['high_20d'])} / 5일 평균 거래량 대비 비율: {an['vol_ratio']}퍼센트
 - 재무/밸류에이션: {extra_info.get('financial_status')}
 - 수급 현황: {extra_info.get('supply_status')}
 - 글로벌 매크로 & 실적 캘린더: {extra_info.get('macro_calendar')}
 - 20일 이평선: {fmt(an['ma20'])} / 60일 이평선: {fmt(an['ma60'])}
 - RSI: {an['rsi']} / 일일 변동폭(ATR): {fmt(an['atr'])}
 - 백테스트 검증: 승률 {bt_info['win_rate']}%, 누적 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1
-- 평균 진입가: {fmt((an['entry1_low']+an['entry1_high'])/2)}
-- 1차 목표가: {fmt(an['target1'])} (기대 수익률 약 {target1_ret:.1f}퍼센트)
-- 2차 목표가: {fmt(an['target2'])}
-- 칼손절가: {fmt(an['stop'])} (리스크 약 {stop_risk:.1f}퍼센트)
+- 평균 진입가: {fmt(avg_entry)} / 1차 목표가: {fmt(an['target1'])} / 2차 목표가: {fmt(an['target2'])} / 칼손절가: {fmt(an['stop'])}
 - 종합 기대 손익비: 1 대 {rr_ratio:.1f}
 
 [필수 작성 규칙]
-- 총 5개 문단으로 구성.
-- 1문단: 최근 주가 흐름, 실시간 핵심 이슈('{extra_info.get('recent_news')}'), 20일 고점({fmt(an['high_20d'])}) 달성 후 눌림목, 거래량 {an['vol_ratio']}퍼센트 숨고르기.
-- 2문단: 실시간 펀더멘털({extra_info.get('financial_status')}), 미국 연준 금리 정책 및 글로벌 매크로·어닝 일정({extra_info.get('macro_calendar')})이 가져올 긍정적 파급 효과.
-- 3문단: 수급({extra_info.get('supply_status')}), 60일선({fmt(an['ma60'])}) 및 20일선({fmt(an['ma20'])}) 안착과 단기 턴어라운드 탄력.
-- 4문단: RSI {an['rsi']}, 일일 변동폭 {fmt(an['atr'])}, 과거 1년 백테스팅 검증 결과(승률 {bt_info['win_rate']}%, 누적 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1).
-- 5문단: 평균 진입가, 1차 목표가 기대수익률({target1_ret:.1f}퍼센트), 칼손절가 리스크({stop_risk:.1f}퍼센트), 2차 목표가, 종합 손익비(1 대 {rr_ratio:.1f}), 분할 매수 결론.
-- 신뢰감 있는 전문 어조(~입니다, ~양상입니다) 사용.
+- 총 5개 문단으로 구성. 신뢰감 있는 전문 어조(~입니다, ~양상입니다) 사용.
+- 1문단: 최근 주가 흐름, 실시간 핵심 이슈('{extra_info.get('recent_news')}'), 20일 고점({fmt(an['high_20d'])}), 거래량 {an['vol_ratio']}% 숨고르기.
+- 2문단: 실시간 펀더멘털({extra_info.get('financial_status')}), 매크로·어닝 일정({extra_info.get('macro_calendar')}).
+- 3문단: 외국인/기관 수급({extra_info.get('supply_status')}), 60일선({fmt(an['ma60'])}) 및 20일선({fmt(an['ma20'])}) 안착.
+- 4문단: RSI {an['rsi']}, ATR {fmt(an['atr'])}, 과거 1년 백테스팅(승률 {bt_info['win_rate']}%, 수익률 +{bt_info['cum_ret']}%, 손익비 {bt_info['pf']:.2f}:1).
+- 5문단: 평균 진입가, 1차/2차 목표가, 손절가 리스크, 종합 손익비(1 대 {rr_ratio:.1f}), 분할 매수 결론.
 """
 
     try:
@@ -744,12 +730,29 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .hero-title { font-size: 3.4rem; font-weight: 800; margin-bottom: 8px; letter-spacing: -1.5px; color: #f5f5f5; }
         .hero-sub { font-size: 1.05rem; color: #8e8ea0; margin-bottom: 28px; font-weight: 400; }
         
-        .search-container { width: 100%; max-width: 720px; }
-        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 8px 10px 8px 20px; display: flex; align-items: center; box-shadow: 0 6px 24px rgba(0,0,0,0.3); }
-        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 1rem; padding: 6px 8px; }
+        .search-container { width: 100%; max-width: 720px; position: relative; }
+        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 6px 8px 6px 20px; display: flex; align-items: center; box-shadow: 0 6px 24px rgba(0,0,0,0.3); position: relative; }
+        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 0.98rem; padding: 8px 6px; }
         .search-box input::placeholder { color: #737380; }
         
-        .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        /* 3단 모델 셀렉터 드롭다운 */
+        .model-selector-wrap { position: relative; margin-right: 8px; }
+        .model-pill-btn { background: #383838; border: 1px solid #4a4a4a; border-radius: 20px; padding: 6px 12px; display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; transition: all 0.2s; }
+        .model-pill-btn:hover { background: #444444; border-color: #60a5fa; }
+        .model-pill-name { font-size: 0.85rem; font-weight: 700; color: #60a5fa; }
+        .model-pill-arrow { font-size: 0.65rem; color: #9ca3af; transition: transform 0.2s; }
+        
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 12px); right: 0; width: 220px; background: #2a2a2a; border: 1px solid #424242; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
+        .model-dropdown-item { padding: 10px 14px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
+        .model-dropdown-item:hover { background: #383838; }
+        .model-dropdown-item.active { background: #343434; }
+        .item-title { font-size: 0.88rem; font-weight: 700; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
+        .item-sub { font-size: 0.73rem; color: #8e8ea0; margin-top: 2px; }
+        .item-check { color: #60a5fa; font-weight: bold; display: none; font-size: 0.85rem; }
+        .model-dropdown-item.active .item-check { display: inline; }
+
+        /* 화살표 아이콘 전송 버튼 */
+        .send-btn { width: 36px; height: 36px; border-radius: 50%; background: #4a4a4a; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
         .send-btn:hover { background: #606060; }
         .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
 
@@ -766,22 +769,9 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; line-height: 1.6; }
         .card-header { font-size: 1.35rem; font-weight: 700; color: #60a5fa; margin-bottom: 14px; }
         
-        .issue-wrap {
-            margin-bottom: 18px;
-        }
-        .issue-title {
-            font-size: 0.95rem;
-            font-weight: 700;
-            color: #ececec;
-            margin-bottom: 4px;
-        }
-        .issue-highlight {
-            font-size: 0.96rem;
-            font-weight: 600;
-            color: #fef08a;
-            display: inline-block;
-            animation: pulseFade 2.4s infinite ease-in-out;
-        }
+        .issue-wrap { margin-bottom: 18px; }
+        .issue-title { font-size: 0.95rem; font-weight: 700; color: #ececec; margin-bottom: 4px; }
+        .issue-highlight { font-size: 0.96rem; font-weight: 600; color: #fef08a; display: inline-block; animation: pulseFade 2.4s infinite ease-in-out; }
         @keyframes pulseFade {
             0% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
             50% { opacity: 1; transform: scale(1); filter: brightness(1.25) drop-shadow(0 0 6px rgba(254, 240, 138, 0.4)); }
@@ -807,7 +797,29 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
         <div class="search-container">
             <div class="search-box">
-                <input type="text" id="centerInput" placeholder="종목명 또는 티커를 입력하세요 (예: SK하이닉스, 알테오젠, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <input type="text" id="centerInput" placeholder="종목명을 입력하세요 (예: SK하이닉스, 알테오젠, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                
+                <div class="model-selector-wrap">
+                    <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
+                        <span class="model-pill-name" id="centerCurrentModel">0.1 gaemi</span>
+                        <span class="model-pill-arrow">▲</span>
+                    </div>
+                    <div class="model-dropdown-menu" id="centerDropdown">
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', '0.1 gaemi')">
+                            <div class="item-title">0.1 gaemi <span class="item-check">✓</span></div>
+                            <div class="item-sub">도움을 받으세요</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', '0.1 info')">
+                            <div class="item-title">0.1 info <span class="item-check">✓</span></div>
+                            <div class="item-sub">정보를 확인하세요</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', '0.1 pro')">
+                            <div class="item-title">0.1 pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">실력을 키우세요</div>
+                        </div>
+                    </div>
+                </div>
+
                 <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
                     <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                 </button>
@@ -849,6 +861,28 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         <div class="search-container">
             <div class="search-box">
                 <input type="text" id="bottomInput" placeholder="다른 종목명을 입력하세요 (예: 테슬라, 카카오)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                
+                <div class="model-selector-wrap">
+                    <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
+                        <span class="model-pill-name" id="bottomCurrentModel">0.1 gaemi</span>
+                        <span class="model-pill-arrow">▲</span>
+                    </div>
+                    <div class="model-dropdown-menu" id="bottomDropdown">
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', '0.1 gaemi')">
+                            <div class="item-title">0.1 gaemi <span class="item-check">✓</span></div>
+                            <div class="item-sub">도움을 받으세요</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', '0.1 info')">
+                            <div class="item-title">0.1 info <span class="item-check">✓</span></div>
+                            <div class="item-sub">정보를 확인하세요</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', '0.1 pro')">
+                            <div class="item-title">0.1 pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">실력을 키우세요</div>
+                        </div>
+                    </div>
+                </div>
+
                 <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
                     <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                 </button>
@@ -857,6 +891,42 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
     </div>
 
     <script>
+        let selectedMode = 'gaemi';
+
+        function toggleModelDropdown(target) {
+            const centerD = document.getElementById('centerDropdown');
+            const bottomD = document.getElementById('bottomDropdown');
+            const targetD = target === 'center' ? centerD : bottomD;
+            const otherD = target === 'center' ? bottomD : centerD;
+            otherD.style.display = 'none';
+            targetD.style.display = targetD.style.display === 'block' ? 'none' : 'block';
+        }
+
+        function selectModel(modeKey, modeName) {
+            selectedMode = modeKey;
+            document.getElementById('centerCurrentModel').innerText = modeName;
+            document.getElementById('bottomCurrentModel').innerText = modeName;
+
+            ['centerDropdown', 'bottomDropdown'].forEach(id => {
+                const items = document.getElementById(id).querySelectorAll('.model-dropdown-item');
+                items.forEach(it => {
+                    if (it.innerText.includes(modeName)) {
+                        it.classList.add('active');
+                    } else {
+                        it.classList.remove('active');
+                    }
+                });
+                document.getElementById(id).style.display = 'none';
+            });
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.model-selector-wrap')) {
+                document.getElementById('centerDropdown').style.display = 'none';
+                document.getElementById('bottomDropdown').style.display = 'none';
+            }
+        });
+
         function resetToHome() {
             document.getElementById('main-view').style.display = 'flex';
             document.getElementById('result-scroll-view').style.display = 'none';
@@ -884,7 +954,8 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
             document.getElementById('bottomInput').value = '';
 
             try {
-                const response = await fetch('/api/analyze?q=' + encodeURIComponent(cleanQ));
+                const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
+                const response = await fetch(url);
                 const data = await response.json();
                 if (!response.ok || data.error) {
                     alert(data.error || '분석 중 오류가 발생했습니다.');
@@ -899,7 +970,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
 
                 document.getElementById('resTitle').innerText = data.name + ' (' + data.symbol + ')';
                 
-                const issueRaw = data.news_raw || "업황 호조 및 기관 수급 유입";
+                const issueRaw = data.news_raw || "업황 호조 및 핵심 공급망 수혜";
                 document.getElementById('issueText').innerText = "👉 " + issueRaw;
 
                 let cleanSummary = data.summary;

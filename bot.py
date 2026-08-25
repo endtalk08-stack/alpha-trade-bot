@@ -97,7 +97,6 @@ def find_stock_code(query):
         if name.replace(" ", "").upper() == clean_q:
             return code, name
 
-    # 1. 네이버 최신 통합 검색 (코스닥/코스피 전 종목 커버)
     try:
         url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -114,7 +113,6 @@ def find_stock_code(query):
     except Exception:
         pass
 
-    # 2. 레거시 자동완성 백업
     try:
         url = f"https://ac.finance.naver.com/ac?q={urllib.parse.quote(query.strip())}&target=stock"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -263,7 +261,7 @@ def get_crypto_multi_exchange_data(symbol="BTCUSDT", limit=500):
                 records.append({
                     "Date": pd.to_datetime(item["candle_date_time_kst"]),
                     "Open": float(item["opening_price"]),
-                    "High": float(item["high_price"]),
+                    "High": float(item["highPrice"]),
                     "Low": float(item["low_price"]),
                     "Close": float(item["trade_price"]),
                     "Volume": float(item["candle_acc_trade_volume"])
@@ -362,7 +360,6 @@ def fetch_domestic_stock_candles(code, years=1):
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     range_str = f"{years}y"
     
-    # 1. 야후 파이낸스 (코스피 .KS / 코스닥 .KQ)
     for suffix in [".KQ", ".KS"]:
         try:
             y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range={range_str}&interval=1d"
@@ -393,7 +390,6 @@ def fetch_domestic_stock_candles(code, years=1):
         except Exception:
             pass
 
-    # 2. 네이버 모바일 일봉 API 백업 (코스피/코스닥 공용)
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/price?pageSize=60&page=1"
         res = requests.get(url, headers=headers, timeout=2.5).json()
@@ -1119,6 +1115,7 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps(response_payload, ensure_ascii=False).encode('utf-8'))
                 return
 
+            # 검색창 상시 유지 및 부드러운 스크롤 레이아웃 적용
             html_content = """<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -1127,17 +1124,16 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
     <title>gaemiGTP - 10초 금융 퀀트 분석 엔진</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        html, body { height: 100%; background-color: #212121; color: #ececec; }
-        body { display: flex; flex-direction: column; justify-content: space-between; position: relative; }
-        header { position: absolute; top: 0; left: 0; width: 100%; display: flex; justify-content: flex-start; align-items: center; padding: 24px 32px; z-index: 10; }
-        .logo-top { font-weight: 800; font-size: 1.15rem; color: #e0e0e0; letter-spacing: -0.5px; }
+        body { background-color: #212121; color: #ececec; min-height: 100vh; display: flex; flex-direction: column; }
+        header { width: 100%; display: flex; justify-content: flex-start; align-items: center; padding: 20px 28px; }
+        .logo-top { font-weight: 800; font-size: 1.15rem; color: #e0e0e0; letter-spacing: -0.5px; cursor: pointer; }
         
-        main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; max-width: 720px; margin: 0 auto; width: 100%; min-height: 100vh; }
+        main { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 30px 20px 60px; max-width: 740px; margin: 0 auto; width: 100%; }
         .center-wrap { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; }
-        .hero-title { font-size: 3.6rem; font-weight: 800; margin-bottom: 12px; letter-spacing: -1.5px; color: #f5f5f5; }
-        .hero-sub { font-size: 1.05rem; color: #8e8ea0; margin-bottom: 30px; font-weight: 400; }
+        .hero-title { font-size: 3.2rem; font-weight: 800; margin-bottom: 8px; letter-spacing: -1.5px; color: #f5f5f5; cursor: pointer; }
+        .hero-sub { font-size: 1rem; color: #8e8ea0; margin-bottom: 24px; font-weight: 400; }
         
-        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 8px 10px 8px 20px; display: flex; align-items: center; box-shadow: 0 8px 24px rgba(0,0,0,0.3); transition: border-color 0.2s; }
+        .search-box { width: 100%; background: #2f2f2f; border: 1px solid #424242; border-radius: 32px; padding: 8px 10px 8px 20px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.25); transition: border-color 0.2s; }
         .search-box:focus-within { border-color: #777; }
         .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #fff; font-size: 1rem; padding: 6px 8px; }
         .search-box input::placeholder { color: #737380; font-size: 0.95rem; }
@@ -1146,28 +1142,28 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
         .send-btn:hover { background: #606060; transform: scale(1.04); }
         .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
 
-        .popular-tags { display: flex; gap: 8px; margin-top: 24px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 7px 14px; font-size: 0.85rem; color: #c5c5d2; cursor: pointer; transition: 0.2s; }
+        .popular-tags { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; justify-content: center; }
+        .tag-btn { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 6px 13px; font-size: 0.85rem; color: #c5c5d2; cursor: pointer; transition: 0.2s; }
         .tag-btn:hover { background: #3a3a3a; color: #fff; border-color: #555; }
         
-        #result-container { width: 100%; margin-top: 30px; display: none; text-align: left; }
+        #result-container { width: 100%; margin-top: 28px; display: none; text-align: left; }
         .card { background: #2a2a2a; border: 1px solid #3e3e3e; border-radius: 16px; padding: 24px; margin-bottom: 20px; white-space: pre-wrap; line-height: 1.6; }
         .card-header { font-size: 1.3rem; font-weight: 700; color: #60a5fa; margin-bottom: 12px; }
-        .detail-btn { width: 100%; background: #374151; border: 1px solid #4b5563; color: #e5e7eb; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 14px; }
+        .detail-btn { width: 100%; background: #374151; border: 1px solid #4b5563; color: #e5e7eb; padding: 12px; border-radius: 10px; font-weight: 600; cursor: pointer; margin-top: 14px; transition: 0.2s; }
         .detail-btn:hover { background: #4b5563; }
         .detail-content { display: none; margin-top: 16px; padding-top: 16px; border-top: 1px solid #444; color: #d1d5db; font-size: 0.95rem; }
         .loading { display: none; margin: 24px 0; text-align: center; color: #9ca3af; font-size: 0.95rem; }
         
-        footer { position: absolute; bottom: 0; left: 0; width: 100%; text-align: center; padding: 18px; color: #555; font-size: 0.8rem; }
+        footer { text-align: center; padding: 24px 18px; color: #555; font-size: 0.8rem; }
     </style>
 </head>
 <body>
     <header>
-        <div class="logo-top">gaemiGTP</div>
+        <div class="logo-top" onclick="resetHome()">gaemiGTP</div>
     </header>
     <main>
         <div class="center-wrap">
-            <div class="hero-title">gaemiGTP</div>
+            <div class="hero-title" onclick="resetHome()">gaemiGTP</div>
             <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
             <div class="search-box">
                 <input type="text" id="queryInput" placeholder="종목명 또는 티커를 입력하세요 (예: 알테오젠, 에코프로, BTC)" onkeypress="if(event.keyCode==13) doSearch();">
@@ -1198,6 +1194,12 @@ class ApiAndWebServer(BaseHTTPRequestHandler):
     </main>
     <footer>본 서비스는 금융데이터 기반 기술적 분석 도구이며 투자 권유가 아닙니다.</footer>
     <script>
+        function resetHome() {
+            document.getElementById('queryInput').value = '';
+            document.getElementById('result-container').style.display = 'none';
+            document.getElementById('loading').style.display = 'none';
+            window.scrollTo({top: 0, behavior: 'smooth'});
+        }
         function searchStock(name) {
             document.getElementById('queryInput').value = name;
             doSearch();

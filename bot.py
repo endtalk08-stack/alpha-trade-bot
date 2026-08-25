@@ -157,7 +157,6 @@ def get_foreign_rss_headlines(ticker):
     return headlines
 
 def synthesize_issue_headline_gemini(stock_name, raw_issues):
-    """실제 뉴스가 없으면 지어내지 않고 빈 문자열 반환"""
     valid_issues = []
     for i in raw_issues:
         c = html.unescape(str(i)).strip()
@@ -194,7 +193,6 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues):
         return valid_issues[0] if valid_issues else ""
 
 def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
-    """데이터가 없으면 가짜 문구 대신 빈 문자열로 둠"""
     raw_issues = []
     info = {
         "supply_status": "",
@@ -352,7 +350,6 @@ def fetch_domestic_stock_candles(code, anchor_price=None, years=1):
     return df_result
 
 def backtest_alpha_strategy(df, years=1, asset_type="domestic_stock"):
-    """데이터 부족 시 가짜 통계 없이 None 반환"""
     if df is None or len(df) < 50:
         return None
 
@@ -408,7 +405,6 @@ def format_backtest_text(formal_name, symbol, bt, years=1):
     return f"🏆 {formal_name} ({symbol}) {years}년 검증\n\n승률: {bt['win_rate']:.1f}%\n누적 수익: {bt['cum_ret']:+.1f}%\n손익비: {bt['pf']:.2f} : 1"
 
 def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
-    """순수 캔들 데이터 기반 100% 동적 연산"""
     if df is None or len(df) < 5:
         return None
 
@@ -438,7 +434,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     calc_rsi = rsi_series.iloc[-1]
     rsi_val = round(float(calc_rsi), 1) if not np.isnan(calc_rsi) else 50.0
 
-    # 스마트머니 오더블록(OB) 탐색
     ict_entry1_high = round_fn(raw_price)
     ict_entry1_low = round_fn(raw_price - (atr_val * 0.7))
     ict_entry2_high = round_fn(ict_entry1_low)
@@ -467,14 +462,23 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     ict_target2 = round_fn(avg_e + (risk_dist * 3.5))
 
     curr_close = float(df['Close'].iloc[-1])
+    
+    # 방향성 판별 (단기 롱 vs 단기 숏/관망)
     if (curr_close >= high_20d * 0.98 and rsi_val >= 62) or (vol_ratio >= 150 and curr_close > ma20):
         regime_key = "BREAKOUT"
+        direction = "단기 롱"
     elif rsi_val < 38 or (curr_close < ma60 and rsi_val < 42):
         regime_key = "OVERSOLD"
+        direction = "단기 롱"
     elif abs(ma20 - ma60) / max(ma20, ma60) < 0.025 and 42 <= rsi_val <= 58:
         regime_key = "BOX"
+        direction = "단기 롱"
+    elif curr_close < ma20 and curr_close < ma60:
+        regime_key = "PULLBACK"
+        direction = "단기 숏"
     else:
         regime_key = "PULLBACK"
+        direction = "단기 롱"
 
     base_score = 2.0
     if curr_close >= ma20: base_score += 0.9
@@ -508,7 +512,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     REGIME_META = {
         "BREAKOUT": {
             "pattern_name": "상승 모멘텀 돌파형",
-            "direction": "단기 롱 (모멘텀 돌파)",
             "entry1_label": "주요 기관 1차 지지 밴드",
             "entry2_label": "구조적 하단 방어 마지노선",
             "target1_label": "직전 고점 유동성 청산",
@@ -518,7 +521,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
         },
         "PULLBACK": {
             "pattern_name": "우상향 눌림목 안착형",
-            "direction": "단기 롱 (기관 수급 눌림목)",
             "entry1_label": "주요 기관 1차 지지 밴드",
             "entry2_label": "구조적 하단 방어 마지노선",
             "target1_label": "직전 고점 유동성 청산",
@@ -528,7 +530,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
         },
         "OVERSOLD": {
             "pattern_name": "낙폭과대 기술적 반등형",
-            "direction": "단기 롱 (과매도 기술적 반등)",
             "entry1_label": "주요 기관 1차 지지 밴드",
             "entry2_label": "구조적 하단 방어 마지노선",
             "target1_label": "직전 고점 유동성 청산",
@@ -538,7 +539,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
         },
         "BOX": {
             "pattern_name": "박스권 횡보 수렴형",
-            "direction": "단기 롱 (박스권 하단 반등)",
             "entry1_label": "주요 기관 1차 지지 밴드",
             "entry2_label": "구조적 하단 방어 마지노선",
             "target1_label": "직전 고점 유동성 청산",
@@ -556,7 +556,7 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
         "stars": stars_str,
         "regime_key": regime_key,
         "pattern_name": meta["pattern_name"],
-        "direction": meta["direction"],
+        "direction": direction,
         "entry1_label": meta["entry1_label"],
         "entry2_label": meta["entry2_label"],
         "target1_label": meta["target1_label"],
@@ -579,7 +579,6 @@ def perform_ict_quant_analysis(raw_price, df, asset_type="domestic_stock"):
     }
 
 def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info):
-    """가짜 대체 템플릿 없이 실제 데이터로만 생성"""
     is_krw = "원" in str(price)
     unit = " 원" if is_krw else " 달러"
     fmt = lambda v: f"{int(v):,}{unit}" if is_krw else f"{v:,.2f}{unit}"
@@ -603,9 +602,10 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info):
 [작성 원칙]
 1. 없는 데이터를 지어내지 마십시오. (뉴스나 재무 데이터가 없으면 언급하지 말 것)
 2. 비전문적 은어('세력', '개미' 등) 사용 절대 금지. 정통 금융 전문 용어만 사용할 것.
-3. 구체적인 매수가/목표가/손절가 금액 숫자를 본문 글에 적지 마십시오.
-4. 이평선 상태는 주어진 [이평선 실제 팩트]의 내용({an['ma_fact_desc']}) 그대로 서술할 것.
-5. 현재 국면('{pattern_name}')에 적합한 실전 분할 대응 전략과 기준 지지선 훼손 시 리스크 관리 시나리오로 명확한 결론을 내릴 것.
+3. 첫 문장에 '...분석 결과입니다' 같은 불필요한 서두나 인사말을 쓰지 말고 즉시 본문 분석으로 들어갈 것.
+4. 구체적인 매수가/목표가/손절가 금액 숫자를 본문 글에 적지 마십시오.
+5. 이평선 상태는 주어진 [이평선 실제 팩트]의 내용({an['ma_fact_desc']}) 그대로 서술할 것.
+6. 현재 국면('{pattern_name}')에 적합한 실전 분할 대응 전략과 기준 지지선 훼손 시 리스크 관리 시나리오로 명확한 결론을 내릴 것.
 """
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -617,8 +617,7 @@ def generate_deep_report_gemini(stock_name, symbol, price, an, extra_info):
         res = requests.post(url, headers=headers, json=payload, timeout=5.0).json()
         return res["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
-        # 가짜 글 대신 팩트 기반 최소 브리핑만 출력
-        return f"{clean_name} ({symbol}) 분석 결과입니다.\n\n기술적으로 {an['ma_fact_desc']}\n\n일일 변동폭(ATR) {fmt(an['atr'])} 및 실시간 RSI {an['rsi']} 지표를 나타내고 있으며, 현재 국면에서는 주요 기관 수급 지지대를 활용한 정밀 분할 접근과 지지선 훼손 시 리스크 관리가 유효합니다."
+        return f"기술적으로 {an['ma_fact_desc']}\n\n일일 변동폭(ATR) {fmt(an['atr'])} 및 실시간 RSI {an['rsi']} 지표를 나타내고 있으며, 현재 국면에서는 주요 기관 수급 지지대를 활용한 정밀 분할 접근과 지지선 훼손 시 리스크 관리가 유효합니다."
 
 def generate_reliable_report(stock_name, symbol, price, an, extra_info):
     is_krw = "원" in str(price)
@@ -641,7 +640,7 @@ def generate_reliable_report(stock_name, symbol, price, an, extra_info):
 
 {detail}""".strip()
 
-    signal_only = f"""[스마트머니 퀀트 타점]
+    signal_only = f"""스마트머니 퀀트 타점
 
 방향성: {an['direction']}
 

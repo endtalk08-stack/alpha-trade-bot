@@ -191,13 +191,28 @@ def fetch_fmp_macro_and_earnings():
         pass
     return events_summary
 
+def translate_financial_text(text):
+    """영문 금융 뉴스를 즉시 한국어로 변환 (금융 용어 보정 포함)"""
+    if not text or not re.search(r'[a-zA-Z]{2,}', text):
+        return text
+    try:
+        url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(text)}&langpair=en|ko"
+        res = requests.get(url, timeout=2.0).json()
+        match_trans = res.get("responseData", {}).get("translatedText", "")
+        if match_trans and not match_trans.startswith("MYMEMORY WARNING"):
+            clean = match_trans.replace("수입", "실적").replace("옵션 표시", "옵션 시장 분석").replace("모멘텀", "").strip()
+            return clean
+    except Exception:
+        pass
+    return text
+
 def get_foreign_rss_headlines(ticker):
-    """야후 파이낸스 실시간 속보 수집 (노이즈 자동 스킵)"""
+    """야후 파이낸스 실시간 속보 수집 후 즉시 한글로 1차 정제"""
     headlines = []
     try:
         rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        r = requests.get(rss_url, headers=headers, timeout=2.5)
+        r = requests.get(rss_url, headers=headers, timeout=2.0)
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             items = root.findall('.//item')
@@ -206,7 +221,8 @@ def get_foreign_rss_headlines(ticker):
                 if t is not None and t.text:
                     clean = re.sub(r'<.*?>', '', t.text).strip()
                     if clean and not is_noise_headline(clean):
-                        headlines.append(clean)
+                        translated = translate_financial_text(clean)
+                        headlines.append(translated)
                     if len(headlines) >= 2:
                         break
     except Exception:
@@ -214,29 +230,28 @@ def get_foreign_rss_headlines(ticker):
     return headlines
 
 def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domestic_stock"):
-    """금융 전문 문맥 반영 및 100% 한국어 명사형 종결 속보 생성"""
+    """금융 전문 AI를 통해 100% 한글 명사형 종결 속보로 1줄 종합"""
     if not raw_issues:
         return f"{stock_name} 업황 호조 및 기관 수급 유입"
     
     joined_issues = " / ".join(raw_issues)
     
     prompt = f"""
-당신은 베테랑 글로벌 금융 전문 기자이자 퀀트 애널리스트입니다.
-다음은 '{stock_name}' 종목의 실시간 뉴스 및 이슈 데이터입니다:
+당신은 최고 권위의 글로벌 금융 퀀트 애널리스트입니다.
+다음은 '{stock_name}' 종목의 실시간 뉴스 및 글로벌 재료입니다:
 [{joined_issues}]
 
-위 재료를 바탕으로 개미 투자자가 1초 만에 주가 영향 요인을 파악할 수 있도록 단 1줄의 완성된 '한국어 속보' 문장으로 작성하세요.
+위 데이터를 바탕으로 개미 투자자가 1초 만에 주가 영향 요인을 파악할 수 있도록 단 1줄의 완성된 '한국어 속보' 문장으로 작성하세요.
 
-[금융 전문 번역 및 요약 지침]
-1. 영문 금융 용어 직역 절대 금지:
+[규칙]
+1. 반드시 100% 완벽한 한국어로만 작성할 것. (영문 알파벳 노출 절대 금지)
+2. 금융 용어 오역 방지:
    - 'earnings' -> '실적 발표' (수입 절대 금지)
    - 'options show' -> '옵션 시장 분석' (옵션 표시 금지)
    - 'price swing' -> '주가 변동성' (가격 변동 금지)
-   - 'is set for / on track' -> '~예고 / ~순항' (설정됩니다 금지)
-   - 'revenue / top-line' -> '매출'
-2. 상투적이고 추상적인 단어('모멘텀', '지속', '전망' 등)는 절대 배제할 것.
-3. 문장 끝은 반드시 사실 중심의 간결한 명사형 종결(예: ~상회, ~가시화, ~순유입 가속화, ~공급 확대, ~기대감 고조, ~주가 변동성 예고)로 끝맺을 것.
-4. 어떤 영어 알파벳도 남기지 말고 100% 자연스러운 한국어 문장으로만 출력할 것.
+   - 'is set for / on track' -> '~예고 / ~순항'
+3. '모멘텀', '지속', '전망' 등 상투적이고 추상적인 단어는 절대 배제할 것.
+4. 문장 끝은 반드시 사실 중심의 간결한 명사형 종결(예: ~상회, ~가시화, ~순유입 가속화, ~공급 확대, ~기대감 고조, ~주가 변동성 예고)로 끝맺을 것.
 5. 따옴표나 기타 설명 없이 단 1줄의 문장만 출력할 것.
 """
     try:
@@ -246,7 +261,7 @@ def synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type="domesti
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.2, "maxOutputTokens": 120}
         }
-        res = requests.post(url, headers=headers, json=payload, timeout=3.0).json()
+        res = requests.post(url, headers=headers, json=payload, timeout=2.5).json()
         text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
         text = re.sub(r'["\'\n]', '', text).strip()
         if text and not re.search(r'[a-zA-Z]{3,}', text):
@@ -270,7 +285,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         "macro_calendar": macro_event
     }
     
-    # 1. 미국 주식 (외신 속보 1순위 최우선)
+    # 1. 미국 주식 (외신 속보 1순위)
     if asset_type == "overseas_stock":
         clean_sym = symbol.upper().strip()
         foreign_news = get_foreign_rss_headlines(clean_sym)
@@ -303,7 +318,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://m.stock.naver.com/"
         }
-        # 3-1. 네이버 실시간 국내 뉴스 1순위 수집
+        # 3-1. 국내 실시간 최신 뉴스 1순위
         try:
             news_url = f"https://m.stock.naver.com/api/news/stock/{symbol}?pageSize=5&page=1"
             n_res = requests.get(news_url, headers=headers, timeout=2.0).json()
@@ -322,12 +337,12 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-        # 3-2. 글로벌 파트너 미국 뉴스 (보조 재료로 2순위 추가)
+        # 3-2. 글로벌 파트너 미국 뉴스 (보조 재료로 한글 변환 후 추가)
         if symbol in GLOBAL_CORRELATION_MAP:
             global_partner = GLOBAL_CORRELATION_MAP[symbol]
             g_news = get_foreign_rss_headlines(global_partner)
             if g_news:
-                raw_issues.append(f"미국 {global_partner} 관련: {g_news[0]}")
+                raw_issues.append(f"미국 파트너({global_partner}) 동향: {g_news[0]}")
 
         # 3-3. 재무 및 수급
         try:
@@ -347,7 +362,7 @@ def fetch_extra_fundamentals(symbol, asset_type, stock_name=""):
         except Exception:
             pass
 
-    # 금융 전문 AI 엔진을 통해 100% 매끄러운 한글 속보로 종합
+    # 100% 매끄러운 한글 속보로 종합
     info["recent_news"] = synthesize_issue_headline_gemini(stock_name, raw_issues, asset_type=asset_type)
     return info
 

@@ -493,7 +493,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 5. 웹 프론트엔드 UI (플래시 드롭다운 탑재)
+# 5. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -514,7 +514,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
         .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
         
-        /* 검색창 및 플래시 드롭다운 셀렉터 */
         .search-container { width: 100%; max-width: 720px; position: relative; }
         .search-box { width: 100%; height: 52px; background: #282a2c; border: none; border-radius: 32px; padding: 0 6px 0 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; }
@@ -550,10 +549,13 @@ HTML_PAGE = """<!DOCTYPE html>
         .price-title span { color: #8e918f; font-size: 0.9rem; font-weight: 400; margin-left: 4px; }
         .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 8px 0; }
         .price-meta { color: #8e918f; font-size: 0.8rem; line-height: 1.4; }
+        
+        /* 갱신된 선명한 범례 스타일 */
         .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.78rem; color: #8e918f; margin-top: 14px; }
         .legend-tag { display: flex; align-items: center; gap: 4px; }
         .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 320px; margin-top: 10px; position: relative; background: #282a2c; border-radius: 8px; overflow: hidden; }
+        
         .section-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         .world-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
         .world-item { background: #1e1f20; padding: 10px 12px; border-radius: 8px; border: 1px solid #2d3035; }
@@ -651,7 +653,8 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="chart-legend">
                         <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
                         <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
-                        <div class="legend-tag"><span class="legend-dot" style="background:#fef08a;"></span> 볼린저 상·하단(60,2)</div>
+                        <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
+                        <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
                     </div>
                     <div class="chart-box-wrap" id="tvChart"></div>
                 </div>
@@ -978,10 +981,12 @@ HTML_PAGE = """<!DOCTYPE html>
             const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
             lineMa60.setData(ma60);
 
-            const lineBbUp = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
+            /* 볼린저 상단: 코랄 레드 실선 */
+            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
             lineBbUp.setData(bbUp);
 
-            const lineBbDn = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
+            /* 볼린저 하단: 스카이 블루 실선 */
+            const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
             lineBbDn.setData(bbDn);
 
             chart.timeScale().fitContent();

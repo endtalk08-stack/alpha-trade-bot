@@ -684,7 +684,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (컨센서스 스타일로 통일된 시그널 대시보드)
+# 6. 웹 프론트엔드 UI (전통 차트 빨간색/파란색 100% 원상 복구)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -863,7 +863,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .world-name { font-size: 0.72rem; color: #8e918f; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .world-val { font-size: 0.88rem; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .world-rate { font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
-        .val-up { color: #10b981; }
+        .val-up { color: #ef4444; }
         .val-down { color: #38bdf8; }
 
         .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -871,7 +871,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .quant-item .q-val { color: #ffffff; font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
-        /* 컨센서스 스타일 일체형 아코디언 헤더 */
         .signal-card-header {
             display: flex;
             justify-content: space-between;
@@ -890,6 +889,10 @@ HTML_PAGE = """<!DOCTYPE html>
             fill: #8e918f;
             transition: transform 0.25s ease;
         }
+
+        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.55; color: #d1d5db; border-top: 1px solid #282a2c; }
+        .guide-title { font-weight: 700; color: #10b981; margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
+        .guide-disclaimer { margin-top: 10px; font-size: 0.65rem; color: #6b7280; text-align: center; }
 
         .news-item { padding: 10px 0; border-bottom: 1px solid #282a2c; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
@@ -996,7 +999,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="chart-legend">
                             <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
                             <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
-                            <div class="legend-tag"><span class="legend-dot" style="background:#10b981;"></span> 볼린저 상단 (저항)</div>
+                            <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
                             <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
                         </div>
                         <div class="chart-box-wrap" id="tvChart"></div>
@@ -1104,7 +1107,6 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                         
                         <div id="signalBody" style="display:none; margin-top:16px;">
-                            <!-- 상단 승률 링 게이지 & 뱃지 영역 -->
                             <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid #282a2c;">
                                 <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0;">
                                     <span style="font-size:1.1rem; font-weight:800; color:#fff; line-height:1;" id="rWinRateGauge"></span>
@@ -1123,7 +1125,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <!-- 중앙 가격 밴드 수평 슬라이더 바 -->
                             <div style="margin:20px 0 14px; position:relative;">
                                 <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px;">
                                     <span style="color:#38bdf8; font-weight:700;" id="rSliderStop"></span>
@@ -1140,7 +1141,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <!-- 하단 주요 진입/목표가 목록 (컨센서스 리포트 스타일) -->
                             <div style="margin-top:16px; border-top:1px solid #282a2c; padding-top:10px;">
                                 <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
                                     <div><span style="color:#ffffff; font-weight:600;">1차 매수 진입가</span></div>
@@ -1164,7 +1164,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <!-- 가이드 텍스트 -->
                             <div class="guide-box">
                                 <div class="guide-title">gaemiGTP 시그널 가이드</div>
                                 <div id="rGuideText" style="margin-top:4px; color:#c4c7c5;"></div>
@@ -1472,6 +1471,7 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
+        // 한국 증시 표준: 상승(양봉) = #ef4444(빨간색), 하락(음봉) = #38bdf8(파란색) 원본 100% 복구
         function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
             const container = document.getElementById('tvChart');
             container.innerHTML = '';
@@ -1493,12 +1493,12 @@ HTML_PAGE = """<!DOCTYPE html>
             });
 
             const candleSeries = chart.addCandlestickSeries({
-                upColor: '#10b981',
+                upColor: '#ef4444',
                 downColor: '#38bdf8',
                 borderDownColor: '#38bdf8',
-                borderUpColor: '#10b981',
+                borderUpColor: '#ef4444',
                 wickDownColor: '#38bdf8',
-                wickUpColor: '#10b981',
+                wickUpColor: '#ef4444',
                 priceLineVisible: false,
                 lastValueVisible: true
             });
@@ -1510,7 +1510,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
             lineMa60.setData(ma60);
 
-            const lineBbUp = chart.addLineSeries({ color: '#10b981', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
+            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
             lineBbUp.setData(bbUp);
 
             const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });

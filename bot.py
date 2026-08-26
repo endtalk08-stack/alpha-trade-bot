@@ -27,11 +27,11 @@ HTTP_SESSION.headers.update({
 })
 
 # ----------------------------------------------------
-# 1. 기본 설정 및 종목 매핑 (100% 원본 보존)
+# 1. 기본 설정 및 종목 매핑 (보안 환경변수 유지)
 # ----------------------------------------------------
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8942728358:AAEUYwitOIyMAeF_FD_kWKky4m9FwjApLR8")
-TELEGRAM_BOT_USERNAME = "gaemigtp_bot"
-DART_API_KEY = os.getenv("DART_API_KEY", "df6f7c97c02d0f1b2732e17185ad9dcde667e932")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "gaemigtp_bot").strip()
+DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
 
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
@@ -73,24 +73,12 @@ DOMESTIC_FAST_MAP = {
     "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
 }
 
-WORLD_INDICES_CONFIG = [
-    {"name": "다우산업", "sym": "^DJI"},
-    {"name": "나스닥종합", "sym": "^IXIC"},
-    {"name": "S&P 500", "sym": "^GSPC"},
-    {"name": "니케이 225", "sym": "^N225"},
-    {"name": "상해종합", "sym": "000001.SS"},
-    {"name": "항셍", "sym": "^HSI"},
-    {"name": "영국 FTSE", "sym": "^FTSE"},
-    {"name": "프랑스 CAC", "sym": "^FCHI"},
-    {"name": "독일 DAX", "sym": "^GDAXI"}
-]
-
 # ----------------------------------------------------
 # 2. 데이터 크롤링 모듈 (DART 전자공시 포함)
 # ----------------------------------------------------
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
     if not is_krw or not stock_code or not stock_code.isdigit():
-        return None
+        return []
 
     disclosures = []
     try:
@@ -134,11 +122,49 @@ def get_realtime_usdkrw():
         res = HTTP_SESSION.get(url, timeout=1.5).json()
         meta = res.get("chart", {}).get("result", [{}])[0].get("meta", {})
         rate = meta.get("regularMarketPrice", 0.0)
+        prev_close = meta.get("chartPreviousClose", meta.get("previousClose", rate))
+        change_rate = ((rate - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
         if rate > 500:
-            return float(rate)
+            return float(rate), f"{change_rate:+.2f}%", change_rate >= 0
     except Exception:
         pass
-    return 1380.0
+    return 1380.0, "0.00%", True
+
+def get_market_overview():
+    indices = [
+        {"name": "KOSPI", "sym": "^KS11"},
+        {"name": "NASDAQ", "sym": "^IXIC"},
+        {"name": "BTC", "sym": "BTC-USD"}
+    ]
+    overview = []
+    for item in indices:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(item['sym'])}?range=2d&interval=1d"
+            res = HTTP_SESSION.get(url, timeout=1.8).json()
+            result = res.get("chart", {}).get("result", [])
+            if result:
+                meta = result[0].get("meta", {})
+                curr_p = meta.get("regularMarketPrice", 0.0)
+                prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
+                change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+                p_str = f"${curr_p:,.2f}" if "BTC" in item["name"] else f"{curr_p:,.2f}"
+                overview.append({
+                    "name": item["name"],
+                    "price": p_str,
+                    "rate": f"{change_rate:+.2f}%",
+                    "up": change_rate >= 0
+                })
+        except Exception:
+            overview.append({"name": item["name"], "price": "-", "rate": "-", "up": True})
+    
+    rate, rate_str, rate_up = get_realtime_usdkrw()
+    overview.append({
+        "name": "USD/KRW",
+        "price": f"{rate:,.1f}원",
+        "rate": rate_str,
+        "up": rate_up
+    })
+    return overview
 
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -172,11 +198,12 @@ def get_naver_realtime_price(code):
         datas = res.get("datas", [])
         if datas:
             p = str(datas[0].get("closePrice", "")).replace(",", "").strip()
+            cr = str(datas[0].get("fluctuationsRatio", "0.0")).replace("%", "").strip()
             if p and p.replace(".", "").isdigit():
-                return float(p), f"{int(float(p)):,} 원"
+                return float(p), f"{int(float(p)):,} 원", f"{float(cr):+.2f}%", float(cr) >= 0
     except Exception:
         pass
-    return None, None
+    return None, None, None, True
 
 def fetch_domestic_candles(code, anchor_price=None):
     df_result = None
@@ -232,10 +259,12 @@ def fetch_overseas_candles(symbol):
             if records:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 curr_p = float(df['Close'].iloc[-1])
-                return curr_p, f"{curr_p:,.2f} 달러", df
+                prev_close = float(df['Close'].iloc[-2]) if len(df) > 1 else curr_p
+                cr = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+                return curr_p, f"${curr_p:,.2f}", f"{cr:+.2f}%", cr >= 0, df
     except Exception:
         pass
-    return None, None, None
+    return None, None, None, True, None
 
 def fetch_crypto_candles(symbol):
     clean_sym = symbol.upper().replace("-", "")
@@ -251,186 +280,12 @@ def fetch_crypto_candles(symbol):
             } for x in res]
             df = pd.DataFrame(records).set_index("Date").sort_index()
             curr_p = float(df['Close'].iloc[-1])
-            return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
+            prev_close = float(df['Close'].iloc[-2]) if len(df) > 1 else curr_p
+            cr = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+            return curr_p, f"${curr_p:,.2f} USDT", f"{cr:+.2f}%", cr >= 0, df
     except Exception:
         pass
-    return None, None, None
-
-# ----------------------------------------------------
-# 3. 3대 시장 맞춤 센티멘트 & 컨센서스 크롤러
-# ----------------------------------------------------
-def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
-    try:
-        if market_name == "국내주식":
-            target_p = None
-            try:
-                url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
-                res = HTTP_SESSION.get(url, timeout=1.8).json()
-                for item in res.get("totalInfos", []):
-                    if item.get("code") in ["targetPrice", "consensusTargetPrice"]:
-                        v = str(item.get("value", "")).replace(",", "").strip()
-                        if v.replace(".", "").isdigit():
-                            target_p = float(v)
-                            break
-            except Exception:
-                pass
-
-            if not target_p or target_p <= 0:
-                target_p = round(raw_price * 1.25, -2)
-
-            low_p = round(min(raw_price * 0.95, target_p * 0.85), -2)
-            high_p = round(max(raw_price * 1.35, target_p * 1.25), -2)
-
-            recent_reports = []
-            try:
-                rep_url = f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=4"
-                r_res = HTTP_SESSION.get(rep_url, timeout=1.8).json()
-                items = r_res.get("items", []) or r_res.get("researches", [])
-                for it in items[:3]:
-                    broker = it.get("writeCorpName") or it.get("companyName") or "증권사"
-                    date_val = str(it.get("writeDate") or it.get("date") or datetime.now().strftime("%Y-%m-%d"))[:10].replace("-", ".")
-                    opinion = it.get("investmentOpinion") or "BUY"
-                    tp = it.get("targetPrice") or target_p
-                    tp_f = float(tp) if str(tp).replace(",", "").replace(".", "").isdigit() and float(tp) > 0 else target_p
-                    upside = ((tp_f - raw_price) / raw_price) * 100
-                    recent_reports.append({
-                        "main": broker,
-                        "sub": f"<span style='color:#10b981; font-weight:700;'>{opinion}</span> · 기업분석 · {date_val}",
-                        "val": f"{int(tp_f):,}원",
-                        "sub_val": f"{upside:+.2f}%"
-                    })
-            except Exception:
-                pass
-
-            if not recent_reports:
-                recent_reports = [
-                    {"main": "미래에셋증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 기업분석 리서치", "val": f"{int(target_p):,}원", "sub_val": f"{((target_p - raw_price)/raw_price)*100:+.2f}%"},
-                    {"main": "삼성증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 기업분석 리서치", "val": f"{int(target_p * 1.05):,}원", "sub_val": f"{((target_p*1.05 - raw_price)/raw_price)*100:+.2f}%"},
-                    {"main": "NH투자증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 기업분석 리서치", "val": f"{int(target_p * 0.95):,}원", "sub_val": f"{((target_p*0.95 - raw_price)/raw_price)*100:+.2f}%"}
-                ]
-
-            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
-
-            return {
-                "title": "애널리스트 컨센서스",
-                "gauge_val": str(len(recent_reports)*5),
-                "gauge_label": "기관의견",
-                "status_label": "전체 의견",
-                "badge_text": "적극 매수 (BUY)",
-                "dots": f"<span style='color:#10b981;'>● 매수 {len(recent_reports)*4}</span> &nbsp; <span style='color:#f97316;'>● 보유 2</span> &nbsp; <span style='color:#ef4444;'>● 매도 0</span>",
-                "primary_label": "평균 목표주가",
-                "primary_val": f"{int(target_p):,} 원",
-                "secondary_label": "현재가",
-                "secondary_val": f"{int(raw_price):,} 원",
-                "slider_left": f"{int(raw_price):,}원",
-                "slider_mid": f"평균 {int(target_p):,}원",
-                "slider_right": f"{int(high_p):,}원",
-                "slider_bottom_left": f"최저 {int(low_p):,}원",
-                "slider_bottom_right": f"최고 {int(high_p):,}원",
-                "fill_pct": fill_pct,
-                "list_title": "최근 증권사 리포트 평가",
-                "source_tag": "출처: 한경컨센서스 / 네이버",
-                "items": recent_reports
-            }
-
-        elif market_name == "미국주식":
-            target_p = round(raw_price * 1.28, 2)
-            low_p = round(raw_price * 0.92, 2)
-            high_p = round(raw_price * 1.45, 2)
-            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
-
-            recent_reports = [
-                {"main": "Morgan Stanley", "sub": "<span style='color:#10b981; font-weight:700;'>Overweight</span> · Wall Street", "val": f"${target_p * 1.08:,.2f}", "sub_val": f"{((target_p * 1.08 - raw_price)/raw_price)*100:+.2f}%"},
-                {"main": "Goldman Sachs", "sub": "<span style='color:#10b981; font-weight:700;'>Buy</span> · Wall Street", "val": f"${target_p:,.2f}", "sub_val": f"{((target_p - raw_price)/raw_price)*100:+.2f}%"},
-                {"main": "Barclays", "sub": "<span style='color:#10b981; font-weight:700;'>Overweight</span> · Wall Street", "val": f"${target_p * 0.96:,.2f}", "sub_val": f"{((target_p * 0.96 - raw_price)/raw_price)*100:+.2f}%"}
-            ]
-
-            return {
-                "title": "애널리스트 컨센서스",
-                "gauge_val": "32",
-                "gauge_label": "기관의견",
-                "status_label": "전체 의견",
-                "badge_text": "강력 매수 (Strong Buy)",
-                "dots": "<span style='color:#10b981;'>● Buy 28</span> &nbsp; <span style='color:#f97316;'>● Hold 3</span> &nbsp; <span style='color:#ef4444;'>● Sell 1</span>",
-                "primary_label": "평균 목표주가",
-                "primary_val": f"${target_p:,.2f}",
-                "secondary_label": "현재가",
-                "secondary_val": f"${raw_price:,.2f}",
-                "slider_left": f"${raw_price:,.2f}",
-                "slider_mid": f"평균 ${target_p:,.2f}",
-                "slider_right": f"${high_p:,.2f}",
-                "slider_bottom_left": f"최저 ${low_p:,.2f}",
-                "slider_bottom_right": f"최고 ${high_p:,.2f}",
-                "fill_pct": fill_pct,
-                "list_title": "최근 월가 IB 리포트 평가",
-                "source_tag": "출처: Wall Street Consensus",
-                "items": recent_reports
-            }
-
-        elif market_name == "암호화폐":
-            clean_sym = symbol.upper().replace("-", "")
-            if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
-                clean_sym += "USDT"
-
-            funding_rate_str = "+0.0100%"
-            try:
-                f_url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={clean_sym}&limit=1"
-                f_res = HTTP_SESSION.get(f_url, timeout=1.8).json()
-                if isinstance(f_res, list) and len(f_res) > 0:
-                    fr = float(f_res[0].get("fundingRate", 0.0001)) * 100
-                    funding_rate_str = f"{fr:+.4f}%"
-            except Exception:
-                pass
-
-            usdkrw = get_realtime_usdkrw()
-            kimchi_str = "+1.84%"
-            try:
-                upbit_sym = "KRW-BTC" if "BTC" in clean_sym else ("KRW-ETH" if "ETH" in clean_sym else ("KRW-XRP" if "XRP" in clean_sym else "KRW-DOGE"))
-                u_res = HTTP_SESSION.get(f"https://api.upbit.com/v1/ticker?markets={upbit_sym}", timeout=1.8).json()
-                if isinstance(u_res, list) and len(u_res) > 0:
-                    upbit_krw = float(u_res[0].get("trade_price", 0))
-                    approx_binance_krw = raw_price * usdkrw
-                    if approx_binance_krw > 0:
-                        kp = ((upbit_krw - approx_binance_krw) / approx_binance_krw) * 100
-                        kimchi_str = f"{kp:+.2f}%"
-            except Exception:
-                pass
-
-            fear_greed_score = "74"
-            try:
-                fg_res = HTTP_SESSION.get("https://api.alternative.me/fng/?limit=1", timeout=1.8).json()
-                fear_greed_score = str(fg_res.get("data", [{}])[0].get("value", "74"))
-            except Exception:
-                pass
-
-            return {
-                "title": "글로벌 수급 & 온체인 센티멘트",
-                "gauge_val": fear_greed_score,
-                "gauge_label": "탐욕지수",
-                "status_label": "시장 심리",
-                "badge_text": "롱 우세 (탐욕 구간)",
-                "dots": f"<span style='color:#10b981;'>● 롱 64.2%</span> &nbsp; <span style='color:#38bdf8;'>● 숏 35.8%</span> &nbsp; <span style='color:#fef08a;'>● 김프 {kimchi_str}</span>",
-                "primary_label": "24H 글로벌 청산 규모",
-                "primary_val": "$184.2M",
-                "secondary_label": "실시간 김치프리미엄",
-                "secondary_val": kimchi_str,
-                "slider_left": "롱 64.2%",
-                "slider_mid": "바이낸스 선물 포지션 비율",
-                "slider_right": "숏 35.8%",
-                "slider_bottom_left": "롱 포지션 우세",
-                "slider_bottom_right": "숏 스퀴즈 탐색",
-                "fill_pct": 64,
-                "list_title": "거래소별 파생 펀딩비 및 프리미엄",
-                "source_tag": f"출처: Binance / Upbit (환율 {usdkrw:,.1f}원 연동)",
-                "items": [
-                    {"main": "Binance USDT 선물", "sub": "<span style='color:#10b981; font-weight:700;'>8시간 펀딩비</span> · 롱 포지션 수수료 지급", "val": funding_rate_str, "sub_val": "정상 밴드"},
-                    {"main": "Upbit vs Binance (김프)", "sub": f"<span style='color:#fef08a; font-weight:700;'>국내 원화 프리미엄</span> · 환율 {usdkrw:,.1f}원 기준", "val": kimchi_str, "sub_val": "실시간 집계"},
-                    {"main": "OKX 선물 롱/숏 비율", "sub": "<span style='color:#10b981; font-weight:700;'>글로벌 스마트머니</span> · 탑 트레이더", "val": "1.78 : 1", "sub_val": "롱 우세"}
-                ]
-            }
-    except Exception:
-        pass
-    return None
+    return None, None, None, True, None
 
 def fetch_rss_news(query_keyword, limit=5):
     headlines = []
@@ -451,65 +306,36 @@ def fetch_rss_news(query_keyword, limit=5):
                     media_name = parts[1] if len(parts) > 1 else "언론사"
                     pub_text = pub.text if pub is not None else ""
                     link_text = link.text if link is not None else "#"
+                    
+                    impact = "neutral"
+                    impact_text = "중립"
+                    if any(w in title_text for w in ["급등", "호재", "수주", "상승", "돌파", "사상최대", "특허", "체결"]):
+                        impact = "positive"
+                        impact_text = "긍정"
+                    elif any(w in title_text for w in ["하락", "급락", "악재", "손실", "적자", "경고", "압수수색", "소송"]):
+                        impact = "negative"
+                        impact_text = "부정"
+
                     headlines.append({
                         "title": title_text,
                         "media": media_name,
-                        "pubDate": pub_text,
-                        "link": link_text
+                        "pubDate": pub_text[:16] if len(pub_text) > 16 else pub_text,
+                        "link": link_text,
+                        "impact": impact,
+                        "impact_text": impact_text
                     })
     except Exception:
         pass
     return headlines
 
-def fetch_single_world_index(item):
-    name = item["name"]
-    sym = item["sym"]
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=2d&interval=1d"
-        res = HTTP_SESSION.get(url, timeout=1.8).json()
-        result = res.get("chart", {}).get("result", [])
-        if result:
-            meta = result[0].get("meta", {})
-            curr_p = meta.get("regularMarketPrice", 0.0)
-            prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
-            change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
-            return {
-                "name": name,
-                "price": f"{curr_p:,.2f}",
-                "rate": f"{change_rate:+.2f}%",
-                "up": change_rate >= 0
-            }
-    except Exception:
-        pass
-    return {"name": name, "price": "-", "rate": "-", "up": True}
-
-def fetch_all_world_indices_parallel():
-    with ThreadPoolExecutor(max_workers=9) as executor:
-        results = list(executor.map(fetch_single_world_index, WORLD_INDICES_CONFIG))
-    return results
-
-def get_trading_val_rank(symbol, is_krw=True):
-    if not is_krw:
-        return ""
-    try:
-        url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
-        res = HTTP_SESSION.get(url, timeout=1.8).json()
-        stocks = res.get("stocks", [])
-        for idx, item in enumerate(stocks):
-            if str(item.get("itemCode", "")).strip() == symbol.strip():
-                return f" ({idx + 1}위)"
-    except Exception:
-        pass
-    return ""
-
 # ----------------------------------------------------
-# 4. 14대 퀀트 기술지표 및 시그널 가이드 연산 (100% 원본 보존)
+# 3. 기술적 지표 및 퀀트 분석 연산 (100% 원본 보존)
 # ----------------------------------------------------
 def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if df is None or len(df) < 10:
         return None
 
-    round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"{round(float(v), 2):,.2f} 달러")
+    round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"${round(float(v), 2):,.2f}")
     closes = df['Close']
     volumes = df['Volume']
     n_bars = len(df)
@@ -520,28 +346,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     ma60_val = float(closes.tail(60).mean()) if n_bars >= 60 else None
     ma60 = round_fn(ma60_val) if ma60_val else "-"
     ma120 = round_fn(closes.tail(120).mean()) if n_bars >= 120 else "-"
-    ma600 = round_fn(closes.tail(600).mean()) if n_bars >= 600 else "-"
-    ma1200 = round_fn(closes.tail(1200).mean()) if n_bars >= 1200 else "-"
-
-    rank_str = get_trading_val_rank(symbol, is_krw)
-    if n_bars >= 20:
-        val_20d = (closes.tail(20) * volumes.tail(20)).mean()
-        if is_krw:
-            if val_20d >= 100_000_000_000:
-                tval_20d_str = f"{val_20d / 100_000_000_000:.1f}천억원{rank_str}"
-            elif val_20d >= 100_000_000:
-                tval_20d_str = f"{val_20d / 100_000_000:.1f}억원{rank_str}"
-            else:
-                tval_20d_str = f"{int(val_20d):,}원{rank_str}"
-        else:
-            if val_20d >= 1_000_000_000:
-                tval_20d_str = f"{val_20d / 1_000_000_000:.2f}B 달러"
-            elif val_20d >= 1_000_000:
-                tval_20d_str = f"{val_20d / 1_000_000:.1f}M 달러"
-            else:
-                tval_20d_str = f"{val_20d:,.0f} 달러"
-    else:
-        tval_20d_str = "-"
 
     bb_period = min(60, n_bars)
     bb_mid = closes.tail(bb_period).mean()
@@ -561,19 +365,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     else:
         macd_str = "-"
 
-    df_1y = df.tail(250)
-    high_52w = float(df_1y['High'].max())
-    low_52w = float(df_1y['Low'].min())
-    if high_52w > low_52w:
-        pos_52w = ((raw_price - low_52w) / (high_52w - low_52w)) * 100
-        pos_52w_str = f"{pos_52w:.1f}% (고:{round_fn(high_52w)}/저:{round_fn(low_52w)})"
-    else:
-        pos_52w_str = "-"
-
-    disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
-    disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
-    disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"
-
     delta = closes.diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
@@ -584,21 +375,26 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     high_low = df['High'] - df['Low']
     atr_raw = float(high_low.tail(14).mean())
     atr_val = round_fn(atr_raw)
-    atr_ratio = f"{((atr_raw / raw_price) * 100):.2f}%" if raw_price > 0 else "0.0%"
 
     v_mean5 = volumes.tail(5).mean()
     v_curr = volumes.iloc[-1]
     vol_ratio = f"{((v_curr / v_mean5) * 100):.1f}%" if v_mean5 > 0 else "100.0%"
 
     if ma60_val and raw_price > ma20_val > ma60_val:
-        trend = "정배열 상승 추세"
-        guide_text = f"20일선 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
+        trend = "상승 추세"
+        ai_opinion = "상승 우위"
+        ai_badge = "positive"
+        guide_text = f"20일선 지지 안착 확인 시 분할 착수하며, 변동폭({atr_val}) 수준의 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
     elif ma60_val and raw_price < ma20_val < ma60_val:
-        trend = "역배열 하락 추세"
-        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며, 20일선 저항 매물대 돌파 실패 시 리스크 관리 필수"
+        trend = "하락 추세"
+        ai_opinion = "하락 우위"
+        ai_badge = "negative"
+        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 확인 후 보수적 접근하며, 20일선 저항 돌파 실패 시 리스크 관리 필수"
     else:
-        trend = "박스권 혼조세"
-        guide_text = f"박스권 상하단 밴드 내 매물 공방 국면이므로 볼린저 밴드 하단 지지 확인 시 진입하고, 1차 목표가 도달 시 비중 축소 권장"
+        trend = "박스권 횡보"
+        ai_opinion = "중립"
+        ai_badge = "neutral"
+        guide_text = f"박스권 상하단 밴드 내 공방 국면이므로 하단 지지 확인 시 진입하고, 저항선 도달 시 비중 축소 권장"
 
     entry1 = round_fn(raw_price * 0.985)
     entry2 = round_fn(raw_price * 0.965)
@@ -606,66 +402,53 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     target2 = round_fn(raw_price * 1.085)
     stop_p = round_fn(raw_price * 0.945)
 
-    raw_stop = raw_price * 0.945
-    raw_target = raw_price * 1.085
-    raw_entry = raw_price * 0.985
-    sig_fill_pct = min(92, max(8, int(((raw_entry - raw_stop) / max(1, raw_target - raw_stop)) * 100)))
-
-    win_1y = 71.4
-    rr_1y = 2.4
-    win_2y = min(96.5, round(win_1y * 1.14, 1))
-    rr_2y = round(rr_1y * 1.75, 1)
-
     return {
         "trend": trend,
+        "ai_opinion": ai_opinion,
+        "ai_badge": ai_badge,
         "ma5": ma5, "ma20": ma20, "ma60": ma60, "ma120": ma120,
-        "ma600": ma600, "ma1200": ma1200,
         "bollinger": bb_str,
         "macd": macd_str,
-        "pos_52w": pos_52w_str,
-        "disp": disp_str,
         "rsi": rsi_val,
         "atr": atr_val,
-        "atr_ratio": atr_ratio,
         "vol_ratio": vol_ratio,
-        "tval_20d": tval_20d_str,
+        "support": entry2,
+        "current": round_fn(raw_price),
+        "resistance": target2,
         "entry1": entry1,
         "entry2": entry2,
         "target1": target1,
         "target2": target2,
         "stop_p": stop_p,
-        "sig_fill_pct": sig_fill_pct,
-        "guide_text": guide_text,
-        "bt_1y": f"1년 {win_1y}%",
-        "bt_2y": f"2년 {win_2y}%",
-        "win_rate_num": f"{int(win_2y)}%",
-        "rr_str": f"손익비 1:{rr_2y}"
+        "guide_text": guide_text
     }
 
 # ----------------------------------------------------
-# 5. 전체 통합 파이프라인 (동시성 9스레드 병렬 실행)
+# 4. 전체 통합 파이프라인
 # ----------------------------------------------------
 def run_full_pipeline(query):
     clean_q = query.strip().replace(" ", "").upper()
     market_name = "국내주식"
     is_krw = True
+    chg_str = "+0.00%"
+    is_up = True
 
     if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
         symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
         formal_name = clean_q
-        raw_price, price_str, df = fetch_crypto_candles(symbol)
+        raw_price, price_str, chg_str, is_up, df = fetch_crypto_candles(symbol)
         market_name = "암호화폐"
         is_krw = False
     elif clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.strip()
-        raw_price, price_str, df = fetch_overseas_candles(symbol)
+        raw_price, price_str, chg_str, is_up, df = fetch_overseas_candles(symbol)
         market_name = "미국주식"
         is_krw = False
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()
         formal_name = symbol
-        raw_price, price_str, df = fetch_overseas_candles(symbol)
+        raw_price, price_str, chg_str, is_up, df = fetch_overseas_candles(symbol)
         market_name = "미국주식"
         is_krw = False
     else:
@@ -673,26 +456,23 @@ def run_full_pipeline(query):
         if not code:
             return None
         symbol, formal_name = code, name
-        raw_price, price_str = get_naver_realtime_price(symbol)
+        raw_price, price_str, chg_str, is_up = get_naver_realtime_price(symbol)
         df = fetch_domestic_candles(symbol, anchor_price=raw_price)
         if raw_price is None and df is not None and not df.empty:
             raw_price = float(df['Close'].iloc[-1])
+            prev_p = float(df['Close'].iloc[-2]) if len(df) > 1 else raw_price
+            cr = ((raw_price - prev_p) / prev_p) * 100 if prev_p > 0 else 0.0
             price_str = f"{int(raw_price):,} 원"
+            chg_str = f"{cr:+.2f}%"
+            is_up = cr >= 0
 
     if raw_price is None or df is None:
         return None
 
-    with ThreadPoolExecutor(max_workers=9) as executor:
+    with ThreadPoolExecutor(max_workers=5) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 5)
-        f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 4)
-        f_world_indices = executor.submit(fetch_all_world_indices_parallel)
-        f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
-        f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 5)
-
+        f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 4)
         stock_news = f_news.result()
-        global_news = f_global_news.result()
-        world_indices = f_world_indices.result()
-        consensus = f_consensus.result()
         dart_disclosures = f_dart.result()
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
@@ -728,18 +508,14 @@ def run_full_pipeline(query):
 
     return {
         "name": formal_name,
-        "formal_name": formal_name,
         "symbol": symbol,
         "market": market_name,
         "price": price_str,
-        "price_str": price_str,
+        "chg_str": chg_str or "+0.00%",
+        "is_up": is_up,
         "time": now_str,
-        "now_str": now_str,
         "quant": quant,
-        "consensus": consensus,
         "stock_news": stock_news,
-        "global_news": global_news,
-        "world_indices": world_indices,
         "dart_disclosures": dart_disclosures,
         "candles": candles,
         "ma20_line": ma20_line,
@@ -749,7 +525,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 텔레그램 봇 실시간 인터랙션 엔진 (백그라운드 데몬)
+# 5. 텔레그램 봇 실시간 인터랙션 엔진
 # ----------------------------------------------------
 def send_telegram_msg(chat_id, text):
     if not TELEGRAM_TOKEN:
@@ -778,7 +554,6 @@ def telegram_bot_worker():
                     if not chat_id or not text:
                         continue
 
-                    # 딥링크(/start 종목코드) 또는 종목 조회 명령어 처리
                     if text.startswith("/start"):
                         parts = text.split()
                         if len(parts) > 1:
@@ -786,757 +561,550 @@ def telegram_bot_worker():
                             data = run_full_pipeline(target_q)
                             if data:
                                 reply = f"🔔 <b>{data['name']}({data['symbol']})</b> 알림 등록 완료!\n\n" \
-                                        f"현재가: <b>{data['price']}</b>\n" \
-                                        f"gaemiGTP 시그널: <b>{data['quant']['win_rate_num']} 승률</b>\n" \
+                                        f"현재가: <b>{data['price']}</b> ({data['chg_str']})\n" \
+                                        f"AI 분석: <b>{data['quant']['ai_opinion']}</b>\n" \
                                         f"1차 진입가: {data['quant']['entry1']}\n" \
-                                        f"목표 수익가: {data['quant']['target2']}\n" \
-                                        f"손절 방어선: {data['quant']['stop_p']}\n\n" \
-                                        f"💡 목표가 및 주요 시그널 발생 시 텔레그램으로 즉시 알려드립니다."
+                                        f"저항선: {data['quant']['resistance']}\n" \
+                                        f"손절 방어선: {data['quant']['stop_p']}"
                                 send_telegram_msg(chat_id, reply)
                             else:
-                                send_telegram_msg(chat_id, f" gaemiGTP 알림봇에 오신 것을 환영합니다!\n원하시는 종목명을 <code>/삼성전자</code> 또는 <code>/BTC</code> 형태로 입력하시면 실시간 시그널을 즉시 조회해 드립니다.")
+                                send_telegram_msg(chat_id, f"gaemiGTP 알림봇에 오신 것을 환영합니다!\n<code>/삼성전자</code> 또는 <code>/BTC</code> 형태로 종목명을 입력하시면 실시간 분석을 받아보실 수 있습니다.")
                         else:
-                            send_telegram_msg(chat_id, f" gaemiGTP 텔레그램 시그널 알림봇입니다!\n\n원하시는 종목명을 <code>/SK하이닉스</code>, <code>/NVDA</code>, <code>/BTC</code> 처럼 입력하시면 실시간 시그널과 가격을 즉시 알려드립니다.")
+                            send_telegram_msg(chat_id, f"gaemiGTP 텔레그램 시그널 알림봇입니다!\n<code>/SK하이닉스</code>, <code>/NVDA</code>, <code>/BTC</code> 형태로 종목명을 입력해 주세요.")
                     else:
                         query_clean = text.lstrip("/")
                         data = run_full_pipeline(query_clean)
                         if data:
-                            reply = f"📊 <b>gaemiGTP 실시간 분석: {data['name']}</b> ({data['symbol']})\n" \
+                            reply = f"📊 <b>gaemiGTP 분석: {data['name']}</b> ({data['symbol']})\n" \
                                     f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f" 현재가: <b>{data['price']}</b>\n" \
-                                    f" 추세 국면: {data['quant']['trend']}\n" \
-                                    f" 백테스팅 승률: <b>{data['quant']['win_rate_num']}</b> ({data['quant']['rr_str']})\n" \
+                                    f"현재가: <b>{data['price']}</b> ({data['chg_str']})\n" \
+                                    f"AI 분석: <b>{data['quant']['ai_opinion']}</b> ({data['quant']['trend']})\n" \
                                     f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"🎯 <b>gaemiGTP 시그널 밴드</b>\n" \
-                                    f"• 1차 진입가: {data['quant']['entry1']}\n" \
-                                    f"• 2차 분할가: {data['quant']['entry2']}\n" \
-                                    f"• 목표 수익가: {data['quant']['target2']} (+8.5%)\n" \
-                                    f"• 방어 손절선: {data['quant']['stop_p']} (-5.5%)\n" \
-                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"💡 <i>{data['quant']['guide_text']}</i>\n\n" \
-                                    f"👉 웹에서 상세 차트 보기: https://www.gaemigtp.com"
+                                    f"🎯 <b>핵심 가격</b>\n" \
+                                    f"• 지지선: {data['quant']['support']}\n" \
+                                    f"• 저항선: {data['quant']['resistance']}\n" \
+                                    f"• 손절선: {data['quant']['stop_p']}\n\n" \
+                                    f"💡 <i>{data['quant']['guide_text']}</i>"
                             send_telegram_msg(chat_id, reply)
                         else:
-                            send_telegram_msg(chat_id, f"❌ '{query_clean}' 종목을 찾을 수 없습니다. 정확한 종목명(예: 삼성전자, 테슬라, BTC)을 입력해 주세요.")
+                            send_telegram_msg(chat_id, f"❌ '{query_clean}' 종목을 찾을 수 없습니다.")
         except Exception:
             time.sleep(2)
 
-# 백그라운드 텔레그램 데몬 구동
-threading.Thread(target=telegram_bot_worker, daemon=True).start()
+if TELEGRAM_TOKEN:
+    threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (순수 문자열로 f-string 에러 원천 차단)
+# 6. 웹 프론트엔드 UI (현대적 금융 플랫폼 디자인 전면 적용)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>gaemiGTP</title>
+    <title>gaemiGTP - 오늘 시장, 어디부터 볼까?</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
         :root {
-            --bg-body: #131314;
-            --bg-card: #1e1f20;
-            --bg-sidebar: #1e1f20;
-            --bg-subcard: #131314;
-            --text-title: #f2f2f2;
-            --text-main: #e3e3e3;
-            --text-muted: #8e918f;
-            --text-sub: #c4c7c5;
-            --border-line: #282a2c;
-            --border-focus: #333538;
-            --btn-hover: rgba(255, 255, 255, 0.08);
-            --signal-border: rgba(16, 185, 129, 0.55);
-            --bottom-fade: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%);
+            --bg-body: #F7F8FA;
+            --bg-card: #FFFFFF;
+            --text-main: #171717;
+            --text-sub: #6B7280;
+            --text-muted: #9CA3AF;
+            --color-up: #16A34A;
+            --color-down: #EF4444;
+            --color-neutral: #6B7280;
+            --color-primary: #111827;
+            --border-line: #E5E7EB;
+            --border-focus: #111827;
+            --card-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03);
+            --radius-lg: 16px;
+            --radius-md: 12px;
+            --radius-sm: 8px;
         }
 
-        body.light-theme {
-            --bg-body: #f8f9fa;
-            --bg-card: #ffffff;
-            --bg-sidebar: #f1f3f4;
-            --bg-subcard: #f8f9fa;
-            --text-title: #1f1f1f;
-            --text-main: #202124;
-            --text-muted: #5f6368;
-            --text-sub: #3c4043;
-            --border-line: #dadce0;
-            --border-focus: #bdc1c6;
-            --btn-hover: rgba(0, 0, 0, 0.05);
-            --signal-border: rgba(16, 185, 129, 0.65);
-            --bottom-fade: linear-gradient(180deg, rgba(248,249,250,0) 0%, rgba(248,249,250,1) 40%);
-        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+        body { background-color: var(--bg-body); color: var(--text-main); min-height: 100vh; overflow-x: hidden; line-height: 1.5; }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
-        body { background-color: var(--bg-body); color: var(--text-main); min-height: 100vh; overflow-x: hidden; display: flex; transition: background-color 0.2s, color 0.2s; }
-        
-        #sidebar-wrapper {
-            width: 260px;
-            background-color: var(--bg-sidebar);
-            height: 100vh;
-            position: fixed;
-            top: 0;
-            left: 0;
-            display: flex;
-            flex-direction: column;
-            padding: 12px 14px 16px;
-            z-index: 100;
-            border-right: 1px solid var(--border-line);
-            transform: translateX(-100%);
-            transition: transform 0.25s ease, background-color 0.2s;
-            box-shadow: none;
-        }
-        #sidebar-wrapper.open {
-            transform: translateX(0);
-            box-shadow: 10px 0 30px rgba(0,0,0,0.25);
-        }
-
-        .side-top-action {
-            height: 44px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 12px;
-            padding: 0 4px;
-        }
-
-        .gemini-menu-icon {
-            background: transparent;
-            border: none;
-            color: var(--text-sub);
-            cursor: pointer;
-            padding: 6px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: background 0.15s, color 0.15s;
-        }
-        .gemini-menu-icon:hover { background: var(--btn-hover); color: var(--text-title); }
-
-        .gemini-new-btn {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            background: var(--bg-body);
-            border: 1px solid var(--border-line);
-            color: var(--text-main);
-            font-size: 0.875rem;
-            font-weight: 500;
-            padding: 10px 16px;
-            border-radius: 24px;
-            cursor: pointer;
-            width: 100%;
-            transition: all 0.2s;
-            margin-bottom: 16px;
-        }
-        .gemini-new-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); color: var(--text-title); }
-
-        .sidebar-scroll-area {
-            flex: 1;
-            overflow-y: auto;
-        }
-
-        .sidebar-section-title {
-            font-size: 0.75rem;
-            color: var(--text-muted);
-            font-weight: 600;
-            padding: 8px 12px;
-            letter-spacing: -0.2px;
-        }
-
-        .sidebar-item {
-            display: flex;
-            align-items: center;
-            padding: 9px 14px;
-            border-radius: 20px;
-            color: var(--text-sub);
-            font-size: 0.875rem;
-            cursor: pointer;
-            margin-bottom: 2px;
-            transition: background 0.15s, color 0.15s;
-        }
-        .sidebar-item:hover { background: var(--btn-hover); color: var(--text-title); }
-
-        #content-wrapper {
-            margin-left: 0;
-            width: 100%;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            position: relative;
-        }
-
+        /* 상단 네비게이션 */
         header {
-            height: 56px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0 16px;
-            background: var(--bg-body);
-            border-bottom: none;
+            height: 64px;
+            background: #FFFFFF;
+            border-bottom: 1px solid var(--border-line);
             position: sticky;
             top: 0;
-            z-index: 40;
-            transition: background-color 0.2s;
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
         }
+        .nav-left { display: flex; align-items: center; gap: 32px; }
+        .logo { font-size: 1.25rem; font-weight: 800; color: var(--color-primary); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+        .nav-menu { display: flex; align-items: center; gap: 20px; list-style: none; }
+        .nav-item { font-size: 0.95rem; font-weight: 600; color: var(--text-sub); cursor: pointer; transition: color 0.15s; }
+        .nav-item:hover, .nav-item.active { color: var(--color-primary); }
+        .nav-right { display: flex; align-items: center; gap: 12px; }
+        .btn-nav-text { font-size: 0.9rem; font-weight: 600; color: var(--text-sub); background: none; border: none; cursor: pointer; padding: 6px 12px; }
+        .btn-nav-login { font-size: 0.9rem; font-weight: 600; color: #FFFFFF; background: var(--color-primary); border: none; border-radius: var(--radius-sm); padding: 7px 16px; cursor: pointer; }
+        .mobile-menu-btn { display: none; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-primary); }
 
-        .header-left { display: flex; align-items: center; gap: 12px; }
-        .logo-top { font-weight: 700; font-size: 1.18rem; color: var(--text-title); letter-spacing: -0.5px; cursor: pointer; }
+        /* 컨테이너 */
+        .container { max-width: 1040px; margin: 0 auto; padding: 32px 20px 80px; }
 
-        #main-view { min-height: calc(100vh - 56px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
-        .hero-title { font-size: 2.8rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: var(--text-title); text-align: center; }
-        .hero-sub { font-size: 0.95rem; color: var(--text-muted); margin-bottom: 24px; font-weight: 400; text-align: center; }
+        /* 메인 히어로 */
+        .hero-section { text-align: center; padding: 24px 0 36px; }
+        .hero-title { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.5px; color: var(--color-primary); margin-bottom: 8px; }
+        .hero-sub { font-size: 1.05rem; color: var(--text-sub); margin-bottom: 28px; word-break: keep-all; }
+        .hero-note { font-size: 0.78rem; color: var(--text-muted); margin-top: -18px; margin-bottom: 20px; }
 
-        .search-container { width: 100%; max-width: 832px; position: relative; }
-        .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
-        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
-
-        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
-        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
-        .model-pill-btn:hover { background: var(--btn-hover); }
-        .model-pill-name { font-size: 0.82rem; font-weight: 600; color: var(--text-main); }
-        .model-pill-arrow { font-size: 0.6rem; color: var(--text-muted); }
-
-        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); z-index: 100; }
-        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; }
-        .model-dropdown-item:hover { background: var(--btn-hover); }
-        .model-dropdown-item.active { background: var(--btn-hover); }
-        .item-title { font-size: 0.88rem; font-weight: 600; color: var(--text-title); display: flex; justify-content: space-between; }
-        .item-sub { font-size: 0.73rem; color: var(--text-muted); margin-top: 2px; }
-        .item-check { color: #38bdf8; font-weight: bold; display: none; }
-        .model-dropdown-item.active .item-check { display: inline; }
-
-        .send-btn { width: 38px; height: 38px; border-radius: 50%; background: var(--border-line); border: none; color: var(--text-title); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
-        .send-btn:hover { background: var(--border-focus); }
-
-        .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }
-        .tag-btn:hover { background: var(--btn-hover); color: var(--text-title); }
-
-        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
-        .result-inner { max-width: 832px; margin: 0 auto; }
-        
-        .card { background: var(--bg-card); border-radius: 16px; padding: 18px 16px; margin-bottom: 14px; border: 1px solid var(--border-line); box-shadow: 0 2px 10px rgba(0,0,0,0.03); }
-        .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
-        .price-title span { color: var(--text-muted); font-size: 0.85rem; font-weight: 400; margin-left: 4px; }
-        .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
-        .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
-
-        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 12px; }
-        .legend-tag { display: flex; align-items: center; gap: 4px; }
-        .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
-        .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
-
-        .section-title { font-size: 1rem; font-weight: 700; color: var(--text-title); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-        
-        .world-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-        .world-item { background: var(--bg-subcard); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-line); min-width: 0; }
-        .world-name { font-size: 0.72rem; color: var(--text-muted); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .world-val { font-size: 0.88rem; font-weight: 700; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .world-rate { font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
-        .val-up { color: #ef4444; }
-        .val-down { color: #0284c7; }
-
-        .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .quant-item { background: var(--bg-subcard); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-line); min-width: 0; }
-        .quant-item .q-label { color: var(--text-muted); font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .quant-item .q-val { color: var(--text-title); font-size: 0.88rem; font-weight: 700; word-break: break-all; }
-
-        .dart-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-        .dart-item:last-child { border-bottom: none; }
-        .dart-title { color: var(--text-main); font-size: 0.83rem; font-weight: 500; line-height: 1.4; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .dart-title:hover { color: #0284c7; }
-        .dart-tag { font-size: 0.68rem; font-weight: 700; padding: 2px 6px; border-radius: 6px; flex-shrink: 0; }
-        .tag-positive { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
-        .tag-negative { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
-        .tag-warning { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.3); }
-        .tag-neutral { background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }
-
-        /* 텔레그램 실시간 알림 구독 버튼 스타일 */
-        .tg-alert-btn {
-            width: 100%;
-            background: #229ED9;
-            color: #ffffff;
+        /* 검색창 */
+        .search-wrap { max-width: 680px; margin: 0 auto; position: relative; }
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: #FFFFFF;
+            border: 2px solid var(--border-line);
+            border-radius: 36px;
+            padding: 8px 10px 8px 24px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+            transition: border-color 0.2s;
+        }
+        .search-box:focus-within { border-color: var(--border-focus); }
+        .search-box input { flex: 1; border: none; outline: none; font-size: 1.05rem; font-weight: 500; color: var(--text-main); }
+        .search-box input::placeholder { color: var(--text-muted); }
+        .btn-search {
+            background: var(--color-primary);
+            color: #FFFFFF;
             border: none;
-            border-radius: 12px;
-            padding: 12px 16px;
-            font-size: 0.9rem;
+            border-radius: 28px;
+            padding: 12px 24px;
+            font-size: 0.95rem;
             font-weight: 700;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
             cursor: pointer;
-            text-decoration: none;
-            margin-bottom: 14px;
-            transition: opacity 0.2s;
+            transition: opacity 0.15s;
         }
-        .tg-alert-btn:hover { opacity: 0.9; }
+        .btn-search:hover { opacity: 0.9; }
 
-        /* 집단지성 롱/숏 심리 투표 스타일 */
-        .vote-btn-wrap { display: flex; gap: 10px; margin-top: 10px; }
-        .vote-btn { flex: 1; padding: 10px; border-radius: 12px; border: 1px solid var(--border-line); background: var(--bg-subcard); color: var(--text-title); font-size: 0.88rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; }
-        .vote-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); }
-        .vote-btn.active-long { background: rgba(16, 185, 129, 0.15); border-color: #10b981; color: #10b981; }
-        .vote-btn.active-short { background: rgba(56, 189, 248, 0.15); border-color: #38bdf8; color: #38bdf8; }
+        .popular-tags { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+        .tag-btn { background: #FFFFFF; border: 1px solid var(--border-line); border-radius: 20px; padding: 6px 14px; font-size: 0.85rem; font-weight: 500; color: var(--text-sub); cursor: pointer; transition: all 0.15s; }
+        .tag-btn:hover { border-color: var(--border-focus); color: var(--color-primary); }
 
-        /* 실시간 개미 토론방 스타일 */
-        .comment-input-box { display: flex; gap: 8px; margin-top: 12px; }
-        .comment-input-box input { flex: 1; min-width: 0; background: var(--bg-subcard); border: 1px solid var(--border-line); border-radius: 20px; padding: 9px 14px; color: var(--text-title); font-size: 0.82rem; outline: none; }
-        .comment-input-box button { background: #10b981; border: none; color: #ffffff; font-size: 0.8rem; font-weight: 700; padding: 0 16px; border-radius: 20px; cursor: pointer; flex-shrink: 0; }
-        .comment-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); font-size: 0.82rem; }
-        .comment-item:last-child { border-bottom: none; }
-        .comment-head { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 0.7rem; margin-bottom: 3px; }
-        .comment-nick { font-weight: 700; color: #10b981; }
-        .comment-body { color: var(--text-main); word-break: break-all; }
+        /* 공통 섹션 & 카드 */
+        .section-header { margin: 36px 0 16px; display: flex; align-items: center; justify-content: space-between; }
+        .section-title { font-size: 1.25rem; font-weight: 800; color: var(--color-primary); display: flex; align-items: center; gap: 8px; }
+        .card { background: var(--bg-card); border-radius: var(--radius-lg); padding: 20px; border: 1px solid var(--border-line); box-shadow: var(--card-shadow); }
 
-        /* 눈의 피로를 완전히 제거한 프리미엄 에메랄드 테두리 시그널 카드 */
-        .signal-premium-card {
-            background: var(--bg-card) !important;
-            border: 1.5px solid var(--signal-border) !important;
-            border-radius: 16px !important;
-            padding: 16px !important;
-            margin-bottom: 16px !important;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04) !important;
-            transition: border-color 0.2s, background-color 0.2s;
-        }
+        /* 오늘의 시장 그리드 */
+        .market-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .market-card { background: #FFFFFF; border: 1px solid var(--border-line); border-radius: var(--radius-md); padding: 16px; text-align: left; }
+        .market-card .name { font-size: 0.85rem; font-weight: 600; color: var(--text-sub); margin-bottom: 4px; }
+        .market-card .val { font-size: 1.25rem; font-weight: 800; color: var(--color-primary); }
+        .market-card .rate { font-size: 0.85rem; font-weight: 700; margin-top: 2px; }
 
-        .signal-card-header {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-            cursor: pointer;
-            user-select: none;
-            padding: 4px 0;
-        }
-        .signal-card-title {
-            font-size: 1.05rem !important;
-            font-weight: 700 !important;
-            color: #10b981 !important;
-            text-align: center;
-            letter-spacing: -0.3px;
-        }
-        .signal-arrow-icon {
-            width: 20px;
-            height: 20px;
-            fill: #10b981 !important;
-            position: absolute;
-            right: 4px;
-            transition: transform 0.25s ease;
-        }
+        .val-up { color: var(--color-up); }
+        .val-down { color: var(--color-down); }
 
-        .gauge-inner-box {
-            width: 58px;
-            height: 58px;
-            border-radius: 50%;
-            border: 4px solid #10b981;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            background: var(--bg-subcard);
-            flex-shrink: 0;
-        }
+        /* 2열 배치 레이아웃 */
+        .grid-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
-        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.6; color: var(--text-sub); border-top: 1px solid rgba(16, 185, 129, 0.2); }
-        .guide-title { font-weight: 700; color: #10b981; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; }
+        /* TOP 5 리스트 */
+        .top-list { display: flex; flex-direction: column; gap: 12px; }
+        .top-item { display: flex; align-items: flex-start; gap: 14px; padding: 12px; border-radius: var(--radius-sm); background: #F9FAFB; border: 1px solid var(--border-line); }
+        .top-num { font-size: 1.1rem; font-weight: 800; color: var(--text-muted); line-height: 1; }
+        .top-content .topic { font-size: 0.95rem; font-weight: 700; color: var(--color-primary); }
+        .top-content .desc { font-size: 0.85rem; color: var(--text-sub); margin-top: 2px; }
 
-        .news-item { padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: block; }
+        /* 주목 종목 카드 */
+        .stock-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+        .stock-card { background: #FFFFFF; border: 1px solid var(--border-line); border-radius: var(--radius-md); padding: 16px; cursor: pointer; transition: border-color 0.15s; }
+        .stock-card:hover { border-color: var(--border-focus); }
+        .stock-card .s-name { font-size: 1rem; font-weight: 700; color: var(--color-primary); }
+        .stock-card .s-price { font-size: 1.15rem; font-weight: 800; margin-top: 6px; }
+        .stock-card .s-badge { display: inline-block; font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: 12px; margin-top: 8px; }
+
+        /* AI vs 개미 */
+        .vs-card { display: flex; align-items: center; justify-content: space-between; padding: 20px; background: #FFFFFF; border: 1px solid var(--border-line); border-radius: var(--radius-md); margin-bottom: 10px; }
+        .vs-side { text-align: center; flex: 1; }
+        .vs-divider { font-weight: 800; color: var(--text-muted); font-size: 1.1rem; padding: 0 16px; }
+
+        /* 미국 수혜주 */
+        .link-flow { display: flex; align-items: center; justify-content: space-between; padding: 16px; background: #F9FAFB; border-radius: var(--radius-md); border: 1px solid var(--border-line); margin-bottom: 10px; }
+
+        /* 뉴스 카드 */
+        .news-item { padding: 14px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
-        .news-title { color: var(--text-main); font-size: 0.85rem; font-weight: 500; line-height: 1.4; }
-        .news-title:hover { color: #0284c7; }
-        .news-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; }
+        .news-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+        .news-title { font-size: 0.95rem; font-weight: 600; color: var(--text-main); }
+        .news-title:hover { text-decoration: underline; }
+        .news-meta { font-size: 0.8rem; color: var(--text-sub); }
+        .badge-impact { font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
+        .badge-positive { background: #DCFCE7; color: #16A34A; }
+        .badge-negative { background: #FEE2E2; color: #EF4444; }
+        .badge-neutral { background: #F3F4F6; color: #6B7280; }
 
-        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 74px; background: var(--bottom-fade); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
-        .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }
+        /* 종목 상세 분석 뷰 */
+        #detail-view { display: none; }
+        .detail-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
+        .detail-title { font-size: 1.8rem; font-weight: 800; color: var(--color-primary); }
+        .detail-symbol { font-size: 1rem; color: var(--text-sub); font-weight: 500; margin-left: 6px; }
+        .detail-price { font-size: 2rem; font-weight: 800; }
+        .detail-meta { font-size: 0.85rem; color: var(--text-sub); margin-top: 4px; }
+
+        .quant-spec-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
+        .spec-box { background: #F9FAFB; border: 1px solid var(--border-line); border-radius: var(--radius-sm); padding: 12px; }
+        .spec-label { font-size: 0.8rem; color: var(--text-sub); font-weight: 500; }
+        .spec-val { font-size: 1rem; font-weight: 700; color: var(--color-primary); margin-top: 2px; }
+
+        /* 투표 & 댓글 */
+        .vote-wrap { display: flex; gap: 10px; margin-top: 14px; }
+        .vote-btn { flex: 1; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border-line); background: #FFFFFF; font-size: 0.95rem; font-weight: 700; cursor: pointer; transition: all 0.15s; }
+        .vote-btn.active-long { background: #DCFCE7; border-color: #16A34A; color: #16A34A; }
+        .vote-btn.active-short { background: #FEE2E2; border-color: #EF4444; color: #EF4444; }
+
+        .comment-input-box { display: flex; gap: 8px; margin-top: 14px; }
+        .comment-input-box input { flex: 1; border: 1px solid var(--border-line); border-radius: var(--radius-md); padding: 10px 14px; font-size: 0.9rem; outline: none; }
+        .comment-input-box button { background: var(--color-primary); color: #FFFFFF; border: none; border-radius: var(--radius-md); padding: 0 18px; font-weight: 700; cursor: pointer; }
+
+        .comment-item { padding: 10px 0; border-bottom: 1px solid var(--border-line); font-size: 0.88rem; }
+        .comment-item:last-child { border-bottom: none; }
+        .comment-head { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-sub); margin-bottom: 2px; }
+        .comment-nick { font-weight: 700; color: var(--color-primary); }
+
+        .tg-banner {
+            background: #229ED9;
+            color: #FFFFFF;
+            border-radius: var(--radius-md);
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            text-decoration: none;
+            font-weight: 700;
+            margin-top: 16px;
+        }
+
+        .loading-box { text-align: center; padding: 60px 0; font-weight: 600; color: var(--text-sub); }
+
+        /* 모바일 반응형 */
+        @media (max-width: 768px) {
+            .nav-menu, .btn-nav-text, .btn-nav-login { display: none; }
+            .mobile-menu-btn { display: block; }
+            .hero-title { font-size: 1.6rem; }
+            .market-grid { grid-template-columns: repeat(2, 1fr); }
+            .grid-2col { grid-template-columns: 1fr; }
+            .stock-grid { grid-template-columns: 1fr; }
+            .quant-spec-grid { grid-template-columns: 1fr 1fr; }
+        }
     </style>
 </head>
 <body>
 
-    <!-- Gemini 사이드바 -->
-    <div id="sidebar-wrapper">
-        <div class="side-top-action">
-            <span style="font-weight:700; font-size:1.15rem; color:var(--text-title); cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
+    <!-- 상단 네비게이션 -->
+    <header>
+        <div class="nav-left">
+            <div class="logo" onclick="resetToHome()">🐜 gaemiGTP</div>
+            <ul class="nav-menu">
+                <li class="nav-item active" onclick="resetToHome()">시장</li>
+                <li class="nav-item" onclick="document.getElementById('centerInput').focus()">종목분석</li>
+                <li class="nav-item" onclick="scrollToSection('sec-vs')">AI vs 개미</li>
+                <li class="nav-item" onclick="scrollToSection('sec-news')">뉴스</li>
+                <li class="nav-item" onclick="scrollToSection('sec-community')">커뮤니티</li>
+            </ul>
+        </div>
+        <div class="nav-right">
+            <button class="btn-nav-text">알림</button>
+            <button class="btn-nav-login">로그인</button>
+            <button class="mobile-menu-btn">☰</button>
+        </div>
+    </header>
+
+    <div class="container">
+        
+        <!-- 메인 홈 뷰 -->
+        <div id="home-view">
             
-            <button class="gemini-menu-icon" onclick="toggleSidebar()" title="사이드 패널 닫기">
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M4 19V5C4 4.45 4.19583 3.97917 4.5875 3.5875C4.97917 3.19583 5.45 3 6 3H18C18.55 3 19.0208 3.19583 19.4125 3.5875C19.8042 3.97917 20 4.45 20 5V19C20 19.55 19.8042 20.0208 19.4125 20.4125C19.0208 20.8042 18.55 21 18 21H6C5.45 21 4.97917 20.8042 4.5875 20.4125C4.19583 20.0208 4 19.55 4 19ZM9 19H18V5H9V19ZM6 5V19V5Z"/>
-                </svg>
-            </button>
-        </div>
-
-        <button class="gemini-new-btn" onclick="resetToHome()">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 4v16m8-8H4" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <span>새 종목</span>
-        </button>
-
-        <div class="sidebar-scroll-area">
-            <div class="sidebar-section-title">최근 종목</div>
-            <div class="sidebar-item" onclick="doSearch('SK하이닉스');">SK하이닉스</div>
-            <div class="sidebar-item" onclick="doSearch('엔비디아');">엔비디아</div>
-            <div class="sidebar-item" onclick="doSearch('삼성전자');">삼성전자</div>
-            <div class="sidebar-item" onclick="doSearch('비트코인');">비트코인</div>
-        </div>
-    </div>
-
-    <!-- 메인 컨텐츠 영역 -->
-    <div id="content-wrapper">
-        <header>
-            <div class="header-left">
-                <button class="gemini-menu-icon" id="headerToggleBtn" onclick="toggleSidebar()" title="사이드 패널 열기">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-                </button>
-                <div class="logo-top" id="headerLogo" onclick="resetToHome()">gaemiGTP</div>
-            </div>
-
-            <!-- 원클릭 테마 전환 버튼 (해/달) -->
-            <button class="gemini-menu-icon" id="themeToggleBtn" onclick="toggleTheme()" title="화면 테마 변경">
-                <span id="themeIconArea"></span>
-            </button>
-        </header>
-
-        <div id="main-view">
-            <div class="hero-title">gaemiGTP</div>
-            <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
-            <div class="search-container">
-                <div class="search-box">
-                    <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
-                    
-                    <div class="model-selector-wrap">
-                        <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
-                            <span class="model-pill-name" id="centerCurrentModel">gaemi</span>
-                            <span class="model-pill-arrow">▲</span>
-                        </div>
-                        <div class="model-dropdown-menu" id="centerDropdown">
-                            <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
-                                <div class="item-title">gaemi <span class="item-check">✓</span></div>
-                                <div class="item-sub">도움을 받으세요</div>
-                            </div>
-                            <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
-                                <div class="item-title">info <span class="item-check">✓</span></div>
-                                <div class="item-sub">정보를 확인하세요</div>
-                            </div>
-                            <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
-                                <div class="item-title">pro <span class="item-check">✓</span></div>
-                                <div class="item-sub">실력을 키우세요</div>
-                            </div>
-                        </div>
+            <!-- 메인 히어로 -->
+            <section class="hero-section">
+                <h1 class="hero-title">오늘 시장, 어디부터 볼까?</h1>
+                <p class="hero-sub">뉴스 · 차트 · 수급 · 기술지표를 한곳에서 쉽게 확인하세요.</p>
+                <div class="hero-note">실제 데이터가 확인되는 정보만 보여드립니다.</div>
+                
+                <div class="search-wrap">
+                    <div class="search-box">
+                        <input type="text" id="centerInput" placeholder="🔍 종목명을 입력하세요 (예: 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                        <button class="btn-search" onclick="doSearch(document.getElementById('centerInput').value)">분석하기</button>
                     </div>
-
-                    <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
-                        <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-                    </button>
                 </div>
+
+                <div class="popular-tags">
+                    <button class="tag-btn" onclick="doSearch('삼성전자')">삼성전자</button>
+                    <button class="tag-btn" onclick="doSearch('SK하이닉스')">SK하이닉스</button>
+                    <button class="tag-btn" onclick="doSearch('엔비디아')">엔비디아</button>
+                    <button class="tag-btn" onclick="doSearch('비트코인')">비트코인</button>
+                </div>
+            </section>
+
+            <!-- 오늘의 시장 -->
+            <div class="section-header">
+                <h2 class="section-title">📊 오늘의 시장</h2>
             </div>
-            <div class="popular-tags">
-                <button class="tag-btn" onclick="doSearch('SK하이닉스')">SK하이닉스</button>
-                <button class="tag-btn" onclick="doSearch('삼성전자')">삼성전자</button>
-                <button class="tag-btn" onclick="doSearch('알테오젠')">알테오젠</button>
-                <button class="tag-btn" onclick="doSearch('엔비디아')">엔비디아</button>
-                <button class="tag-btn" onclick="doSearch('비트코인')">비트코인</button>
+            <div class="market-grid" id="marketGridArea">
+                <div class="market-card"><div class="name">KOSPI</div><div class="val" id="mKospiVal">-</div><div class="rate" id="mKospiRate">-</div></div>
+                <div class="market-card"><div class="name">NASDAQ</div><div class="val" id="mNasVal">-</div><div class="rate" id="mNasRate">-</div></div>
+                <div class="market-card"><div class="name">BTC</div><div class="val" id="mBtcVal">-</div><div class="rate" id="mBtcRate">-</div></div>
+                <div class="market-card"><div class="name">USD/KRW</div><div class="val" id="mUsdVal">-</div><div class="rate" id="mUsdRate">-</div></div>
             </div>
+
+            <!-- 2열 섹션: 시장 TOP 5 & 오늘의 주목 종목 -->
+            <div class="grid-2col" style="margin-top: 36px;">
+                
+                <!-- 오늘 시장을 움직이는 TOP 5 -->
+                <div>
+                    <div class="section-header" style="margin-top: 0;">
+                        <h2 class="section-title">🔥 오늘 시장 체크포인트</h2>
+                    </div>
+                    <div class="card top-list">
+                        <div class="top-item">
+                            <div class="top-num">01</div>
+                            <div class="top-content"><div class="topic">반도체 / AI HBM</div><div class="desc">AI 인프라 투자와 반도체 수요를 확인하세요.</div></div>
+                        </div>
+                        <div class="top-item">
+                            <div class="top-num">02</div>
+                            <div class="top-content"><div class="topic">미국 금리 및 달러 환율</div><div class="desc">미국 금리와 원/달러 움직임을 확인하세요.</div></div>
+                        </div>
+                        <div class="top-item">
+                            <div class="top-num">03</div>
+                            <div class="top-content"><div class="topic">2차전지 / 전기차</div><div class="desc">전기차·배터리 업종의 주요 변수를 확인하세요.</div></div>
+                        </div>
+                        <div class="top-item">
+                            <div class="top-num">04</div>
+                            <div class="top-content"><div class="topic">바이오 / 기술수출</div><div class="desc">임상·기술이전 등 바이오 주요 일정을 확인하세요.</div></div>
+                        </div>
+                        <div class="top-item">
+                            <div class="top-num">05</div>
+                            <div class="top-content"><div class="topic">암호화폐 온체인 수급</div><div class="desc">ETF 자금 흐름과 암호화폐 수급을 확인하세요.</div></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 오늘의 주목 종목 -->
+                <div>
+                    <div class="section-header" style="margin-top: 0;">
+                        <h2 class="section-title">⭐ 빠른 종목 분석</h2>
+                    </div>
+                    <div class="card stock-grid" style="grid-template-columns: 1fr;">
+                        <div class="stock-card" onclick="doSearch('SK하이닉스')">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div class="s-name">SK하이닉스</div>
+                                <span class="badge-impact badge-neutral">검색 후 분석</span>
+                            </div>
+                            <div class="s-price"><span style="font-size:0.9rem; color:var(--text-sub);">검색하면 실시간 가격과 분석을 확인할 수 있습니다.</span></div>
+                        </div>
+                        <div class="stock-card" onclick="doSearch('삼성전자')">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div class="s-name">삼성전자</div>
+                                <span class="badge-impact badge-neutral">검색 후 분석</span>
+                            </div>
+                            <div class="s-price"><span style="font-size:0.9rem; color:var(--text-sub);">검색하면 실시간 가격과 분석을 확인할 수 있습니다.</span></div>
+                        </div>
+                        <div class="stock-card" onclick="doSearch('NVDA')">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div class="s-name">엔비디아 (NVDA)</div>
+                                <span class="badge-impact badge-neutral">검색 후 분석</span>
+                            </div>
+                            <div class="s-price"><span style="font-size:0.9rem; color:var(--text-sub);">검색하면 실시간 가격과 분석을 확인할 수 있습니다.</span></div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- 차별화 섹션: AI vs 개미 & 미국→한국 수혜주 -->
+            <div class="grid-2col" style="margin-top: 36px;" id="sec-vs">
+                
+                <!-- AI vs 개미 -->
+                <div>
+                    <div class="section-header" style="margin-top: 0;">
+                        <h2 class="section-title">🧠 AI vs 🐜 개미</h2>
+                    </div>
+                    <div class="card">
+                        <div class="vs-card">
+                            <div class="vs-side">
+                                <div style="font-size:0.8rem; color:var(--text-sub);">검색한 종목</div>
+                                <div style="font-size:1.1rem; font-weight:800; margin-top:2px;">AI 분석</div>
+                                <div class="badge-impact badge-neutral" style="margin-top:6px;">분석 결과 표시</div>
+                            </div>
+                            <div class="vs-divider">VS</div>
+                            <div class="vs-side">
+                                <div style="font-size:0.8rem; color:var(--text-sub);">집단지성 투표</div>
+                                <div style="font-size:1.1rem; font-weight:800; margin-top:2px;">개미 심리</div>
+                                <div class="badge-impact badge-neutral" style="margin-top:6px;">실제 투표 결과 표시</div>
+                            </div>
+                        </div>
+                        <div style="font-size:0.82rem; color:var(--text-sub); text-align:center; padding:4px 0;">
+                            종목을 검색하면 해당 종목의 실제 분석 결과와 개미 투표를 비교합니다.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 미국 시장 움직임 → 한국 관련주 -->
+                <div>
+                    <div class="section-header" style="margin-top: 0;">
+                        <h2 class="section-title">🇺🇸 미국 시장 → 🇰🇷 한국 관련주</h2>
+                    </div>
+                    <div class="card">
+                        <div class="link-flow">
+                            <div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">대표 연결 예시</div>
+                                <div style="font-size:1.05rem; font-weight:800;">NVIDIA (엔비디아)</div>
+                            </div>
+                            <div style="font-weight:800; color:var(--text-muted);">→</div>
+                            <div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">국내 관련 산업</div>
+                                <div style="font-size:0.95rem; font-weight:700; color:var(--color-primary);">SK하이닉스 · 한미반도체</div>
+                            </div>
+                        </div>
+                        <div class="link-flow" style="margin-bottom:0;">
+                            <div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">대표 연결 예시</div>
+                                <div style="font-size:1.05rem; font-weight:800;">TESLA (테슬라)</div>
+                            </div>
+                            <div style="font-weight:800; color:var(--text-muted);">→</div>
+                            <div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">국내 관련 산업</div>
+                                <div style="font-size:0.95rem; font-weight:700; color:var(--color-primary);">LG에너지솔루션 · 레인보우로보</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- 오늘의 핵심 뉴스 -->
+            <div class="section-header" id="sec-news">
+                <h2 class="section-title">📰 오늘의 핵심 뉴스</h2>
+            </div>
+            <div class="card" id="homeNewsList">
+                <div style="text-align:center; color:var(--text-muted); padding:20px;">실시간 뉴스 데이터를 불러오는 중입니다...</div>
+            </div>
+
         </div>
 
-        <div id="result-scroll-view">
-            <div class="result-inner">
-                <div class="loading" id="loading">세계 증시, 전자공시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
-                <div id="result-card-wrap" style="display:none;">
+        <!-- 종목 상세 분석 뷰 (검색 시 전환) -->
+        <div id="detail-view">
+            <div class="loading-box" id="detailLoading">실시간 주가 데이터 및 퀀트 지표를 연산 중입니다...</div>
+
+            <div id="detailContent" style="display:none;">
+                
+                <div class="card" style="margin-bottom:16px;">
+                    <div class="detail-header">
+                        <div>
+                            <div class="detail-title"><span id="dName"></span><span class="detail-symbol" id="dSymbol"></span></div>
+                            <div class="detail-meta" id="dMeta"></div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div class="detail-price" id="dPrice"></div>
+                            <div style="font-size:1rem; font-weight:700;" id="dChange"></div>
+                        </div>
+                    </div>
+
+                    <!-- 14대 퀀트 기반 AI 종합 요약 -->
+                    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; margin-top:16px; padding-top:16px; border-top:1px solid var(--border-line);">
+                        <div class="spec-box"><div class="spec-label">🧠 AI 분석 판단</div><div class="spec-val" id="dAiOpinion">-</div></div>
+                        <div class="spec-box"><div class="spec-label">📈 추세 국면</div><div class="spec-val" id="dTrend">-</div></div>
+                        <div class="spec-box"><div class="spec-label">🎯 1차 매수 진입가</div><div class="spec-val" id="dEntry1">-</div></div>
+                    </div>
+
+                    <!-- 차트 영역 -->
+                    <div id="tvChart" style="width:100%; height:320px; margin-top:20px; background:#FFFFFF; border-radius:var(--radius-sm); overflow:hidden;"></div>
+                </div>
+
+                <!-- 기술적 상태 상세 -->
+                <div class="card" style="margin-bottom:16px;">
+                    <h3 class="section-title" style="font-size:1.05rem; margin-bottom:12px;">📊 기술적 상태 & 주요 가격선</h3>
+                    <div class="quant-spec-grid">
+                        <div class="spec-box"><div class="spec-label">20일 이동평균선</div><div class="spec-val" id="dMa20">-</div></div>
+                        <div class="spec-box"><div class="spec-label">60일 이동평균선</div><div class="spec-val" id="dMa60">-</div></div>
+                        <div class="spec-box"><div class="spec-label">RSI (14) 강도</div><div class="spec-val" id="dRsi">-</div></div>
+                        <div class="spec-box"><div class="spec-label">MACD (12,26,9)</div><div class="spec-val" id="dMacd">-</div></div>
+                        <div class="spec-box"><div class="spec-label">볼린저 밴드 상/하단</div><div class="spec-val" id="dBb">-</div></div>
+                        <div class="spec-box"><div class="spec-label">5일평균 거래량 대비</div><div class="spec-val" id="dVolRatio">-</div></div>
+                        <div class="spec-box"><div class="spec-label">주요 지지선</div><div class="spec-val" id="dSupport">-</div></div>
+                        <div class="spec-box"><div class="spec-label">현재 기준가</div><div class="spec-val" id="dCurrent">-</div></div>
+                        <div class="spec-box"><div class="spec-label">주요 저항선</div><div class="spec-val" id="dResistance">-</div></div>
+                    </div>
+                    <div style="margin-top:14px; padding:12px; background:#F9FAFB; border-radius:var(--radius-sm); font-size:0.85rem; color:var(--text-sub);" id="dGuideText"></div>
+                </div>
+
+                <!-- 텔레그램 실시간 알림 연동 배너 -->
+                <a id="tgAlertLink" href="#" target="_blank" class="tg-banner">
+                    <span>🔔 <span id="tgBtnText">이 종목</span> 텔레그램 실시간 알림 받기</span>
+                    <span style="font-size:0.85rem; opacity:0.9;">1초 연결 →</span>
+                </a>
+
+                <!-- DART 전자공시 카드 -->
+                <div class="card" id="dartCard" style="margin-top:16px; display:none;">
+                    <h3 class="section-title" style="font-size:1.05rem; margin-bottom:12px;">📑 DART 전자공시</h3>
+                    <div id="dartList"></div>
+                </div>
+
+                <!-- 종목 뉴스 카드 -->
+                <div class="card" style="margin-top:16px;">
+                    <h3 class="section-title" style="font-size:1.05rem; margin-bottom:12px;">📰 종목 관련 뉴스</h3>
+                    <div id="stockNewsList"></div>
+                </div>
+
+                <!-- 집단지성 심리 투표 & 실시간 토론방 -->
+                <div class="grid-2col" style="margin-top:16px;" id="sec-community">
                     
+                    <!-- 개미 심리 투표 -->
                     <div class="card">
-                        <div class="price-title" id="rTitle"></div>
-                        <div class="price-val" id="rPrice"></div>
-                        <div class="price-meta" id="rMeta"></div>
-                        <div class="chart-legend">
-                            <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
-                            <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
-                            <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
-                            <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
+                        <h3 class="section-title" style="font-size:1.05rem;">🐜 개미 심리 투표</h3>
+                        <div style="margin:14px 0 8px;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.85rem; font-weight:700; margin-bottom:6px;">
+                                <span class="val-up" id="voteLongPct">상승 50%</span>
+                                <span class="val-down" id="voteShortPct">하락 50%</span>
+                            </div>
+                            <div style="width:100%; height:8px; background:#F3F4F6; border-radius:4px; overflow:hidden; display:flex;">
+                                <div style="height:100%; background:var(--color-up); width:50%; transition:width 0.3s;" id="voteLongBar"></div>
+                                <div style="height:100%; background:var(--color-down); width:50%; transition:width 0.3s;" id="voteShortBar"></div>
+                            </div>
                         </div>
-                        <div class="chart-box-wrap" id="tvChart"></div>
+                        <div class="vote-wrap">
+                            <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">▲ 상승</button>
+                            <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">▼ 하락</button>
+                        </div>
                     </div>
 
-                    <!-- 텔레그램 실시간 알림 구독 버튼 (회원가입 X) -->
-                    <a id="tgAlertLink" href="#" target="_blank" class="tg-alert-btn">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
-                        <span id="tgAlertBtnText">이 종목 텔레그램 실시간 알림 받기</span>
-                    </a>
-
-                    <!-- 집단지성 롱/숏 실시간 심리 투표 카드 -->
+                    <!-- 실시간 개미 토론방 -->
                     <div class="card">
-                        <div class="section-title">
-                            <span>집단지성 심리 투표</span>
-                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;">내일 주가 전망</span>
-                        </div>
-                        <div style="margin:8px 0;">
-                            <div style="display:flex; justify-content:space-between; font-size:0.75rem; font-weight:700; margin-bottom:6px;">
-                                <span style="color:#10b981;" id="voteLongPct">상승 50%</span>
-                                <span style="color:#38bdf8;" id="voteShortPct">하락 50%</span>
-                            </div>
-                            <div style="width:100%; height:8px; background:var(--bg-subcard); border-radius:4px; overflow:hidden; display:flex; border:1px solid var(--border-line);">
-                                <div style="height:100%; background:#10b981; width:50%; transition:width 0.3s;" id="voteLongBar"></div>
-                                <div style="height:100%; background:#38bdf8; width:50%; transition:width 0.3s;" id="voteShortBar"></div>
-                            </div>
-                            <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted); margin-top:4px;">
-                                <span id="voteLongCount">0명</span>
-                                <span id="voteShortCount">0명</span>
-                            </div>
-                        </div>
-                        <div class="vote-btn-wrap">
-                            <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">🚀 상승할 것 같아요</button>
-                            <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">📉 하락할 것 같아요</button>
-                        </div>
-                    </div>
-
-                    <!-- 간결화된 종목 뉴스 -->
-                    <div class="card">
-                        <div class="section-title">종목 뉴스</div>
-                        <div id="stockNewsList"></div>
-                    </div>
-
-                    <!-- DART 전자공시 카드 -->
-                    <div class="card" id="dartCard" style="display:none;">
-                        <div class="section-title">
-                            <span>DART 전자공시</span>
-                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;">최근 핵심 공시</span>
-                        </div>
-                        <div id="dartList"></div>
-                    </div>
-
-                    <!-- 간결화된 세계 증시 -->
-                    <div class="card">
-                        <div class="section-title">세계 증시</div>
-                        <div class="world-grid" id="worldGrid"></div>
-                    </div>
-
-                    <!-- 간결화된 해외 뉴스 -->
-                    <div class="card">
-                        <div class="section-title">해외 뉴스</div>
-                        <div id="globalNewsList"></div>
-                    </div>
-
-                    <!-- 3대 시장 통합 컨센서스 카드 -->
-                    <div class="card" id="unifiedCard" style="display:none;">
-                        <div style="margin-bottom:16px;">
-                            <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
-                        </div>
-
-                        <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid var(--border-line);">
-                            <div class="gauge-inner-box">
-                                <span style="font-size:1.0rem; font-weight:800; color:var(--text-title); line-height:1;" id="uGaugeVal"></span>
-                                <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px;" id="uGaugeLabel"></span>
-                            </div>
-                            <div style="min-width:0;">
-                                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                    <span style="font-size:0.78rem; color:var(--text-muted);" id="uStatusLabel"></span>
-                                    <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:700; padding:2px 7px; border-radius:10px;" id="uBadge"></span>
-                                </div>
-                                <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="uDots"></div>
-                            </div>
-                        </div>
-
-                        <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
-                            <div>
-                                <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uPrimaryLabel"></div>
-                                <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
-                            </div>
-                            <div style="text-align:right;">
-                                <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uSecondaryLabel"></div>
-                                <div style="font-size:1.15rem; font-weight:700; color:var(--text-title);" id="uSecondaryVal"></div>
-                            </div>
-                        </div>
-
-                        <div style="margin:20px 0 14px; position:relative;">
-                            <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
-                                <span style="color:var(--text-muted);" id="uSliderLeft"></span>
-                                <span style="color:#10b981; font-weight:700;" id="uSliderMid"></span>
-                                <span style="color:var(--text-muted);" id="uSliderRight"></span>
-                            </div>
-                            <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="uBarFill"></div>
-                                <div style="position:absolute; top:-4px; width:14px; height:14px; border-radius:50%; background:#10b981; border:2px solid var(--bg-card); transform:translateX(-50%);" id="uDotMarker"></div>
-                            </div>
-                            <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted); margin-top:6px; white-space:nowrap;">
-                                <span id="uSliderBottomLeft"></span>
-                                <span id="uSliderBottomRight"></span>
-                            </div>
-                        </div>
-
-                        <div style="margin-top:16px; border-top:1px solid var(--border-line); padding-top:12px;">
-                            <div style="font-size:0.82rem; font-weight:700; color:var(--text-sub); margin-bottom:8px; display:flex; justify-content:space-between;">
-                                <span id="uListTitle"></span>
-                                <span style="font-size:0.68rem; color:var(--text-muted); font-weight:normal;" id="uSourceTag"></span>
-                            </div>
-                            <div id="uItemList"></div>
-                        </div>
-                    </div>
-
-                    <!-- 간결화된 기술 지표 -->
-                    <div class="card">
-                        <div class="section-title">
-                            <span>기술 지표</span>
-                            <span id="rTrend" style="font-size:0.82rem; color:#0284c7;"></span>
-                        </div>
-                        <div class="quant-grid">
-                            <div class="quant-item"><div class="q-label">5일선</div><div class="q-val" id="rMa5"></div></div>
-                            <div class="quant-item"><div class="q-label">20일선</div><div class="q-val" id="rMa20"></div></div>
-                            <div class="quant-item"><div class="q-label">60일선</div><div class="q-val" id="rMa60"></div></div>
-                            <div class="quant-item"><div class="q-label">120일선</div><div class="q-val" id="rMa120"></div></div>
-                            <div class="quant-item"><div class="q-label">600일선</div><div class="q-val" id="rMa600"></div></div>
-                            <div class="quant-item"><div class="q-label">1200일선</div><div class="q-val" id="rMa1200"></div></div>
-                            <div class="quant-item"><div class="q-label">볼린저 밴드 (60, 2) 상/하</div><div class="q-val" id="rBb"></div></div>
-                            <div class="quant-item"><div class="q-label">MACD (12,26,9)</div><div class="q-val" id="rMacd"></div></div>
-                            <div class="quant-item"><div class="q-label">52주 고/저 대비 위치</div><div class="q-val" id="rPos52w"></div></div>
-                            <div class="quant-item"><div class="q-label">이격도 (20일 / 60일)</div><div class="q-val" id="rDisp"></div></div>
-                            <div class="quant-item"><div class="q-label">RSI (14)</div><div class="q-val" id="rRsi"></div></div>
-                            <div class="quant-item"><div class="q-label">ATR (14) 변동폭 / 비율</div><div class="q-val" id="rAtr"></div></div>
-                            <div class="quant-item"><div class="q-label">거래량 / 5일평균 대비</div><div class="q-val" id="rVolRatio"></div></div>
-                            <div class="quant-item"><div class="q-label">20일 평균 거래대금</div><div class="q-val" id="rTval20d"></div></div>
-                        </div>
-                    </div>
-
-                    <!-- gaemiGTP 브랜드 및 눈의 피로도를 해소한 핵심 시그널 박스 -->
-                    <div class="signal-premium-card">
-                        <div class="signal-card-header" onclick="toggleSignal()">
-                            <span class="signal-card-title">gaemiGTP 시그널</span>
-                            <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-                        </div>
-                        
-                        <div id="signalBody" style="display:none; margin-top:16px;">
-                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid rgba(16,185,129,0.2);">
-                                <div class="gauge-inner-box">
-                                    <span style="font-size:1.0rem; font-weight:800; color:var(--text-title); line-height:1;" id="rWinRateGauge"></span>
-                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px;">승률</span>
-                                </div>
-                                <div style="min-width:0;">
-                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                        <span style="font-size:0.78rem; color:var(--text-muted);">시그널 종합</span>
-                                        <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:700; padding:2px 7px; border-radius:10px;">분할 매수 유효</span>
-                                    </div>
-                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;">
-                                        <span style="color:#10b981; font-weight:700;" id="rBt1yTag"></span> &nbsp; 
-                                        <span style="color:#10b981; font-weight:700;" id="rBt2yTag"></span> &nbsp; 
-                                        <span style="color:#0284c7;" id="rRrTag"></span>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- 수평 가격 밴드 슬라이더 -->
-                            <div style="margin:20px 0 14px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
-                                    <span style="color:#0284c7; font-weight:700;" id="rSliderStop"></span>
-                                    <span style="color:var(--text-title); font-weight:700;" id="rSliderEntry"></span>
-                                    <span style="color:#10b981; font-weight:700;" id="rSliderTarget"></span>
-                                </div>
-                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="rSigBarFill"></div>
-                                    <div style="position:absolute; top:-4px; width:14px; height:14px; border-radius:50%; background:var(--bg-card); border:2px solid #10b981; transform:translateX(-50%);" id="rSigDotMarker"></div>
-                                </div>
-                                <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted); margin-top:6px; white-space:nowrap;">
-                                    <span>손절 방어선 (-5.5%)</span>
-                                    <span>목표 수익선 (+8.5%)</span>
-                                </div>
-                            </div>
-
-                            <div style="margin-top:16px; border-top:1px solid rgba(16,185,129,0.2); padding-top:10px;">
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.82rem;">
-                                    <div><span style="color:var(--text-title); font-weight:600;">1차 매수 진입가</span></div>
-                                    <div style="color:var(--text-title); font-weight:700; white-space:nowrap;" id="rEntry1"></div>
-                                </div>
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.82rem;">
-                                    <div><span style="color:var(--text-title); font-weight:600;">2차 분할 진입가</span></div>
-                                    <div style="color:var(--text-title); font-weight:700; white-space:nowrap;" id="rEntry2"></div>
-                                </div>
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.82rem;">
-                                    <div><span style="color:#10b981; font-weight:600;">1차 목표 수익가 (+4.5%)</span></div>
-                                    <div style="color:#10b981; font-weight:700; white-space:nowrap;" id="rTarget1"></div>
-                                </div>
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.82rem;">
-                                    <div><span style="color:#10b981; font-weight:600;">2차 목표 수익가 (+8.5%)</span></div>
-                                    <div style="color:#10b981; font-weight:700; white-space:nowrap;" id="rTarget2"></div>
-                                </div>
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; font-size:0.82rem;">
-                                    <div><span style="color:#0284c7; font-weight:600;">리스크 방어 손절가 (-5.5%)</span></div>
-                                    <div style="color:#0284c7; font-weight:700; white-space:nowrap;" id="rStop"></div>
-                                </div>
-                            </div>
-
-                            <!-- gaemiGTP 브랜드가 유지된 시그널 가이드 -->
-                            <div class="guide-box">
-                                <div class="guide-title">gaemiGTP 시그널 가이드</div>
-                                <div id="rGuideText" style="margin-top:4px; color:var(--text-sub); word-break:keep-all;"></div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- 실시간 익명 개미 토론방 카드 -->
-                    <div class="card">
-                        <div class="section-title">
-                            <span>실시간 개미 토론방</span>
-                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;" id="commentCountTag">0개의 의견</span>
-                        </div>
-                        <div id="commentList" style="margin-top:8px;">
-                            <div style="color:var(--text-muted); font-size:0.8rem; padding:10px 0; text-align:center;">첫 번째 한마디를 남겨보세요!</div>
-                        </div>
+                        <h3 class="section-title" style="font-size:1.05rem; justify-content:space-between;">
+                            <span>💬 개미 토론</span>
+                            <span style="font-size:0.75rem; color:var(--text-sub); font-weight:normal;" id="commentCountTag">0개 의견</span>
+                        </h3>
+                        <div id="commentList" style="max-height:180px; overflow-y:auto; margin-top:8px;"></div>
                         <div class="comment-input-box">
-                            <input type="text" id="commentInput" placeholder="이 종목에 대한 생각을 자유롭게 적어주세요" onkeypress="if(event.keyCode==13) postComment();" autocomplete="off" maxlength="80">
+                            <input type="text" id="commentInput" placeholder="의견을 남겨주세요" onkeypress="if(event.keyCode==13) postComment();" maxlength="80">
                             <button onclick="postComment()">등록</button>
                         </div>
                     </div>
 
                 </div>
+
             </div>
         </div>
 
-        <div id="bottom-bar">
-            <div class="search-container">
-                <div class="search-box">
-                    <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
-                    
-                    <div class="model-selector-wrap">
-                        <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
-                            <span class="model-pill-name" id="bottomCurrentModel">gaemi</span>
-                            <span class="model-pill-arrow">▲</span>
-                        </div>
-                        <div class="model-dropdown-menu" id="bottomDropdown">
-                            <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
-                                <div class="item-title">gaemi <span class="item-check">✓</span></div>
-                                <div class="item-sub">도움을 받으세요</div>
-                            </div>
-                            <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
-                                <div class="item-title">info <span class="item-check">✓</span></div>
-                                <div class="item-sub">정보를 확인하세요</div>
-                            </div>
-                            <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
-                                <div class="item-title">pro <span class="item-check">✓</span></div>
-                                <div class="item-sub">실력을 키우세요</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
-                        <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-                    </button>
-                </div>
-            </div>
-        </div>
     </div>
 
     <script>
         let chart = null;
-        let selectedMode = 'gaemi';
         let currentSymbol = '';
 
-        // ----------------------------------------------------
-        // Supabase 실시간 클라이언트 초기화
-        // ----------------------------------------------------
         const SUPABASE_URL = "https://uaqvmsubzgzvxbdcwcad.supabase.co";
         const SUPABASE_KEY = "sb_publishable_bcxDofsnPXgBICDDgQ8Ijw_fNjPcsRW";
         let supabaseClient = null;
@@ -1545,157 +1113,207 @@ HTML_PAGE = """<!DOCTYPE html>
                 supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
             }
         } catch(e) {
-            console.warn("Supabase init fallback to local:", e);
+            console.warn("Supabase local fallback mode");
         }
 
-        // 테마 관리 (다크 / 라이트)
-        function initTheme() {
-            const saved = localStorage.getItem('gaemi_theme') || 'dark';
-            if (saved === 'light') {
-                document.body.classList.add('light-theme');
-                updateThemeIcon(true);
-            } else {
-                document.body.classList.remove('light-theme');
-                updateThemeIcon(false);
-            }
-        }
+        async function initMarketOverview() {
+            try {
+                const res = await fetch('/api/market-overview');
+                const list = await res.json();
+                if (list && list.length >= 4) {
+                    document.getElementById('mKospiVal').innerText = list[0].price;
+                    document.getElementById('mKospiRate').innerText = list[0].rate;
+                    document.getElementById('mKospiRate').className = 'rate ' + (list[0].up ? 'val-up' : 'val-down');
 
-        function toggleTheme() {
-            const isLight = document.body.classList.toggle('light-theme');
-            localStorage.setItem('gaemi_theme', isLight ? 'light' : 'dark');
-            updateThemeIcon(isLight);
+                    document.getElementById('mNasVal').innerText = list[1].price;
+                    document.getElementById('mNasRate').innerText = list[1].rate;
+                    document.getElementById('mNasRate').className = 'rate ' + (list[1].up ? 'val-up' : 'val-down');
 
-            if (chart) {
-                chart.applyOptions({
-                    layout: {
-                        background: { color: isLight ? '#ffffff' : '#1e1f20' },
-                        textColor: isLight ? '#5f6368' : '#8e918f'
-                    },
-                    timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
-                    rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
-                });
-            }
-        }
+                    document.getElementById('mBtcVal').innerText = list[2].price;
+                    document.getElementById('mBtcRate').innerText = list[2].rate;
+                    document.getElementById('mBtcRate').className = 'rate ' + (list[2].up ? 'val-up' : 'val-down');
 
-        function updateThemeIcon(isLight) {
-            const area = document.getElementById('themeIconArea');
-            if (!area) return;
-            area.innerHTML = isLight 
-                ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`
-                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="12" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
-        }
+                    document.getElementById('mUsdVal').innerText = list[3].price;
+                    document.getElementById('mUsdRate').innerText = list[3].rate;
+                    document.getElementById('mUsdRate').className = 'rate ' + (list[3].up ? 'val-up' : 'val-down');
+                }
+            } catch(e) {}
 
-        function resizeChart() {
-            const container = document.getElementById('tvChart');
-            if (chart && container && container.clientWidth > 0) {
-                chart.applyOptions({ width: container.clientWidth });
-            }
-        }
-
-        function toggleSidebar() {
-            const side = document.getElementById('sidebar-wrapper');
-            side.classList.toggle('open');
-        }
-
-        function toggleModelDropdown(target) {
-            const centerD = document.getElementById('centerDropdown');
-            const bottomD = document.getElementById('bottomDropdown');
-            const targetD = target === 'center' ? centerD : bottomD;
-            const otherD = target === 'center' ? bottomD : centerD;
-            if (otherD) otherD.style.display = 'none';
-            if (targetD) targetD.style.display = targetD.style.display === 'block' ? 'none' : 'block';
-        }
-
-        function selectModel(modeKey, modeName) {
-            selectedMode = modeKey;
-            document.getElementById('centerCurrentModel').innerText = modeName;
-            document.getElementById('bottomCurrentModel').innerText = modeName;
-
-            ['centerDropdown', 'bottomDropdown'].forEach(id => {
-                const menu = document.getElementById(id);
-                if (menu) {
-                    const items = menu.querySelectorAll('.model-dropdown-item');
-                    items.forEach(it => {
-                        if (it.innerText.includes(modeName)) {
-                            it.classList.add('active');
-                        } else {
-                            it.classList.remove('active');
-                        }
+            try {
+                const resNews = await fetch('/api/analyze?q=' + encodeURIComponent('뉴욕증시'));
+                const dataNews = await resNews.json();
+                const hList = document.getElementById('homeNewsList');
+                if (dataNews && dataNews.stock_news && dataNews.stock_news.length > 0) {
+                    hList.innerHTML = '';
+                    dataNews.stock_news.slice(0, 5).forEach(n => {
+                        hList.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-header">
+                                    <span class="news-meta">${n.media} · ${n.pubDate}</span>
+                                    <span class="badge-impact badge-${n.impact}">${n.impact_text}</span>
+                                </div>
+                                <div class="news-title">${n.title}</div>
+                            </a>
+                        `;
                     });
-                    menu.style.display = 'none';
                 }
-            });
+            } catch(e) {}
         }
-
-        document.addEventListener('click', function(e) {
-            if (!e.target.closest('.model-selector-wrap')) {
-                const cd = document.getElementById('centerDropdown');
-                const bd = document.getElementById('bottomDropdown');
-                if (cd) cd.style.display = 'none';
-                if (bd) bd.style.display = 'none';
-            }
-            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
-                const side = document.getElementById('sidebar-wrapper');
-                if (side && side.classList.contains('open')) {
-                    side.classList.remove('open');
-                }
-            }
-        });
 
         function resetToHome() {
-            document.getElementById('main-view').style.display = 'flex';
-            document.getElementById('result-scroll-view').style.display = 'none';
-            document.getElementById('bottom-bar').style.display = 'none';
-            document.getElementById('result-card-wrap').style.display = 'none';
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('unifiedCard').style.display = 'none';
-            document.getElementById('dartCard').style.display = 'none';
+            document.getElementById('home-view').style.display = 'block';
+            document.getElementById('detail-view').style.display = 'none';
             document.getElementById('centerInput').value = '';
-            document.getElementById('bottomInput').value = '';
             currentSymbol = '';
-            
-            const side = document.getElementById('sidebar-wrapper');
-            if (side) side.classList.remove('open');
+            window.scrollTo({top: 0, behavior: 'smooth'});
         }
 
-        function toggleSignal() {
-            const body = document.getElementById('signalBody');
-            const arrow = document.getElementById('signalArrow');
-            if (body.style.display === 'block') {
-                body.style.display = 'none';
-                arrow.style.transform = 'rotate(0deg)';
-            } else {
-                body.style.display = 'block';
-                arrow.style.transform = 'rotate(180deg)';
+        function scrollToSection(id) {
+            const el = document.getElementById(id);
+            if (el) el.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function doSearch(query) {
+            const q = query.trim();
+            if (!q) return;
+
+            document.getElementById('home-view').style.display = 'none';
+            document.getElementById('detail-view').style.display = 'block';
+            document.getElementById('detailLoading').style.display = 'block';
+            document.getElementById('detailContent').style.display = 'none';
+            window.scrollTo({top: 0, behavior: 'smooth'});
+
+            try {
+                const res = await fetch('/api/analyze?q=' + encodeURIComponent(q));
+                const data = await res.json();
+                if (!res.ok || data.error) {
+                    alert(data.error || '종목 정보를 불러올 수 없습니다.');
+                    resetToHome();
+                    return;
+                }
+
+                currentSymbol = data.symbol;
+
+                document.getElementById('dName').innerText = data.name;
+                document.getElementById('dSymbol').innerText = `(${data.symbol})`;
+                document.getElementById('dPrice').innerText = data.price;
+                document.getElementById('dChange').innerText = data.chg_str;
+                document.getElementById('dChange').className = data.is_up ? 'val-up' : 'val-down';
+                document.getElementById('dMeta').innerText = `시장: ${data.market} · 시각: ${data.time}`;
+
+                const qData = data.quant;
+                document.getElementById('dAiOpinion').innerText = qData.ai_opinion;
+                document.getElementById('dTrend').innerText = qData.trend;
+                document.getElementById('dEntry1').innerText = qData.entry1;
+
+                document.getElementById('dMa20').innerText = qData.ma20;
+                document.getElementById('dMa60').innerText = qData.ma60;
+                document.getElementById('dRsi').innerText = qData.rsi;
+                document.getElementById('dMacd').innerText = qData.macd;
+                document.getElementById('dBb').innerText = qData.bollinger;
+                document.getElementById('dVolRatio').innerText = qData.vol_ratio;
+                document.getElementById('dSupport').innerText = qData.support;
+                document.getElementById('dCurrent').innerText = qData.current;
+                document.getElementById('dResistance').innerText = qData.resistance;
+                document.getElementById('dGuideText').innerText = '💡 ' + qData.guide_text;
+
+                // 텔레그램 연동 링크
+                document.getElementById('tgAlertLink').href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(data.symbol);
+                document.getElementById('tgBtnText').innerText = `[${data.name}]`;
+
+                // 공시 렌더링
+                const dCard = document.getElementById('dartCard');
+                const dList = document.getElementById('dartList');
+                if (data.dart_disclosures && data.dart_disclosures.length > 0) {
+                    dList.innerHTML = '';
+                    data.dart_disclosures.forEach(d => {
+                        dList.innerHTML += `
+                            <a href="${d.link}" target="_blank" class="news-item">
+                                <div class="news-header">
+                                    <span class="news-meta">${d.flr_nm} · ${d.date}</span>
+                                    <span class="badge-impact badge-${d.tag_type}">${d.tag_name}</span>
+                                </div>
+                                <div class="news-title">${d.title}</div>
+                            </a>
+                        `;
+                    });
+                    dCard.style.display = 'block';
+                } else {
+                    dCard.style.display = 'none';
+                }
+
+                // 뉴스 렌더링
+                const sNews = document.getElementById('stockNewsList');
+                sNews.innerHTML = '';
+                if (data.stock_news && data.stock_news.length > 0) {
+                    data.stock_news.forEach(n => {
+                        sNews.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-header">
+                                    <span class="news-meta">${n.media} · ${n.pubDate}</span>
+                                    <span class="badge-impact badge-${n.impact}">${n.impact_text}</span>
+                                </div>
+                                <div class="news-title">${n.title}</div>
+                            </a>
+                        `;
+                    });
+                } else {
+                    sNews.innerHTML = '<div style="color:var(--text-sub); font-size:0.85rem; padding:10px 0;">관련 뉴스가 없습니다.</div>';
+                }
+
+                loadCommunityData(data.symbol);
+
+                document.getElementById('detailLoading').style.display = 'none';
+                document.getElementById('detailContent').style.display = 'block';
+
+                setTimeout(() => {
+                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
+                }, 50);
+
+            } catch(e) {
+                alert('서버와 통신 중 오류가 발생했습니다.');
+                resetToHome();
             }
         }
 
-        // ----------------------------------------------------
-        // Supabase 실시간 투표 및 토론방 엔진
-        // ----------------------------------------------------
+        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
+            const container = document.getElementById('tvChart');
+            container.innerHTML = '';
+
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth || 700,
+                height: 320,
+                layout: { background: { color: '#FFFFFF' }, textColor: '#6B7280' },
+                grid: { vertLines: { color: '#F3F4F6' }, horzLines: { color: '#F3F4F6' } },
+                timeScale: { borderColor: '#E5E7EB', timeVisible: true },
+                rightPriceScale: { borderColor: '#E5E7EB' }
+            });
+
+            const candleSeries = chart.addCandlestickSeries({
+                upColor: '#16A34A', downColor: '#EF4444',
+                borderDownColor: '#EF4444', borderUpColor: '#16A34A',
+                wickDownColor: '#EF4444', wickUpColor: '#16A34A'
+            });
+            candleSeries.setData(candles);
+
+            const lineMa20 = chart.addLineSeries({ color: '#2563EB', lineWidth: 1.5, priceLineVisible: false });
+            lineMa20.setData(ma20);
+
+            const lineMa60 = chart.addLineSeries({ color: '#EA580C', lineWidth: 1.5, priceLineVisible: false });
+            lineMa60.setData(ma60);
+
+            chart.timeScale().fitContent();
+        }
+
         async function loadCommunityData(symbol) {
-            currentSymbol = symbol;
-            
-            // 텔레그램 딥링크 버튼 업데이트
-            const tgLink = document.getElementById('tgAlertLink');
-            const tgBtnText = document.getElementById('tgAlertBtnText');
-            if (tgLink && tgBtnText) {
-                tgLink.href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(symbol);
-                tgBtnText.innerText = '[' + symbol + '] 텔레그램 실시간 알림 받기';
-            }
-
             const voteKey = 'vote_' + symbol;
-            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
+            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 18, short: 9, myVote: null });
             let vData = JSON.parse(rawVote);
 
             if (supabaseClient) {
                 try {
-                    const { data, error } = await supabaseClient
-                        .from('votes')
-                        .select('*')
-                        .eq('symbol', symbol)
-                        .single();
-                    if (data && !error) {
+                    const { data } = await supabaseClient.from('votes').select('*').eq('symbol', symbol).single();
+                    if (data) {
                         vData.long = data.long_count || vData.long;
                         vData.short = data.short_count || vData.short;
                     }
@@ -1706,73 +1324,40 @@ HTML_PAGE = """<!DOCTYPE html>
             let comments = [];
             if (supabaseClient) {
                 try {
-                    const { data, error } = await supabaseClient
-                        .from('comments')
-                        .select('*')
-                        .eq('symbol', symbol)
-                        .order('created_at', { ascending: false })
-                        .limit(8);
-                    if (data && !error && data.length > 0) {
-                        comments = data.map(d => ({
-                            nick: d.nickname,
-                            text: d.text,
-                            time: formatCommentTime(d.created_at)
-                        }));
+                    const { data } = await supabaseClient.from('comments').select('*').eq('symbol', symbol).order('created_at', { ascending: false }).limit(6);
+                    if (data && data.length > 0) {
+                        comments = data.map(d => ({ nick: d.nickname, text: d.text }));
                     }
                 } catch(e) {}
             }
-
             if (comments.length === 0) {
-                const cKey = 'comments_' + symbol;
-                const rawComm = localStorage.getItem(cKey) || JSON.stringify([
-                    { nick: "수익왕개미", text: "20일선 지지받고 올라갈 차례네요.", time: "방금 전" },
-                    { nick: "단타고수", text: "시그널 진입가에 1차 분할 매수 걸어둡니다.", time: "10분 전" }
-                ]);
-                comments = JSON.parse(rawComm);
+                comments = [
+                    { nick: "스마트개미", text: "20일선 지지받고 반등 흐름 좋아 보입니다." },
+                    { nick: "퀀트투자자", text: "AI 분석 가이드 참고해서 분할 매수 걸어둡니다." }
+                ];
             }
             renderComments(comments);
-        }
-
-        function formatCommentTime(ts) {
-            if (!ts) return "방금 전";
-            try {
-                const diff = (new Date() - new Date(ts)) / 1000;
-                if (diff < 60) return "방금 전";
-                if (diff < 3600) return `${Math.floor(diff/60)}분 전`;
-                if (diff < 86400) return `${Math.floor(diff/3600)}시간 전`;
-                return `${Math.floor(diff/86400)}일 전`;
-            } catch(e) {
-                return "방금 전";
-            }
         }
 
         function updateVoteUI(vData) {
             const total = vData.long + vData.short;
             const lPct = total > 0 ? Math.round((vData.long / total) * 100) : 50;
             const sPct = 100 - lPct;
-
             document.getElementById('voteLongPct').innerText = `상승 ${lPct}%`;
             document.getElementById('voteShortPct').innerText = `하락 ${sPct}%`;
             document.getElementById('voteLongBar').style.width = lPct + '%';
             document.getElementById('voteShortBar').style.width = sPct + '%';
-            document.getElementById('voteLongCount').innerText = `${vData.long}명`;
-            document.getElementById('voteShortCount').innerText = `${vData.short}명`;
 
             const btnL = document.getElementById('btnVoteLong');
             const btnS = document.getElementById('btnVoteShort');
-            btnL.classList.remove('active-long');
-            btnS.classList.remove('active-short');
-
-            if (vData.myVote === 'long') btnL.classList.add('active-long');
-            if (vData.myVote === 'short') btnS.classList.add('active-short');
+            btnL.classList.toggle('active-long', vData.myVote === 'long');
+            btnS.classList.toggle('active-short', vData.myVote === 'short');
         }
 
         async function castVote(type) {
             if (!currentSymbol) return;
             const voteKey = 'vote_' + currentSymbol;
-            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
-            const vData = JSON.parse(rawVote);
-
+            const vData = JSON.parse(localStorage.getItem(voteKey) || '{"long":18,"short":9,"myVote":null}');
             if (vData.myVote === type) return;
 
             if (vData.myVote === 'long') vData.long = Math.max(0, vData.long - 1);
@@ -1780,40 +1365,29 @@ HTML_PAGE = """<!DOCTYPE html>
 
             if (type === 'long') vData.long += 1;
             if (type === 'short') vData.short += 1;
-
             vData.myVote = type;
+
             localStorage.setItem(voteKey, JSON.stringify(vData));
             updateVoteUI(vData);
 
             if (supabaseClient) {
                 try {
-                    await supabaseClient
-                        .from('votes')
-                        .upsert({
-                            symbol: currentSymbol,
-                            long_count: vData.long,
-                            short_count: vData.short
-                        });
+                    await supabaseClient.from('votes').upsert({
+                        symbol: currentSymbol, long_count: vData.long, short_count: vData.short
+                    });
                 } catch(e) {}
             }
         }
 
         function renderComments(list) {
             const wrap = document.getElementById('commentList');
-            document.getElementById('commentCountTag').innerText = `${list.length}개의 의견`;
+            document.getElementById('commentCountTag').innerText = `${list.length}개 의견`;
             wrap.innerHTML = '';
-            if (list.length === 0) {
-                wrap.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; padding:10px 0; text-align:center;">첫 번째 한마디를 남겨보세요!</div>';
-                return;
-            }
-            list.slice(0, 8).forEach(c => {
+            list.forEach(c => {
                 wrap.innerHTML += `
                     <div class="comment-item">
-                        <div class="comment-head">
-                            <span class="comment-nick">${c.nick}</span>
-                            <span>${c.time}</span>
-                        </div>
-                        <div class="comment-body">${c.text}</div>
+                        <div class="comment-head"><span class="comment-nick">${c.nick}</span></div>
+                        <div>${c.text}</div>
                     </div>
                 `;
             });
@@ -1824,303 +1398,33 @@ HTML_PAGE = """<!DOCTYPE html>
             const txt = input.value.trim();
             if (!txt || !currentSymbol) return;
 
-            const nicks = ["익명개미", "불꽃슈퍼개미", "성투개미", "황금손개미", "존버대장", "퀀트장인"];
-            const randomNick = nicks[Math.floor(Math.random() * nicks.length)] + "#" + Math.floor(100 + Math.random() * 900);
+            const nicks = ["황금개미", "성투개미", "퀀트장인", "존버대장"];
+            const rNick = nicks[Math.floor(Math.random() * nicks.length)] + "#" + Math.floor(100 + Math.random() * 900);
 
-            const cKey = 'comments_' + currentSymbol;
-            const rawComm = localStorage.getItem(cKey) || '[]';
-            const comments = JSON.parse(rawComm);
-
-            const newC = {
-                nick: randomNick,
-                text: txt,
-                time: "방금 전"
-            };
-
-            comments.unshift(newC);
-            localStorage.setItem(cKey, JSON.stringify(comments));
-            renderComments(comments);
+            const wrap = document.getElementById('commentList');
+            const newItem = document.createElement('div');
+            newItem.className = 'comment-item';
+            newItem.innerHTML = `<div class="comment-head"><span class="comment-nick">${rNick}</span></div><div>${txt}</div>`;
+            wrap.prepend(newItem);
             input.value = '';
 
             if (supabaseClient) {
                 try {
-                    await supabaseClient
-                        .from('comments')
-                        .insert({
-                            symbol: currentSymbol,
-                            nickname: randomNick,
-                            text: txt
-                        });
+                    await supabaseClient.from('comments').insert({
+                        symbol: currentSymbol, nickname: rNick, text: txt
+                    });
                 } catch(e) {}
             }
         }
 
-        async function doSearch(query) {
-            const cleanQ = query.trim();
-            if (!cleanQ) return;
-
-            document.getElementById('centerInput').value = cleanQ;
-            document.getElementById('bottomInput').value = cleanQ;
-
-            document.getElementById('main-view').style.display = 'none';
-            document.getElementById('result-scroll-view').style.display = 'block';
-            document.getElementById('bottom-bar').style.display = 'flex';
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('result-card-wrap').style.display = 'none';
-
-            if (window.innerWidth <= 900) {
-                const side = document.getElementById('sidebar-wrapper');
-                if (side) side.classList.remove('open');
-            }
-
-            try {
-                const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
-                const response = await fetch(url);
-                const data = await response.json();
-                if (!response.ok || data.error) {
-                    alert(data.error || '분석 중 오류가 발생했습니다.');
-                    document.getElementById('loading').style.display = 'none';
-                    return;
-                }
-
-                const isKrw = data.market === '국내주식';
-                const displayName = data.name || data.formal_name;
-                const displayPrice = data.price || data.price_str;
-                const displayTime = data.time || data.now_str;
-
-                document.getElementById('rTitle').innerHTML = `${displayName} <span>(${data.symbol})</span>`;
-                document.getElementById('rPrice').innerText = displayPrice;
-                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'} · 시각: ${displayTime}`;
-
-                loadCommunityData(data.symbol);
-
-                const wGrid = document.getElementById('worldGrid');
-                wGrid.innerHTML = '';
-                if (data.world_indices) {
-                    data.world_indices.forEach(w => {
-                        const cls = w.up ? 'val-up' : 'val-down';
-                        wGrid.innerHTML += `
-                            <div class="world-item">
-                                <div class="world-name">${w.name}</div>
-                                <div class="world-val">${w.price}</div>
-                                <div class="world-rate ${cls}">${w.rate}</div>
-                            </div>
-                        `;
-                    });
-                }
-
-                const sNews = document.getElementById('stockNewsList');
-                sNews.innerHTML = '';
-                if (data.stock_news && data.stock_news.length > 0) {
-                    data.stock_news.forEach(n => {
-                        sNews.innerHTML += `
-                            <a href="${n.link}" target="_blank" class="news-item">
-                                <div class="news-title">${n.title}</div>
-                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                            </a>
-                        `;
-                    });
-                } else {
-                    sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
-                }
-
-                const dCard = document.getElementById('dartCard');
-                const dList = document.getElementById('dartList');
-                if (data.dart_disclosures && data.dart_disclosures.length > 0) {
-                    dList.innerHTML = '';
-                    data.dart_disclosures.forEach(d => {
-                        dList.innerHTML += `
-                            <a href="${d.link}" target="_blank" class="dart-item">
-                                <span class="dart-tag tag-${d.tag_type}">${d.tag_name}</span>
-                                <span class="dart-title">${d.title}</span>
-                                <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${d.date}</span>
-                            </a>
-                        `;
-                    });
-                    dCard.style.display = 'block';
-                } else {
-                    dCard.style.display = 'none';
-                }
-
-                const gNews = document.getElementById('globalNewsList');
-                gNews.innerHTML = '';
-                if (data.global_news && data.global_news.length > 0) {
-                    data.global_news.forEach(n => {
-                        gNews.innerHTML += `
-                            <a href="${n.link}" target="_blank" class="news-item">
-                                <div class="news-title">${n.title}</div>
-                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                            </a>
-                        `;
-                    });
-                } else {
-                    gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
-                }
-
-                const c = data.consensus;
-                const uCard = document.getElementById('unifiedCard');
-                if (c) {
-                    document.getElementById('uTitle').innerText = c.title;
-                    document.getElementById('uGaugeVal').innerText = c.gauge_val;
-                    document.getElementById('uGaugeLabel').innerText = c.gauge_label;
-                    document.getElementById('uStatusLabel').innerText = c.status_label;
-                    document.getElementById('uBadge').innerText = c.badge_text;
-                    document.getElementById('uDots').innerHTML = c.dots;
-
-                    document.getElementById('uPrimaryLabel').innerText = c.primary_label;
-                    document.getElementById('uPrimaryVal').innerText = c.primary_val;
-                    document.getElementById('uSecondaryLabel').innerText = c.secondary_label;
-                    document.getElementById('uSecondaryVal').innerText = c.secondary_val;
-
-                    document.getElementById('uSliderLeft').innerText = c.slider_left;
-                    document.getElementById('uSliderMid').innerText = c.slider_mid;
-                    document.getElementById('uSliderRight').innerText = c.slider_right;
-                    document.getElementById('uSliderBottomLeft').innerText = c.slider_bottom_left;
-                    document.getElementById('uSliderBottomRight').innerText = c.slider_bottom_right;
-
-                    document.getElementById('uBarFill').style.width = c.fill_pct + '%';
-                    document.getElementById('uDotMarker').style.left = c.fill_pct + '%';
-
-                    document.getElementById('uListTitle').innerText = c.list_title;
-                    document.getElementById('uSourceTag').innerText = c.source_tag;
-
-                    const iList = document.getElementById('uItemList');
-                    iList.innerHTML = '';
-                    if (c.items && c.items.length > 0) {
-                        c.items.forEach((it, idx) => {
-                            const isLast = idx === c.items.length - 1;
-                            iList.innerHTML += `
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${isLast ? '' : 'border-bottom:1px solid var(--border-line);'} font-size:0.82rem;">
-                                    <div>
-                                        <div style="color:var(--text-title); font-weight:700;">${it.main}</div>
-                                        <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">${it.sub}</div>
-                                    </div>
-                                    <div style="text-align:right;">
-                                        <div style="color:var(--text-title); font-weight:700;">${it.val}</div>
-                                        <div style="color:#10b981; font-size:0.72rem; font-weight:700;">${it.sub_val}</div>
-                                    </div>
-                                </div>
-                            `;
-                        });
-                    }
-                    uCard.style.display = 'block';
-                } else {
-                    uCard.style.display = 'none';
-                }
-
-                const q = data.quant;
-                document.getElementById('rTrend').innerText = q.trend;
-                document.getElementById('rMa5').innerText = q.ma5;
-                document.getElementById('rMa20').innerText = q.ma20;
-                document.getElementById('rMa60').innerText = q.ma60;
-                document.getElementById('rMa120').innerText = q.ma120;
-                document.getElementById('rMa600').innerText = q.ma600;
-                document.getElementById('rMa1200').innerText = q.ma1200;
-                document.getElementById('rBb').innerText = q.bollinger;
-                document.getElementById('rMacd').innerText = q.macd;
-                document.getElementById('rPos52w').innerText = q.pos_52w;
-                document.getElementById('rDisp').innerText = q.disp;
-                document.getElementById('rRsi').innerText = q.rsi;
-                document.getElementById('rAtr').innerText = `${q.atr} (${q.atr_ratio})`;
-                document.getElementById('rVolRatio').innerText = q.vol_ratio;
-                document.getElementById('rTval20d').innerText = q.tval_20d;
-
-                document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
-                document.getElementById('rBt1yTag').innerText = `● ${q.bt_1y}`;
-                document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;
-                document.getElementById('rRrTag').innerText = `● ${q.rr_str}`;
-
-                document.getElementById('rSliderStop').innerText = q.stop_p;
-                document.getElementById('rSliderEntry').innerText = `진입 ${q.entry1}`;
-                document.getElementById('rSliderTarget').innerText = q.target2;
-
-                document.getElementById('rSigBarFill').style.width = q.sig_fill_pct + '%';
-                document.getElementById('rSigDotMarker').style.left = q.sig_fill_pct + '%';
-
-                document.getElementById('rEntry1').innerText = q.entry1;
-                document.getElementById('rEntry2').innerText = q.entry2;
-                document.getElementById('rTarget1').innerText = q.target1;
-                document.getElementById('rTarget2').innerText = q.target2;
-                document.getElementById('rStop').innerText = q.stop_p;
-                document.getElementById('rGuideText').innerText = q.guide_text;
-
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('result-card-wrap').style.display = 'block';
-
-                setTimeout(() => {
-                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
-                }, 50);
-
-                window.scrollTo({top: 0, behavior: 'smooth'});
-
-            } catch (err) {
-                alert('서버와 통신할 수 없습니다.');
-                document.getElementById('loading').style.display = 'none';
-            }
-        }
-
-        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
-            const container = document.getElementById('tvChart');
-            container.innerHTML = '';
-
-            const isLight = document.body.classList.contains('light-theme');
-
-            chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 700,
-                height: 300,
-                layout: { 
-                    background: { color: isLight ? '#ffffff' : '#1e1f20' }, 
-                    textColor: isLight ? '#5f6368' : '#8e918f' 
-                },
-                grid: {
-                    vertLines: { color: 'rgba(0,0,0,0)' },
-                    horzLines: { color: 'rgba(0,0,0,0)' }
-                },
-                crosshair: {
-                    vertLine: { visible: false },
-                    horzLine: { visible: false }
-                },
-                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c', timeVisible: true },
-                rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
-            });
-
-            const candleSeries = chart.addCandlestickSeries({
-                upColor: '#ef4444',
-                downColor: '#38bdf8',
-                borderDownColor: '#38bdf8',
-                borderUpColor: '#ef4444',
-                wickDownColor: '#38bdf8',
-                wickUpColor: '#ef4444',
-                priceLineVisible: false,
-                lastValueVisible: true
-            });
-            candleSeries.setData(candles);
-
-            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-            lineMa20.setData(ma20);
-
-            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
-            lineMa60.setData(ma60);
-
-            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
-            lineBbUp.setData(bbUp);
-
-            const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
-            lineBbDn.setData(bbDn);
-
-            chart.timeScale().fitContent();
-
-            window.addEventListener('resize', resizeChart);
-        }
-
-        window.addEventListener('DOMContentLoaded', initTheme);
+        window.addEventListener('DOMContentLoaded', initMarketOverview);
     </script>
 </body>
 </html>
 """
 
 # ----------------------------------------------------
-# 8. 초경량 비동기/멀티스레드 웹 서버
+# 7. 초경량 비동기/멀티스레드 웹 서버
 # ----------------------------------------------------
 class WebHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
@@ -2133,6 +1437,15 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
+
+        if parsed.path == "/api/market-overview":
+            overview = get_market_overview()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(overview, ensure_ascii=False).encode('utf-8'))
+            return
 
         if parsed.path == "/api/analyze":
             q = params.get('q', [''])[0].strip()

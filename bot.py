@@ -204,7 +204,7 @@ def fetch_crypto_candles(symbol):
     return None, None, None
 
 # ----------------------------------------------------
-# 3. 3대 시장(국내/미국/코인) 맞춤 센티멘트 & 컨센서스 크롤러
+# 3. 3대 시장 맞춤 센티멘트 & 컨센서스 크롤러
 # ----------------------------------------------------
 def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
     try:
@@ -260,7 +260,6 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
 
             return {
                 "title": "gaemiGTP 애널리스트 컨센서스",
-                "sub_tag": f"최근 증권사 리포트 {len(recent_reports)*5}개 종합",
                 "gauge_val": str(len(recent_reports)*5),
                 "gauge_label": "기관의견",
                 "status_label": "전체 의견",
@@ -273,8 +272,8 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "slider_left": f"{int(raw_price):,}원",
                 "slider_mid": f"평균 {int(target_p):,}원",
                 "slider_right": f"{int(high_p):,}원",
-                "slider_bottom_left": f"증권사 최저 {int(low_p):,}원",
-                "slider_bottom_right": f"증권사 최고 {int(high_p):,}원",
+                "slider_bottom_left": f"최저 {int(low_p):,}원",
+                "slider_bottom_right": f"최고 {int(high_p):,}원",
                 "fill_pct": fill_pct,
                 "list_title": "최근 증권사 리포트 평가",
                 "source_tag": "출처: 한경컨센서스 / 네이버",
@@ -295,7 +294,6 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
 
             return {
                 "title": "gaemiGTP 애널리스트 컨센서스",
-                "sub_tag": "월가 애널리스트 32명 종합",
                 "gauge_val": "32",
                 "gauge_label": "기관의견",
                 "status_label": "전체 의견",
@@ -308,8 +306,8 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "slider_left": f"${raw_price:,.2f}",
                 "slider_mid": f"평균 ${target_p:,.2f}",
                 "slider_right": f"${high_p:,.2f}",
-                "slider_bottom_left": f"월가 최저 ${low_p:,.2f}",
-                "slider_bottom_right": f"월가 최고 ${high_p:,.2f}",
+                "slider_bottom_left": f"최저 ${low_p:,.2f}",
+                "slider_bottom_right": f"최고 ${high_p:,.2f}",
                 "fill_pct": fill_pct,
                 "list_title": "최근 월가 IB 리포트 평가",
                 "source_tag": "출처: Wall Street Consensus",
@@ -354,7 +352,6 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
 
             return {
                 "title": "gaemiGTP 글로벌 수급 & 온체인 센티멘트",
-                "sub_tag": "실시간 파생/온체인 집계",
                 "gauge_val": fear_greed_score,
                 "gauge_label": "탐욕지수",
                 "status_label": "시장 심리",
@@ -367,8 +364,8 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "slider_left": "롱 64.2%",
                 "slider_mid": "바이낸스 선물 포지션 비율",
                 "slider_right": "숏 35.8%",
-                "slider_bottom_left": "롱 포지션 우세 (과열 주의)",
-                "slider_bottom_right": "숏 스퀴즈 가능성 탐색",
+                "slider_bottom_left": "롱 포지션 우세",
+                "slider_bottom_right": "숏 스퀴즈 탐색",
                 "fill_pct": 64,
                 "list_title": "거래소별 파생 펀딩비 및 프리미엄",
                 "source_tag": f"출처: Binance / Upbit (환율 {usdkrw:,.1f}원 연동)",
@@ -685,7 +682,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI
+# 6. 웹 프론트엔드 UI (모바일 완벽 최적화 및 텍스트 겹침 방지)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -802,7 +799,7 @@ HTML_PAGE = """<!DOCTYPE html>
             height: 56px;
             display: flex;
             align-items: center;
-            padding: 0 20px;
+            padding: 0 16px;
             background: #131314;
             border-bottom: 1px solid #282a2c;
             position: sticky;
@@ -814,17 +811,17 @@ HTML_PAGE = """<!DOCTYPE html>
         .logo-top { font-weight: 700; font-size: 1.18rem; color: #e3e3e3; letter-spacing: -0.5px; cursor: pointer; }
 
         #main-view { min-height: calc(100vh - 56px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
-        .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
-        .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
+        .hero-title { font-size: 2.8rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; text-align: center; }
+        .hero-sub { font-size: 0.95rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
 
         .search-container { width: 100%; max-width: 832px; position: relative; }
-        .search-box { width: 100%; min-height: 60px; background: #1e1f20; border: 1px solid #333538; border-radius: 30px; padding: 8px 12px 8px 22px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.25); position: relative; }
-        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.98rem; }
+        .search-box { width: 100%; min-height: 60px; background: #1e1f20; border: 1px solid #333538; border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.25); position: relative; }
+        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; }
 
-        .model-selector-wrap { position: relative; margin-right: 6px; flex-shrink: 0; }
-        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 10px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
         .model-pill-btn:hover { background: rgba(255, 255, 255, 0.08); }
-        .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
+        .model-pill-name { font-size: 0.82rem; font-weight: 600; color: #e3e3e3; }
         .model-pill-arrow { font-size: 0.6rem; color: #8e918f; }
 
         .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: #1e1f20; border: 1px solid #37393b; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
@@ -836,65 +833,68 @@ HTML_PAGE = """<!DOCTYPE html>
         .item-check { color: #38bdf8; font-weight: bold; display: none; }
         .model-dropdown-item.active .item-check { display: inline; }
 
-        .send-btn { width: 40px; height: 40px; border-radius: 50%; background: #282a2c; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+        .send-btn { width: 38px; height: 38px; border-radius: 50%; background: #282a2c; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
         .send-btn:hover { background: #37393b; }
 
         .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
         .tag-btn { background: #1e1f20; border: 1px solid #282a2c; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; }
         .tag-btn:hover { background: #282a2c; color: #fff; }
 
-        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 20px 20px 100px; }
+        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 832px; margin: 0 auto; }
         
-        .card { background: #1e1f20; border-radius: 16px; padding: 20px; margin-bottom: 16px; border: 1px solid #282a2c; }
-        .price-title { font-size: 1.35rem; font-weight: 700; color: #f2f2f2; }
-        .price-title span { color: #8e918f; font-size: 0.9rem; font-weight: 400; margin-left: 4px; }
-        .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 8px 0; }
-        .price-meta { color: #8e918f; font-size: 0.8rem; line-height: 1.4; }
+        .card { background: #1e1f20; border-radius: 16px; padding: 18px 16px; margin-bottom: 14px; border: 1px solid #282a2c; }
+        .price-title { font-size: 1.25rem; font-weight: 700; color: #f2f2f2; word-break: keep-all; }
+        .price-title span { color: #8e918f; font-size: 0.85rem; font-weight: 400; margin-left: 4px; }
+        .price-val { font-size: 2.1rem; font-weight: 800; color: #ffffff; margin: 6px 0; }
+        .price-meta { color: #8e918f; font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
 
-        .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.78rem; color: #8e918f; margin-top: 14px; }
+        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: #8e918f; margin-top: 12px; }
         .legend-tag { display: flex; align-items: center; gap: 4px; }
-        .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
-        .chart-box-wrap { width: 100%; height: 320px; margin-top: 10px; position: relative; background: #1e1f20; border-radius: 8px; overflow: hidden; }
+        .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
+        .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: #1e1f20; border-radius: 8px; overflow: hidden; }
 
-        .section-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-        .world-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-        .world-item { background: #131314; padding: 10px 12px; border-radius: 8px; border: 1px solid #282a2c; }
-        .world-name { font-size: 0.78rem; color: #8e918f; margin-bottom: 2px; }
-        .world-val { font-size: 0.95rem; font-weight: 700; color: #fff; }
-        .world-rate { font-size: 0.75rem; font-weight: 600; }
+        .section-title { font-size: 1rem; font-weight: 700; color: #f2f2f2; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+        
+        /* 세계 증시 모바일 가로 스크롤 및 3열 안전 레이아웃 */
+        .world-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+        .world-item { background: #131314; padding: 8px 10px; border-radius: 8px; border: 1px solid #282a2c; min-width: 0; }
+        .world-name { font-size: 0.72rem; color: #8e918f; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .world-val { font-size: 0.88rem; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .world-rate { font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
         .val-up { color: #ef4444; }
         .val-down { color: #38bdf8; }
 
-        .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .quant-item { background: #131314; padding: 12px 14px; border-radius: 10px; border: 1px solid #282a2c; }
-        .quant-item .q-label { color: #8e918f; font-size: 0.78rem; margin-bottom: 3px; }
-        .quant-item .q-val { color: #ffffff; font-size: 0.95rem; font-weight: 700; }
+        /* 기술 지표 그리드 */
+        .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .quant-item { background: #131314; padding: 10px 12px; border-radius: 10px; border: 1px solid #282a2c; min-width: 0; }
+        .quant-item .q-label { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .quant-item .q-val { color: #ffffff; font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
-        .signal-accordion-btn { width: 100%; height: 52px; background: #1e1f20; border: 1px solid #282a2c; border-radius: 32px; padding: 0 20px; color: #fff; font-size: 0.98rem; font-weight: 700; display: flex; align-items: center; cursor: pointer; position: relative; }
+        .signal-accordion-btn { width: 100%; height: 50px; background: #1e1f20; border: 1px solid #282a2c; border-radius: 32px; padding: 0 16px; color: #fff; font-size: 0.92rem; font-weight: 700; display: flex; align-items: center; cursor: pointer; position: relative; }
         .signal-title-center { flex: 1; text-align: center; }
-        .signal-arrow-icon { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 20px; }
-        .signal-body { display: none; background: #17181a; border-radius: 16px; padding: 18px; margin-top: 10px; border: 1px solid #282a2c; }
-        .signal-row { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid #282a2c; font-size: 0.9rem; }
+        .signal-arrow-icon { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 16px; }
+        .signal-body { display: none; background: #17181a; border-radius: 16px; padding: 16px; margin-top: 10px; border: 1px solid #282a2c; }
+        .signal-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #282a2c; font-size: 0.85rem; }
         .signal-row:last-child { border-bottom: none; }
 
-        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.86rem; line-height: 1.55; color: #d1d5db; }
-        .guide-title { font-weight: 700; color: #38bdf8; margin-bottom: 5px; }
-        .guide-disclaimer { margin-top: 12px; font-size: 0.65rem; color: #6b7280; text-align: center; }
+        .guide-box { padding: 12px 0 0 0; margin-top: 12px; font-size: 0.82rem; line-height: 1.5; color: #d1d5db; }
+        .guide-title { font-weight: 700; color: #38bdf8; margin-bottom: 4px; }
+        .guide-disclaimer { margin-top: 10px; font-size: 0.65rem; color: #6b7280; text-align: center; }
 
         .news-item { padding: 10px 0; border-bottom: 1px solid #282a2c; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
-        .news-title { color: #e3e3e3; font-size: 0.88rem; font-weight: 500; line-height: 1.4; }
+        .news-title { color: #e3e3e3; font-size: 0.85rem; font-weight: 500; line-height: 1.4; }
         .news-title:hover { color: #38bdf8; }
-        .news-meta { color: #8e918f; font-size: 0.74rem; margin-top: 4px; }
+        .news-meta { color: #8e918f; font-size: 0.72rem; margin-top: 4px; }
 
-        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 80px; background: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%); align-items: center; justify-content: center; padding: 0 16px 8px; z-index: 50; }
-        .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.92rem; }
+        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 74px; background: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
+        .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.9rem; }
     </style>
 </head>
 <body>
 
-    <!-- Gemini 사이드바: '새 종목' 및 '최근'으로 텍스트 정돈 -->
+    <!-- Gemini 사이드바: 좌측 로고 / 우측 Google Gemini 공식 left_panel_close 아이콘 -->
     <div id="sidebar-wrapper">
         <div class="side-top-action">
             <span style="font-weight:700; font-size:1.15rem; color:#fff; cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
@@ -910,11 +910,11 @@ HTML_PAGE = """<!DOCTYPE html>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 4v16m8-8H4" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <span>새 종목</span>
+            <span>새 종목 분석</span>
         </button>
 
         <div class="sidebar-scroll-area">
-            <div class="sidebar-section-title">최근</div>
+            <div class="sidebar-section-title">최근 분석</div>
             <div class="sidebar-item" onclick="doSearch('SK하이닉스');">SK하이닉스</div>
             <div class="sidebar-item" onclick="doSearch('엔비디아');">엔비디아</div>
             <div class="sidebar-item" onclick="doSearch('삼성전자');">삼성전자</div>
@@ -1008,39 +1008,39 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div id="globalNewsList"></div>
                     </div>
 
+                    <!-- 3대 시장 통합 컨센서스 카드 (상단 깨짐 유발 라벨 완전 제거) -->
                     <div class="card" id="unifiedCard" style="display:none;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+                        <div style="margin-bottom:16px;">
                             <span style="font-size:1.05rem; font-weight:700; color:#f2f2f2;" id="uTitle"></span>
-                            <span style="font-size:0.78rem; color:#8e918f;" id="uSubTag"></span>
                         </div>
 
-                        <div style="display:flex; align-items:center; gap:16px; padding-bottom:18px; border-bottom:1px solid #282a2c;">
-                            <div style="width:62px; height:62px; border-radius:50%; border:4.5px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0;">
-                                <span style="font-size:1.15rem; font-weight:800; color:#fff; line-height:1;" id="uGaugeVal"></span>
-                                <span style="font-size:0.58rem; color:#8e918f; margin-top:3px;" id="uGaugeLabel"></span>
+                        <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid #282a2c;">
+                            <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0;">
+                                <span style="font-size:1.1rem; font-weight:800; color:#fff; line-height:1;" id="uGaugeVal"></span>
+                                <span style="font-size:0.55rem; color:#8e918f; margin-top:3px;" id="uGaugeLabel"></span>
                             </div>
-                            <div>
-                                <div style="display:flex; align-items:center; gap:6px;">
-                                    <span style="font-size:0.8rem; color:#8e918f;" id="uStatusLabel"></span>
-                                    <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:10px;" id="uBadge"></span>
+                            <div style="min-width:0;">
+                                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                    <span style="font-size:0.78rem; color:#8e918f;" id="uStatusLabel"></span>
+                                    <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:700; padding:2px 7px; border-radius:10px;" id="uBadge"></span>
                                 </div>
-                                <div style="font-size:0.76rem; color:#8e918f; margin-top:4px;" id="uDots"></div>
+                                <div style="font-size:0.74rem; color:#8e918f; margin-top:4px; word-break:keep-all;" id="uDots"></div>
                             </div>
                         </div>
 
-                        <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:16px;">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
                             <div>
-                                <div style="font-size:0.75rem; color:#8e918f; margin-bottom:2px;" id="uPrimaryLabel"></div>
-                                <div style="font-size:1.35rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
+                                <div style="font-size:0.72rem; color:#8e918f; margin-bottom:2px;" id="uPrimaryLabel"></div>
+                                <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
                             </div>
                             <div style="text-align:right;">
-                                <div style="font-size:0.75rem; color:#8e918f; margin-bottom:2px;" id="uSecondaryLabel"></div>
-                                <div style="font-size:1.2rem; font-weight:700; color:#ffffff;" id="uSecondaryVal"></div>
+                                <div style="font-size:0.72rem; color:#8e918f; margin-bottom:2px;" id="uSecondaryLabel"></div>
+                                <div style="font-size:1.15rem; font-weight:700; color:#ffffff;" id="uSecondaryVal"></div>
                             </div>
                         </div>
 
-                        <div style="margin:24px 0 16px; position:relative;">
-                            <div style="display:flex; justify-content:space-between; font-size:0.72rem; margin-bottom:6px;">
+                        <div style="margin:20px 0 14px; position:relative;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px;">
                                 <span style="color:#8e918f;" id="uSliderLeft"></span>
                                 <span style="color:#10b981; font-weight:700;" id="uSliderMid"></span>
                                 <span style="color:#8e918f;" id="uSliderRight"></span>
@@ -1049,16 +1049,16 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="uBarFill"></div>
                                 <div style="position:absolute; top:-4px; width:14px; height:14px; border-radius:50%; background:#10b981; border:2px solid #1e1f20; transform:translateX(-50%);" id="uDotMarker"></div>
                             </div>
-                            <div style="display:flex; justify-content:space-between; font-size:0.7rem; color:#6b7280; margin-top:6px;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:#6b7280; margin-top:6px;">
                                 <span id="uSliderBottomLeft"></span>
                                 <span id="uSliderBottomRight"></span>
                             </div>
                         </div>
 
-                        <div style="margin-top:18px; border-top:1px solid #282a2c; padding-top:14px;">
-                            <div style="font-size:0.85rem; font-weight:700; color:#c4c7c5; margin-bottom:10px; display:flex; justify-content:space-between;">
+                        <div style="margin-top:16px; border-top:1px solid #282a2c; padding-top:12px;">
+                            <div style="font-size:0.82rem; font-weight:700; color:#c4c7c5; margin-bottom:8px; display:flex; justify-content:space-between;">
                                 <span id="uListTitle"></span>
-                                <span style="font-size:0.7rem; color:#8e918f; font-weight:normal;" id="uSourceTag"></span>
+                                <span style="font-size:0.68rem; color:#8e918f; font-weight:normal;" id="uSourceTag"></span>
                             </div>
                             <div id="uItemList"></div>
                         </div>
@@ -1067,7 +1067,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="card">
                         <div class="section-title">
                             <span>gaemiGTP 기술 지표</span>
-                            <span id="rTrend" style="font-size:0.85rem; color:#38bdf8;"></span>
+                            <span id="rTrend" style="font-size:0.82rem; color:#38bdf8;"></span>
                         </div>
                         <div class="quant-grid">
                             <div class="quant-item"><div class="q-label">5일선</div><div class="q-val" id="rMa5"></div></div>
@@ -1087,7 +1087,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <div style="margin-bottom:16px;">
+                    <div style="margin-bottom:14px;">
                         <button class="signal-accordion-btn" onclick="toggleSignal()">
                             <span class="signal-title-center">⚡ gaemiGTP 시그널 타점</span>
                             <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
@@ -1318,7 +1318,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 const uCard = document.getElementById('unifiedCard');
                 if (c) {
                     document.getElementById('uTitle').innerText = c.title;
-                    document.getElementById('uSubTag').innerText = c.sub_tag;
                     document.getElementById('uGaugeVal').innerText = c.gauge_val;
                     document.getElementById('uGaugeLabel').innerText = c.gauge_label;
                     document.getElementById('uStatusLabel').innerText = c.status_label;
@@ -1413,7 +1412,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             chart = LightweightCharts.createChart(container, {
                 width: container.clientWidth || 700,
-                height: 320,
+                height: 300,
                 layout: { background: { color: '#1e1f20' }, textColor: '#8e918f' },
                 grid: {
                     vertLines: { color: 'rgba(0,0,0,0)' },

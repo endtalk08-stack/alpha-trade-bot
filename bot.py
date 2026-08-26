@@ -252,7 +252,7 @@ def fetch_market_consensus(symbol, market_name, raw_price):
                 "gauge_val": "18",
                 "gauge_label": "기관의견",
                 "badge_text": "적극 매수 (BUY)",
-                "dots": "<span style='color:#10b981;'>매수 16</span> &nbsp; <span style='color:#f97316;'>보유 2</span> &nbsp; <span style='color:#ef4444;'>매도 0</span>",
+                "dots": "<span style='color:#10a37f;'>매수 16</span> &nbsp; <span style='color:#f97316;'>보유 2</span> &nbsp; <span style='color:#ef4444;'>매도 0</span>",
                 "primary_label": "평균 목표주가",
                 "primary_val": f"{int(target_p):,} 원",
                 "secondary_label": "현재가",
@@ -276,7 +276,7 @@ def fetch_market_consensus(symbol, market_name, raw_price):
                 "gauge_val": "32",
                 "gauge_label": "기관의견",
                 "badge_text": "강력 매수 (Strong Buy)",
-                "dots": "<span style='color:#10b981;'>Buy 28</span> &nbsp; <span style='color:#f97316;'>Hold 3</span> &nbsp; <span style='color:#ef4444;'>Sell 1</span>",
+                "dots": "<span style='color:#10a37f;'>Buy 28</span> &nbsp; <span style='color:#f97316;'>Hold 3</span> &nbsp; <span style='color:#ef4444;'>Sell 1</span>",
                 "primary_label": "평균 목표주가",
                 "primary_val": f"${target_p:,.2f}",
                 "secondary_label": "현재가",
@@ -295,7 +295,7 @@ def fetch_market_consensus(symbol, market_name, raw_price):
                 "gauge_val": "74",
                 "gauge_label": "탐욕지수",
                 "badge_text": "롱 우세 (탐욕 구간)",
-                "dots": "<span style='color:#10b981;'>롱 64.2%</span> &nbsp; <span style='color:#38bdf8;'>숏 35.8%</span> &nbsp; <span style='color:#fef08a;'>김프 +1.84%</span>",
+                "dots": "<span style='color:#10a37f;'>롱 64.2%</span> &nbsp; <span style='color:#38bdf8;'>숏 35.8%</span> &nbsp; <span style='color:#fef08a;'>김프 +1.84%</span>",
                 "primary_label": "24H 글로벌 청산 규모",
                 "primary_val": "$184.2M",
                 "secondary_label": "실시간 김치프리미엄",
@@ -467,7 +467,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 4. 프론트엔드 UI (순수 텍스트/미니멀 테마)
+# 4. 프론트엔드 UI (하단 고정 플로팅 입력창 포함)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -517,7 +517,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-btn:hover { background: #3e3f4b; color: #ececf1; }
 
         /* 결과 화면 2단 레이아웃 (메인 740px + 우측 340px) */
-        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 68px 16px 80px; }
+        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 68px 16px 100px; }
         .dashboard-wrapper {
             max-width: 1100px;
             margin: 0 auto;
@@ -599,6 +599,11 @@ HTML_PAGE = """<!DOCTYPE html>
         .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(32, 33, 35, 0.8); }
         .lock-btn { background: #10a37f; color: #fff; border: none; font-weight: 600; font-size: 0.75rem; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
 
+        /* 결과 화면 하단 고정 플로팅 입력창 */
+        .bottom-floating-bar { position: fixed; bottom: 0; left: 0; width: 100%; background: linear-gradient(180deg, rgba(32,33,35,0) 0%, #202123 30%); padding: 16px 16px 20px; display: flex; justify-content: center; z-index: 40; }
+        .bottom-search-box { width: 100%; max-width: 740px; height: 48px; background: #2f3037; border: 1px solid #3e3f4b; border-radius: 24px; padding: 0 8px 0 16px; display: flex; align-items: center; box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
+        .bottom-search-box input { flex: 1; background: transparent; border: none; outline: none; color: #ececf1; font-size: 0.9rem; }
+
         @media (max-width: 1100px) {
             .dashboard-wrapper { grid-template-columns: 1fr; max-width: 740px; }
             .row-1-height, .row-2-height, .row-3-height, .row-4-height { min-height: auto; }
@@ -635,6 +640,7 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- 1. 메인 홈 화면 입력창 -->
     <div id="main-view">
         <div class="hero-title">gaemiGTP</div>
         <div class="hero-sub">종목명 입력 시 퀀트 데이터 및 분석 지표를 조회합니다.</div>
@@ -655,13 +661,13 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
+    <!-- 2. 결과 화면 -->
     <div id="result-scroll-view">
         <div class="loading" id="loading">데이터를 분석 중입니다...</div>
         <div class="dashboard-wrapper" id="resultCardWrap" style="display:none;">
             
-            <!-- [좌측 메인 컬럼: 740px] -->
+            <!-- [좌측 메인: 740px] -->
             <div class="col-main">
-                <!-- 1행 좌: 시세 및 차트 -->
                 <div class="card row-1-height">
                     <div style="display:flex; justify-content:space-between; align-items:flex-end;">
                         <div>
@@ -673,7 +679,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="chart-box-wrap" id="tvChart"></div>
                 </div>
 
-                <!-- 2행 좌: 종목 뉴스 -->
                 <div class="card row-2-height">
                     <div class="section-header">
                         <span class="section-title">종목 뉴스</span>
@@ -682,7 +687,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div id="stockNewsList"></div>
                 </div>
 
-                <!-- 3행 좌: 컨센서스 -->
                 <div class="card row-3-height" id="consensusCard">
                     <div class="section-header">
                         <span class="section-title" id="cTitle"></span>
@@ -721,7 +725,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <!-- 4행 좌: 기술 지표 -->
                 <div class="card row-4-height">
                     <div class="section-header">
                         <span class="section-title">기술 지표</span>
@@ -737,7 +740,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <!-- 5행 좌: 시그널 타점 -->
                 <div>
                     <button class="accordion-btn" onclick="toggleAccordion('signalBody', 'signalArrow')">
                         <span>시그널 타점 분석</span>
@@ -753,9 +755,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <!-- [우측 보조 컬럼: 340px] -->
+            <!-- [우측 보조: 340px] -->
             <div class="col-side">
-                <!-- 1행 우: 글로벌 매크로 -->
                 <div class="card row-1-height">
                     <div class="section-header">
                         <span class="section-title">글로벌 매크로 지표</span>
@@ -764,7 +765,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div id="macroIndicesList"></div>
                 </div>
 
-                <!-- 2행 우: 해외 뉴스 -->
                 <div class="card row-2-height">
                     <div class="section-header">
                         <span class="section-title">해외 증시 뉴스</span>
@@ -773,7 +773,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div id="globalNewsList"></div>
                 </div>
 
-                <!-- 3행 우: 속보 요약 -->
                 <div class="card row-3-height">
                     <div class="section-header">
                         <span class="section-title">글로벌 속보 요약</span>
@@ -788,7 +787,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <!-- 4행 우: 경제 일정 -->
                 <div class="card row-4-height">
                     <div class="section-header">
                         <span class="section-title">주요 경제 일정</span>
@@ -800,7 +798,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="cal-row"><span style="color:#38bdf8; font-weight:600;">09.05 (금)</span><span style="color:#ececf1;">미국 비농업 고용 (NFP)</span><span style="color:#8e8ea0;">21:30</span></div>
                 </div>
 
-                <!-- 5행 우: 마스터 전략 -->
                 <div>
                     <button class="accordion-btn" onclick="toggleAccordion('masterBody', 'masterArrow')">
                         <span>마스터 전략 브리핑 (PRO)</span>
@@ -826,6 +823,16 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
 
         </div>
+
+        <!-- 3. 결과 화면 하단 고정 플로팅 입력창 -->
+        <div class="bottom-floating-bar" id="bottomSearchBar" style="display:none;">
+            <div class="bottom-search-box">
+                <input type="text" id="bottomInput" placeholder="새 종목명 입력 후 Enter (예: 테슬라, 카카오, ETH)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
+                    <svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                </button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -840,8 +847,10 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('main-view').style.display = 'flex';
             document.getElementById('result-scroll-view').style.display = 'none';
             document.getElementById('resultCardWrap').style.display = 'none';
+            document.getElementById('bottomSearchBar').style.display = 'none';
             document.getElementById('loading').style.display = 'none';
             document.getElementById('centerInput').value = '';
+            document.getElementById('bottomInput').value = '';
         }
 
         function toggleAccordion(bodyId, arrowId) {
@@ -864,6 +873,7 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('result-scroll-view').style.display = 'block';
             document.getElementById('loading').style.display = 'block';
             document.getElementById('resultCardWrap').style.display = 'none';
+            document.getElementById('bottomSearchBar').style.display = 'none';
 
             try {
                 const response = await fetch('/api/analyze?q=' + encodeURIComponent(cleanQ));
@@ -958,6 +968,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('resultCardWrap').style.display = 'grid';
+                document.getElementById('bottomSearchBar').style.display = 'flex';
 
                 setTimeout(() => {
                     initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);

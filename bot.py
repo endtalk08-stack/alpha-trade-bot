@@ -259,7 +259,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
 
             return {
-                "title": "gaemiGTP 애널리스트 컨센서스",
+                "title": "애널리스트 컨센서스",
                 "gauge_val": str(len(recent_reports)*5),
                 "gauge_label": "기관의견",
                 "status_label": "전체 의견",
@@ -293,7 +293,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             ]
 
             return {
-                "title": "gaemiGTP 애널리스트 컨센서스",
+                "title": "애널리스트 컨센서스",
                 "gauge_val": "32",
                 "gauge_label": "기관의견",
                 "status_label": "전체 의견",
@@ -351,7 +351,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 pass
 
             return {
-                "title": "gaemiGTP 글로벌 수급 & 온체인 센티멘트",
+                "title": "글로벌 수급 & 온체인 센티멘트",
                 "gauge_val": fear_greed_score,
                 "gauge_label": "탐욕지수",
                 "status_label": "시장 심리",
@@ -379,6 +379,9 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
         pass
     return None
 
+# ----------------------------------------------------
+# 구글 RSS 뉴스 검색 모듈
+# ----------------------------------------------------
 def fetch_rss_news(query_keyword, limit=5):
     headlines = []
     clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
@@ -690,7 +693,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (원클릭 다크/화이트 모드 완벽 지원)
+# 6. 웹 프론트엔드 UI (중복 ID 완벽 해결)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -844,7 +847,7 @@ HTML_PAGE = """<!DOCTYPE html>
             justify-content: space-between;
             padding: 0 16px;
             background: var(--bg-body);
-            border-bottom: 1px solid var(--border-line);
+            border-bottom: none;
             position: sticky;
             top: 0;
             z-index: 40;
@@ -1014,7 +1017,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="logo-top" id="headerLogo" onclick="resetToHome()">gaemiGTP</div>
             </div>
 
-            <!-- 원클릭 해/달 테마 토글 버튼 -->
+            <!-- 원클릭 테마 전환 버튼 (해/달) -->
             <button class="gemini-menu-icon" id="themeToggleBtn" onclick="toggleTheme()" title="화면 테마 변경">
                 <span id="themeIconArea"></span>
             </button>
@@ -1080,18 +1083,21 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="chart-box-wrap" id="tvChart"></div>
                     </div>
 
+                    <!-- 간결화된 종목 뉴스 -->
                     <div class="card">
-                        <div class="section-title">gaemiGTP 종목 뉴스</div>
+                        <div class="section-title">종목 뉴스</div>
                         <div id="stockNewsList"></div>
                     </div>
 
+                    <!-- 간결화된 세계 증시 -->
                     <div class="card">
-                        <div class="section-title">gaemiGTP 세계 증시</div>
+                        <div class="section-title">세계 증시</div>
                         <div class="world-grid" id="worldGrid"></div>
                     </div>
 
+                    <!-- 간결화된 해외 뉴스 -->
                     <div class="card">
-                        <div class="section-title">gaemiGTP 해외 뉴스</div>
+                        <div class="section-title">해외 뉴스</div>
                         <div id="globalNewsList"></div>
                     </div>
 
@@ -1151,9 +1157,10 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
+                    <!-- 간결화된 기술 지표 -->
                     <div class="card">
                         <div class="section-title">
-                            <span>gaemiGTP 기술 지표</span>
+                            <span>기술 지표</span>
                             <span id="rTrend" style="font-size:0.82rem; color:#0284c7;"></span>
                         </div>
                         <div class="quant-grid">
@@ -1174,7 +1181,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 시그널 박스 -->
+                    <!-- gaemiGTP 브랜드가 완벽 유지된 핵심 시그널 박스 (중복 ID uDots 제거 완료) -->
                     <div class="signal-premium-card">
                         <div class="signal-card-header" onclick="toggleSignal()">
                             <span class="signal-card-title">gaemiGTP 시그널</span>
@@ -1240,6 +1247,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
+                            <!-- gaemiGTP 브랜드가 유지된 시그널 가이드 -->
                             <div class="guide-box">
                                 <div class="guide-title">gaemiGTP 시그널 가이드</div>
                                 <div id="rGuideText" style="margin-top:4px; color:var(--text-sub); word-break:keep-all;"></div>

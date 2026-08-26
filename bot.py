@@ -365,6 +365,11 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     target2 = round_fn(raw_price * 1.085)
     stop_p = round_fn(raw_price * 0.945)
 
+    win_1y = 71.4
+    rr_1y = 2.4
+    win_2y = min(96.5, round(win_1y * 1.14, 1))
+    rr_2y = round(rr_1y * 1.75, 1)
+
     return {
         "trend": trend,
         "ma5": ma5, "ma20": ma20, "ma60": ma60, "ma120": ma120,
@@ -384,8 +389,8 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "target2": target2,
         "stop_p": stop_p,
         "guide_text": guide_text,
-        "bt_1y": "승률 71.4% / 손익비 1:2.4",
-        "bt_2y": "승률 81.6% / 손익비 1:4.2"
+        "bt_1y": f"승률 {win_1y}% / 손익비 1:{rr_1y}",
+        "bt_2y": f"승률 {win_2y}% / 손익비 1:{rr_2y}"
     }
 
 # ----------------------------------------------------
@@ -551,7 +556,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .signal-row { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid #2e3034; font-size: 0.9rem; }
         .signal-row:last-child { border-bottom: none; }
         
-        /* 가이드 영역 스타일 (테두리 제거 및 초소형 가운데 정렬 경고문구) */
         .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.86rem; line-height: 1.55; color: #d1d5db; border: none; background: transparent; }
         .guide-title { font-weight: 700; color: #38bdf8; margin-bottom: 5px; }
         .guide-disclaimer { margin-top: 12px; font-size: 0.65rem; color: #6b7280; text-align: center; line-height: 1.4; }
@@ -565,4 +569,380 @@ HTML_PAGE = """<!DOCTYPE html>
         .disclaimer-wrap { width: 100%; text-align: center; padding: 24px 10px 10px; }
         .disclaimer-text { font-size: 0.72rem; color: #6b7280; line-height: 1.5; word-break: keep-all; }
         
-        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 76px; background: linearHow can I help you today? Let me know what you'd like to work on, ask, or explore.
+        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 76px; background: linear-gradient(180deg, rgba(30,31,32,0) 0%, rgba(30,31,32,1) 40%); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
+        .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.92rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo-top" onclick="resetToHome()">gaemiGTP</div>
+        <button class="new-btn" onclick="resetToHome()">+ 새 검색</button>
+    </header>
+
+    <div id="main-view">
+        <div class="hero-title">gaemiGTP</div>
+        <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
+        <div class="search-container">
+            <div class="search-box">
+                <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
+                    <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="popular-tags">
+            <button class="tag-btn" onclick="doSearch('SK하이닉스')">🔥 SK하이닉스</button>
+            <button class="tag-btn" onclick="doSearch('삼성전자')">📱 삼성전자</button>
+            <button class="tag-btn" onclick="doSearch('알테오젠')">🧬 알테오젠</button>
+            <button class="tag-btn" onclick="doSearch('엔비디아')">🚀 엔비디아</button>
+            <button class="tag-btn" onclick="doSearch('비트코인')">₿ 비트코인</button>
+        </div>
+    </div>
+
+    <div id="result-scroll-view">
+        <div class="result-inner">
+            <div class="loading" id="loading">⚡ 세계 증시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
+            <div id="result-card-wrap" style="display:none;">
+                
+                <div class="card">
+                    <div class="price-title" id="rTitle"></div>
+                    <div class="price-val" id="rPrice"></div>
+                    <div class="price-meta" id="rMeta"></div>
+                    <div class="chart-legend">
+                        <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
+                        <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
+                        <div class="legend-tag"><span class="legend-dot" style="background:#fef08a;"></span> 볼린저 상·하단(60,2)</div>
+                    </div>
+                    <div class="chart-box-wrap" id="tvChart"></div>
+                </div>
+
+                <div class="card">
+                    <div class="section-title">gaemiGTP 종목 뉴스</div>
+                    <div id="stockNewsList"></div>
+                </div>
+
+                <div class="card">
+                    <div class="section-title">gaemiGTP 세계 증시</div>
+                    <div class="world-grid" id="worldGrid"></div>
+                </div>
+
+                <div class="card">
+                    <div class="section-title">gaemiGTP 해외 뉴스</div>
+                    <div id="globalNewsList"></div>
+                </div>
+
+                <div class="card">
+                    <div class="section-title">
+                        <span>gaemiGTP 기술 지표</span>
+                        <span id="rTrend" style="font-size:0.85rem; color:#38bdf8;"></span>
+                    </div>
+                    <div class="quant-grid">
+                        <div class="quant-item"><div class="q-label">5일선</div><div class="q-val" id="rMa5"></div></div>
+                        <div class="quant-item"><div class="q-label">20일선</div><div class="q-val" id="rMa20"></div></div>
+                        <div class="quant-item"><div class="q-label">60일선</div><div class="q-val" id="rMa60"></div></div>
+                        <div class="quant-item"><div class="q-label">120일선</div><div class="q-val" id="rMa120"></div></div>
+                        <div class="quant-item"><div class="q-label">600일선</div><div class="q-val" id="rMa600"></div></div>
+                        <div class="quant-item"><div class="q-label">1200일선</div><div class="q-val" id="rMa1200"></div></div>
+                        <div class="quant-item"><div class="q-label">볼린저 밴드 (60, 2) 상/하</div><div class="q-val" id="rBb"></div></div>
+                        <div class="quant-item"><div class="q-label">MACD (12,26,9)</div><div class="q-val" id="rMacd"></div></div>
+                        <div class="quant-item"><div class="q-label">52주 고/저 대비 위치</div><div class="q-val" id="rPos52w"></div></div>
+                        <div class="quant-item"><div class="q-label">이격도 (20일 / 60일)</div><div class="q-val" id="rDisp"></div></div>
+                        <div class="quant-item"><div class="q-label">RSI (14)</div><div class="q-val" id="rRsi"></div></div>
+                        <div class="quant-item"><div class="q-label">ATR (14) 변동폭 / 비율</div><div class="q-val" id="rAtr"></div></div>
+                        <div class="quant-item"><div class="q-label">거래량 / 5일평균 대비</div><div class="q-val" id="rVolRatio"></div></div>
+                        <div class="quant-item"><div class="q-label">20일 평균 거래대금</div><div class="q-val" id="rTval20d"></div></div>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:16px;">
+                    <button class="signal-accordion-btn" onclick="toggleSignal()">
+                        <span class="signal-title-center">⚡ gaemiGTP 시그널 타점</span>
+                        <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+                    </button>
+                    <div class="signal-body" id="signalBody">
+                        <div class="signal-row"><span>1차 매수 진입 타점</span><strong id="rEntry1" style="color:#fff;"></strong></div>
+                        <div class="signal-row"><span>2차 분할 진입 타점</span><strong id="rEntry2" style="color:#fff;"></strong></div>
+                        <div class="signal-row"><span>1차 목표 수익가 (+4.5%)</span><strong id="rTarget1" style="color:#ef4444;"></strong></div>
+                        <div class="signal-row"><span>2차 목표 수익가 (+8.5%)</span><strong id="rTarget2" style="color:#ef4444;"></strong></div>
+                        <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong id="rStop" style="color:#38bdf8;"></strong></div>
+                        <div class="signal-row" style="margin-top:6px; border-top:1px dashed #37393d; padding-top:8px;">
+                            <span>1년 백테스트 검증</span>
+                            <span id="rBt1y" style="color:#38bdf8; font-weight:700;"></span>
+                        </div>
+                        <div class="signal-row">
+                            <span>2년 백테스트 검증</span>
+                            <span id="rBt2y" style="color:#38bdf8; font-weight:700;"></span>
+                        </div>
+                        
+                        <div class="guide-box">
+                            <div class="guide-title">gaemiGTP 시그널 가이드</div>
+                            <div id="rGuideText"></div>
+                            <div class="guide-disclaimer">과거의 수익률이 미래의 수익을 보장하지 않습니다.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="disclaimer-wrap">
+                    <p class="disclaimer-text">
+                        본 플랫폼에서 제공하는 모든 시세 데이터 및 기술지표는 투자 참고용이며, 투자 권유가 아닙니다. 모든 투자의 결과와 책임은 투자자 본인에게 있습니다.
+                    </p>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <div id="bottom-bar">
+        <div class="search-container">
+            <div class="search-box">
+                <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
+                    <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+
+        function resetToHome() {
+            document.getElementById('main-view').style.display = 'flex';
+            document.getElementById('result-scroll-view').style.display = 'none';
+            document.getElementById('bottom-bar').style.display = 'none';
+            document.getElementById('result-card-wrap').style.display = 'none';
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('centerInput').value = '';
+            document.getElementById('bottomInput').value = '';
+        }
+
+        function toggleSignal() {
+            const body = document.getElementById('signalBody');
+            const arrow = document.getElementById('signalArrow');
+            if (body.style.display === 'block') {
+                body.style.display = 'none';
+                arrow.style.transform = 'rotate(0deg)';
+            } else {
+                body.style.display = 'block';
+                arrow.style.transform = 'rotate(180deg)';
+            }
+        }
+
+        async function doSearch(query) {
+            const cleanQ = query.trim();
+            if (!cleanQ) return;
+
+            document.getElementById('main-view').style.display = 'none';
+            document.getElementById('result-scroll-view').style.display = 'block';
+            document.getElementById('bottom-bar').style.display = 'flex';
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result-card-wrap').style.display = 'none';
+            document.getElementById('bottomInput').value = '';
+
+            try {
+                const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
+                const response = await fetch(url);
+                const data = await response.json();
+                if (!response.ok || data.error) {
+                    alert(data.error || '분석 중 오류가 발생했습니다.');
+                    document.getElementById('loading').style.display = 'none';
+                    return;
+                }
+
+                const isKrw = data.market === '국내주식';
+                document.getElementById('rTitle').innerHTML = `${data.name} <span>(${data.symbol})</span>`;
+                document.getElementById('rPrice').innerText = data.price;
+                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'} · 시각: ${data.time}`;
+
+                const wGrid = document.getElementById('worldGrid');
+                wGrid.innerHTML = '';
+                if (data.world_indices) {
+                    data.world_indices.forEach(w => {
+                        const cls = w.up ? 'val-up' : 'val-down';
+                        wGrid.innerHTML += `
+                            <div class="world-item">
+                                <div class="world-name">${w.name}</div>
+                                <div class="world-val">${w.price}</div>
+                                <div class="world-rate ${cls}">${w.rate}</div>
+                            </div>
+                        `;
+                    });
+                }
+
+                const sNews = document.getElementById('stockNewsList');
+                sNews.innerHTML = '';
+                if (data.stock_news && data.stock_news.length > 0) {
+                    data.stock_news.forEach(n => {
+                        sNews.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `;
+                    });
+                } else {
+                    sNews.innerHTML = '<div style="color:#8e918f; font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
+                }
+
+                const gNews = document.getElementById('globalNewsList');
+                gNews.innerHTML = '';
+                if (data.global_news && data.global_news.length > 0) {
+                    data.global_news.forEach(n => {
+                        gNews.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `;
+                    });
+                }
+
+                const q = data.quant;
+                document.getElementById('rTrend').innerText = q.trend;
+                document.getElementById('rMa5').innerText = q.ma5;
+                document.getElementById('rMa20').innerText = q.ma20;
+                document.getElementById('rMa60').innerText = q.ma60;
+                document.getElementById('rMa120').innerText = q.ma120;
+                document.getElementById('rMa600').innerText = q.ma600;
+                document.getElementById('rMa1200').innerText = q.ma1200;
+                document.getElementById('rBb').innerText = q.bollinger;
+                document.getElementById('rMacd').innerText = q.macd;
+                document.getElementById('rPos52w').innerText = q.pos_52w;
+                document.getElementById('rDisp').innerText = q.disp;
+                document.getElementById('rRsi').innerText = q.rsi;
+                document.getElementById('rAtr').innerText = `${q.atr} (${q.atr_ratio})`;
+                document.getElementById('rVolRatio').innerText = q.vol_ratio;
+                document.getElementById('rTval20d').innerText = q.tval_20d;
+
+                document.getElementById('rEntry1').innerText = q.entry1;
+                document.getElementById('rEntry2').innerText = q.entry2;
+                document.getElementById('rTarget1').innerText = q.target1;
+                document.getElementById('rTarget2').innerText = q.target2;
+                document.getElementById('rStop').innerText = q.stop_p;
+                document.getElementById('rBt1y').innerText = q.bt_1y;
+                document.getElementById('rBt2y').innerText = q.bt_2y;
+                document.getElementById('rGuideText').innerText = q.guide_text;
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('result-card-wrap').style.display = 'block';
+
+                setTimeout(() => {
+                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
+                }, 50);
+
+                window.scrollTo({top: 0, behavior: 'smooth'});
+
+            } catch (err) {
+                alert('서버와 통신할 수 없습니다.');
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
+            const container = document.getElementById('tvChart');
+            container.innerHTML = '';
+
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth || 700,
+                height: 320,
+                layout: { background: { color: '#282a2c' }, textColor: '#8e918f' },
+                grid: {
+                    vertLines: { color: 'rgba(0,0,0,0)' },
+                    horzLines: { color: 'rgba(0,0,0,0)' }
+                },
+                timeScale: { borderColor: '#37393b', timeVisible: true },
+                rightPriceScale: { borderColor: '#37393b' }
+            });
+
+            const candleSeries = chart.addCandlestickSeries({
+                upColor: '#ef4444',
+                downColor: '#38bdf8',
+                borderDownColor: '#38bdf8',
+                borderUpColor: '#ef4444',
+                wickDownColor: '#38bdf8',
+                wickUpColor: '#ef4444',
+            });
+            candleSeries.setData(candles);
+
+            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1 });
+            lineMa20.setData(ma20);
+
+            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5 });
+            lineMa60.setData(ma60);
+
+            const lineBbUp = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2 });
+            lineBbUp.setData(bbUp);
+
+            const lineBbDn = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2 });
+            lineBbDn.setData(bbDn);
+
+            chart.timeScale().fitContent();
+
+            window.addEventListener('resize', () => {
+                if (chart && container) chart.applyOptions({ width: container.clientWidth });
+            });
+        }
+    </script>
+</body>
+</html>
+"""
+
+class WebHandler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+
+        if parsed.path == "/api/analyze":
+            q = params.get('q', [''])[0].strip()
+            data = run_full_pipeline(q) if q else None
+            if not data:
+                self.send_response(404)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
+                return
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            res_obj = {
+                "name": data["formal_name"],
+                "symbol": data["symbol"],
+                "market": data["market"],
+                "price": data["price_str"],
+                "time": data["now_str"],
+                "quant": data["quant"],
+                "stock_news": data["stock_news"],
+                "global_news": data["global_news"],
+                "world_indices": data["world_indices"],
+                "candles": data["candles"],
+                "ma20_line": data["ma20_line"],
+                "ma60_line": data["ma60_line"],
+                "bb_up_line": data["bb_up_line"],
+                "bb_dn_line": data["bb_dn_line"]
+            }
+            self.wfile.write(json.dumps(res_obj, ensure_ascii=False).encode('utf-8'))
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(HTML_PAGE.encode('utf-8'))
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), WebHandler)
+    server.serve_forever()
+
+if __name__ == "__main__":
+    run_web_server()

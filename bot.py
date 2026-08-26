@@ -13,22 +13,9 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import requests
 import pandas as pd
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import mplfinance as mpf
-
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes
-)
 
 # ----------------------------------------------------
-# 1. 환경 변수 및 종목 매핑 (보안 키 하드코딩 0개)
+# 1. 기본 설정 및 종목 매핑 (유료 API 키 0개, 보안 이슈 0개)
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
@@ -73,7 +60,7 @@ DOMESTIC_FAST_MAP = {
 }
 
 # ----------------------------------------------------
-# 2. 실시간 데이터 크롤링 모듈
+# 2. 무료 데이터 수집 모듈 (네이버 / 야후 / 바이낸스 / 구글RSS)
 # ----------------------------------------------------
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -362,8 +349,412 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 5. 웹 서버 및 프론트엔드 UI (어제 오리지널 레이아웃 완벽 복원)
+# 5. 웹 서버 및 프론트엔드 UI
 # ----------------------------------------------------
+HTML_PAGE = """<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>gaemiGTP - 10초 금융 퀀트 분석 엔진</title>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        html, body { height: 100%; background-color: #1e1f20; color: #e3e3e3; overflow: hidden; }
+        header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 20px; z-index: 50; }
+        .logo-top { font-weight: 700; font-size: 1.15rem; color: #e3e3e3; letter-spacing: -0.5px; cursor: pointer; }
+        .new-btn { background: #282a2c; border: none; color: #c4c7c5; font-size: 0.82rem; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-weight: 500; transition: background 0.2s; white-space: nowrap; }
+        .new-btn:hover { background: #37393b; color: #fff; }
+        #main-view { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; transition: all 0.3s; }
+        .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
+        .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
+        .search-container { width: 100%; max-width: 720px; position: relative; }
+        .search-box { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 4px 6px 4px 16px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
+        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; padding: 8px 4px; }
+        .search-box input::placeholder { color: #8e918f; }
+        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 10px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; transition: all 0.2s; white-space: nowrap; }
+        .model-pill-btn:hover { background: rgba(255, 255, 255, 0.08); }
+        .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
+        .model-pill-arrow { font-size: 0.6rem; color: #8e918f; }
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: #282a2c; border: none; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
+        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
+        .model-dropdown-item:hover { background: rgba(255, 255, 255, 0.08); }
+        .model-dropdown-item.active { background: rgba(255, 255, 255, 0.12); }
+        .item-title { font-size: 0.88rem; font-weight: 600; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
+        .item-sub { font-size: 0.73rem; color: #8e918f; margin-top: 2px; }
+        .item-check { color: #e3e3e3; font-weight: bold; display: none; font-size: 0.85rem; }
+        .model-dropdown-item.active .item-check { display: inline; }
+        .send-btn { width: 34px; height: 34px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+        .send-btn:hover { background: #4a4d50; }
+        .send-btn svg { width: 17px; height: 17px; fill: currentColor; }
+        .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
+        .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; white-space: nowrap; }
+        .tag-btn:hover { background: #37393b; color: #fff; }
+        #result-scroll-view { display: none; position: absolute; top: 56px; bottom: 84px; left: 0; width: 100%; overflow-y: auto; padding: 16px; }
+        .result-inner { max-width: 720px; margin: 0 auto; }
+        .card { background: #282a2c; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+        .price-title { font-size: 1.3rem; font-weight: 700; color: #f2f2f2; }
+        .price-title span { color: #8e918f; font-size: 0.9rem; font-weight: 400; margin-left: 4px; }
+        .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 8px 0; }
+        .price-meta { color: #8e918f; font-size: 0.8rem; line-height: 1.4; }
+        .chart-wrap { width: 100%; height: 300px; margin-top: 14px; position: relative; }
+        .issue-wrap { margin-bottom: 16px; }
+        .issue-title { font-size: 0.88rem; font-weight: 600; color: #c4c7c5; margin-bottom: 4px; }
+        .issue-highlight { font-size: 0.92rem; font-weight: 600; color: #fef08a; display: inline-block; animation: pulseFade 2.4s infinite ease-in-out; }
+        @keyframes pulseFade { 0% { opacity: 0.35; } 50% { opacity: 1; filter: brightness(1.2); } 100% { opacity: 0.35; } }
+        .section-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+        .trend-badge { font-size: 0.88rem; color: #38bdf8; font-weight: 600; margin-bottom: 12px; }
+        .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .quant-item { background: #1e1f20; padding: 14px; border-radius: 10px; }
+        .quant-item .q-label { color: #8e918f; font-size: 0.78rem; margin-bottom: 4px; }
+        .quant-item .q-val { color: #ffffff; font-size: 1.05rem; font-weight: 700; }
+        .signal-card { background: #202733; border: 1px solid #2b384a; }
+        .signal-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #283344; font-size: 0.9rem; }
+        .signal-item:last-child { border-bottom: none; }
+        .signal-target { color: #ef4444; font-weight: 700; }
+        .signal-stop { color: #38bdf8; font-weight: 700; }
+        .news-item { padding: 12px 0; border-bottom: 1px solid #37393b; text-decoration: none; display: block; }
+        .news-item:last-child { border-bottom: none; }
+        .news-title { color: #e3e3e3; font-size: 0.9rem; font-weight: 500; line-height: 1.4; }
+        .news-title:hover { color: #fff; }
+        .news-meta { color: #8e918f; font-size: 0.75rem; margin-top: 4px; }
+        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 76px; background: linear-gradient(180deg, rgba(30,31,32,0) 0%, rgba(30,31,32,1) 40%); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
+        .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.92rem; }
+        @media (max-width: 600px) { .hero-title { font-size: 2.6rem; } .search-box { padding: 3px 5px 3px 12px; } .search-box input { font-size: 0.88rem; } .card { padding: 16px; } }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo-top" onclick="resetToHome()">gaemiGTP</div>
+        <button class="new-btn" onclick="resetToHome()">+ 새 검색</button>
+    </header>
+
+    <div id="main-view">
+        <div class="hero-title">gaemiGTP</div>
+        <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
+        <div class="search-container">
+            <div class="search-box">
+                <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, NVDA, BTC, QQQ)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <div class="model-selector-wrap">
+                    <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
+                        <span class="model-pill-name" id="centerCurrentModel">gaemi</span>
+                        <span class="model-pill-arrow">▲</span>
+                    </div>
+                    <div class="model-dropdown-menu" id="centerDropdown">
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                            <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                            <div class="item-sub">통합 퀀트 리포트</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                            <div class="item-title">info <span class="item-check">✓</span></div>
+                            <div class="item-sub">실시간 뉴스 중심</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                            <div class="item-title">pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">차트 및 시그널 타점</div>
+                        </div>
+                    </div>
+                </div>
+                <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
+                    <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="popular-tags">
+            <button class="tag-btn" onclick="doSearch('SK하이닉스')">🔥 SK하이닉스</button>
+            <button class="tag-btn" onclick="doSearch('삼성전자')">📱 삼성전자</button>
+            <button class="tag-btn" onclick="doSearch('알테오젠')">🧬 알테오젠</button>
+            <button class="tag-btn" onclick="doSearch('엔비디아')">🚀 엔비디아</button>
+            <button class="tag-btn" onclick="doSearch('비트코인')">₿ 비트코인</button>
+        </div>
+    </div>
+
+    <div id="result-scroll-view">
+        <div class="result-inner">
+            <div class="loading" id="loading">⚡ 실시간 팩트 데이터를 연산 중입니다...</div>
+            <div id="result-card-wrap" style="display:none;">
+                <div class="card" id="cardPrice">
+                    <div class="price-title" id="rTitle"></div>
+                    <div class="price-val" id="rPrice"></div>
+                    <div class="price-meta" id="rMeta"></div>
+                    <div class="chart-wrap" id="tvChart"></div>
+                </div>
+
+                <div class="card" id="cardIssue" style="display:none;">
+                    <div class="issue-wrap">
+                        <div class="issue-title">gaemiGTP 이슈</div>
+                        <div class="issue-highlight" id="issueText"></div>
+                    </div>
+                </div>
+
+                <div class="card" id="cardQuant">
+                    <div class="section-title">퀀트 기술지표</div>
+                    <div class="trend-badge" id="rTrend"></div>
+                    <div class="quant-grid">
+                        <div class="quant-item"><div class="q-label">5일선</div><div class="q-val" id="rMa5"></div></div>
+                        <div class="quant-item"><div class="q-label">20일선</div><div class="q-val" id="rMa20"></div></div>
+                        <div class="quant-item"><div class="q-label">60일선</div><div class="q-val" id="rMa60"></div></div>
+                        <div class="quant-item"><div class="q-label">120일선</div><div class="q-val" id="rMa120"></div></div>
+                        <div class="quant-item"><div class="q-label">RSI(14)</div><div class="q-val" id="rRsi"></div></div>
+                        <div class="quant-item"><div class="q-label">ATR(14)</div><div class="q-val" id="rAtr"></div></div>
+                        <div class="quant-item"><div class="q-label">ATR 비율</div><div class="q-val" id="rAtrRatio"></div></div>
+                        <div class="quant-item"><div class="q-label">거래량/직전5일 평균</div><div class="q-val" id="rVolRatio"></div></div>
+                    </div>
+                </div>
+
+                <div class="card signal-card" id="cardSignal">
+                    <div class="section-title">
+                        <span>⚡ gaemiGTP 시그널 타점</span>
+                        <span style="font-size:0.75rem; color:#38bdf8; border:1px solid #38bdf8; padding:2px 6px; border-radius:4px;">알고리즘 산출</span>
+                    </div>
+                    <div class="signal-item"><span>1차 매수 타점</span><strong id="rEntry1" style="color:#fff;"></strong></div>
+                    <div class="signal-item"><span>2차 분할 타점</span><strong id="rEntry2" style="color:#fff;"></strong></div>
+                    <div class="signal-item"><span>목표 수익 실현가 (+6.5%)</span><strong id="rTarget" class="signal-target"></strong></div>
+                    <div class="signal-item"><span>리스크 방어 손절가 (-5.5%)</span><strong id="rStop" class="signal-stop"></strong></div>
+                    <div class="signal-item" style="margin-top:6px; border-top:1px dashed #2c3848; padding-top:10px;">
+                        <span>1년 백테스트 검증</span>
+                        <span id="rBacktest" style="color:#38bdf8; font-weight:700;"></span>
+                    </div>
+                </div>
+
+                <div class="card" id="cardNews">
+                    <div class="section-title">최근 뉴스</div>
+                    <div id="newsList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="bottom-bar">
+        <div class="search-container">
+            <div class="search-box">
+                <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <div class="model-selector-wrap">
+                    <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
+                        <span class="model-pill-name" id="bottomCurrentModel">gaemi</span>
+                        <span class="model-pill-arrow">▲</span>
+                    </div>
+                    <div class="model-dropdown-menu" id="bottomDropdown">
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                            <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                            <div class="item-sub">통합 퀀트 리포트</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                            <div class="item-title">info <span class="item-check">✓</span></div>
+                            <div class="item-sub">실시간 뉴스 중심</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                            <div class="item-title">pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">차트 및 시그널 타점</div>
+                        </div>
+                    </div>
+                </div>
+                <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
+                    <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let candleSeries = null;
+        let lineSeries = null;
+        let selectedMode = 'gaemi';
+
+        function toggleModelDropdown(target) {
+            const centerD = document.getElementById('centerDropdown');
+            const bottomD = document.getElementById('bottomDropdown');
+            const targetD = target === 'center' ? centerD : bottomD;
+            const otherD = target === 'center' ? bottomD : centerD;
+            otherD.style.display = 'none';
+            targetD.style.display = targetD.style.display === 'block' ? 'none' : 'block';
+        }
+
+        function selectModel(modeKey, modeName) {
+            selectedMode = modeKey;
+            document.getElementById('centerCurrentModel').innerText = modeName;
+            document.getElementById('bottomCurrentModel').innerText = modeName;
+
+            ['centerDropdown', 'bottomDropdown'].forEach(id => {
+                const items = document.getElementById(id).querySelectorAll('.model-dropdown-item');
+                items.forEach(it => {
+                    if (it.innerText.includes(modeName)) {
+                        it.classList.add('active');
+                    } else {
+                        it.classList.remove('active');
+                    }
+                });
+                document.getElementById(id).style.display = 'none';
+            });
+            applyModelFilter();
+        }
+
+        function applyModelFilter() {
+            const price = document.getElementById('cardPrice');
+            const quant = document.getElementById('cardQuant');
+            const signal = document.getElementById('cardSignal');
+            const news = document.getElementById('cardNews');
+
+            if (selectedMode === 'gaemi') {
+                price.style.display = 'block';
+                quant.style.display = 'block';
+                signal.style.display = 'block';
+                news.style.display = 'block';
+            } else if (selectedMode === 'info') {
+                price.style.display = 'block';
+                quant.style.display = 'none';
+                signal.style.display = 'none';
+                news.style.display = 'block';
+            } else if (selectedMode === 'pro') {
+                price.style.display = 'block';
+                quant.style.display = 'block';
+                signal.style.display = 'block';
+                news.style.display = 'none';
+            }
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.model-selector-wrap')) {
+                document.getElementById('centerDropdown').style.display = 'none';
+                document.getElementById('bottomDropdown').style.display = 'none';
+            }
+        });
+
+        function resetToHome() {
+            document.getElementById('main-view').style.display = 'flex';
+            document.getElementById('result-scroll-view').style.display = 'none';
+            document.getElementById('bottom-bar').style.display = 'none';
+            document.getElementById('result-card-wrap').style.display = 'none';
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('centerInput').value = '';
+            document.getElementById('bottomInput').value = '';
+        }
+
+        function fmtNum(v, isKrw) {
+            if (isKrw) return parseInt(v).toLocaleString() + '원';
+            return parseFloat(v).toLocaleString(undefined, {minimumFractionDigits: 2}) + '달러';
+        }
+
+        async function doSearch(query) {
+            const cleanQ = query.trim();
+            if (!cleanQ) return;
+
+            document.getElementById('main-view').style.display = 'none';
+            document.getElementById('result-scroll-view').style.display = 'block';
+            document.getElementById('bottom-bar').style.display = 'flex';
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result-card-wrap').style.display = 'none';
+            document.getElementById('bottomInput').value = '';
+
+            try {
+                const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
+                const response = await fetch(url);
+                const data = await response.json();
+                if (!response.ok || data.error) {
+                    alert(data.error || '분석 중 오류가 발생했습니다.');
+                    document.getElementById('loading').style.display = 'none';
+                    return;
+                }
+
+                const isKrw = data.market === '국내주식';
+                document.getElementById('rTitle').innerHTML = `${data.name} <span>(${data.symbol})</span>`;
+                document.getElementById('rPrice').innerText = data.price;
+                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 데이터 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'}<br>조회시각: ${data.time}`;
+
+                if (data.top_news) {
+                    document.getElementById('issueText').innerText = "👉 " + data.top_news;
+                    document.getElementById('cardIssue').style.display = 'block';
+                } else {
+                    document.getElementById('cardIssue').style.display = 'none';
+                }
+
+                document.getElementById('rTrend').innerText = `추세: ${data.quant.trend}`;
+                document.getElementById('rMa5').innerText = fmtNum(data.quant.ma5, isKrw);
+                document.getElementById('rMa20').innerText = fmtNum(data.quant.ma20, isKrw);
+                document.getElementById('rMa60').innerText = fmtNum(data.quant.ma60, isKrw);
+                document.getElementById('rMa120').innerText = fmtNum(data.quant.ma120, isKrw);
+                document.getElementById('rRsi').innerText = data.quant.rsi;
+                document.getElementById('rAtr').innerText = fmtNum(data.quant.atr, isKrw);
+                document.getElementById('rAtrRatio').innerText = data.quant.atr_ratio + '%';
+                document.getElementById('rVolRatio').innerText = data.quant.vol_ratio + '%';
+
+                document.getElementById('rEntry1').innerText = fmtNum(data.quant.entry1, isKrw);
+                document.getElementById('rEntry2').innerText = fmtNum(data.quant.entry2, isKrw);
+                document.getElementById('rTarget').innerText = fmtNum(data.quant.target_p, isKrw);
+                document.getElementById('rStop').innerText = fmtNum(data.quant.stop_p, isKrw);
+                document.getElementById('rBacktest').innerText = `승률 ${data.quant.win_rate}% / 손익비 ${data.quant.rr_ratio}`;
+
+                const nBox = document.getElementById('newsList');
+                nBox.innerHTML = '';
+                if (data.news && data.news.length > 0) {
+                    data.news.forEach(n => {
+                        nBox.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `;
+                    });
+                } else {
+                    nBox.innerHTML = '<div style="color:#8e918f; font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
+                }
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('result-card-wrap').style.display = 'block';
+                document.getElementById('result-scroll-view').scrollTo({top: 0, behavior: 'smooth'});
+
+                applyModelFilter();
+                initTvChart(data.candles, data.ma20_line);
+
+            } catch (err) {
+                alert('서버와 통신할 수 없습니다.');
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        function initTvChart(candles, ma20) {
+            const chartContainer = document.getElementById('tvChart');
+            chartContainer.innerHTML = '';
+
+            chart = LightweightCharts.createChart(chartContainer, {
+                width: chartContainer.clientWidth,
+                height: 300,
+                layout: { background: { color: '#282a2c' }, textColor: '#8e918f' },
+                grid: { vertLines: { color: '#333538' }, horzLines: { color: '#333538' } },
+                timeScale: { borderColor: '#37393b' },
+                rightPriceScale: { borderColor: '#37393b' }
+            });
+
+            candleSeries = chart.addCandlestickSeries({
+                upColor: '#ef4444',
+                downColor: '#38bdf8',
+                borderDownColor: '#38bdf8',
+                borderUpColor: '#ef4444',
+                wickDownColor: '#38bdf8',
+                wickUpColor: '#ef4444',
+            });
+            candleSeries.setData(candles);
+
+            lineSeries = chart.addLineSeries({
+                color: '#fef08a',
+                lineWidth: 2,
+            });
+            lineSeries.setData(ma20);
+
+            chart.timeScale().fitContent();
+
+            window.addEventListener('resize', () => {
+                if (chart && chartContainer) {
+                    chart.applyOptions({ width: chartContainer.clientWidth });
+                }
+            });
+        }
+    </script>
+</body>
+</html>"""
+
 class WebHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(200)
@@ -410,318 +801,12 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.end_headers()
-        html_doc = """<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>gaemiGTP - 10초 금융 퀀트 분석 엔진</title>
-    <!-- TradingView Lightweight Charts 스크립트 -->
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        html, body { height: 100%; background-color: #1e1f20; color: #e3e3e3; overflow: hidden; }
-        
-        header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 20px; z-index: 50; }
-        .logo-top { font-weight: 700; font-size: 1.15rem; color: #e3e3e3; letter-spacing: -0.5px; cursor: pointer; }
-        .new-btn { background: #282a2c; border: none; color: #c4c7c5; font-size: 0.82rem; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-weight: 500; transition: background 0.2s; white-space: nowrap; }
-        .new-btn:hover { background: #37393b; color: #fff; }
+        self.wfile.write(HTML_PAGE.encode('utf-8'))
 
-        #main-view { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; transition: all 0.3s; }
-        .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
-        .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
-        
-        .search-container { width: 100%; max-width: 720px; position: relative; }
-        .search-box { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 4px 6px 4px 16px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
-        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; padding: 8px 4px; }
-        .search-box input::placeholder { color: #8e918f; }
-        
-        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
-        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 10px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; transition: all 0.2s; white-space: nowrap; }
-        .model-pill-btn:hover { background: rgba(255, 255, 255, 0.08); }
-        .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
-        .model-pill-arrow { font-size: 0.6rem; color: #8e918f; transition: transform 0.2s; }
-        
-        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: #282a2c; border: none; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
-        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
-        .model-dropdown-item:hover { background: rgba(255, 255, 255, 0.08); }
-        .model-dropdown-item.active { background: rgba(255, 255, 255, 0.12); }
-        .item-title { font-size: 0.88rem; font-weight: 600; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
-        .item-sub { font-size: 0.73rem; color: #8e918f; margin-top: 2px; }
-        .item-check { color: #e3e3e3; font-weight: bold; display: none; font-size: 0.85rem; }
-        .model-dropdown-item.active .item-check { display: inline; }
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), WebHandler)
+    server.serve_forever()
 
-        .send-btn { width: 34px; height: 34px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; transition: background 0.2s; }
-        .send-btn:hover { background: #4a4d50; }
-        .send-btn svg { width: 17px; height: 17px; fill: currentColor; }
-
-        .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; transition: background 0.2s; white-space: nowrap; }
-        .tag-btn:hover { background: #37393b; color: #fff; }
-
-        #result-scroll-view { display: none; position: absolute; top: 56px; bottom: 84px; left: 0; width: 100%; overflow-y: auto; padding: 16px; }
-        .result-inner { max-width: 720px; margin: 0 auto; }
-        
-        .card { background: #282a2c; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
-        .price-title { font-size: 1.3rem; font-weight: 700; color: #f2f2f2; }
-        .price-title span { color: #8e918f; font-size: 0.9rem; font-weight: 400; margin-left: 4px; }
-        .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 8px 0; }
-        .price-meta { color: #8e918f; font-size: 0.8rem; line-height: 1.4; }
-
-        .chart-wrap { width: 100%; height: 300px; margin-top: 14px; position: relative; }
-
-        .issue-wrap { margin-bottom: 16px; }
-        .issue-title { font-size: 0.88rem; font-weight: 600; color: #c4c7c5; margin-bottom: 4px; }
-        .issue-highlight { font-size: 0.92rem; font-weight: 600; color: #fef08a; display: inline-block; animation: pulseFade 2.4s infinite ease-in-out; }
-        @keyframes pulseFade {
-            0% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
-            50% { opacity: 1; transform: scale(1); filter: brightness(1.25) drop-shadow(0 0 6px rgba(254, 240, 138, 0.4)); }
-            100% { opacity: 0.35; transform: scale(0.995); filter: brightness(0.85); }
-        }
-
-        .section-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-        .trend-badge { font-size: 0.88rem; color: #38bdf8; font-weight: 600; margin-bottom: 12px; }
-        
-        .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .quant-item { background: #1e1f20; padding: 14px; border-radius: 10px; }
-        .quant-item .q-label { color: #8e918f; font-size: 0.78rem; margin-bottom: 4px; }
-        .quant-item .q-val { color: #ffffff; font-size: 1.05rem; font-weight: 700; }
-
-        .signal-card { background: #202733; border: 1px solid #2b384a; }
-        .signal-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #283344; font-size: 0.9rem; }
-        .signal-item:last-child { border-bottom: none; }
-        .signal-target { color: #ef4444; font-weight: 700; }
-        .signal-stop { color: #38bdf8; font-weight: 700; }
-
-        .news-item { padding: 12px 0; border-bottom: 1px solid #37393b; text-decoration: none; display: block; }
-        .news-item:last-child { border-bottom: none; }
-        .news-title { color: #e3e3e3; font-size: 0.9rem; font-weight: 500; line-height: 1.4; }
-        .news-title:hover { color: #fff; }
-        .news-meta { color: #8e918f; font-size: 0. shame shame shame shame shame shame shame shame shame shame shame shame shame shame shame shame대시보드 화면 구성을 완성하기 위해, 원하시는 형태에 맞춰 바로 사용하실 수 있는 **단일 HTML 파일 기반의 완전한 프론트엔드 코드**를 작성했습니다. 
-
-별도의 복잡한 빌드 과정 없이 `index.html` 파일 하나로 브라우저에서 즉시 실행되며, 상단 검색창에 종목명을 입력하면 **실시간 캔들스틱 차트, 퀀트 지표, 시그널 타점, 최신 뉴스 피드**가 한 화면에 렌더링됩니다.
-
----
-
-### `index.html` 완전한 통합 대시보드 코드
-
-```html
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>gaemiGTP - 퀀트 트레이딩 대시보드</title>
-    <!-- TradingView Lightweight Charts 라이브러리 -->
-    <script src="[https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js](https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js)"></script>
-    <style>
-        :root {
-            --bg-base: #121316;
-            --bg-card: #1a1c20;
-            --bg-inner: #22252a;
-            --border: #2c3038;
-            --text-main: #f0f2f5;
-            --text-sub: #8b929e;
-            --accent-up: #ef4444;
-            --accent-down: #3b82f6;
-            --accent-primary: #38bdf8;
-            --accent-warn: #eab308;
-        }
-
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background-color: var(--bg-base); color: var(--text-main); padding: 24px 16px; display: flex; justify-content: center; }
-        .dashboard { width: 100%; max-width: 1080px; display: flex; flex-direction: column; gap: 20px; }
-
-        /* 1. 상단 글로벌 헤더 & 검색창 */
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
-        .logo { font-size: 1.4rem; font-weight: 800; letter-spacing: -0.5px; color: #fff; }
-        .search-wrap { display: flex; gap: 8px; width: 100%; max-width: 460px; }
-        .search-wrap input { flex: 1; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; color: #fff; font-size: 0.95rem; outline: none; }
-        .search-wrap input:focus { border-color: var(--accent-primary); }
-        .search-wrap button { background: var(--accent-primary); color: #000; border: none; border-radius: 8px; padding: 10px 18px; font-weight: 700; cursor: pointer; }
-
-        /* 2. 대시보드 그리드 레이아웃 */
-        .grid-layout { display: grid; grid-template-columns: 2fr 1.2fr; gap: 20px; }
-        @media (max-width: 860px) { .grid-layout { grid-template-columns: 1fr; } }
-
-        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
-        .card-title { font-size: 1rem; font-weight: 700; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; color: #fff; }
-
-        /* 종목 헤더 */
-        .ticker-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 14px; }
-        .ticker-info h2 { font-size: 1.5rem; font-weight: 800; color: #fff; }
-        .ticker-info span { font-size: 0.85rem; color: var(--text-sub); }
-        .price-box { text-align: right; }
-        .current-price { font-size: 1.6rem; font-weight: 800; }
-        .price-change { font-size: 0.9rem; font-weight: 600; }
-
-        /* 차트 영역 */
-        #chartContainer { width: 100%; height: 360px; }
-
-        /* 퀀트 지표 타일 */
-        .quant-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-        .quant-item { background: var(--bg-inner); padding: 10px 14px; border-radius: 8px; border: 1px solid var(--border); }
-        .quant-label { font-size: 0.75rem; color: var(--text-sub); margin-bottom: 2px; }
-        .quant-val { font-size: 0.95rem; font-weight: 700; color: #fff; }
-
-        /* 시그널 타점 박스 */
-        .signal-list { display: flex; flex-direction: column; gap: 8px; }
-        .signal-row { display: flex; justify-content: space-between; padding: 8px 12px; background: var(--bg-inner); border-radius: 6px; font-size: 0.88rem; }
-        .val-target { color: var(--accent-up); font-weight: 700; }
-        .val-stop { color: var(--accent-down); font-weight: 700; }
-
-        /* 뉴스 피드 */
-        .news-feed { display: flex; flex-direction: column; gap: 10px; max-height: 280px; overflow-y: auto; }
-        .news-node { display: flex; flex-direction: column; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
-        .news-node:last-child { border-bottom: none; }
-        .news-node a { color: var(--text-main); font-size: 0.88rem; text-decoration: none; line-height: 1.35; font-weight: 500; }
-        .news-node a:hover { color: var(--accent-primary); }
-        .news-meta { font-size: 0.72rem; color: var(--text-sub); }
-    </style>
-</head>
-<body>
-    <div class="dashboard">
-        <!-- 상단 헤더 & 검색 -->
-        <header class="header">
-            <div class="logo">gaemiGTP</div>
-            <div class="search-wrap">
-                <input type="text" id="queryInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA)" value="SK하이닉스" onkeypress="if(event.keyCode===13) executeAnalysis();">
-                <button onclick="executeAnalysis()">분석</button>
-            </div>
-        </header>
-
-        <!-- 메인 대시보드 그리드 -->
-        <div class="grid-layout">
-            <!-- 좌측 메인 패널: 실시간 주가 & 캔들 차트 -->
-            <div style="display: flex; flex-direction: column; gap: 20px;">
-                <div class="card">
-                    <div class="ticker-header">
-                        <div class="ticker-info">
-                            <h2 id="dispTicker">SK하이닉스</h2>
-                            <span id="dispCode">000660 · KOSPI</span>
-                        </div>
-                        <div class="price-box">
-                            <div class="current-price" id="dispPrice">194,500 원</div>
-                            <div class="price-change" id="dispChange" style="color: var(--accent-up);">+3.40% ▲</div>
-                        </div>
-                    </div>
-                    <div id="chartContainer"></div>
-                </div>
-
-                <!-- 퀀트 기술적 분석 지표 -->
-                <div class="card">
-                    <div class="card-title">
-                        <span>퀀트 기술적 분석 지표</span>
-                        <span id="dispTrend" style="font-size: 0.8rem; color: var(--accent-primary);">정배열 우상향</span>
-                    </div>
-                    <div class="quant-grid">
-                        <div class="quant-item"><div class="quant-label">5일 이동평균선</div><div class="quant-val" id="qMa5">191,200 원</div></div>
-                        <div class="quant-item"><div class="quant-label">20일 이동평균선</div><div class="quant-val" id="qMa20">186,400 원</div></div>
-                        <div class="quant-item"><div class="quant-label">RSI (14)</div><div class="quant-val" id="qRsi">64.2 (중립 매수세)</div></div>
-                        <div class="quant-item"><div class="quant-label">ATR (14일 변동폭)</div><div class="quant-val" id="qAtr">5,800 원 (2.98%)</div></div>
-                        <div class="quant-item"><div class="quant-label">5일 대비 거래량 비율</div><div class="quant-val" id="qVol">148% (수급 유입)</div></div>
-                        <div class="quant-item"><div class="quant-label">MACD 히스토그램</div><div class="quant-val" id="qMacd">+1,420 (골든크로스)</div></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 우측 사이드 패널: 시그널 타점 & 최신 뉴스 피드 -->
-            <div style="display: flex; flex-direction: column; gap: 20px;">
-                <!-- 퀀트 시그널 타점 -->
-                <div class="card">
-                    <div class="card-title">
-                        <span>⚡ 스마트머니 시그널 타점</span>
-                        <span style="font-size: 0.75rem; background: rgba(56,189,248,0.15); color: var(--accent-primary); padding: 2px 6px; border-radius: 4px;">알고리즘 산출</span>
-                    </div>
-                    <div class="signal-list">
-                        <div class="signal-row"><span>1차 매수 진입 타점</span><strong id="sEntry1">191,500 원</strong></div>
-                        <div class="signal-row"><span>2차 분할 진입 타점</span><strong id="sEntry2">187,500 원</strong></div>
-                        <div class="signal-row"><span>목표 익절 실현가 (+6.5%)</span><strong id="sTarget" class="val-target">207,000 원</strong></div>
-                        <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong id="sStop" class="val-stop">183,800 원</strong></div>
-                        <div class="signal-row" style="margin-top: 4px; border-top: 1px dashed var(--border); padding-top: 10px;">
-                            <span>1년 백테스트 검증</span>
-                            <span style="color: var(--accent-primary); font-weight: 700;">승률 71.4% / 손익비 1:2.4</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 최신 뉴스 & 공시 피드 -->
-                <div class="card">
-                    <div class="card-title">최신 뉴스 및 시장 재료</div>
-                    <div class="news-feed" id="newsFeed">
-                        <div class="news-node">
-                            <a href="#">HBM3E 양산 확대에 따른 글로벌 메모리 공급망 주도권 지속 전망</a>
-                            <div class="news-meta">한국경제 · 25분 전</div>
-                        </div>
-                        <div class="news-node">
-                            <a href="#">외국인·기관 동반 순매수 유입... 반도체 대형주 중심 강세</a>
-                            <div class="news-meta">매일경제 · 1시간 전</div>
-                        </div>
-                        <div class="news-node">
-                            <a href="#">글로벌 AI 서버 수요 폭증, 하반기 실적 가이던스 상향 기대감</a>
-                            <div class="news-meta">연합뉴스 · 3시간 전</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- 차트 구동 스크립트 -->
-    <script>
-        let chart = null;
-        let candleSeries = null;
-        let lineSeries = null;
-
-        function initChart() {
-            const container = document.getElementById('chartContainer');
-            container.innerHTML = '';
-
-            chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth,
-                height: 360,
-                layout: { background: { color: '#1a1c20' }, textColor: '#8b929e' },
-                grid: { vertLines: { color: '#25282f' }, horzLines: { color: '#25282f' } },
-                timeScale: { borderColor: '#2c3038' },
-                rightPriceScale: { borderColor: '#2c3038' }
-            });
-
-            candleSeries = chart.addCandlestickSeries({
-                upColor: '#ef4444',
-                downColor: '#3b82f6',
-                borderDownColor: '#3b82f6',
-                borderUpColor: '#ef4444',
-                wickDownColor: '#3b82f6',
-                wickUpColor: '#ef4444'
-            });
-
-            lineSeries = chart.addLineSeries({
-                color: '#38bdf8',
-                lineWidth: 2
-            });
-
-            // 초기 데모 캔들 데이터 생성
-            generateMockCandles(194500);
-
-            window.addEventListener('resize', () => {
-                if (chart && container) chart.applyOptions({ width: container.clientWidth });
-            });
-        }
-
-        function generateMockCandles(basePrice) {
-            const candles shame shame shame shame shame shame shame shameThe deployment failed due to a **`SyntaxError`** in your Python script.
-
-**The Cause**
-In `bot.py` around line 46, the dictionary definition `US_STOCK_MAP = {` was opened with a curly bracket `{` but never closed with a corresponding `}` before the end of the block or file.
-
-**How to Fix**
-1. Open `bot.py` and navigate to line 46.
-2. Ensure every opening brace `{` in `US_STOCK_MAP` has a matching closing brace `}`.
-3. Check for missing commas between dictionary key-value pairs or accidental unclosed inner brackets/strings.
-
-```python
-# Example fix:
-US_STOCK_MAP = {
-    "AAPL": "Apple",
-    "TSLA": "Tesla",
-}  # Make sure this closing brace is present
+if __name__ == "__main__":
+    run_web_server()

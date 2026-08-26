@@ -825,9 +825,9 @@ def telegram_bot_worker():
 threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (텔레그램 구독 버튼 탑재)
+# 7. 웹 프론트엔드 UI (순수 문자열로 f-string 에러 원천 차단)
 # ----------------------------------------------------
-HTML_PAGE = f"""<!DOCTYPE html>
+HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
@@ -839,7 +839,7 @@ HTML_PAGE = f"""<!DOCTYPE html>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <style>
-        :root {{
+        :root {
             --bg-body: #131314;
             --bg-card: #1e1f20;
             --bg-sidebar: #1e1f20;
@@ -853,9 +853,9 @@ HTML_PAGE = f"""<!DOCTYPE html>
             --btn-hover: rgba(255, 255, 255, 0.08);
             --signal-border: rgba(16, 185, 129, 0.55);
             --bottom-fade: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%);
-        }}
+        }
 
-        body.light-theme {{
+        body.light-theme {
             --bg-body: #f8f9fa;
             --bg-card: #ffffff;
             --bg-sidebar: #f1f3f4;
@@ -869,12 +869,12 @@ HTML_PAGE = f"""<!DOCTYPE html>
             --btn-hover: rgba(0, 0, 0, 0.05);
             --signal-border: rgba(16, 185, 129, 0.65);
             --bottom-fade: linear-gradient(180deg, rgba(248,249,250,0) 0%, rgba(248,249,250,1) 40%);
-        }}
+        }
 
-        * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }}
-        body {{ background-color: var(--bg-body); color: var(--text-main); min-height: 100vh; overflow-x: hidden; display: flex; transition: background-color 0.2s, color 0.2s; }}
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
+        body { background-color: var(--bg-body); color: var(--text-main); min-height: 100vh; overflow-x: hidden; display: flex; transition: background-color 0.2s, color 0.2s; }
         
-        #sidebar-wrapper {{
+        #sidebar-wrapper {
             width: 260px;
             background-color: var(--bg-sidebar);
             height: 100vh;
@@ -889,22 +889,22 @@ HTML_PAGE = f"""<!DOCTYPE html>
             transform: translateX(-100%);
             transition: transform 0.25s ease, background-color 0.2s;
             box-shadow: none;
-        }}
-        #sidebar-wrapper.open {{
+        }
+        #sidebar-wrapper.open {
             transform: translateX(0);
             box-shadow: 10px 0 30px rgba(0,0,0,0.25);
-        }}
+        }
 
-        .side-top-action {{
+        .side-top-action {
             height: 44px;
             display: flex;
             align-items: center;
             justify-content: space-between;
             margin-bottom: 12px;
             padding: 0 4px;
-        }}
+        }
 
-        .gemini-menu-icon {{
+        .gemini-menu-icon {
             background: transparent;
             border: none;
             color: var(--text-sub);
@@ -915,10 +915,10 @@ HTML_PAGE = f"""<!DOCTYPE html>
             align-items: center;
             justify-content: center;
             transition: background 0.15s, color 0.15s;
-        }}
-        .gemini-menu-icon:hover {{ background: var(--btn-hover); color: var(--text-title); }}
+        }
+        .gemini-menu-icon:hover { background: var(--btn-hover); color: var(--text-title); }
 
-        .gemini-new-btn {{
+        .gemini-new-btn {
             display: flex;
             align-items: center;
             gap: 12px;
@@ -933,23 +933,23 @@ HTML_PAGE = f"""<!DOCTYPE html>
             width: 100%;
             transition: all 0.2s;
             margin-bottom: 16px;
-        }}
-        .gemini-new-btn:hover {{ background: var(--btn-hover); border-color: var(--border-focus); color: var(--text-title); }}
+        }
+        .gemini-new-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); color: var(--text-title); }
 
-        .sidebar-scroll-area {{
+        .sidebar-scroll-area {
             flex: 1;
             overflow-y: auto;
-        }}
+        }
 
-        .sidebar-section-title {{
+        .sidebar-section-title {
             font-size: 0.75rem;
             color: var(--text-muted);
             font-weight: 600;
             padding: 8px 12px;
             letter-spacing: -0.2px;
-        }}
+        }
 
-        .sidebar-item {{
+        .sidebar-item {
             display: flex;
             align-items: center;
             padding: 9px 14px;
@@ -959,19 +959,19 @@ HTML_PAGE = f"""<!DOCTYPE html>
             cursor: pointer;
             margin-bottom: 2px;
             transition: background 0.15s, color 0.15s;
-        }}
-        .sidebar-item:hover {{ background: var(--btn-hover); color: var(--text-title); }}
+        }
+        .sidebar-item:hover { background: var(--btn-hover); color: var(--text-title); }
 
-        #content-wrapper {{
+        #content-wrapper {
             margin-left: 0;
             width: 100%;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
             position: relative;
-        }}
+        }
 
-        header {{
+        header {
             height: 56px;
             display: flex;
             align-items: center;
@@ -983,82 +983,82 @@ HTML_PAGE = f"""<!DOCTYPE html>
             top: 0;
             z-index: 40;
             transition: background-color 0.2s;
-        }}
+        }
 
-        .header-left {{ display: flex; align-items: center; gap: 12px; }}
-        .logo-top {{ font-weight: 700; font-size: 1.18rem; color: var(--text-title); letter-spacing: -0.5px; cursor: pointer; }}
+        .header-left { display: flex; align-items: center; gap: 12px; }
+        .logo-top { font-weight: 700; font-size: 1.18rem; color: var(--text-title); letter-spacing: -0.5px; cursor: pointer; }
 
-        #main-view {{ min-height: calc(100vh - 56px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }}
-        .hero-title {{ font-size: 2.8rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: var(--text-title); text-align: center; }}
-        .hero-sub {{ font-size: 0.95rem; color: var(--text-muted); margin-bottom: 24px; font-weight: 400; text-align: center; }}
+        #main-view { min-height: calc(100vh - 56px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
+        .hero-title { font-size: 2.8rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: var(--text-title); text-align: center; }
+        .hero-sub { font-size: 0.95rem; color: var(--text-muted); margin-bottom: 24px; font-weight: 400; text-align: center; }
 
-        .search-container {{ width: 100%; max-width: 832px; position: relative; }}
-        .search-box {{ width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }}
-        .search-box input {{ flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }}
+        .search-container { width: 100%; max-width: 832px; position: relative; }
+        .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
+        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
 
-        .model-selector-wrap {{ position: relative; margin-right: 4px; flex-shrink: 0; }}
-        .model-pill-btn {{ background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }}
-        .model-pill-btn:hover {{ background: var(--btn-hover); }}
-        .model-pill-name {{ font-size: 0.82rem; font-weight: 600; color: var(--text-main); }}
-        .model-pill-arrow {{ font-size: 0.6rem; color: var(--text-muted); }}
+        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+        .model-pill-btn:hover { background: var(--btn-hover); }
+        .model-pill-name { font-size: 0.82rem; font-weight: 600; color: var(--text-main); }
+        .model-pill-arrow { font-size: 0.6rem; color: var(--text-muted); }
 
-        .model-dropdown-menu {{ display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); z-index: 100; }}
-        .model-dropdown-item {{ padding: 9px 12px; border-radius: 10px; cursor: pointer; }}
-        .model-dropdown-item:hover {{ background: var(--btn-hover); }}
-        .model-dropdown-item.active {{ background: var(--btn-hover); }}
-        .item-title {{ font-size: 0.88rem; font-weight: 600; color: var(--text-title); display: flex; justify-content: space-between; }}
-        .item-sub {{ font-size: 0.73rem; color: var(--text-muted); margin-top: 2px; }}
-        .item-check {{ color: #38bdf8; font-weight: bold; display: none; }}
-        .model-dropdown-item.active .item-check {{ display: inline; }}
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); z-index: 100; }
+        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; }
+        .model-dropdown-item:hover { background: var(--btn-hover); }
+        .model-dropdown-item.active { background: var(--btn-hover); }
+        .item-title { font-size: 0.88rem; font-weight: 600; color: var(--text-title); display: flex; justify-content: space-between; }
+        .item-sub { font-size: 0.73rem; color: var(--text-muted); margin-top: 2px; }
+        .item-check { color: #38bdf8; font-weight: bold; display: none; }
+        .model-dropdown-item.active .item-check { display: inline; }
 
-        .send-btn {{ width: 38px; height: 38px; border-radius: 50%; background: var(--border-line); border: none; color: var(--text-title); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }}
-        .send-btn:hover {{ background: var(--border-focus); }}
+        .send-btn { width: 38px; height: 38px; border-radius: 50%; background: var(--border-line); border: none; color: var(--text-title); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+        .send-btn:hover { background: var(--border-focus); }
 
-        .popular-tags {{ display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }}
-        .tag-btn {{ background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }}
-        .tag-btn:hover {{ background: var(--btn-hover); color: var(--text-title); }}
+        .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
+        .tag-btn { background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }
+        .tag-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
-        #result-scroll-view {{ display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }}
-        .result-inner {{ max-width: 832px; margin: 0 auto; }}
+        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
+        .result-inner { max-width: 832px; margin: 0 auto; }
         
-        .card {{ background: var(--bg-card); border-radius: 16px; padding: 18px 16px; margin-bottom: 14px; border: 1px solid var(--border-line); box-shadow: 0 2px 10px rgba(0,0,0,0.03); }}
-        .price-title {{ font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }}
-        .price-title span {{ color: var(--text-muted); font-size: 0.85rem; font-weight: 400; margin-left: 4px; }}
-        .price-val {{ font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }}
-        .price-meta {{ color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }}
+        .card { background: var(--bg-card); border-radius: 16px; padding: 18px 16px; margin-bottom: 14px; border: 1px solid var(--border-line); box-shadow: 0 2px 10px rgba(0,0,0,0.03); }
+        .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
+        .price-title span { color: var(--text-muted); font-size: 0.85rem; font-weight: 400; margin-left: 4px; }
+        .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
+        .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
 
-        .chart-legend {{ display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 12px; }}
-        .legend-tag {{ display: flex; align-items: center; gap: 4px; }}
-        .legend-dot {{ width: 7px; height: 7px; border-radius: 50%; }}
-        .chart-box-wrap {{ width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }}
+        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 12px; }
+        .legend-tag { display: flex; align-items: center; gap: 4px; }
+        .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
+        .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
-        .section-title {{ font-size: 1rem; font-weight: 700; color: var(--text-title); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }}
+        .section-title { font-size: 1rem; font-weight: 700; color: var(--text-title); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         
-        .world-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }}
-        .world-item {{ background: var(--bg-subcard); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-line); min-width: 0; }}
-        .world-name {{ font-size: 0.72rem; color: var(--text-muted); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        .world-val {{ font-size: 0.88rem; font-weight: 700; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        .world-rate {{ font-size: 0.72rem; font-weight: 600; white-space: nowrap; }}
-        .val-up {{ color: #ef4444; }}
-        .val-down {{ color: #0284c7; }}
+        .world-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+        .world-item { background: var(--bg-subcard); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-line); min-width: 0; }
+        .world-name { font-size: 0.72rem; color: var(--text-muted); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .world-val { font-size: 0.88rem; font-weight: 700; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .world-rate { font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+        .val-up { color: #ef4444; }
+        .val-down { color: #0284c7; }
 
-        .quant-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }}
-        .quant-item {{ background: var(--bg-subcard); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-line); min-width: 0; }}
-        .quant-item .q-label {{ color: var(--text-muted); font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        .quant-item .q-val {{ color: var(--text-title); font-size: 0.88rem; font-weight: 700; word-break: break-all; }}
+        .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .quant-item { background: var(--bg-subcard); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-line); min-width: 0; }
+        .quant-item .q-label { color: var(--text-muted); font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .quant-item .q-val { color: var(--text-title); font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
-        .dart-item {{ padding: 9px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }}
-        .dart-item:last-child {{ border-bottom: none; }}
-        .dart-title {{ color: var(--text-main); font-size: 0.83rem; font-weight: 500; line-height: 1.4; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        .dart-title:hover {{ color: #0284c7; }}
-        .dart-tag {{ font-size: 0.68rem; font-weight: 700; padding: 2px 6px; border-radius: 6px; flex-shrink: 0; }}
-        .tag-positive {{ background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }}
-        .tag-negative {{ background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }}
-        .tag-warning {{ background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.3); }}
-        .tag-neutral {{ background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }}
+        .dart-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .dart-item:last-child { border-bottom: none; }
+        .dart-title { color: var(--text-main); font-size: 0.83rem; font-weight: 500; line-height: 1.4; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .dart-title:hover { color: #0284c7; }
+        .dart-tag { font-size: 0.68rem; font-weight: 700; padding: 2px 6px; border-radius: 6px; flex-shrink: 0; }
+        .tag-positive { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .tag-negative { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+        .tag-warning { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.3); }
+        .tag-neutral { background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }
 
         /* 텔레그램 실시간 알림 구독 버튼 스타일 */
-        .tg-alert-btn {{
+        .tg-alert-btn {
             width: 100%;
             background: #229ED9;
             color: #ffffff;
@@ -1075,28 +1075,28 @@ HTML_PAGE = f"""<!DOCTYPE html>
             text-decoration: none;
             margin-bottom: 14px;
             transition: opacity 0.2s;
-        }}
-        .tg-alert-btn:hover {{ opacity: 0.9; }}
+        }
+        .tg-alert-btn:hover { opacity: 0.9; }
 
         /* 집단지성 롱/숏 심리 투표 스타일 */
-        .vote-btn-wrap {{ display: flex; gap: 10px; margin-top: 10px; }}
-        .vote-btn {{ flex: 1; padding: 10px; border-radius: 12px; border: 1px solid var(--border-line); background: var(--bg-subcard); color: var(--text-title); font-size: 0.88rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; }}
-        .vote-btn:hover {{ background: var(--btn-hover); border-color: var(--border-focus); }}
-        .vote-btn.active-long {{ background: rgba(16, 185, 129, 0.15); border-color: #10b981; color: #10b981; }}
-        .vote-btn.active-short {{ background: rgba(56, 189, 248, 0.15); border-color: #38bdf8; color: #38bdf8; }}
+        .vote-btn-wrap { display: flex; gap: 10px; margin-top: 10px; }
+        .vote-btn { flex: 1; padding: 10px; border-radius: 12px; border: 1px solid var(--border-line); background: var(--bg-subcard); color: var(--text-title); font-size: 0.88rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; }
+        .vote-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); }
+        .vote-btn.active-long { background: rgba(16, 185, 129, 0.15); border-color: #10b981; color: #10b981; }
+        .vote-btn.active-short { background: rgba(56, 189, 248, 0.15); border-color: #38bdf8; color: #38bdf8; }
 
         /* 실시간 개미 토론방 스타일 */
-        .comment-input-box {{ display: flex; gap: 8px; margin-top: 12px; }}
-        .comment-input-box input {{ flex: 1; min-width: 0; background: var(--bg-subcard); border: 1px solid var(--border-line); border-radius: 20px; padding: 9px 14px; color: var(--text-title); font-size: 0.82rem; outline: none; }}
-        .comment-input-box button {{ background: #10b981; border: none; color: #ffffff; font-size: 0.8rem; font-weight: 700; padding: 0 16px; border-radius: 20px; cursor: pointer; flex-shrink: 0; }}
-        .comment-item {{ padding: 9px 0; border-bottom: 1px solid var(--border-line); font-size: 0.82rem; }}
-        .comment-item:last-child {{ border-bottom: none; }}
-        .comment-head {{ display: flex; justify-content: space-between; color: var(--text-muted); font-size: 0.7rem; margin-bottom: 3px; }}
-        .comment-nick {{ font-weight: 700; color: #10b981; }}
-        .comment-body {{ color: var(--text-main); word-break: break-all; }}
+        .comment-input-box { display: flex; gap: 8px; margin-top: 12px; }
+        .comment-input-box input { flex: 1; min-width: 0; background: var(--bg-subcard); border: 1px solid var(--border-line); border-radius: 20px; padding: 9px 14px; color: var(--text-title); font-size: 0.82rem; outline: none; }
+        .comment-input-box button { background: #10b981; border: none; color: #ffffff; font-size: 0.8rem; font-weight: 700; padding: 0 16px; border-radius: 20px; cursor: pointer; flex-shrink: 0; }
+        .comment-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); font-size: 0.82rem; }
+        .comment-item:last-child { border-bottom: none; }
+        .comment-head { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 0.7rem; margin-bottom: 3px; }
+        .comment-nick { font-weight: 700; color: #10b981; }
+        .comment-body { color: var(--text-main); word-break: break-all; }
 
         /* 눈의 피로를 완전히 제거한 프리미엄 에메랄드 테두리 시그널 카드 */
-        .signal-premium-card {{
+        .signal-premium-card {
             background: var(--bg-card) !important;
             border: 1.5px solid var(--signal-border) !important;
             border-radius: 16px !important;
@@ -1104,9 +1104,9 @@ HTML_PAGE = f"""<!DOCTYPE html>
             margin-bottom: 16px !important;
             box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04) !important;
             transition: border-color 0.2s, background-color 0.2s;
-        }}
+        }
 
-        .signal-card-header {{
+        .signal-card-header {
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1114,24 +1114,24 @@ HTML_PAGE = f"""<!DOCTYPE html>
             cursor: pointer;
             user-select: none;
             padding: 4px 0;
-        }}
-        .signal-card-title {{
+        }
+        .signal-card-title {
             font-size: 1.05rem !important;
             font-weight: 700 !important;
             color: #10b981 !important;
             text-align: center;
             letter-spacing: -0.3px;
-        }}
-        .signal-arrow-icon {{
+        }
+        .signal-arrow-icon {
             width: 20px;
             height: 20px;
             fill: #10b981 !important;
             position: absolute;
             right: 4px;
             transition: transform 0.25s ease;
-        }}
+        }
 
-        .gauge-inner-box {{
+        .gauge-inner-box {
             width: 58px;
             height: 58px;
             border-radius: 50%;
@@ -1142,19 +1142,19 @@ HTML_PAGE = f"""<!DOCTYPE html>
             justify-content: center;
             background: var(--bg-subcard);
             flex-shrink: 0;
-        }}
+        }
 
-        .guide-box {{ padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.6; color: var(--text-sub); border-top: 1px solid rgba(16, 185, 129, 0.2); }}
-        .guide-title {{ font-weight: 700; color: #10b981; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; }}
+        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.6; color: var(--text-sub); border-top: 1px solid rgba(16, 185, 129, 0.2); }
+        .guide-title { font-weight: 700; color: #10b981; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; }
 
-        .news-item {{ padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: block; }}
-        .news-item:last-child {{ border-bottom: none; }}
-        .news-title {{ color: var(--text-main); font-size: 0.85rem; font-weight: 500; line-height: 1.4; }}
-        .news-title:hover {{ color: #0284c7; }}
-        .news-meta {{ color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; }}
+        .news-item { padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: block; }
+        .news-item:last-child { border-bottom: none; }
+        .news-title { color: var(--text-main); font-size: 0.85rem; font-weight: 500; line-height: 1.4; }
+        .news-title:hover { color: #0284c7; }
+        .news-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; }
 
-        #bottom-bar {{ display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 74px; background: var(--bottom-fade); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }}
-        .loading {{ display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }}
+        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 74px; background: var(--bottom-fade); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
+        .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }
     </style>
 </head>
 <body>
@@ -1540,109 +1540,109 @@ HTML_PAGE = f"""<!DOCTYPE html>
         const SUPABASE_URL = "https://uaqvmsubzgzvxbdcwcad.supabase.co";
         const SUPABASE_KEY = "sb_publishable_bcxDofsnPXgBICDDgQ8Ijw_fNjPcsRW";
         let supabaseClient = null;
-        try {{
-            if (window.supabase) {{
+        try {
+            if (window.supabase) {
                 supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-            }}
-        }} catch(e) {{
+            }
+        } catch(e) {
             console.warn("Supabase init fallback to local:", e);
-        }}
+        }
 
         // 테마 관리 (다크 / 라이트)
-        function initTheme() {{
+        function initTheme() {
             const saved = localStorage.getItem('gaemi_theme') || 'dark';
-            if (saved === 'light') {{
+            if (saved === 'light') {
                 document.body.classList.add('light-theme');
                 updateThemeIcon(true);
-            }} else {{
+            } else {
                 document.body.classList.remove('light-theme');
                 updateThemeIcon(false);
-            }}
-        }}
+            }
+        }
 
-        function toggleTheme() {{
+        function toggleTheme() {
             const isLight = document.body.classList.toggle('light-theme');
             localStorage.setItem('gaemi_theme', isLight ? 'light' : 'dark');
             updateThemeIcon(isLight);
 
-            if (chart) {{
-                chart.applyOptions({{
-                    layout: {{
-                        background: {{ color: isLight ? '#ffffff' : '#1e1f20' }},
+            if (chart) {
+                chart.applyOptions({
+                    layout: {
+                        background: { color: isLight ? '#ffffff' : '#1e1f20' },
                         textColor: isLight ? '#5f6368' : '#8e918f'
-                    }},
-                    timeScale: {{ borderColor: isLight ? '#dadce0' : '#282a2c' }},
-                    rightPriceScale: {{ borderColor: isLight ? '#dadce0' : '#282a2c' }}
-                }});
-            }}
-        }}
+                    },
+                    timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
+                    rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
+                });
+            }
+        }
 
-        function updateThemeIcon(isLight) {{
+        function updateThemeIcon(isLight) {
             const area = document.getElementById('themeIconArea');
             if (!area) return;
             area.innerHTML = isLight 
                 ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`
-                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
-        }}
+                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="12" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
+        }
 
-        function resizeChart() {{
+        function resizeChart() {
             const container = document.getElementById('tvChart');
-            if (chart && container && container.clientWidth > 0) {{
-                chart.applyOptions({{ width: container.clientWidth }});
-            }}
-        }}
+            if (chart && container && container.clientWidth > 0) {
+                chart.applyOptions({ width: container.clientWidth });
+            }
+        }
 
-        function toggleSidebar() {{
+        function toggleSidebar() {
             const side = document.getElementById('sidebar-wrapper');
             side.classList.toggle('open');
-        }}
+        }
 
-        function toggleModelDropdown(target) {{
+        function toggleModelDropdown(target) {
             const centerD = document.getElementById('centerDropdown');
             const bottomD = document.getElementById('bottomDropdown');
             const targetD = target === 'center' ? centerD : bottomD;
             const otherD = target === 'center' ? bottomD : centerD;
             if (otherD) otherD.style.display = 'none';
             if (targetD) targetD.style.display = targetD.style.display === 'block' ? 'none' : 'block';
-        }}
+        }
 
-        function selectModel(modeKey, modeName) {{
+        function selectModel(modeKey, modeName) {
             selectedMode = modeKey;
             document.getElementById('centerCurrentModel').innerText = modeName;
             document.getElementById('bottomCurrentModel').innerText = modeName;
 
-            ['centerDropdown', 'bottomDropdown'].forEach(id => {{
+            ['centerDropdown', 'bottomDropdown'].forEach(id => {
                 const menu = document.getElementById(id);
-                if (menu) {{
+                if (menu) {
                     const items = menu.querySelectorAll('.model-dropdown-item');
-                    items.forEach(it => {{
-                        if (it.innerText.includes(modeName)) {{
+                    items.forEach(it => {
+                        if (it.innerText.includes(modeName)) {
                             it.classList.add('active');
-                        }} else {{
+                        } else {
                             it.classList.remove('active');
-                        }}
-                    }});
+                        }
+                    });
                     menu.style.display = 'none';
-                }}
-            }});
-        }}
+                }
+            });
+        }
 
-        document.addEventListener('click', function(e) {{
-            if (!e.target.closest('.model-selector-wrap')) {{
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.model-selector-wrap')) {
                 const cd = document.getElementById('centerDropdown');
                 const bd = document.getElementById('bottomDropdown');
                 if (cd) cd.style.display = 'none';
                 if (bd) bd.style.display = 'none';
-            }}
-            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {{
+            }
+            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
                 const side = document.getElementById('sidebar-wrapper');
-                if (side && side.classList.contains('open')) {{
+                if (side && side.classList.contains('open')) {
                     side.classList.remove('open');
-                }}
-            }}
-        }});
+                }
+            }
+        });
 
-        function resetToHome() {{
+        function resetToHome() {
             document.getElementById('main-view').style.display = 'flex';
             document.getElementById('result-scroll-view').style.display = 'none';
             document.getElementById('bottom-bar').style.display = 'none';
@@ -1656,107 +1656,107 @@ HTML_PAGE = f"""<!DOCTYPE html>
             
             const side = document.getElementById('sidebar-wrapper');
             if (side) side.classList.remove('open');
-        }}
+        }
 
-        function toggleSignal() {{
+        function toggleSignal() {
             const body = document.getElementById('signalBody');
             const arrow = document.getElementById('signalArrow');
-            if (body.style.display === 'block') {{
+            if (body.style.display === 'block') {
                 body.style.display = 'none';
                 arrow.style.transform = 'rotate(0deg)';
-            }} else {{
+            } else {
                 body.style.display = 'block';
                 arrow.style.transform = 'rotate(180deg)';
-            }}
-        }}
+            }
+        }
 
         // ----------------------------------------------------
         // Supabase 실시간 투표 및 토론방 엔진
         // ----------------------------------------------------
-        async function loadCommunityData(symbol) {{
+        async function loadCommunityData(symbol) {
             currentSymbol = symbol;
             
             // 텔레그램 딥링크 버튼 업데이트
             const tgLink = document.getElementById('tgAlertLink');
             const tgBtnText = document.getElementById('tgAlertBtnText');
-            if (tgLink && tgBtnText) {{
-                tgLink.href = `https://t.me/{TELEGRAM_BOT_USERNAME}?start=${{symbol}}`;
-                tgBtnText.innerText = `[${{symbol}}] 텔레그램 실시간 알림 받기`;
-            }}
+            if (tgLink && tgBtnText) {
+                tgLink.href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(symbol);
+                tgBtnText.innerText = '[' + symbol + '] 텔레그램 실시간 알림 받기';
+            }
 
             const voteKey = 'vote_' + symbol;
-            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({{ long: 15, short: 8, myVote: null }});
+            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
             let vData = JSON.parse(rawVote);
 
-            if (supabaseClient) {{
-                try {{
-                    const {{ data, error }} = await supabaseClient
+            if (supabaseClient) {
+                try {
+                    const { data, error } = await supabaseClient
                         .from('votes')
                         .select('*')
                         .eq('symbol', symbol)
                         .single();
-                    if (data && !error) {{
+                    if (data && !error) {
                         vData.long = data.long_count || vData.long;
                         vData.short = data.short_count || vData.short;
-                    }}
-                }} catch(e) {{}}
-            }}
+                    }
+                } catch(e) {}
+            }
             updateVoteUI(vData);
 
             let comments = [];
-            if (supabaseClient) {{
-                try {{
-                    const {{ data, error }} = await supabaseClient
+            if (supabaseClient) {
+                try {
+                    const { data, error } = await supabaseClient
                         .from('comments')
                         .select('*')
                         .eq('symbol', symbol)
-                        .order('created_at', {{ ascending: false }})
+                        .order('created_at', { ascending: false })
                         .limit(8);
-                    if (data && !error && data.length > 0) {{
-                        comments = data.map(d => ({{
+                    if (data && !error && data.length > 0) {
+                        comments = data.map(d => ({
                             nick: d.nickname,
                             text: d.text,
                             time: formatCommentTime(d.created_at)
-                        }}));
-                    }}
-                }} catch(e) {{}}
-            }}
+                        }));
+                    }
+                } catch(e) {}
+            }
 
-            if (comments.length === 0) {{
+            if (comments.length === 0) {
                 const cKey = 'comments_' + symbol;
                 const rawComm = localStorage.getItem(cKey) || JSON.stringify([
-                    {{ nick: "수익왕개미", text: "20일선 지지받고 올라갈 차례네요.", time: "방금 전" }},
-                    {{ nick: "단타고수", text: "시그널 진입가에 1차 분할 매수 걸어둡니다.", time: "10분 전" }}
+                    { nick: "수익왕개미", text: "20일선 지지받고 올라갈 차례네요.", time: "방금 전" },
+                    { nick: "단타고수", text: "시그널 진입가에 1차 분할 매수 걸어둡니다.", time: "10분 전" }
                 ]);
                 comments = JSON.parse(rawComm);
-            }}
+            }
             renderComments(comments);
-        }}
+        }
 
-        function formatCommentTime(ts) {{
+        function formatCommentTime(ts) {
             if (!ts) return "방금 전";
-            try {{
+            try {
                 const diff = (new Date() - new Date(ts)) / 1000;
                 if (diff < 60) return "방금 전";
-                if (diff < 3600) return `${{Math.floor(diff/60)}}분 전`;
-                if (diff < 86400) return `${{Math.floor(diff/3600)}}시간 전`;
-                return `${{Math.floor(diff/86400)}}일 전`;
-            }} catch(e) {{
+                if (diff < 3600) return `${Math.floor(diff/60)}분 전`;
+                if (diff < 86400) return `${Math.floor(diff/3600)}시간 전`;
+                return `${Math.floor(diff/86400)}일 전`;
+            } catch(e) {
                 return "방금 전";
-            }}
-        }}
+            }
+        }
 
-        function updateVoteUI(vData) {{
+        function updateVoteUI(vData) {
             const total = vData.long + vData.short;
             const lPct = total > 0 ? Math.round((vData.long / total) * 100) : 50;
             const sPct = 100 - lPct;
 
-            document.getElementById('voteLongPct').innerText = `상승 ${{lPct}}%`;
-            document.getElementById('voteShortPct').innerText = `하락 ${{sPct}}%`;
+            document.getElementById('voteLongPct').innerText = `상승 ${lPct}%`;
+            document.getElementById('voteShortPct').innerText = `하락 ${sPct}%`;
             document.getElementById('voteLongBar').style.width = lPct + '%';
             document.getElementById('voteShortBar').style.width = sPct + '%';
-            document.getElementById('voteLongCount').innerText = `${{vData.long}}명`;
-            document.getElementById('voteShortCount').innerText = `${{vData.short}}명`;
+            document.getElementById('voteLongCount').innerText = `${vData.long}명`;
+            document.getElementById('voteShortCount').innerText = `${vData.short}명`;
 
             const btnL = document.getElementById('btnVoteLong');
             const btnS = document.getElementById('btnVoteShort');
@@ -1765,12 +1765,12 @@ HTML_PAGE = f"""<!DOCTYPE html>
 
             if (vData.myVote === 'long') btnL.classList.add('active-long');
             if (vData.myVote === 'short') btnS.classList.add('active-short');
-        }}
+        }
 
-        async function castVote(type) {{
+        async function castVote(type) {
             if (!currentSymbol) return;
             const voteKey = 'vote_' + currentSymbol;
-            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({{ long: 15, short: 8, myVote: null }});
+            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
             const vData = JSON.parse(rawVote);
 
             if (vData.myVote === type) return;
@@ -1785,41 +1785,41 @@ HTML_PAGE = f"""<!DOCTYPE html>
             localStorage.setItem(voteKey, JSON.stringify(vData));
             updateVoteUI(vData);
 
-            if (supabaseClient) {{
-                try {{
+            if (supabaseClient) {
+                try {
                     await supabaseClient
                         .from('votes')
-                        .upsert({{
+                        .upsert({
                             symbol: currentSymbol,
                             long_count: vData.long,
                             short_count: vData.short
-                        }});
-                }} catch(e) {{}}
-            }}
-        }}
+                        });
+                } catch(e) {}
+            }
+        }
 
-        function renderComments(list) {{
+        function renderComments(list) {
             const wrap = document.getElementById('commentList');
-            document.getElementById('commentCountTag').innerText = `${{list.length}}개의 의견`;
+            document.getElementById('commentCountTag').innerText = `${list.length}개의 의견`;
             wrap.innerHTML = '';
-            if (list.length === 0) {{
+            if (list.length === 0) {
                 wrap.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; padding:10px 0; text-align:center;">첫 번째 한마디를 남겨보세요!</div>';
                 return;
-            }}
-            list.slice(0, 8).forEach(c => {{
+            }
+            list.slice(0, 8).forEach(c => {
                 wrap.innerHTML += `
                     <div class="comment-item">
                         <div class="comment-head">
-                            <span class="comment-nick">${{c.nick}}</span>
-                            <span>${{c.time}}</span>
+                            <span class="comment-nick">${c.nick}</span>
+                            <span>${c.time}</span>
                         </div>
-                        <div class="comment-body">${{c.text}}</div>
+                        <div class="comment-body">${c.text}</div>
                     </div>
                 `;
-            }});
-        }}
+            });
+        }
 
-        async function postComment() {{
+        async function postComment() {
             const input = document.getElementById('commentInput');
             const txt = input.value.trim();
             if (!txt || !currentSymbol) return;
@@ -1831,31 +1831,31 @@ HTML_PAGE = f"""<!DOCTYPE html>
             const rawComm = localStorage.getItem(cKey) || '[]';
             const comments = JSON.parse(rawComm);
 
-            const newC = {{
+            const newC = {
                 nick: randomNick,
                 text: txt,
                 time: "방금 전"
-            }};
+            };
 
             comments.unshift(newC);
             localStorage.setItem(cKey, JSON.stringify(comments));
             renderComments(comments);
             input.value = '';
 
-            if (supabaseClient) {{
-                try {{
+            if (supabaseClient) {
+                try {
                     await supabaseClient
                         .from('comments')
-                        .insert({{
+                        .insert({
                             symbol: currentSymbol,
                             nickname: randomNick,
                             text: txt
-                        }});
-                }} catch(e) {{}}
-            }}
-        }}
+                        });
+                } catch(e) {}
+            }
+        }
 
-        async function doSearch(query) {{
+        async function doSearch(query) {
             const cleanQ = query.trim();
             if (!cleanQ) return;
 
@@ -1868,98 +1868,98 @@ HTML_PAGE = f"""<!DOCTYPE html>
             document.getElementById('loading').style.display = 'block';
             document.getElementById('result-card-wrap').style.display = 'none';
 
-            if (window.innerWidth <= 900) {{
+            if (window.innerWidth <= 900) {
                 const side = document.getElementById('sidebar-wrapper');
                 if (side) side.classList.remove('open');
-            }}
+            }
 
-            try {{
+            try {
                 const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
                 const response = await fetch(url);
                 const data = await response.json();
-                if (!response.ok || data.error) {{
+                if (!response.ok || data.error) {
                     alert(data.error || '분석 중 오류가 발생했습니다.');
                     document.getElementById('loading').style.display = 'none';
                     return;
-                }}
+                }
 
                 const isKrw = data.market === '국내주식';
                 const displayName = data.name || data.formal_name;
                 const displayPrice = data.price || data.price_str;
                 const displayTime = data.time || data.now_str;
 
-                document.getElementById('rTitle').innerHTML = `${{displayName}} <span>(${{data.symbol}})</span>`;
+                document.getElementById('rTitle').innerHTML = `${displayName} <span>(${data.symbol})</span>`;
                 document.getElementById('rPrice').innerText = displayPrice;
-                document.getElementById('rMeta').innerHTML = `시장: ${{data.market}} · 출처: ${{isKrw ? 'Naver 증권' : 'Yahoo/Binance'}} · 시각: ${{displayTime}}`;
+                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'} · 시각: ${displayTime}`;
 
                 loadCommunityData(data.symbol);
 
                 const wGrid = document.getElementById('worldGrid');
                 wGrid.innerHTML = '';
-                if (data.world_indices) {{
-                    data.world_indices.forEach(w => {{
+                if (data.world_indices) {
+                    data.world_indices.forEach(w => {
                         const cls = w.up ? 'val-up' : 'val-down';
                         wGrid.innerHTML += `
                             <div class="world-item">
-                                <div class="world-name">${{w.name}}</div>
-                                <div class="world-val">${{w.price}}</div>
-                                <div class="world-rate ${{cls}}">${{w.rate}}</div>
+                                <div class="world-name">${w.name}</div>
+                                <div class="world-val">${w.price}</div>
+                                <div class="world-rate ${cls}">${w.rate}</div>
                             </div>
                         `;
-                    }});
-                }}
+                    });
+                }
 
                 const sNews = document.getElementById('stockNewsList');
                 sNews.innerHTML = '';
-                if (data.stock_news && data.stock_news.length > 0) {{
-                    data.stock_news.forEach(n => {{
+                if (data.stock_news && data.stock_news.length > 0) {
+                    data.stock_news.forEach(n => {
                         sNews.innerHTML += `
-                            <a href="${{n.link}}" target="_blank" class="news-item">
-                                <div class="news-title">${{n.title}}</div>
-                                <div class="news-meta">${{n.media}} · ${{n.pubDate}}</div>
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
                             </a>
                         `;
-                    }});
-                }} else {{
+                    });
+                } else {
                     sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
-                }}
+                }
 
                 const dCard = document.getElementById('dartCard');
                 const dList = document.getElementById('dartList');
-                if (data.dart_disclosures && data.dart_disclosures.length > 0) {{
+                if (data.dart_disclosures && data.dart_disclosures.length > 0) {
                     dList.innerHTML = '';
-                    data.dart_disclosures.forEach(d => {{
+                    data.dart_disclosures.forEach(d => {
                         dList.innerHTML += `
-                            <a href="${{d.link}}" target="_blank" class="dart-item">
-                                <span class="dart-tag tag-${{d.tag_type}}">${{d.tag_name}}</span>
-                                <span class="dart-title">${{d.title}}</span>
-                                <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${{d.date}}</span>
+                            <a href="${d.link}" target="_blank" class="dart-item">
+                                <span class="dart-tag tag-${d.tag_type}">${d.tag_name}</span>
+                                <span class="dart-title">${d.title}</span>
+                                <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${d.date}</span>
                             </a>
                         `;
-                    }});
+                    });
                     dCard.style.display = 'block';
-                }} else {{
+                } else {
                     dCard.style.display = 'none';
-                }}
+                }
 
                 const gNews = document.getElementById('globalNewsList');
                 gNews.innerHTML = '';
-                if (data.global_news && data.global_news.length > 0) {{
-                    data.global_news.forEach(n => {{
+                if (data.global_news && data.global_news.length > 0) {
+                    data.global_news.forEach(n => {
                         gNews.innerHTML += `
-                            <a href="${{n.link}}" target="_blank" class="news-item">
-                                <div class="news-title">${{n.title}}</div>
-                                <div class="news-meta">${{n.media}} · ${{n.pubDate}}</div>
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
                             </a>
                         `;
-                    }});
-                }} else {{
+                    });
+                } else {
                     gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
-                }}
+                }
 
                 const c = data.consensus;
                 const uCard = document.getElementById('unifiedCard');
-                if (c) {{
+                if (c) {
                     document.getElementById('uTitle').innerText = c.title;
                     document.getElementById('uGaugeVal').innerText = c.gauge_val;
                     document.getElementById('uGaugeLabel').innerText = c.gauge_label;
@@ -1986,27 +1986,27 @@ HTML_PAGE = f"""<!DOCTYPE html>
 
                     const iList = document.getElementById('uItemList');
                     iList.innerHTML = '';
-                    if (c.items && c.items.length > 0) {{
-                        c.items.forEach((it, idx) => {{
+                    if (c.items && c.items.length > 0) {
+                        c.items.forEach((it, idx) => {
                             const isLast = idx === c.items.length - 1;
                             iList.innerHTML += `
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${{isLast ? '' : 'border-bottom:1px solid var(--border-line);'}} font-size:0.82rem;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${isLast ? '' : 'border-bottom:1px solid var(--border-line);'} font-size:0.82rem;">
                                     <div>
-                                        <div style="color:var(--text-title); font-weight:700;">${{it.main}}</div>
-                                        <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">${{it.sub}}</div>
+                                        <div style="color:var(--text-title); font-weight:700;">${it.main}</div>
+                                        <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">${it.sub}</div>
                                     </div>
                                     <div style="text-align:right;">
-                                        <div style="color:var(--text-title); font-weight:700;">${{it.val}}</div>
-                                        <div style="color:#10b981; font-size:0.72rem; font-weight:700;">${{it.sub_val}}</div>
+                                        <div style="color:var(--text-title); font-weight:700;">${it.val}</div>
+                                        <div style="color:#10b981; font-size:0.72rem; font-weight:700;">${it.sub_val}</div>
                                     </div>
                                 </div>
                             `;
-                        }});
-                    }}
+                        });
+                    }
                     uCard.style.display = 'block';
-                }} else {{
+                } else {
                     uCard.style.display = 'none';
-                }}
+                }
 
                 const q = data.quant;
                 document.getElementById('rTrend').innerText = q.trend;
@@ -2021,17 +2021,17 @@ HTML_PAGE = f"""<!DOCTYPE html>
                 document.getElementById('rPos52w').innerText = q.pos_52w;
                 document.getElementById('rDisp').innerText = q.disp;
                 document.getElementById('rRsi').innerText = q.rsi;
-                document.getElementById('rAtr').innerText = `${{q.atr}} (${{q.atr_ratio}})`;
+                document.getElementById('rAtr').innerText = `${q.atr} (${q.atr_ratio})`;
                 document.getElementById('rVolRatio').innerText = q.vol_ratio;
                 document.getElementById('rTval20d').innerText = q.tval_20d;
 
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
-                document.getElementById('rBt1yTag').innerText = `● ${{q.bt_1y}}`;
-                document.getElementById('rBt2yTag').innerText = `● ${{q.bt_2y}}`;
-                document.getElementById('rRrTag').innerText = `● ${{q.rr_str}}`;
+                document.getElementById('rBt1yTag').innerText = `● ${q.bt_1y}`;
+                document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;
+                document.getElementById('rRrTag').innerText = `● ${q.rr_str}`;
 
                 document.getElementById('rSliderStop').innerText = q.stop_p;
-                document.getElementById('rSliderEntry').innerText = `진입 ${{q.entry1}}`;
+                document.getElementById('rSliderEntry').innerText = `진입 ${q.entry1}`;
                 document.getElementById('rSliderTarget').innerText = q.target2;
 
                 document.getElementById('rSigBarFill').style.width = q.sig_fill_pct + '%';
@@ -2047,43 +2047,44 @@ HTML_PAGE = f"""<!DOCTYPE html>
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
 
-                setTimeout(() => {{
+                setTimeout(() => {
                     initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
-                }}, 50);
+                }, 50);
 
-                window.scrollTo({{top: 0, behavior: 'smooth'}});
+                window.scrollTo({top: 0, behavior: 'smooth'});
 
-            }} catch (err) {{
+            } catch (err) {
                 alert('서버와 통신할 수 없습니다.');
                 document.getElementById('loading').style.display = 'none';
-            }}
-        }}
+            }
+        }
 
-        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {{
+        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
             const container = document.getElementById('tvChart');
             container.innerHTML = '';
 
             const isLight = document.body.classList.contains('light-theme');
 
-            chart = LightweightCharts.createChart(container, {{
+            chart = LightweightCharts.createChart(container, {
                 width: container.clientWidth || 700,
                 height: 300,
-                layout: {{ 
-                    background: {{ color: isLight ? '#ffffff' : '#1e1f20' }}, 
+                layout: { 
+                    background: { color: isLight ? '#ffffff' : '#1e1f20' }, 
                     textColor: isLight ? '#5f6368' : '#8e918f' 
-                }},
-                grid: {{
-                    vertLines: {{ color: 'rgba(0,0,0,0)' }},
-                    horzLines: {{ color: 'rgba(0,0,0,0)' }}
-                }},
-                crosshair: {{
-                    vertLine: {{ visible: false }},
-                    horzLine: {{ visible: false }}},
-                timeScale: {{ borderColor: isLight ? '#dadce0' : '#282a2c', timeVisible: true }},
-                rightPriceScale: {{ borderColor: isLight ? '#dadce0' : '#282a2c' }}
-            }});
+                },
+                grid: {
+                    vertLines: { color: 'rgba(0,0,0,0)' },
+                    horzLines: { color: 'rgba(0,0,0,0)' }
+                },
+                crosshair: {
+                    vertLine: { visible: false },
+                    horzLine: { visible: false }
+                },
+                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c', timeVisible: true },
+                rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
+            });
 
-            const candleSeries = chart.addCandlestickSeries({{
+            const candleSeries = chart.addCandlestickSeries({
                 upColor: '#ef4444',
                 downColor: '#38bdf8',
                 borderDownColor: '#38bdf8',
@@ -2092,25 +2093,25 @@ HTML_PAGE = f"""<!DOCTYPE html>
                 wickUpColor: '#ef4444',
                 priceLineVisible: false,
                 lastValueVisible: true
-            }});
+            });
             candleSeries.setData(candles);
 
-            const lineMa20 = chart.addLineSeries({{ color: '#00b4d8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }});
+            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
             lineMa20.setData(ma20);
 
-            const lineMa60 = chart.addLineSeries({{ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false }});
+            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
             lineMa60.setData(ma60);
 
-            const lineBbUp = chart.addLineSeries({{ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false }});
+            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
             lineBbUp.setData(bbUp);
 
-            const lineBbDn = chart.addLineSeries({{ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false }});
+            const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
             lineBbDn.setData(bbDn);
 
             chart.timeScale().fitContent();
 
             window.addEventListener('resize', resizeChart);
-        }}
+        }
 
         window.addEventListener('DOMContentLoaded', initTheme);
     </script>

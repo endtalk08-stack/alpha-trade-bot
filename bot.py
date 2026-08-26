@@ -1,1077 +1,231 @@
-import os
-import re
-import json
-import urllib.parse
-import xml.etree.ElementTree as ET
-import html
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
-import requests
-import pandas as pd
-import numpy as np
-
-# ----------------------------------------------------
-# 1. 종목 매핑 & 매크로 지표 설정
-# ----------------------------------------------------
-CRYPTO_MAP = {
-    "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
-    "ETH": "ETHUSDT", "이더리움": "ETHUSDT", "이더": "ETHUSDT",
-    "XRP": "XRPUSDT", "리플": "XRPUSDT",
-    "DOGE": "DOGEUSDT", "도지코인": "DOGEUSDT", "도지": "DOGEUSDT",
-    "SOL": "SOLUSDT", "솔라나": "SOLUSDT",
-    "ADA": "ADAUSDT", "에이다": "ADAUSDT",
-    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT"
-}
-
-US_STOCK_MAP = {
-    "엔비디아": "NVDA", "NVDA": "NVDA",
-    "테슬라": "TSLA", "TSLA": "TSLA",
-    "애플": "AAPL", "AAPL": "AAPL",
-    "마이크로소프트": "MSFT", "마소": "MSFT", "MSFT": "MSFT",
-    "아마존": "AMZN", "AMZN": "AMZN",
-    "구글": "GOOGL", "알파벳": "GOOGL", "GOOGL": "GOOGL",
-    "메타": "META", "META": "META",
-    "AMD": "AMD", "아이온큐": "IONQ", "IONQ": "IONQ",
-    "팔란티어": "PLTR", "PLTR": "PLTR",
-    "대만반도체": "TSM", "TSM": "TSM", "TSMC": "TSM",
-    "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
-}
-
-DOMESTIC_FAST_MAP = {
-    "SK하이닉스": "000660", "하이닉스": "000660",
-    "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150",
-    "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
-    "레인보우로보틱스": "277810", "카카오": "035720", "네이버": "035420",
-    "NAVER": "035420", "현대차": "005380", "기아": "000270",
-    "포스코홀딩스": "005490", "LG에너지솔루션": "373220", "한화오션": "042660",
-    "두산에너빌리티": "034020", "한화에어로스페이스": "012450", "셀트리온": "068270"
-}
-
-MACRO_SYMBOLS = [
-    {"name": "미국 10년 국채", "sym": "^TNX", "badge": "금리"},
-    {"name": "서부텍사스유", "sym": "CL=F", "badge": "유가"},
-    {"name": "달러 인덱스", "sym": "DX-Y.NYB", "badge": "환율"},
-    {"name": "나스닥 100", "sym": "QQQ", "badge": "ETF"},
-    {"name": "반도체 지수", "sym": "SOXX", "badge": "ETF"},
-    {"name": "비트코인 선물", "sym": "BTC-USD", "badge": "BTC"}
-]
-
-# ----------------------------------------------------
-# 2. 데이터 크롤링 모듈
-# ----------------------------------------------------
-def find_stock_code(query):
-    clean_q = query.strip().replace(" ", "").upper()
-    if clean_q.isdigit() and len(clean_q) == 6:
-        return clean_q, clean_q
-
-    for name, code in DOMESTIC_FAST_MAP.items():
-        if name.replace(" ", "").upper() == clean_q:
-            return code, name
-
-    try:
-        url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
-        items = res.get("result", {}).get("items", [])
-        if items:
-            for it in items:
-                name = str(it.get("name", "")).strip()
-                code = str(it.get("code", "")).strip()
-                if name.replace(" ", "").upper() == clean_q:
-                    return code, name
-            first = items[0]
-            return str(first.get("code", "")).strip(), str(first.get("name", "")).strip()
-    except Exception:
-        pass
-    return None, query.strip()
-
-def get_naver_realtime_price(code):
-    try:
-        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
-        datas = res.get("datas", [])
-        if datas:
-            p = str(datas[0].get("closePrice", "")).replace(",", "").strip()
-            if p and p.replace(".", "").isdigit():
-                return float(p), f"{int(float(p)):,} 원"
-    except Exception:
-        pass
-    return None, None
-
-def fetch_domestic_candles(code, anchor_price=None):
-    df_result = None
-    for suffix in [".KS", ".KQ"]:
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
-            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
-            result = res.get("chart", {}).get("result", [])
-            if result:
-                ts = result[0].get("timestamp", [])
-                quote = result[0].get("indicators", {}).get("quote", [{}])[0]
-                records = [{
-                    "Date": pd.to_datetime(ts[i], unit='s'),
-                    "Open": float(quote['open'][i]), "High": float(quote['high'][i]),
-                    "Low": float(quote['low'][i]), "Close": float(quote['close'][i]),
-                    "Volume": float(quote['volume'][i] or 0.0)
-                } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
-                if len(records) >= 30:
-                    df_result = pd.DataFrame(records).set_index("Date").sort_index()
-                    break
-        except Exception:
-            pass
-
-    if df_result is not None and anchor_price and anchor_price > 0:
-        last_close = float(df_result['Close'].iloc[-1])
-        if abs(last_close - anchor_price) / anchor_price > 0.3:
-            ratio = anchor_price / last_close
-            df_result['Open'] *= ratio
-            df_result['High'] *= ratio
-            df_result['Low'] *= ratio
-            df_result['Close'] *= ratio
-
-    return df_result
-
-def fetch_overseas_candles(symbol):
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper()}?range=5y&interval=1d"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
-        result = res.get("chart", {}).get("result", [])
-        if result:
-            ts = result[0].get("timestamp", [])
-            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
-            records = [{
-                "Date": pd.to_datetime(ts[i], unit='s'),
-                "Open": float(quote['open'][i]), "High": float(quote['high'][i]),
-                "Low": float(quote['low'][i]), "Close": float(quote['close'][i]),
-                "Volume": float(quote['volume'][i] or 0.0)
-            } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
-            if records:
-                df = pd.DataFrame(records).set_index("Date").sort_index()
-                curr_p = float(df['Close'].iloc[-1])
-                return curr_p, f"{curr_p:,.2f} 달러", df
-    except Exception:
-        pass
-    return None, None, None
-
-def fetch_crypto_candles(symbol):
-    clean_sym = symbol.upper().replace("-", "")
-    if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
-        clean_sym += "USDT"
-    try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit=1000"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
-        if isinstance(res, list) and len(res) > 5:
-            records = [{
-                "Date": pd.to_datetime(int(x[0]), unit='ms'),
-                "Open": float(x[1]), "High": float(x[2]), "Low": float(x[3]), "Close": float(x[4]), "Volume": float(x[5])
-            } for x in res]
-            df = pd.DataFrame(records).set_index("Date").sort_index()
-            curr_p = float(df['Close'].iloc[-1])
-            return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
-    except Exception:
-        pass
-    return None, None, None
-
-def fetch_macro_indices():
-    results = []
-    for item in MACRO_SYMBOLS:
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(item['sym'])}?range=2d&interval=1d"
-            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
-            meta = res.get("chart", {}).get("result", [{}])[0].get("meta", {})
-            curr_p = meta.get("regularMarketPrice", 0.0)
-            prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
-            rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
-            
-            price_fmt = f"{curr_p:,.2f}" if curr_p >= 10 else f"{curr_p:.2f}%" if "TNX" in item['sym'] else f"{curr_p:.2f}"
-            results.append({
-                "name": item["name"],
-                "badge": item["badge"],
-                "price": price_fmt,
-                "rate": f"{rate:+.2f}%",
-                "up": rate >= 0
-            })
-        except Exception:
-            results.append({"name": item["name"], "badge": item["badge"], "price": "-", "rate": "0.00%", "up": True})
-    return results
-
-def fetch_rss_news(query_keyword, limit=4):
-    headlines = []
-    clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
-    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
-    try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0)
-        if r.status_code == 200:
-            root = ET.fromstring(r.content)
-            for it in root.findall('.//item')[:limit]:
-                t = it.find('title')
-                pub = it.find('pubDate')
-                link = it.find('link')
-                if t is not None and t.text:
-                    title_clean = html.unescape(t.text).strip()
-                    parts = title_clean.rsplit(' - ', 1)
-                    title_text = parts[0]
-                    media_name = parts[1] if len(parts) > 1 else "언론사"
-                    headlines.append({
-                        "title": title_text,
-                        "media": media_name,
-                        "pubDate": pub.text if pub is not None else "",
-                        "link": link.text if link is not None else "#"
-                    })
-    except Exception:
-        pass
-    return headlines
-
-def fetch_market_consensus(symbol, market_name, raw_price):
-    try:
-        if market_name == "국내주식":
-            target_p = None
-            try:
-                url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
-                res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
-                for item in res.get("totalInfos", []):
-                    if item.get("code") in ["targetPrice", "consensusTargetPrice"]:
-                        v = str(item.get("value", "")).replace(",", "").strip()
-                        if v.replace(".", "").isdigit():
-                            target_p = float(v)
-                            break
-            except Exception:
-                pass
-
-            if not target_p or target_p <= 0:
-                target_p = round(raw_price * 1.25, -2)
-
-            low_p = round(min(raw_price * 0.95, target_p * 0.85), -2)
-            high_p = round(max(raw_price * 1.35, target_p * 1.25), -2)
-            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
-
-            return {
-                "title": "gaemiGTP 애널리스트 컨센서스",
-                "sub_tag": "최근 증권사 리포트 18개 종합",
-                "gauge_val": "18",
-                "gauge_label": "기관의견",
-                "badge_text": "적극 매수 (BUY)",
-                "dots": "<span style='color:#10a37f;'>매수 16</span> &nbsp; <span style='color:#f97316;'>보유 2</span> &nbsp; <span style='color:#ef4444;'>매도 0</span>",
-                "primary_label": "평균 목표주가",
-                "primary_val": f"{int(target_p):,} 원",
-                "secondary_label": "현재가",
-                "secondary_val": f"{int(raw_price):,} 원",
-                "slider_left": f"{int(raw_price):,}원",
-                "slider_mid": f"평균 {int(target_p):,}원",
-                "slider_right": f"{int(high_p):,}원",
-                "slider_bottom_left": f"증권사 최저 {int(low_p):,}원",
-                "slider_bottom_right": f"증권사 최고 {int(high_p):,}원",
-                "fill_pct": fill_pct
-            }
-        elif market_name == "미국주식":
-            target_p = round(raw_price * 1.28, 2)
-            low_p = round(raw_price * 0.92, 2)
-            high_p = round(raw_price * 1.45, 2)
-            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
-
-            return {
-                "title": "gaemiGTP 애널리스트 컨센서스",
-                "sub_tag": "월가 애널리스트 32명 종합",
-                "gauge_val": "32",
-                "gauge_label": "기관의견",
-                "badge_text": "강력 매수 (Strong Buy)",
-                "dots": "<span style='color:#10a37f;'>Buy 28</span> &nbsp; <span style='color:#f97316;'>Hold 3</span> &nbsp; <span style='color:#ef4444;'>Sell 1</span>",
-                "primary_label": "평균 목표주가",
-                "primary_val": f"${target_p:,.2f}",
-                "secondary_label": "현재가",
-                "secondary_val": f"${raw_price:,.2f}",
-                "slider_left": f"${raw_price:,.2f}",
-                "slider_mid": f"평균 ${target_p:,.2f}",
-                "slider_right": f"${high_p:,.2f}",
-                "slider_bottom_left": f"월가 최저 ${low_p:,.2f}",
-                "slider_bottom_right": f"월가 최고 ${high_p:,.2f}",
-                "fill_pct": fill_pct
-            }
-        elif market_name == "암호화폐":
-            return {
-                "title": "gaemiGTP 글로벌 수급 & 온체인 센티멘트",
-                "sub_tag": "실시간 파생/온체인 집계",
-                "gauge_val": "74",
-                "gauge_label": "탐욕지수",
-                "badge_text": "롱 우세 (탐욕 구간)",
-                "dots": "<span style='color:#10a37f;'>롱 64.2%</span> &nbsp; <span style='color:#38bdf8;'>숏 35.8%</span> &nbsp; <span style='color:#fef08a;'>김프 +1.84%</span>",
-                "primary_label": "24H 글로벌 청산 규모",
-                "primary_val": "$184.2M",
-                "secondary_label": "실시간 김치프리미엄",
-                "secondary_val": "+1.84%",
-                "slider_left": "롱 64.2%",
-                "slider_mid": "선물 포지션 비율",
-                "slider_right": "숏 35.8%",
-                "slider_bottom_left": "롱 포지션 우세",
-                "slider_bottom_right": "숏 스퀴즈 가능성",
-                "fill_pct": 64
-            }
-    except Exception:
-        pass
-    return None
-
-def calculate_quant_factors(raw_price, df, is_krw=True):
-    if df is None or len(df) < 10:
-        return None
-
-    round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"{round(float(v), 2):,.2f} 달러")
-    closes = df['Close']
-    volumes = df['Volume']
-    n_bars = len(df)
-
-    ma5 = round_fn(closes.tail(5).mean())
-    ma20_val = float(closes.tail(20).mean())
-    ma20 = round_fn(ma20_val)
-    ma60_val = float(closes.tail(60).mean()) if n_bars >= 60 else None
-    ma60 = round_fn(ma60_val) if ma60_val else "-"
-
-    bb_period = min(60, n_bars)
-    bb_mid = closes.tail(bb_period).mean()
-    bb_std = closes.tail(bb_period).std()
-    bb_upper = bb_mid + (bb_std * 2)
-    bb_lower = bb_mid - (bb_std * 2)
-    bb_str = f"{round_fn(bb_upper)} / {round_fn(bb_lower)}"
-
-    df_1y = df.tail(250)
-    high_52w = float(df_1y['High'].max())
-    low_52w = float(df_1y['Low'].min())
-    pos_52w_str = f"{((raw_price - low_52w) / (high_52w - low_52w)) * 100:.1f}%" if high_52w > low_52w else "-"
-
-    delta = closes.diff()
-    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
-    rs = gain / loss
-    rsi_series = 100 - (100 / (1 + rs))
-    rsi_val = f"{float(rsi_series.iloc[-1]):.2f}" if not np.isnan(rsi_series.iloc[-1]) else "50.0"
-
-    if n_bars >= 20:
-        val_20d = (closes.tail(20) * volumes.tail(20)).mean()
-        if is_krw:
-            tval_20d_str = f"{val_20d / 100_000_000_000:.1f}천억원" if val_20d >= 100_000_000_000 else f"{val_20d / 100_000_000:.1f}억원"
-        else:
-            tval_20d_str = f"{val_20d / 1_000_000_000:.2f}B 달러" if val_20d >= 1_000_000_000 else f"{val_20d / 1_000_000:.1f}M 달러"
-    else:
-        tval_20d_str = "-"
-
-    trend = "정배열 상승 추세" if (ma60_val and raw_price > ma20_val > ma60_val) else ("역배열 하락 추세" if (ma60_val and raw_price < ma20_val < ma60_val) else "박스권 혼조세")
-
-    return {
-        "trend": trend,
-        "ma5": ma5, "ma20": ma20, "ma60": ma60,
-        "bollinger": bb_str,
-        "pos_52w": pos_52w_str,
-        "rsi": rsi_val,
-        "tval_20d": tval_20d_str,
-        "entry1": round_fn(raw_price * 0.985),
-        "entry2": round_fn(raw_price * 0.965),
-        "target1": round_fn(raw_price * 1.045),
-        "target2": round_fn(raw_price * 1.085),
-        "stop_p": round_fn(raw_price * 0.945)
-    }
-
-# ----------------------------------------------------
-# 3. 파이프라인
-# ----------------------------------------------------
-def run_full_pipeline(query):
-    clean_q = query.strip().replace(" ", "").upper()
-    market_name = "국내주식"
-    is_krw = True
-
-    if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
-        symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
-        formal_name = clean_q
-        raw_price, price_str, df = fetch_crypto_candles(symbol)
-        market_name = "암호화폐"
-        is_krw = False
-    elif clean_q in US_STOCK_MAP:
-        symbol = US_STOCK_MAP[clean_q]
-        formal_name = query.strip()
-        raw_price, price_str, df = fetch_overseas_candles(symbol)
-        market_name = "미국주식"
-        is_krw = False
-    elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
-        symbol = query.upper().strip()
-        formal_name = symbol
-        raw_price, price_str, df = fetch_overseas_candles(symbol)
-        market_name = "미국주식"
-        is_krw = False
-    else:
-        code, name = find_stock_code(query)
-        if not code:
-            return None
-        symbol, formal_name = code, name
-        raw_price, price_str = get_naver_realtime_price(symbol)
-        df = fetch_domestic_candles(symbol, anchor_price=raw_price)
-        if raw_price is None and df is not None and not df.empty:
-            raw_price = float(df['Close'].iloc[-1])
-            price_str = f"{int(raw_price):,} 원"
-
-    if raw_price is None or df is None:
-        return None
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        f_news = executor.submit(fetch_rss_news, formal_name, 4)
-        f_consensus = executor.submit(fetch_market_consensus, symbol, market_name, raw_price)
-        f_macro = executor.submit(fetch_macro_indices)
-        f_global_news = executor.submit(fetch_rss_news, "세계 증시 뉴욕증시", 4)
-
-        stock_news = f_news.result()
-        consensus = f_consensus.result()
-        macro_indices = f_macro.result()
-        global_news = f_global_news.result()
-
-    quant = calculate_quant_factors(raw_price, df, is_krw=is_krw)
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
-
-    df['MA20'] = df['Close'].rolling(20).mean()
-    df['MA60'] = df['Close'].rolling(60).mean()
-    df['STD60'] = df['Close'].rolling(60).std()
-    df['BB_UP'] = df['MA60'] + (df['STD60'] * 2)
-    df['BB_DN'] = df['MA60'] - (df['STD60'] * 2)
-
-    candles = []
-    ma20_line = []
-    ma60_line = []
-    bb_up_line = []
-    bb_dn_line = []
-
-    for date_idx, row in df.tail(65).iterrows():
-        t_str = date_idx.strftime("%Y-%m-%d")
-        candles.append({
-            "time": t_str,
-            "open": float(row['Open']), "high": float(row['High']),
-            "low": float(row['Low']), "close": float(row['Close'])
-        })
-        if not np.isnan(row['MA20']): ma20_line.append({"time": t_str, "value": float(row['MA20'])})
-        if not np.isnan(row['MA60']): ma60_line.append({"time": t_str, "value": float(row['MA60'])})
-        if not np.isnan(row['BB_UP']): bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
-        if not np.isnan(row['BB_DN']): bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
-
-    return {
-        "formal_name": formal_name,
-        "symbol": symbol,
-        "market": market_name,
-        "price_str": price_str,
-        "now_str": now_str,
-        "quant": quant,
-        "consensus": consensus,
-        "stock_news": stock_news,
-        "macro_indices": macro_indices,
-        "global_news": global_news,
-        "candles": candles,
-        "ma20_line": ma20_line,
-        "ma60_line": ma60_line,
-        "bb_up_line": bb_up_line,
-        "bb_dn_line": bb_dn_line
-    }
-
-# ----------------------------------------------------
-# 4. 프론트엔드 UI (하단 고정 플로팅 입력창 포함)
-# ----------------------------------------------------
-HTML_PAGE = """<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>gaemiGTP</title>
-    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>gaemiGTP - 애널리스트 컨센서스 위젯 예시</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background-color: #202123; color: #ececf1; min-height: 100vh; overflow-x: hidden; }
+        body { background-color: #1e1f20; color: #e3e3e3; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
+        .widget-wrap { width: 100%; max-width: 440px; }
+        .card { background: #282a2c; border-radius: 16px; padding: 22px; border: 1px solid #33363a; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
         
-        /* 상단 헤더 */
-        header { position: fixed; top: 0; left: 0; width: 100%; height: 52px; display: flex; justify-content: space-between; align-items: center; padding: 0 16px; z-index: 50; background: #202123; border-bottom: 1px solid #2d2f34; }
-        .header-left { display: flex; align-items: center; gap: 12px; }
-        .menu-btn { background: transparent; border: none; color: #acacbe; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 6px; border-radius: 6px; }
-        .menu-btn:hover { background: #2f3037; color: #ececf1; }
-        .logo-top { font-weight: 600; font-size: 1.05rem; color: #ececf1; letter-spacing: -0.3px; cursor: pointer; }
-        .pro-top-tag { font-size: 0.72rem; font-weight: 600; color: #10a37f; background: rgba(16, 163, 127, 0.1); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(16, 163, 127, 0.25); }
+        /* 탭 전환 버튼 */
+        .tab-wrap { display: flex; gap: 8px; margin-bottom: 16px; }
+        .tab-btn { flex: 1; padding: 8px 0; background: #1e1f20; border: 1px solid #37393b; color: #8e918f; border-radius: 8px; cursor: pointer; font-size: 0.85rem; font-weight: 600; text-align: center; }
+        .tab-btn.active { background: #38bdf8; color: #121212; border-color: #38bdf8; }
 
-        /* 좌측 사이드바 서랍 */
-        .drawer-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 90; opacity: 0; pointer-events: none; transition: opacity 0.2s ease; }
-        .drawer-overlay.active { opacity: 1; pointer-events: auto; }
-        .drawer { position: fixed; top: 0; left: -260px; width: 260px; height: 100%; background: #171717; border-right: 1px solid #2d2f34; z-index: 100; transition: left 0.2s ease; display: flex; flex-direction: column; padding: 12px; }
-        .drawer.active { left: 0; }
-        .new-search-main-btn { width: 100%; height: 40px; background: transparent; border: 1px solid #3e3f4b; color: #ececf1; font-size: 0.85rem; font-weight: 500; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; cursor: pointer; margin-bottom: 16px; }
-        .new-search-main-btn:hover { background: #212121; }
-        .drawer-scroll-area { flex: 1; overflow-y: auto; }
-        .drawer-section-title { font-size: 0.7rem; color: #8e8ea0; font-weight: 600; margin: 12px 6px 6px; }
-        .drawer-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: 6px; color: #d1d5db; font-size: 0.82rem; cursor: pointer; margin-bottom: 2px; }
-        .drawer-item:hover { background: #212121; color: #ececf1; }
-        .drawer-badge { font-size: 0.68rem; color: #8e8ea0; border: 1px solid #3e3f4b; padding: 1px 5px; border-radius: 4px; }
+        /* 상단 타이틀 */
+        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+        .card-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; }
+        .analyst-count { font-size: 0.78rem; color: #8e918f; }
 
-        /* 메인 홈 화면 */
-        #main-view { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
-        .hero-title { font-size: 2.4rem; font-weight: 600; margin-bottom: 6px; letter-spacing: -0.5px; color: #ececf1; }
-        .hero-sub { font-size: 0.95rem; color: #8e8ea0; margin-bottom: 24px; font-weight: 400; text-align: center; }
-        
-        .search-container { width: 100%; max-width: 740px; position: relative; }
-        .search-box { width: 100%; height: 50px; background: #2f3037; border: 1px solid #3e3f4b; border-radius: 25px; padding: 0 8px 0 18px; display: flex; align-items: center; }
-        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #ececf1; font-size: 0.92rem; }
-        .send-btn { width: 34px; height: 34px; border-radius: 50%; background: #ececf1; border: none; color: #202123; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-        .send-btn:hover { opacity: 0.9; }
-        
-        .popular-tags { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: #2f3037; border: 1px solid #3e3f4b; border-radius: 14px; padding: 5px 12px; font-size: 0.8rem; color: #acacbe; cursor: pointer; }
-        .tag-btn:hover { background: #3e3f4b; color: #ececf1; }
+        /* 원형 게이지 & 종합의견 */
+        .gauge-section { display: flex; align-items: center; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid #33363a; }
+        .circle-gauge { width: 62px; height: 62px; border-radius: 50%; border: 4.5px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #1e1f20; flex-shrink: 0; }
+        .gauge-score { font-size: 1.15rem; font-weight: 800; color: #fff; line-height: 1; }
+        .gauge-label { font-size: 0.58rem; color: #8e918f; margin-top: 3px; }
+        .opinion-status { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
+        .badge-buy { background: rgba(16, 185, 129, 0.15); color: #10b981; font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+        .opinion-dots { font-size: 0.76rem; color: #8e918f; }
 
-        /* 결과 화면 2단 레이아웃 (메인 740px + 우측 340px) */
-        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 68px 16px 100px; }
-        .dashboard-wrapper {
-            max-width: 1100px;
-            margin: 0 auto;
-            display: grid;
-            grid-template-columns: 740px 340px;
-            gap: 16px;
-            justify-content: center;
-            align-items: stretch;
-        }
+        /* 가격 비교 영역 */
+        .price-compare { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 16px; }
+        .price-sub { font-size: 0.75rem; color: #8e918f; margin-bottom: 2px; }
+        .target-avg-val { font-size: 1.35rem; font-weight: 800; color: #10b981; }
+        .curr-price-val { font-size: 1.2rem; font-weight: 700; color: #ffffff; }
 
-        .col-main, .col-side {
-            display: flex;
-            flex-direction: column;
-            gap: 16px;
-        }
+        /* 목표가 슬라이더 바 */
+        .slider-wrap { margin: 24px 0 16px; position: relative; }
+        .slider-top-labels { display: flex; justify-content: space-between; font-size: 0.72rem; margin-bottom: 6px; }
+        .bar-track { width: 100%; height: 6px; background: #1e1f20; border-radius: 4px; position: relative; }
+        .bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #10b981); border-radius: 4px; }
+        .dot-curr { position: absolute; top: -3px; width: 12px; height: 12px; border-radius: 50%; background: #ffffff; border: 2px solid #282a2c; }
+        .dot-target { position: absolute; top: -4px; width: 14px; height: 14px; border-radius: 50%; background: #10b981; border: 2px solid #282a2c; transform: translateX(-50%); }
+        .slider-bottom-labels { display: flex; justify-content: space-between; font-size: 0.7rem; color: #6b7280; margin-top: 6px; }
 
-        .card { 
-            background: #2f3037; 
-            border-radius: 10px; 
-            padding: 16px; 
-            border: 1px solid #3e3f4b; 
-            display: flex; 
-            flex-direction: column; 
-            justify-content: space-between; 
-        }
-
-        .row-1-height { min-height: 380px; }
-        .row-2-height { min-height: 320px; }
-        .row-3-height { min-height: 220px; }
-        .row-4-height { min-height: 220px; }
-
-        .price-title { font-size: 1.3rem; font-weight: 600; color: #ececf1; }
-        .price-title span { color: #8e8ea0; font-size: 0.85rem; font-weight: 400; }
-        .price-val { font-size: 2.1rem; font-weight: 700; color: #ececf1; margin: 2px 0; }
-        .price-meta { color: #8e8ea0; font-size: 0.75rem; text-align: right; }
-        .chart-box-wrap { width: 100%; height: 260px; margin-top: 10px; position: relative; background: #202123; border-radius: 6px; overflow: hidden; }
-
-        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        .section-title { font-size: 0.95rem; font-weight: 600; color: #ececf1; }
-        .badge-tag { font-size: 0.7rem; color: #8e8ea0; background: #202123; padding: 2px 6px; border-radius: 4px; border: 1px solid #3e3f4b; }
-
-        .news-item { padding: 8px 0; border-bottom: 1px solid #3e3f4b; text-decoration: none; display: block; }
-        .news-item:last-child { border-bottom: none; }
-        .news-title { color: #d1d5db; font-size: 0.82rem; font-weight: 500; line-height: 1.35; }
-        .news-meta { color: #8e8ea0; font-size: 0.68rem; margin-top: 2px; }
-
-        .gauge-row { display: flex; align-items: center; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid #3e3f4b; }
-        .circle-gauge { width: 48px; height: 48px; border-radius: 50%; border: 3px solid #10a37f; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #202123; flex-shrink: 0; }
-        .slider-bar-wrap { width: 100%; height: 4px; background: #202123; border-radius: 2px; position: relative; margin: 10px 0 4px; }
-        .slider-bar-fill { height: 100%; background: #10a37f; border-radius: 2px; }
-        .slider-dot { position: absolute; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: #10a37f; transform: translateX(-50%); }
-
-        .quant-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
-        .quant-box { background: #202123; padding: 7px 9px; border-radius: 6px; border: 1px solid #3e3f4b; }
-        .q-name { color: #8e8ea0; font-size: 0.7rem; margin-bottom: 1px; }
-        .q-val { color: #ececf1; font-size: 0.85rem; font-weight: 600; }
-
-        .accordion-btn { width: 100%; height: 46px; background: #2f3037; border: 1px solid #3e3f4b; border-radius: 8px; padding: 0 16px; color: #ececf1; font-size: 0.9rem; font-weight: 600; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
-        .accordion-arrow { width: 16px; height: 16px; fill: #8e8ea0; transition: transform 0.2s; }
-        .accordion-body { background: #24252b; border-radius: 8px; padding: 14px; margin-top: 8px; border: 1px solid #3e3f4b; }
-        .signal-row { display: flex; justify-content: space-between; font-size: 0.82rem; padding: 5px 0; border-bottom: 1px solid #3e3f4b; }
-        .signal-row:last-child { border-bottom: none; }
-
-        .macro-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #3e3f4b; }
-        .macro-item:last-child { border-bottom: none; }
-        .macro-sym { font-size: 0.82rem; font-weight: 600; color: #ececf1; }
-        .val-up { color: #ef4444; font-weight: 600; font-size: 0.75rem; }
-        .val-down { color: #38bdf8; font-weight: 600; font-size: 0.75rem; }
-
-        .brief-item { padding: 6px 0; }
-        .brief-title { font-size: 0.8rem; font-weight: 600; color: #ececf1; line-height: 1.35; margin-bottom: 4px; }
-        .brief-bullets { background: #202123; padding: 6px 8px; border-radius: 4px; font-size: 0.7rem; color: #acacbe; line-height: 1.4; }
-
-        .cal-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #3e3f4b; font-size: 0.74rem; }
-        .cal-row:last-child { border-bottom: none; }
-
-        .master-content-box { position: relative; background: #202123; padding: 10px; border-radius: 6px; border: 1px solid #3e3f4b; font-size: 0.78rem; line-height: 1.45; color: #acacbe; overflow: hidden; }
-        .blur-text { filter: blur(3px); user-select: none; opacity: 0.4; margin-top: 4px; }
-        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(32, 33, 35, 0.8); }
-        .lock-btn { background: #10a37f; color: #fff; border: none; font-weight: 600; font-size: 0.75rem; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
-
-        /* 결과 화면 하단 고정 플로팅 입력창 */
-        .bottom-floating-bar { position: fixed; bottom: 0; left: 0; width: 100%; background: linear-gradient(180deg, rgba(32,33,35,0) 0%, #202123 30%); padding: 16px 16px 20px; display: flex; justify-content: center; z-index: 40; }
-        .bottom-search-box { width: 100%; max-width: 740px; height: 48px; background: #2f3037; border: 1px solid #3e3f4b; border-radius: 24px; padding: 0 8px 0 16px; display: flex; align-items: center; box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
-        .bottom-search-box input { flex: 1; background: transparent; border: none; outline: none; color: #ececf1; font-size: 0.9rem; }
-
-        @media (max-width: 1100px) {
-            .dashboard-wrapper { grid-template-columns: 1fr; max-width: 740px; }
-            .row-1-height, .row-2-height, .row-3-height, .row-4-height { min-height: auto; }
-        }
-
-        .loading { display: none; text-align: center; color: #10a37f; margin: 30px 0; font-size: 0.9rem; }
+        /* 최근 리포트 리스트 */
+        .report-section { margin-top: 18px; border-top: 1px solid #33363a; padding-top: 14px; }
+        .report-header { font-size: 0.85rem; font-weight: 700; color: #c4c7c5; margin-bottom: 10px; display: flex; justify-content: space-between; }
+        .source-tag { font-size: 0.7rem; color: #8e918f; font-weight: normal; }
+        .report-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #2e3034; font-size: 0.82rem; }
+        .report-item:last-child { border-bottom: none; }
+        .broker-name { color: #ffffff; font-weight: 700; }
+        .broker-meta { font-size: 0.7rem; color: #8e918f; margin-top: 2px; }
+        .target-val { color: #ffffff; font-weight: 700; text-align: right; }
+        .upside-val { color: #10b981; font-size: 0.72rem; font-weight: 700; text-align: right; }
     </style>
 </head>
 <body>
 
-    <header>
-        <div class="header-left">
-            <button class="menu-btn" onclick="toggleDrawer()">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-            </button>
-            <div class="logo-top" onclick="resetToHome()">gaemiGTP</div>
-        </div>
-        <div class="pro-top-tag">PRO</div>
-    </header>
-
-    <div class="drawer-overlay" id="drawerOverlay" onclick="toggleDrawer()"></div>
-    <div class="drawer" id="sideDrawer">
-        <button class="new-search-main-btn" onclick="resetToHome(); toggleDrawer();">
-            <span>새 종목 검색</span>
-            <span style="font-size:0.75rem; color:#8e8ea0;">+</span>
-        </button>
-        <div class="drawer-scroll-area">
-            <div class="drawer-section-title">최근 검색</div>
-            <div id="recentSearchList">
-                <div class="drawer-item" onclick="doSearch('SK하이닉스'); toggleDrawer();"><span>SK하이닉스</span><span class="drawer-badge">국내</span></div>
-                <div class="drawer-item" onclick="doSearch('엔비디아'); toggleDrawer();"><span>엔비디아</span><span class="drawer-badge">미국</span></div>
-                <div class="drawer-item" onclick="doSearch('비트코인'); toggleDrawer();"><span>비트코인</span><span class="drawer-badge">코인</span></div>
-            </div>
-        </div>
+<div class="widget-wrap">
+    <!-- 국내 / 해외 예시 전환 탭 -->
+    <div class="tab-wrap">
+        <div class="tab-btn active" onclick="switchData('kr')">🇰🇷 국내주식 (한경컨센서스 기반)</div>
+        <div class="tab-btn" onclick="switchData('us')">🇺🇸 미국주식 (TipRanks/Yahoo 기반)</div>
     </div>
 
-    <!-- 1. 메인 홈 화면 입력창 -->
-    <div id="main-view">
-        <div class="hero-title">gaemiGTP</div>
-        <div class="hero-sub">종목명 입력 시 퀀트 데이터 및 분석 지표를 조회합니다.</div>
-        <div class="search-container">
-            <div class="search-box">
-                <input type="text" id="centerInput" placeholder="종목명 입력 (SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
-                <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
-                    <svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-                </button>
-            </div>
-        </div>
-        <div class="popular-tags">
-            <button class="tag-btn" onclick="doSearch('SK하이닉스')">SK하이닉스</button>
-            <button class="tag-btn" onclick="doSearch('삼성전자')">삼성전자</button>
-            <button class="tag-btn" onclick="doSearch('알테오젠')">알테오젠</button>
-            <button class="tag-btn" onclick="doSearch('엔비디아')">엔비디아</button>
-            <button class="tag-btn" onclick="doSearch('비트코인')">비트코인</button>
-        </div>
-    </div>
-
-    <!-- 2. 결과 화면 -->
-    <div id="result-scroll-view">
-        <div class="loading" id="loading">데이터를 분석 중입니다...</div>
-        <div class="dashboard-wrapper" id="resultCardWrap" style="display:none;">
-            
-            <!-- [좌측 메인: 740px] -->
-            <div class="col-main">
-                <div class="card row-1-height">
-                    <div style="display:flex; justify-content:space-between; align-items:flex-end;">
-                        <div>
-                            <div class="price-title" id="rTitle"></div>
-                            <div class="price-val" id="rPrice"></div>
-                        </div>
-                        <div class="price-meta" id="rMeta"></div>
-                    </div>
-                    <div class="chart-box-wrap" id="tvChart"></div>
-                </div>
-
-                <div class="card row-2-height">
-                    <div class="section-header">
-                        <span class="section-title">종목 뉴스</span>
-                        <span class="badge-tag">실시간</span>
-                    </div>
-                    <div id="stockNewsList"></div>
-                </div>
-
-                <div class="card row-3-height" id="consensusCard">
-                    <div class="section-header">
-                        <span class="section-title" id="cTitle"></span>
-                        <span class="badge-tag" id="cSubTag"></span>
-                    </div>
-                    <div class="gauge-row">
-                        <div class="circle-gauge">
-                            <span style="font-size:0.95rem; font-weight:700; color:#ececf1; line-height:1;" id="cGaugeVal"></span>
-                            <span style="font-size:0.5rem; color:#8e8ea0;" id="cGaugeLabel"></span>
-                        </div>
-                        <div>
-                            <div style="font-size:0.78rem; margin-bottom:2px;">
-                                <span style="color:#8e8ea0;">종합 의견:</span>
-                                <strong style="color:#10a37f;" id="cBadge"></strong>
-                            </div>
-                            <div style="font-size:0.7rem; color:#8e8ea0;" id="cDots"></div>
-                        </div>
-                    </div>
-                    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:6px;">
-                        <div>
-                            <div style="font-size:0.68rem; color:#8e8ea0;" id="cPrimaryLabel"></div>
-                            <div style="font-size:1.1rem; font-weight:700; color:#10a37f;" id="cPrimaryVal"></div>
-                        </div>
-                        <div style="text-align:right;">
-                            <div style="font-size:0.68rem; color:#8e8ea0;" id="cSecondaryLabel"></div>
-                            <div style="font-size:0.95rem; font-weight:600; color:#ececf1;" id="cSecondaryVal"></div>
-                        </div>
-                    </div>
-                    <div class="slider-bar-wrap">
-                        <div class="slider-bar-fill" id="cBarFill"></div>
-                        <div class="slider-dot" id="cDotMarker"></div>
-                    </div>
-                    <div style="display:flex; justify-content:space-between; font-size:0.65rem; color:#8e8ea0;">
-                        <span id="cSliderLow"></span>
-                        <span id="cSliderHigh"></span>
-                    </div>
-                </div>
-
-                <div class="card row-4-height">
-                    <div class="section-header">
-                        <span class="section-title">기술 지표</span>
-                        <span style="font-size:0.75rem; color:#38bdf8; font-weight:600;" id="rTrend"></span>
-                    </div>
-                    <div class="quant-grid">
-                        <div class="quant-box"><div class="q-name">5일선</div><div class="q-val" id="qMa5"></div></div>
-                        <div class="quant-box"><div class="q-name">20일선</div><div class="q-val" id="qMa20"></div></div>
-                        <div class="quant-box"><div class="q-name">볼린저 상/하</div><div class="q-val" id="qBb"></div></div>
-                        <div class="quant-box"><div class="q-name">RSI (14)</div><div class="q-val" id="qRsi"></div></div>
-                        <div class="quant-box"><div class="q-name">52주 위치</div><div class="q-val" id="qPos52w"></div></div>
-                        <div class="quant-box"><div class="q-name">20일 거래대금</div><div class="q-val" id="qTval20d"></div></div>
-                    </div>
-                </div>
-
-                <div>
-                    <button class="accordion-btn" onclick="toggleAccordion('signalBody', 'signalArrow')">
-                        <span>시그널 타점 분석</span>
-                        <svg class="accordion-arrow" id="signalArrow" style="transform:rotate(180deg);" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-                    </button>
-                    <div class="accordion-body" id="signalBody">
-                        <div class="signal-row"><span>1차 매수 타점</span><strong style="color:#ececf1;" id="sEntry1"></strong></div>
-                        <div class="signal-row"><span>2차 매수 타점</span><strong style="color:#ececf1;" id="sEntry2"></strong></div>
-                        <div class="signal-row"><span>1차 목표가 (+4.5%)</span><strong style="color:#ef4444;" id="sTarget1"></strong></div>
-                        <div class="signal-row"><span>2차 목표가 (+8.5%)</span><strong style="color:#ef4444;" id="sTarget2"></strong></div>
-                        <div class="signal-row"><span>손절가 (-5.5%)</span><strong style="color:#38bdf8;" id="sStop"></strong></div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- [우측 보조: 340px] -->
-            <div class="col-side">
-                <div class="card row-1-height">
-                    <div class="section-header">
-                        <span class="section-title">글로벌 매크로 지표</span>
-                        <span class="badge-tag">실시간</span>
-                    </div>
-                    <div id="macroIndicesList"></div>
-                </div>
-
-                <div class="card row-2-height">
-                    <div class="section-header">
-                        <span class="section-title">해외 증시 뉴스</span>
-                        <span class="badge-tag">외신</span>
-                    </div>
-                    <div id="globalNewsList"></div>
-                </div>
-
-                <div class="card row-3-height">
-                    <div class="section-header">
-                        <span class="section-title">글로벌 속보 요약</span>
-                        <span class="badge-tag">SaveTicker</span>
-                    </div>
-                    <div class="brief-item">
-                        <div class="brief-title">연준 통화정책 조정 시점 도래 확인</div>
-                        <div class="brief-bullets">
-                            <div>• 노동 시장 둔화 방지 선제적 대응 공감대</div>
-                            <div>• 국채 금리 하락 및 기술주 중심 자금 유입</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card row-4-height">
-                    <div class="section-header">
-                        <span class="section-title">주요 경제 일정</span>
-                        <span class="badge-tag">KST</span>
-                    </div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:600;">08.28 (금)</span><span style="color:#ececf1;">미국 근원 PCE 물가지수</span><span style="color:#8e8ea0;">예상 2.6%</span></div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:600;">08.28 (금)</span><span style="color:#ececf1;">엔비디아 (NVDA) 실적</span><span style="color:#8e8ea0;">장 마감후</span></div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:600;">09.03 (목)</span><span style="color:#ececf1;">미국 ISM 제조업지수</span><span style="color:#8e8ea0;">예상 47.5</span></div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:600;">09.05 (금)</span><span style="color:#ececf1;">미국 비농업 고용 (NFP)</span><span style="color:#8e8ea0;">21:30</span></div>
-                </div>
-
-                <div>
-                    <button class="accordion-btn" onclick="toggleAccordion('masterBody', 'masterArrow')">
-                        <span>마스터 전략 브리핑 (PRO)</span>
-                        <svg class="accordion-arrow" id="masterArrow" style="transform:rotate(180deg);" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-                    </button>
-                    <div class="accordion-body" id="masterBody">
-                        <div class="master-content-box">
-                            <div style="color:#ececf1; font-weight:600; font-size:0.8rem;">수석 분석관 브리핑</div>
-                            <p style="font-size:0.75rem; margin-top:3px;">
-                                외인 순매수 전환 및 20일선 지지선 안착 확인.
-                            </p>
-                            <div class="blur-text">
-                                목표가 도달 전 주요 매물대 분할 매도 및 하방 리스크 가이드 전문...
-                            </div>
-                            <div class="lock-overlay">
-                                <button class="lock-btn" onclick="alert('PRO 멤버십 안내');">
-                                    PRO 리포트 열람
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
+    <!-- 카드 본체 -->
+    <div class="card">
+        <div class="header-row">
+            <span class="card-title">gaemiGTP 애널리스트 컨센서스</span>
+            <span class="analyst-count" id="analystCount">최근 리포트 18개 종합</span>
         </div>
 
-        <!-- 3. 결과 화면 하단 고정 플로팅 입력창 -->
-        <div class="bottom-floating-bar" id="bottomSearchBar" style="display:none;">
-            <div class="bottom-search-box">
-                <input type="text" id="bottomInput" placeholder="새 종목명 입력 후 Enter (예: 테슬라, 카카오, ETH)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
-                <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
-                    <svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-                </button>
+        <!-- 원형 게이지 & 투자의견 -->
+        <div class="gauge-section">
+            <div class="circle-gauge">
+                <span class="gauge-score" id="scoreNum">18</span>
+                <span class="gauge-label">기관의견</span>
             </div>
+            <div>
+                <div class="opinion-status">
+                    <span style="font-size:0.8rem; color:#8e918f;">전체 의견</span>
+                    <span class="badge-buy" id="badgeOpinion">적극 매수 (BUY)</span>
+                </div>
+                <div class="opinion-dots" id="dotsText">
+                    <span style="color:#10b981;">● 매수 16</span> &nbsp;
+                    <span style="color:#f97316;">● 보유 2</span> &nbsp;
+                    <span style="color:#ef4444;">● 매도 0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 가격 비교 -->
+        <div class="price-compare">
+            <div>
+                <div class="price-sub">평균 목표주가</div>
+                <div class="target-avg-val" id="targetAvgPrice">245,000 원</div>
+            </div>
+            <div style="text-align: right;">
+                <div class="price-sub">현재가</div>
+                <div class="curr-price-val" id="currentPrice">178,500 원</div>
+            </div>
+        </div>
+
+        <!-- 슬라이더 바 -->
+        <div class="slider-wrap">
+            <div class="slider-top-labels">
+                <span id="sliderCurrPrice" style="color:#8e918f;">178,500원</span>
+                <span id="sliderTargetPrice" style="color:#10b981; font-weight:700;">평균 245,000원</span>
+                <span id="sliderHighPrice" style="color:#8e918f;">300,000원</span>
+            </div>
+            <div class="bar-track">
+                <div class="bar-fill" id="barFill" style="width: 65%;"></div>
+                <div class="dot-curr" style="left: 0%;"></div>
+                <div class="dot-target" id="dotTarget" style="left: 65%;"></div>
+            </div>
+            <div class="slider-bottom-labels">
+                <span id="sliderLowText">증권사 최저 200,000원</span>
+                <span id="sliderHighText">증권사 최고 300,000원</span>
+            </div>
+        </div>
+
+        <!-- 최근 증권사별 리포트 리스트 -->
+        <div class="report-section">
+            <div class="report-header">
+                <span>최근 증권사 리포트 평가</span>
+                <span class="source-tag" id="sourceTag">출처: 한경컨센서스</span>
+            </div>
+            <div id="reportList"></div>
         </div>
     </div>
+</div>
 
-    <script>
-        let chart = null;
-
-        function toggleDrawer() {
-            document.getElementById('sideDrawer').classList.toggle('active');
-            document.getElementById('drawerOverlay').classList.toggle('active');
+<script>
+    const sampleData = {
+        kr: {
+            analystCount: "최근 리포트 18개 종합",
+            score: "18",
+            opinion: "적극 매수 (BUY)",
+            dots: '<span style="color:#10b981;">● 매수 16</span> &nbsp; <span style="color:#f97316;">● 보유 2</span> &nbsp; <span style="color:#ef4444;">● 매도 0</span>',
+            targetAvg: "245,000 원",
+            currPrice: "178,500 원",
+            sliderCurr: "178,500원",
+            sliderTarget: "평균 245,000원",
+            sliderHigh: "300,000원",
+            sliderLowTxt: "증권사 최저 210,000원",
+            sliderHighTxt: "증권사 최고 300,000원",
+            progressPct: 62,
+            source: "출처: 한경컨센서스 실시간 취합",
+            reports: [
+                { broker: "미래에셋증권", analyst: "김영건 연구원", opinion: "BUY", date: "2026.08.24", target: "260,000원", upside: "+45.65%" },
+                { broker: "신한투자증권", analyst: "김형태 연구원", opinion: "BUY", date: "2026.08.20", target: "250,000원", upside: "+40.05%" },
+                { broker: "하나증권", analyst: "김록호 연구원", opinion: "BUY", date: "2026.08.18", target: "280,000원", upside: "+56.86%" },
+                { broker: "NH투자증권", analyst: "류영호 연구원", opinion: "BUY", date: "2026.08.12", target: "230,000원", upside: "+28.85%" }
+            ]
+        },
+        us: {
+            analystCount: "월가 애널리스트 32명 종합",
+            score: "32",
+            opinion: "강력 매수 (Strong Buy)",
+            dots: '<span style="color:#10b981;">● Buy 28</span> &nbsp; <span style="color:#f97316;">● Hold 3</span> &nbsp; <span style="color:#ef4444;">● Sell 1</span>',
+            targetAvg: "$248.50",
+            currPrice: "$159.55",
+            sliderCurr: "$159.55",
+            sliderTarget: "평균 $248.50",
+            sliderHigh: "$320.00",
+            sliderLowTxt: "월가 최저 $180.00",
+            sliderHighTxt: "월가 최고 $320.00",
+            progressPct: 68,
+            source: "출처: Wall Street Consensus",
+            reports: [
+                { broker: "Morgan Stanley", analyst: "Joseph Moore", opinion: "Overweight", date: "2026.08.25", target: "$260.00", upside: "+62.96%" },
+                { broker: "Goldman Sachs", analyst: "Toshiya Hari", opinion: "Buy", date: "2026.08.22", target: "$250.00", upside: "+56.69%" },
+                { broker: "Barclays", analyst: "Tom O'Malley", opinion: "Overweight", date: "2026.08.19", target: "$275.00", upside: "+72.36%" },
+                { broker: "JPMorgan", analyst: "Harlan Sur", opinion: "Overweight", date: "2026.08.14", target: "$235.00", upside: "+47.28%" }
+            ]
         }
+    };
 
-        function resetToHome() {
-            document.getElementById('main-view').style.display = 'flex';
-            document.getElementById('result-scroll-view').style.display = 'none';
-            document.getElementById('resultCardWrap').style.display = 'none';
-            document.getElementById('bottomSearchBar').style.display = 'none';
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('centerInput').value = '';
-            document.getElementById('bottomInput').value = '';
-        }
+    function render(data) {
+        document.getElementById('analystCount').innerText = data.analystCount;
+        document.getElementById('scoreNum').innerText = data.score;
+        document.getElementById('badgeOpinion').innerText = data.opinion;
+        document.getElementById('dotsText').innerHTML = data.dots;
+        document.getElementById('targetAvgPrice').innerText = data.targetAvg;
+        document.getElementById('currentPrice').innerText = data.currPrice;
 
-        function toggleAccordion(bodyId, arrowId) {
-            const body = document.getElementById(bodyId);
-            const arrow = document.getElementById(arrowId);
-            if (body.style.display === 'none') {
-                body.style.display = 'block';
-                arrow.style.transform = 'rotate(180deg)';
-            } else {
-                body.style.display = 'none';
-                arrow.style.transform = 'rotate(0deg)';
-            }
-        }
+        document.getElementById('sliderCurrPrice').innerText = data.sliderCurr;
+        document.getElementById('sliderTargetPrice').innerText = data.sliderTarget;
+        document.getElementById('sliderHighPrice').innerText = data.sliderHigh;
+        document.getElementById('sliderLowText').innerText = data.sliderLowTxt;
+        document.getElementById('sliderHighText').innerText = data.sliderHighTxt;
 
-        async function doSearch(query) {
-            const cleanQ = query.trim();
-            if (!cleanQ) return;
+        document.getElementById('barFill').style.width = data.progressPct + '%';
+        document.getElementById('dotTarget').style.left = data.progressPct + '%';
+        document.getElementById('sourceTag').innerText = data.source;
 
-            document.getElementById('main-view').style.display = 'none';
-            document.getElementById('result-scroll-view').style.display = 'block';
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('resultCardWrap').style.display = 'none';
-            document.getElementById('bottomSearchBar').style.display = 'none';
+        const rList = document.getElementById('reportList');
+        rList.innerHTML = '';
+        data.reports.forEach(r => {
+            rList.innerHTML += `
+                <div class="report-item">
+                    <div>
+                        <span class="broker-name">${r.broker}</span>
+                        <div class="broker-meta">
+                            <span style="color:#10b981; font-weight:700;">${r.opinion}</span> · ${r.analyst} · ${r.date}
+                        </div>
+                    </div>
+                    <div>
+                        <div class="target-val">${r.target}</div>
+                        <div class="upside-val">${r.upside}</div>
+                    </div>
+                </div>
+            `;
+        });
+    }
 
-            try {
-                const response = await fetch('/api/analyze?q=' + encodeURIComponent(cleanQ));
-                const data = await response.json();
-                if (!response.ok || data.error) {
-                    alert(data.error || '종목을 찾을 수 없습니다.');
-                    resetToHome();
-                    return;
-                }
+    function switchData(type) {
+        document.querySelectorAll('.tab-btn').forEach((b, idx) => {
+            b.classList.toggle('active', (type === 'kr' && idx === 0) || (type === 'us' && idx === 1));
+        });
+        render(sampleData[type]);
+    }
 
-                document.getElementById('rTitle').innerHTML = `${data.name} <span>(${data.symbol})</span>`;
-                document.getElementById('rPrice').innerText = data.price;
-                document.getElementById('rMeta').innerText = `${data.market} · ${data.time}`;
+    // 초기 렌더링 (국내주식)
+    render(sampleData.kr);
+</script>
 
-                const sNews = document.getElementById('stockNewsList');
-                sNews.innerHTML = '';
-                if (data.stock_news && data.stock_news.length > 0) {
-                    data.stock_news.forEach(n => {
-                        sNews.innerHTML += `
-                            <a href="${n.link}" target="_blank" class="news-item">
-                                <div class="news-title">${n.title}</div>
-                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                            </a>
-                        `;
-                    });
-                } else {
-                    sNews.innerHTML = '<div style="color:#8e8ea0; font-size:0.8rem;">관련 뉴스가 없습니다.</div>';
-                }
-
-                const mList = document.getElementById('macroIndicesList');
-                mList.innerHTML = '';
-                if (data.macro_indices) {
-                    data.macro_indices.forEach(m => {
-                        const cls = m.up ? 'val-up' : 'val-down';
-                        mList.innerHTML += `
-                            <div class="macro-item">
-                                <div><span class="macro-sym">${m.name}</span> <span class="badge-tag">${m.badge}</span></div>
-                                <div style="text-align:right;"><span style="color:#ececf1; font-weight:600; font-size:0.82rem;">${m.price}</span> <span class="${cls}" style="margin-left:4px;">${m.rate}</span></div>
-                            </div>
-                        `;
-                    });
-                }
-
-                const gList = document.getElementById('globalNewsList');
-                gList.innerHTML = '';
-                if (data.global_news && data.global_news.length > 0) {
-                    data.global_news.forEach(n => {
-                        gList.innerHTML += `
-                            <a href="${n.link}" target="_blank" class="news-item">
-                                <div class="news-title">${n.title}</div>
-                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                            </a>
-                        `;
-                    });
-                }
-
-                const c = data.consensus;
-                if (c) {
-                    document.getElementById('cTitle').innerText = c.title;
-                    document.getElementById('cSubTag').innerText = c.sub_tag;
-                    document.getElementById('cGaugeVal').innerText = c.gauge_val;
-                    document.getElementById('cGaugeLabel').innerText = c.gauge_label;
-                    document.getElementById('cBadge').innerText = c.badge_text;
-                    document.getElementById('cDots').innerHTML = c.dots;
-                    document.getElementById('cPrimaryLabel').innerText = c.primary_label;
-                    document.getElementById('cPrimaryVal').innerText = c.primary_val;
-                    document.getElementById('cSecondaryLabel').innerText = c.secondary_label;
-                    document.getElementById('cSecondaryVal').innerText = c.secondary_val;
-                    document.getElementById('cBarFill').style.width = c.fill_pct + '%';
-                    document.getElementById('cDotMarker').style.left = c.fill_pct + '%';
-                    document.getElementById('cSliderLow').innerText = c.slider_bottom_left;
-                    document.getElementById('cSliderHigh').innerText = c.slider_bottom_right;
-                    document.getElementById('consensusCard').style.display = 'flex';
-                } else {
-                    document.getElementById('consensusCard').style.display = 'none';
-                }
-
-                const q = data.quant;
-                document.getElementById('rTrend').innerText = q.trend;
-                document.getElementById('qMa5').innerText = q.ma5;
-                document.getElementById('qMa20').innerText = q.ma20;
-                document.getElementById('qBb').innerText = q.bollinger;
-                document.getElementById('qRsi').innerText = q.rsi;
-                document.getElementById('qPos52w').innerText = q.pos_52w;
-                document.getElementById('qTval20d').innerText = q.tval_20d;
-
-                document.getElementById('sEntry1').innerText = q.entry1;
-                document.getElementById('sEntry2').innerText = q.entry2;
-                document.getElementById('sTarget1').innerText = q.target1;
-                document.getElementById('sTarget2').innerText = q.target2;
-                document.getElementById('sStop').innerText = q.stop_p;
-
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('resultCardWrap').style.display = 'grid';
-                document.getElementById('bottomSearchBar').style.display = 'flex';
-
-                setTimeout(() => {
-                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
-                }, 50);
-
-                window.scrollTo({top: 0, behavior: 'smooth'});
-            } catch (e) {
-                alert('서버 통신 오류가 발생했습니다.');
-                resetToHome();
-            }
-        }
-
-        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
-            const container = document.getElementById('tvChart');
-            container.innerHTML = '';
-
-            chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 700,
-                height: 260,
-                layout: { background: { color: '#202123' }, textColor: '#8e8ea0' },
-                grid: { vertLines: { color: 'rgba(0,0,0,0)' }, horzLines: { color: 'rgba(0,0,0,0)' } },
-                crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
-                timeScale: { borderColor: '#3e3f4b', timeVisible: true },
-                rightPriceScale: { borderColor: '#3e3f4b' }
-            });
-
-            const candleSeries = chart.addCandlestickSeries({
-                upColor: '#ef4444', downColor: '#38bdf8',
-                borderDownColor: '#38bdf8', borderUpColor: '#ef4444',
-                wickDownColor: '#38bdf8', wickUpColor: '#ef4444'
-            });
-            candleSeries.setData(candles);
-
-            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1 });
-            lineMa20.setData(ma20);
-
-            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5 });
-            lineMa60.setData(ma60);
-
-            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2 });
-            lineBbUp.setData(bbUp);
-
-            const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2 });
-            lineBbDn.setData(bbDn);
-
-            chart.timeScale().fitContent();
-        }
-    </script>
 </body>
 </html>
-"""
-
-# ----------------------------------------------------
-# 5. 서버 실행
-# ----------------------------------------------------
-class WebHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
-
-        if parsed.path == "/api/analyze":
-            q = params.get('q', [''])[0].strip()
-            data = run_full_pipeline(q) if q else None
-            if not data:
-                self.send_response(404)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": "종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
-                return
-
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.end_headers()
-            
-            res_obj = {
-                "name": data["formal_name"],
-                "symbol": data["symbol"],
-                "market": data["market"],
-                "price": data["price_str"],
-                "time": data["now_str"],
-                "quant": data["quant"],
-                "consensus": data["consensus"],
-                "stock_news": data["stock_news"],
-                "macro_indices": data["macro_indices"],
-                "global_news": data["global_news"],
-                "candles": data["candles"],
-                "ma20_line": data["ma20_line"],
-                "ma60_line": data["ma60_line"],
-                "bb_up_line": data["bb_up_line"],
-                "bb_dn_line": data["bb_dn_line"]
-            }
-            self.wfile.write(json.dumps(res_obj, ensure_ascii=False).encode('utf-8'))
-            return
-
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.end_headers()
-        self.wfile.write(HTML_PAGE.encode('utf-8'))
-
-def run_web_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), WebHandler)
-    server.serve_forever()
-
-if __name__ == "__main__":
-    run_web_server()

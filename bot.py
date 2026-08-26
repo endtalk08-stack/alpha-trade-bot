@@ -414,7 +414,7 @@ def run_full_pipeline(query):
         f_news = executor.submit(fetch_rss_news, formal_name, 4)
         f_consensus = executor.submit(fetch_market_consensus, symbol, market_name, raw_price)
         f_macro = executor.submit(fetch_macro_indices)
-        f_global_news = executor.submit(fetch_rss_news, "세계 증시 뉴욕증시", 3)
+        f_global_news = executor.submit(fetch_rss_news, "세계 증시 뉴욕증시", 4)
 
         stock_news = f_news.result()
         consensus = f_consensus.result()
@@ -467,7 +467,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 4. 프론트엔드 UI 템플릿 (중앙 피드 + 우측 위젯 완벽 결합)
+# 4. 프론트엔드 UI (좌우 동일 행 1:1 높이 일치 대시보드)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -503,7 +503,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .drawer-item:hover { background: #282a2c; color: #fff; }
         .drawer-badge { font-size: 0.68rem; background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 2px 6px; border-radius: 4px; }
 
-        /* 메인 홈 화면 */
+        /* 홈 화면 */
         #main-view { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
         .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
         .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
@@ -518,47 +518,57 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; }
         .tag-btn:hover { background: #37393b; color: #fff; }
 
-        /* 2단 대시보드 레이아웃 (중앙 피드 + 우측 위젯) */
+        /* 대시보드 2단 분할 레이아웃 */
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 72px 16px 80px; }
-        .dashboard-container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1fr 390px; gap: 20px; align-items: start; }
+        .dashboard-container { max-width: 1220px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: stretch; }
+        .col-wrap { display: flex; flex-direction: column; gap: 16px; }
+
+        /* 카드 공통 스타일 */
+        .card { background: #282a2c; border-radius: 16px; padding: 20px; border: 1px solid #33363a; box-shadow: 0 4px 20px rgba(0,0,0,0.25); display: flex; flex-direction: column; justify-content: space-between; }
         
-        .card { background: #282a2c; border-radius: 16px; padding: 20px; border: 1px solid #33363a; box-shadow: 0 4px 20px rgba(0,0,0,0.25); margin-bottom: 16px; }
-        
+        /* 1행 카드 높이 일치 */
+        .row-1-card { min-height: 380px; }
+        /* 2행 카드 높이 일치 (종목뉴스 / 해외뉴스) */
+        .row-2-card { min-height: 340px; }
+        /* 3행 카드 높이 일치 (컨센서스 / 3줄속보) */
+        .row-3-card { min-height: 230px; }
+        /* 4행 카드 높이 일치 (기술지표 / 경제일정) */
+        .row-4-card { min-height: 230px; }
+
         .price-title { font-size: 1.35rem; font-weight: 700; color: #f2f2f2; }
         .price-title span { color: #8e918f; font-size: 0.9rem; font-weight: 400; }
-        .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 6px 0; }
+        .price-val { font-size: 2.2rem; font-weight: 800; color: #ffffff; margin: 4px 0; }
         .price-meta { color: #8e918f; font-size: 0.78rem; }
-        .chart-box-wrap { width: 100%; height: 280px; margin-top: 14px; position: relative; background: #282a2c; border-radius: 8px; overflow: hidden; }
+        .chart-box-wrap { width: 100%; height: 260px; margin-top: 10px; position: relative; background: #282a2c; border-radius: 8px; overflow: hidden; }
 
-        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
-        .section-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+        .section-title { font-size: 1.02rem; font-weight: 700; color: #f2f2f2; }
         .badge-tag { font-size: 0.72rem; color: #8e918f; background: #1e1f20; padding: 3px 8px; border-radius: 12px; border: 1px solid #37393b; }
 
         .news-item { padding: 9px 0; border-bottom: 1px solid #2e3034; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
-        .news-title { color: #e3e3e3; font-size: 0.86rem; font-weight: 600; line-height: 1.4; }
-        .news-meta { color: #8e918f; font-size: 0.72rem; margin-top: 3px; }
+        .news-title { color: #e3e3e3; font-size: 0.84rem; font-weight: 600; line-height: 1.35; }
+        .news-meta { color: #8e918f; font-size: 0.7rem; margin-top: 2px; }
 
-        .gauge-row { display: flex; align-items: center; gap: 14px; padding-bottom: 14px; border-bottom: 1px solid #33363a; }
-        .circle-gauge { width: 56px; height: 56px; border-radius: 50%; border: 4px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #1e1f20; flex-shrink: 0; }
-        .slider-bar-wrap { width: 100%; height: 6px; background: #1e1f20; border-radius: 4px; position: relative; margin: 16px 0 6px; }
+        .gauge-row { display: flex; align-items: center; gap: 14px; padding-bottom: 12px; border-bottom: 1px solid #33363a; }
+        .circle-gauge { width: 52px; height: 52px; border-radius: 50%; border: 4px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #1e1f20; flex-shrink: 0; }
+        .slider-bar-wrap { width: 100%; height: 6px; background: #1e1f20; border-radius: 4px; position: relative; margin: 12px 0 6px; }
         .slider-bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #10b981); border-radius: 4px; }
         .slider-dot { position: absolute; top: -4px; width: 14px; height: 14px; border-radius: 50%; background: #10b981; border: 2px solid #282a2c; transform: translateX(-50%); }
 
         .quant-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-        .quant-box { background: #1e1f20; padding: 10px 12px; border-radius: 8px; border: 1px solid #2d3035; }
-        .q-name { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; }
-        .q-val { color: #fff; font-size: 0.9rem; font-weight: 700; }
+        .quant-box { background: #1e1f20; padding: 8px 10px; border-radius: 8px; border: 1px solid #2d3035; }
+        .q-name { color: #8e918f; font-size: 0.72rem; margin-bottom: 2px; }
+        .q-val { color: #fff; font-size: 0.88rem; font-weight: 700; }
 
-        .accordion-btn { width: 100%; height: 52px; background: #282a2c; border: 1px solid #33363a; border-radius: 32px; padding: 0 20px; color: #fff; font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; margin-bottom: 16px; }
+        /* 5행 아코디언 토글 높이 일치 */
+        .accordion-btn { width: 100%; height: 52px; background: #282a2c; border: 1px solid #33363a; border-radius: 32px; padding: 0 20px; color: #fff; font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
         .accordion-arrow { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 20px; }
-        .accordion-body { background: #242628; border-radius: 16px; padding: 16px; margin-top: -6px; margin-bottom: 16px; border: 1px solid #33363a; }
-        .signal-row { display: flex; justify-content: space-between; font-size: 0.85rem; padding: 6px 0; border-bottom: 1px solid #2e3034; }
+        .accordion-body { background: #242628; border-radius: 16px; padding: 16px; margin-top: 10px; border: 1px solid #33363a; }
+        .signal-row { display: flex; justify-content: space-between; font-size: 0.84rem; padding: 6px 0; border-bottom: 1px solid #2e3034; }
         .signal-row:last-child { border-bottom: none; }
 
-        /* 우측 위젯 스타일 */
-        .side-widget-col { display: flex; flex-direction: column; gap: 16px; }
-        .macro-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #2e3034; }
+        .macro-item { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid #2e3034; }
         .macro-item:last-child { border-bottom: none; }
         .macro-sym { font-size: 0.85rem; font-weight: 700; color: #fff; }
         .val-up { color: #ef4444; font-weight: 700; }
@@ -580,6 +590,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         @media (max-width: 960px) {
             .dashboard-container { grid-template-columns: 1fr; }
+            .row-1-card, .row-2-card, .row-3-card, .row-4-card { min-height: auto; }
         }
 
         .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.95rem; }
@@ -597,7 +608,6 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="pro-top-tag">PRO ACCESS</div>
     </header>
 
-    <!-- 좌측 서랍 -->
     <div class="drawer-overlay" id="drawerOverlay" onclick="toggleDrawer()"></div>
     <div class="drawer" id="sideDrawer">
         <button class="new-search-main-btn" onclick="resetToHome(); toggleDrawer();">
@@ -614,7 +624,6 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- 메인 홈 화면 -->
     <div id="main-view">
         <div class="hero-title">gaemiGTP</div>
         <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
@@ -635,15 +644,14 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- 2단 대시보드 결과 화면 (좌: 중앙 피드 / 우: 사이드 위젯) -->
     <div id="result-scroll-view">
         <div class="loading" id="loading">⚡ 실시간 퀀트 데이터 및 매크로 지표를 연산 중입니다...</div>
         <div class="dashboard-container" id="resultCardWrap" style="display:none;">
             
-            <!-- [좌측 메인 컬럼] -->
-            <div class="main-feed-col">
-                <!-- 1. 시세 & 캔들 차트 -->
-                <div class="card">
+            <!-- [좌측 컬럼] -->
+            <div class="col-wrap">
+                <!-- 1행 좌: 시세 & 캔들 차트 (우측 매크로와 높이 일치) -->
+                <div class="card row-1-card">
                     <div style="display:flex; justify-content:space-between; align-items:flex-end;">
                         <div>
                             <div class="price-title" id="rTitle"></div>
@@ -654,8 +662,8 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="chart-box-wrap" id="tvChart"></div>
                 </div>
 
-                <!-- 2. 종목 고유 뉴스 -->
-                <div class="card">
+                <!-- 2행 좌: 종목 고유 뉴스 (우측 해외 뉴스와 4건 1:1 높이 일치) -->
+                <div class="card row-2-card">
                     <div class="section-header">
                         <span class="section-title">📰 gaemiGTP 종목 뉴스</span>
                         <span class="badge-tag">실시간</span>
@@ -663,8 +671,8 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div id="stockNewsList"></div>
                 </div>
 
-                <!-- 3. 컨센서스 & 수급 -->
-                <div class="card" id="consensusCard">
+                <!-- 3행 좌: 컨센서스 & 수급 (우측 3줄 속보와 높이 일치) -->
+                <div class="card row-3-card" id="consensusCard">
                     <div class="section-header">
                         <span class="section-title" id="cTitle"></span>
                         <span class="badge-tag" id="cSubTag"></span>
@@ -682,14 +690,14 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div style="font-size:0.72rem; color:#8e918f;" id="cDots"></div>
                         </div>
                     </div>
-                    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:8px;">
                         <div>
                             <div style="font-size:0.7rem; color:#8e918f;" id="cPrimaryLabel"></div>
-                            <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="cPrimaryVal"></div>
+                            <div style="font-size:1.2rem; font-weight:800; color:#10b981;" id="cPrimaryVal"></div>
                         </div>
                         <div style="text-align:right;">
                             <div style="font-size:0.7rem; color:#8e918f;" id="cSecondaryLabel"></div>
-                            <div style="font-size:1.1rem; font-weight:700; color:#ffffff;" id="cSecondaryVal"></div>
+                            <div style="font-size:1.05rem; font-weight:700; color:#ffffff;" id="cSecondaryVal"></div>
                         </div>
                     </div>
                     <div class="slider-bar-wrap">
@@ -702,8 +710,8 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <!-- 4. 퀀트 기술 지표 -->
-                <div class="card">
+                <!-- 4행 좌: 퀀트 기술 지표 (우측 경제 일정과 높이 일치) -->
+                <div class="card row-4-card">
                     <div class="section-header">
                         <span class="section-title">⚡ gaemiGTP 기술 지표</span>
                         <span style="font-size:0.78rem; color:#38bdf8; font-weight:700;" id="rTrend"></span>
@@ -718,7 +726,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
-                <!-- 5. 시그널 타점 -->
+                <!-- 5행 좌: 시그널 타점 (우측 PRO 마스터 전략과 높이 일치) -->
                 <div>
                     <button class="accordion-btn" onclick="toggleAccordion('signalBody', 'signalArrow')">
                         <span>⚡ gaemiGTP 시그널 타점</span>
@@ -734,10 +742,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <!-- [우측 사이드바 위젯] -->
-            <div class="side-widget-col">
-                <!-- 1. 거시 매크로 6대 지수 -->
-                <div class="card">
+            <!-- [우측 컬럼] -->
+            <div class="col-wrap">
+                <!-- 1행 우: 글로벌 매크로 6대 지수 (좌측 캔들과 높이 일치) -->
+                <div class="card row-1-card">
                     <div class="section-header">
                         <span class="section-title">🌐 글로벌 매크로 & ETF</span>
                         <span class="badge-tag">• 실시간</span>
@@ -745,26 +753,43 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div id="macroIndicesList"></div>
                 </div>
 
-                <!-- 2. 3줄 요약 글로벌 속보 -->
-                <div class="card">
+                <!-- 2행 우: gaemiGTP 해외 뉴스 4건 (좌측 종목뉴스와 1:1 높이 일치) -->
+                <div class="card row-2-card">
                     <div class="section-header">
-                        <span class="section-title">⚡ 3줄 요약 글로벌 속보</span>
-                        <span class="badge-tag">실시간 피드</span>
+                        <span class="section-title">🌍 gaemiGTP 해외 뉴스</span>
+                        <span class="badge-tag">실시간 외신</span>
                     </div>
                     <div id="globalNewsList"></div>
                 </div>
 
-                <!-- 3. 주요 경제 일정 -->
-                <div class="card">
+                <!-- 3행 우: 3줄 요약 글로벌 속보 (좌측 컨센서스와 높이 일치) -->
+                <div class="card row-3-card">
                     <div class="section-header">
-                        <span class="section-title">📅 주요 경제 일정</span>
-                        <span class="badge-tag">KST</span>
+                        <span class="section-title">⚡ 3줄 요약 글로벌 속보</span>
+                        <span class="badge-tag">실시간 피드</span>
                     </div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">08.28 (금)</span><span style="color:#fff; font-weight:600;">미국 근원 PCE 물가</span><span style="color:#8e918f;">예상 2.6%</span></div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">08.28 (금)</span><span style="color:#fff; font-weight:600;">엔비디아 (NVDA) 실적</span><span style="color:#8e918f;">장 마감후</span></div>
+                    <div class="brief-item">
+                        <div class="brief-title">연준 "인플레이션 둔화세 확인, 정책 조정 시점 도래"</div>
+                        <div class="brief-bullets">
+                            <div>• 노동 시장 둔화 방지를 위한 선제적 완화 공감대 형성</div>
+                            <div>• 국채 금리 하락 및 기술주 중심의 글로벌 매수세 유입</div>
+                        </div>
+                    </div>
                 </div>
 
-                <!-- 4. 마스터 전략 브리핑 (유료화 슬롯) -->
+                <!-- 4행 우: 주요 경제 일정 (이번 주 + 다음 주 4건으로 좌측 퀀트와 높이 일치) -->
+                <div class="card row-4-card">
+                    <div class="section-header">
+                        <span class="section-title">📅 주요 경제 일정</span>
+                        <span class="badge-tag">KST 기준</span>
+                    </div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">08.28 (금)</span><span style="color:#fff; font-weight:600;">미국 근원 PCE 물가지수</span><span style="color:#8e918f;">예상 2.6%</span></div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">08.28 (금)</span><span style="color:#fff; font-weight:600;">엔비디아 (NVDA) 실적</span><span style="color:#8e918f;">장 마감후</span></div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">09.03 (목)</span><span style="color:#fff; font-weight:600;">미국 ISM 제조업지수</span><span style="color:#8e918f;">예상 47.5</span></div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">09.05 (금)</span><span style="color:#fff; font-weight:600;">미국 비농업 고용 (NFP)</span><span style="color:#8e918f;">21:30 발표</span></div>
+                </div>
+
+                <!-- 5행 우: PRO 마스터 전략 토글 (좌측 시그널 타점과 높이 일치) -->
                 <div>
                     <button class="accordion-btn" onclick="toggleAccordion('masterBody', 'masterArrow')">
                         <span>✍️ gaemiGTP 마스터 전략 <span class="pro-badge">PRO</span></span>
@@ -842,6 +867,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rPrice').innerText = data.price;
                 document.getElementById('rMeta').innerText = `시장: ${data.market} · 시각: ${data.time}`;
 
+                // 2행 좌측: 종목 뉴스
                 const sNews = document.getElementById('stockNewsList');
                 sNews.innerHTML = '';
                 if (data.stock_news && data.stock_news.length > 0) {
@@ -857,7 +883,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     sNews.innerHTML = '<div style="color:#8e918f; font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
                 }
 
-                // 우측 매크로 지표 렌더링
+                // 1행 우측: 매크로 지표
                 const mList = document.getElementById('macroIndicesList');
                 mList.innerHTML = '';
                 if (data.macro_indices) {
@@ -872,20 +898,21 @@ HTML_PAGE = """<!DOCTYPE html>
                     });
                 }
 
-                // 우측 3줄 요약 속보 렌더링
+                // 2행 우측: 해외 뉴스 (기존 포맷 4건 복원)
                 const gList = document.getElementById('globalNewsList');
                 gList.innerHTML = '';
                 if (data.global_news && data.global_news.length > 0) {
                     data.global_news.forEach(n => {
                         gList.innerHTML += `
-                            <div class="brief-item">
-                                <div class="brief-title">${n.title}</div>
-                                <div class="brief-bullets">• ${n.media} 속보 취합 요약</div>
-                            </div>
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
                         `;
                     });
                 }
 
+                // 3행 좌측: 컨센서스
                 const c = data.consensus;
                 if (c) {
                     document.getElementById('cTitle').innerText = c.title;
@@ -902,11 +929,12 @@ HTML_PAGE = """<!DOCTYPE html>
                     document.getElementById('cDotMarker').style.left = c.fill_pct + '%';
                     document.getElementById('cSliderLow').innerText = c.slider_bottom_left;
                     document.getElementById('cSliderHigh').innerText = c.slider_bottom_right;
-                    document.getElementById('consensusCard').style.display = 'block';
+                    document.getElementById('consensusCard').style.display = 'flex';
                 } else {
                     document.getElementById('consensusCard').style.display = 'none';
                 }
 
+                // 4행 좌측: 기술지표
                 const q = data.quant;
                 document.getElementById('rTrend').innerText = q.trend;
                 document.getElementById('qMa5').innerText = q.ma5;
@@ -916,6 +944,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('qPos52w').innerText = q.pos_52w;
                 document.getElementById('qTval20d').innerText = q.tval_20d;
 
+                // 5행 좌측: 시그널 타점
                 document.getElementById('sEntry1').innerText = q.entry1;
                 document.getElementById('sEntry2').innerText = q.entry2;
                 document.getElementById('sTarget1').innerText = q.target1;
@@ -941,8 +970,8 @@ HTML_PAGE = """<!DOCTYPE html>
             container.innerHTML = '';
 
             chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 700,
-                height: 280,
+                width: container.clientWidth || 560,
+                height: 260,
                 layout: { background: { color: '#282a2c' }, textColor: '#8e918f' },
                 grid: { vertLines: { color: 'rgba(0,0,0,0)' }, horzLines: { color: 'rgba(0,0,0,0)' } },
                 crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },

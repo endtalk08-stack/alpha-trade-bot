@@ -493,7 +493,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 5. 웹 프론트엔드 UI (현재가 라벨만 축에 표시)
+# 5. 웹 프론트엔드 UI (gaemi / info / pro 복원)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -514,6 +514,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
         .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
         
+        /* 검색창 및 gaemi / info / pro 드롭다운 */
         .search-container { width: 100%; max-width: 720px; position: relative; }
         .search-box { width: 100%; height: 52px; background: #282a2c; border: none; border-radius: 32px; padding: 0 6px 0 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; }
@@ -607,21 +608,21 @@ HTML_PAGE = """<!DOCTYPE html>
                 
                 <div class="model-selector-wrap">
                     <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
-                        <span class="model-pill-name" id="centerCurrentModel">Flash</span>
+                        <span class="model-pill-name" id="centerCurrentModel">gaemi</span>
                         <span class="model-pill-arrow">▲</span>
                     </div>
                     <div class="model-dropdown-menu" id="centerDropdown">
-                        <div class="model-dropdown-item active" onclick="selectModel('Flash', 'Flash')">
-                            <div class="item-title">Flash <span class="item-check">✓</span></div>
-                            <div class="item-sub">빠른 퀀트 분석</div>
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                            <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                            <div class="item-sub">도움을 받으세요</div>
                         </div>
-                        <div class="model-dropdown-item" onclick="selectModel('Info', 'Info')">
-                            <div class="item-title">Info <span class="item-check">✓</span></div>
-                            <div class="item-sub">종목 뉴스 및 정보</div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                            <div class="item-title">info <span class="item-check">✓</span></div>
+                            <div class="item-sub">정보를 확인하세요</div>
                         </div>
-                        <div class="model-dropdown-item" onclick="selectModel('Pro', 'Pro')">
-                            <div class="item-title">Pro <span class="item-check">✓</span></div>
-                            <div class="item-sub">정밀 시그널 검증</div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                            <div class="item-title">pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">실력을 키우세요</div>
                         </div>
                     </div>
                 </div>
@@ -741,21 +742,21 @@ HTML_PAGE = """<!DOCTYPE html>
                 
                 <div class="model-selector-wrap">
                     <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
-                        <span class="model-pill-name" id="bottomCurrentModel">Flash</span>
+                        <span class="model-pill-name" id="bottomCurrentModel">gaemi</span>
                         <span class="model-pill-arrow">▲</span>
                     </div>
                     <div class="model-dropdown-menu" id="bottomDropdown">
-                        <div class="model-dropdown-item active" onclick="selectModel('Flash', 'Flash')">
-                            <div class="item-title">Flash <span class="item-check">✓</span></div>
-                            <div class="item-sub">빠른 퀀트 분석</div>
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                            <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                            <div class="item-sub">도움을 받으세요</div>
                         </div>
-                        <div class="model-dropdown-item" onclick="selectModel('Info', 'Info')">
-                            <div class="item-title">Info <span class="item-check">✓</span></div>
-                            <div class="item-sub">종목 뉴스 및 정보</div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                            <div class="item-title">info <span class="item-check">✓</span></div>
+                            <div class="item-sub">정보를 확인하세요</div>
                         </div>
-                        <div class="model-dropdown-item" onclick="selectModel('Pro', 'Pro')">
-                            <div class="item-title">Pro <span class="item-check">✓</span></div>
-                            <div class="item-sub">정밀 시그널 검증</div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                            <div class="item-title">pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">실력을 키우세요</div>
                         </div>
                     </div>
                 </div>
@@ -769,7 +770,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <script>
         let chart = null;
-        let selectedMode = 'Flash';
+        let selectedMode = 'gaemi';
 
         function toggleModelDropdown(target) {
             const centerD = document.getElementById('centerDropdown');
@@ -962,7 +963,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 rightPriceScale: { borderColor: '#37393b' }
             });
 
-            /* 현재가 가로 점선(priceLine)은 끄고, 우측 축의 현재가 뱃지(lastValue)만 켬 */
             const candleSeries = chart.addCandlestickSeries({
                 upColor: '#ef4444',
                 downColor: '#38bdf8',

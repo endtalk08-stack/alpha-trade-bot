@@ -682,7 +682,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (모바일 완벽 최적화 및 텍스트 겹침 방지)
+# 6. 웹 프론트엔드 UI (이모티콘 완전 제거 및 정돈)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -856,7 +856,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
         .section-title { font-size: 1rem; font-weight: 700; color: #f2f2f2; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         
-        /* 세계 증시 모바일 가로 스크롤 및 3열 안전 레이아웃 */
         .world-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
         .world-item { background: #131314; padding: 8px 10px; border-radius: 8px; border: 1px solid #282a2c; min-width: 0; }
         .world-name { font-size: 0.72rem; color: #8e918f; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -865,7 +864,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .val-up { color: #ef4444; }
         .val-down { color: #38bdf8; }
 
-        /* 기술 지표 그리드 */
         .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .quant-item { background: #131314; padding: 10px 12px; border-radius: 10px; border: 1px solid #282a2c; min-width: 0; }
         .quant-item .q-label { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -894,7 +892,7 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
-    <!-- Gemini 사이드바: 좌측 로고 / 우측 Google Gemini 공식 left_panel_close 아이콘 -->
+    <!-- Gemini 사이드바 -->
     <div id="sidebar-wrapper">
         <div class="side-top-action">
             <span style="font-weight:700; font-size:1.15rem; color:#fff; cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
@@ -977,7 +975,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <div id="result-scroll-view">
             <div class="result-inner">
-                <div class="loading" id="loading">⚡ 세계 증시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
+                <div class="loading" id="loading">세계 증시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
                 <div id="result-card-wrap" style="display:none;">
                     
                     <div class="card">
@@ -1008,14 +1006,13 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div id="globalNewsList"></div>
                     </div>
 
-                    <!-- 3대 시장 통합 컨센서스 카드 (상단 깨짐 유발 라벨 완전 제거) -->
                     <div class="card" id="unifiedCard" style="display:none;">
                         <div style="margin-bottom:16px;">
                             <span style="font-size:1.05rem; font-weight:700; color:#f2f2f2;" id="uTitle"></span>
                         </div>
 
                         <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid #282a2c;">
-                            <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0;">
+                            <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0; display:flex;">
                                 <span style="font-size:1.1rem; font-weight:800; color:#fff; line-height:1;" id="uGaugeVal"></span>
                                 <span style="font-size:0.55rem; color:#8e918f; margin-top:3px;" id="uGaugeLabel"></span>
                             </div>
@@ -1087,9 +1084,10 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
+                    <!-- 번개 이모티콘 완벽 제거된 시그널 아코디언 버튼 -->
                     <div style="margin-bottom:14px;">
                         <button class="signal-accordion-btn" onclick="toggleSignal()">
-                            <span class="signal-title-center">⚡ gaemiGTP 시그널 타점</span>
+                            <span class="signal-title-center">gaemiGTP 시그널 타점</span>
                             <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
                         </button>
                         <div class="signal-body" id="signalBody">

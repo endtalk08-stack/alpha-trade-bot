@@ -16,7 +16,7 @@ import pandas as pd
 import numpy as np
 
 # ----------------------------------------------------
-# 0. 고성능 네트워크 세션 (TCP 재사용으로 속도 극대화)
+# 0. 고성능 네트워크 세션 (TCP 커넥션 풀 재사용으로 속도 극대화)
 # ----------------------------------------------------
 HTTP_SESSION = requests.Session()
 HTTP_SESSION.headers.update({
@@ -600,7 +600,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     }
 
 # ----------------------------------------------------
-# 5. 전체 통합 파이프라인 (동시성 8스레드 병렬 실행 + 키 매핑 완전 보정)
+# 5. 전체 통합 파이프라인 (동시성 8스레드 병렬 실행 + 무결점 키 매핑)
 # ----------------------------------------------------
 def run_full_pipeline(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -681,7 +681,6 @@ def run_full_pipeline(query):
         if not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
 
-    # 프론트엔드 호환성을 위해 name/price 및 formal_name/price_str 동시 제공
     return {
         "name": formal_name,
         "formal_name": formal_name,
@@ -704,7 +703,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (ID 충돌 제거 및 최적화 완료)
+# 6. 웹 프론트엔드 UI (ID 충돌 제거 및 눈 피로도 해소 완료)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -729,8 +728,7 @@ HTML_PAGE = """<!DOCTYPE html>
             --border-line: #282a2c;
             --border-focus: #333538;
             --btn-hover: rgba(255, 255, 255, 0.08);
-            --signal-bg: rgba(16, 185, 129, 0.06);
-            --signal-border: rgba(16, 185, 129, 0.4);
+            --signal-border: rgba(16, 185, 129, 0.55);
             --bottom-fade: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%);
         }
 
@@ -746,8 +744,7 @@ HTML_PAGE = """<!DOCTYPE html>
             --border-line: #dadce0;
             --border-focus: #bdc1c6;
             --btn-hover: rgba(0, 0, 0, 0.05);
-            --signal-bg: rgba(16, 185, 129, 0.08);
-            --signal-border: rgba(16, 185, 129, 0.5);
+            --signal-border: rgba(16, 185, 129, 0.65);
             --bottom-fade: linear-gradient(180deg, rgba(248,249,250,0) 0%, rgba(248,249,250,1) 40%);
         }
 
@@ -927,14 +924,15 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: var(--text-muted); font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .quant-item .q-val { color: var(--text-title); font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
+        /* 눈의 피로를 완전히 제거한 프리미엄 에메랄드 테두리 시그널 카드 */
         .signal-premium-card {
-            background: var(--signal-bg) !important;
-            border: 1px solid var(--signal-border) !important;
+            background: var(--bg-card) !important;
+            border: 1.5px solid var(--signal-border) !important;
             border-radius: 16px !important;
             padding: 16px !important;
             margin-bottom: 16px !important;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05) !important;
-            transition: border-color 0.2s, background 0.2s;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04) !important;
+            transition: border-color 0.2s, background-color 0.2s;
         }
 
         .signal-card-header {
@@ -944,7 +942,7 @@ HTML_PAGE = """<!DOCTYPE html>
             position: relative;
             cursor: pointer;
             user-select: none;
-            padding: 2px 0;
+            padding: 4px 0;
         }
         .signal-card-title {
             font-size: 1.05rem !important;
@@ -975,8 +973,8 @@ HTML_PAGE = """<!DOCTYPE html>
             flex-shrink: 0;
         }
 
-        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.55; color: var(--text-sub); border-top: 1px solid rgba(16, 185, 129, 0.2); }
-        .guide-title { font-weight: 700; color: #10b981; margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
+        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.6; color: var(--text-sub); border-top: 1px solid rgba(16, 185, 129, 0.2); }
+        .guide-title { font-weight: 700; color: #10b981; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; }
 
         .news-item { padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
@@ -1192,7 +1190,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- gaemiGTP 브랜드가 완벽 유지된 핵심 시그널 박스 -->
+                    <!-- gaemiGTP 브랜드 및 눈의 피로도를 해소한 핵심 시그널 박스 (ID 중복 수정 완료) -->
                     <div class="signal-premium-card">
                         <div class="signal-card-header" onclick="toggleSignal()">
                             <span class="signal-card-title">gaemiGTP 시그널</span>

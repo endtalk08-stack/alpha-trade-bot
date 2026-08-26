@@ -1078,14 +1078,14 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         .tg-alert-btn:hover { opacity: 0.9; }
 
-        /* 집단지성 롱/숏 심리 투표 스타일 */
+        /* 개미 투표 스타일 */
         .vote-btn-wrap { display: flex; gap: 10px; margin-top: 10px; }
         .vote-btn { flex: 1; padding: 10px; border-radius: 12px; border: 1px solid var(--border-line); background: var(--bg-subcard); color: var(--text-title); font-size: 0.88rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; }
         .vote-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); }
         .vote-btn.active-long { background: rgba(16, 185, 129, 0.15); border-color: #10b981; color: #10b981; }
         .vote-btn.active-short { background: rgba(56, 189, 248, 0.15); border-color: #38bdf8; color: #38bdf8; }
 
-        /* 실시간 개미 토론방 스타일 */
+        /* 개미 토론 스타일 */
         .comment-input-box { display: flex; gap: 8px; margin-top: 12px; }
         .comment-input-box input { flex: 1; min-width: 0; background: var(--bg-subcard); border: 1px solid var(--border-line); border-radius: 20px; padding: 9px 14px; color: var(--text-title); font-size: 0.82rem; outline: none; }
         .comment-input-box button { background: #10b981; border: none; color: #ffffff; font-size: 0.8rem; font-weight: 700; padding: 0 16px; border-radius: 20px; cursor: pointer; flex-shrink: 0; }
@@ -1269,10 +1269,10 @@ HTML_PAGE = """<!DOCTYPE html>
                         <span id="tgAlertBtnText">이 종목 텔레그램 실시간 알림 받기</span>
                     </a>
 
-                    <!-- 집단지성 롱/숏 실시간 심리 투표 카드 -->
+                    <!-- 개미 투표 카드 (명칭 변경 완료) -->
                     <div class="card">
                         <div class="section-title">
-                            <span>집단지성 심리 투표</span>
+                            <span>개미 투표</span>
                             <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;">내일 주가 전망</span>
                         </div>
                         <div style="margin:8px 0;">
@@ -1292,6 +1292,21 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="vote-btn-wrap">
                             <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">🚀 상승할 것 같아요</button>
                             <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">📉 하락할 것 같아요</button>
+                        </div>
+                    </div>
+
+                    <!-- 개미 토론 카드 (명칭 변경 및 개미 투표 바로 밑으로 이동 완료) -->
+                    <div class="card">
+                        <div class="section-title">
+                            <span>개미 토론</span>
+                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;" id="commentCountTag">0개의 의견</span>
+                        </div>
+                        <div id="commentList" style="margin-top:8px;">
+                            <div style="color:var(--text-muted); font-size:0.8rem; padding:10px 0; text-align:center;">첫 번째 한마디를 남겨보세요!</div>
+                        </div>
+                        <div class="comment-input-box">
+                            <input type="text" id="commentInput" placeholder="이 종목에 대한 생각을 자유롭게 적어주세요" onkeypress="if(event.keyCode==13) postComment();" autocomplete="off" maxlength="80">
+                            <button onclick="postComment()">등록</button>
                         </div>
                     </div>
 
@@ -1473,21 +1488,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div class="guide-title">gaemiGTP 시그널 가이드</div>
                                 <div id="rGuideText" style="margin-top:4px; color:var(--text-sub); word-break:keep-all;"></div>
                             </div>
-                        </div>
-                    </div>
-
-                    <!-- 실시간 익명 개미 토론방 카드 -->
-                    <div class="card">
-                        <div class="section-title">
-                            <span>실시간 개미 토론방</span>
-                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;" id="commentCountTag">0개의 의견</span>
-                        </div>
-                        <div id="commentList" style="margin-top:8px;">
-                            <div style="color:var(--text-muted); font-size:0.8rem; padding:10px 0; text-align:center;">첫 번째 한마디를 남겨보세요!</div>
-                        </div>
-                        <div class="comment-input-box">
-                            <input type="text" id="commentInput" placeholder="이 종목에 대한 생각을 자유롭게 적어주세요" onkeypress="if(event.keyCode==13) postComment();" autocomplete="off" maxlength="80">
-                            <button onclick="postComment()">등록</button>
                         </div>
                     </div>
 

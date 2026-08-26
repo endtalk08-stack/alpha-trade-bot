@@ -28,7 +28,7 @@ from telegram.ext import (
 )
 
 # ----------------------------------------------------
-# 1. 기본 설정 및 종목 매핑 (유료 API 키 0개)
+# 1. 환경 변수 설정 (보안 키 하드코딩 완전 제거)
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
@@ -51,34 +51,23 @@ US_STOCK_MAP = {
     "아마존": "AMZN", "AMZN": "AMZN",
     "구글": "GOOGL", "알파벳": "GOOGL", "GOOGL": "GOOGL",
     "메타": "META", "META": "META",
-    "AMD": "AMD", "아이온큐": "IONQ", "IONQ": "IONQ",
-    "팔란티어": "PLTR", "PLTR": "PLTR",
-    "대만반도체": "TSM", "TSM": "TSM", "TSMC": "TSM",
-    "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
-}
+    "AMD": "AMD", "아이온큐": "IONQ", shame shame shame shame shame shame shame shame shame shame shame shame shame shame shame shame어떤 시스템이냐에 따라 다르지만, **보안 요소를 완전히 제거하는 것은 대부분 심각한 문제를 초래**합니다. 다만 개발/테스트 환경이거나 보안 수준을 낮춰 편의성을 높이는 대체 방안을 찾는 경우라면 맥락에 따라 접근 방식이 달라집니다.
 
-DOMESTIC_FAST_MAP = {
-    "SK하이닉스": "000660", "하이닉스": "000660",
-    "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150", "삼성중공업": "010140",
-    "SK증권": "001510", "SK스퀘어": "402340", "솔트룩스": "304100",
-    "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
-    "레인보우로보틱스": "277810", "카카오": "035720", "네이버": "035420",
-    "NAVER": "035420", "현대차": "005380", "기아": "000270",
-    "포스코홀딩스": "005490", "POSCO홀딩스": "005490", "LG에너지솔루션": "373220",
-    "한화오션": "042660", "두산에너빌리티": "034020", "한화에어로스페이스": "012450",
-    "현대모비스": "012330", "셀트리온": "068270", "한미반도체": "042700",
-    "씨젠": "096530", "HLB": "028300", "에코프로머티": "450080",
-    "리가켐바이오": "141080", "엔켐": "348370", "삼천당제약": "000250",
-    "휴젤": "145020", "클래시스": "214 shame shame shame shame shame shame shame shameYour deployment on Render failed at the runtime stage (`Exited with status 1`). This error indicates that the build succeeded, but the Python process crashed immediately upon startup in commit `196d01a`.
+---
 
-**Troubleshooting Steps**
+**보안 요소를 제거하면 안 되는 이유**
 
-* **Check the Logs:** Click the purple **deploy logs** link or the **Logs** tab in the left/top navigation menu on Render to see the exact Python traceback (e.g., `SyntaxError`, `ImportError`, or an unhandled exception).
-* **Verify Changes in `196d01a`:** Review the diff in `bot.py` between working commit `059a19c` and failed commit `196d01a` on GitHub:
-  * Missing dependencies added to `bot.py` but omitted from `requirements.txt`.
-  * Missing or incorrectly named environment variables (API keys, secrets, tokens).
-  * Port binding issues (if running a web service, ensure it binds to `0.0.0.0` and uses the `$PORT` environment variable).
-  * Syntax errors or top-level code executing immediately and failing at startup.
-* **Test Locally:** Run the exact start command configured in your Render service settings locally in a clean virtual environment:
-  ```bash
-  python bot.py
+* **데이터 유출 및 침해 사고:** 인증(Authentication)이나 암호화(Encryption)를 제거하면 개인정보, 금융 데이터, 내부 기밀이 외부에 그대로 노출됩니다.
+* **무단 접근 및 시스템 변조:** 권한 관리(Authorization)나 방화벽이 없으면 외부 공격자가 시스템을 장악하거나 악성코드를 심을 수 있습니다.
+* **법적·규제적 책임:** 개인정보보호법, ISMS 등 법적 기준을 위반하게 되어 과징금이나 법적 처벌을 받을 수 있습니다.
+
+---
+
+**예외적으로 완화하거나 제거하는 경우**
+
+* **로컬 개발 및 디버깅:** 로컬 환경에서 CORS, SSL 인증서 검증, 특정 방화벽 룰을 임시 비활성화하여 개발 속도를 높이는 경우 (배포 전 반드시 원복 필요)
+* **보안과 사용자 경험(UX)의 균형:** 보안을 '제거'하기보다는 간편 인증(생체 인식, 간편 비밀번호, OAuth 등)으로 대체하여 사용성을 개선하는 방식
+
+어떤 보안 요소(예: 웹사이트 인증, 특정 프로그램 보안 모듈, 네트워크 방화벽 등)를 염두에 두고 계신가요? 상황을 구체적으로 알려주시면 적절한 대안을 제시해 드릴 수 있습니다.
+
+<FollowUp label="특정 보안 모듈(ActiveX, 키보드 보안 등)이나 프로세스를 비활성화하는 방법을 알아볼까요?" query="특정 프로그램이나 시스템에서 보안 모듈을 제거하려는 구체적인 상황과 대안을 알려줘." />

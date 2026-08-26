@@ -16,7 +16,7 @@ import pandas as pd
 import numpy as np
 
 # ----------------------------------------------------
-# 1. 기본 설정 및 종목 매핑
+# 1. 기본 설정 및 종목 매핑 (100% 보존)
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
@@ -685,7 +685,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI
+# 6. 웹 프론트엔드 UI (기본 닫힘 방식 적용)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -701,7 +701,7 @@ HTML_PAGE = """<!DOCTYPE html>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
         body { background-color: #131314; color: #e3e3e3; min-height: 100vh; overflow-x: hidden; display: flex; }
         
-        /* Gemini 사이드바 */
+        /* 사이드바 기본 닫힘(숨김) */
         #sidebar-wrapper {
             width: 260px;
             background-color: #1e1f20;
@@ -714,7 +714,11 @@ HTML_PAGE = """<!DOCTYPE html>
             padding: 12px 14px 16px;
             z-index: 100;
             border-right: 1px solid #282a2c;
-            transition: transform 0.25s ease, width 0.25s ease;
+            transform: translateX(-100%);
+            transition: transform 0.25s ease;
+        }
+        #sidebar-wrapper.open {
+            transform: translateX(0);
         }
 
         .side-top-action {
@@ -787,13 +791,13 @@ HTML_PAGE = """<!DOCTYPE html>
             border-top: 1px solid #282a2c;
         }
 
+        /* 메인 컨텐츠 영역: 기본 마진 0 */
         #content-wrapper {
-            margin-left: 260px;
-            flex: 1;
+            margin-left: 0;
+            width: 100%;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            transition: margin-left 0.25s ease;
             position: relative;
         }
 
@@ -817,11 +821,11 @@ HTML_PAGE = """<!DOCTYPE html>
         .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
         .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
 
-        .search-container { width: 100%; max-width: 720px; position: relative; }
-        .search-box { width: 100%; height: 52px; background: #1e1f20; border: 1px solid #333538; border-radius: 32px; padding: 0 6px 0 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
-        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; }
+        .search-container { width: 100%; max-width: 832px; position: relative; }
+        .search-box { width: 100%; min-height: 60px; background: #1e1f20; border: 1px solid #333538; border-radius: 30px; padding: 8px 12px 8px 22px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.25); position: relative; }
+        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.98rem; }
 
-        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
+        .model-selector-wrap { position: relative; margin-right: 6px; flex-shrink: 0; }
         .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 10px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
         .model-pill-btn:hover { background: rgba(255, 255, 255, 0.08); }
         .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
@@ -836,7 +840,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .item-check { color: #38bdf8; font-weight: bold; display: none; }
         .model-dropdown-item.active .item-check { display: inline; }
 
-        .send-btn { width: 38px; height: 38px; border-radius: 50%; background: #282a2c; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+        .send-btn { width: 40px; height: 40px; border-radius: 50%; background: #282a2c; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
         .send-btn:hover { background: #37393b; }
 
         .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
@@ -844,7 +848,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-btn:hover { background: #282a2c; color: #fff; }
 
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 20px 20px 100px; }
-        .result-inner { max-width: 820px; margin: 0 auto; }
+        .result-inner { max-width: 832px; margin: 0 auto; }
         
         .card { background: #1e1f20; border-radius: 16px; padding: 20px; margin-bottom: 16px; border: 1px solid #282a2c; }
         .price-title { font-size: 1.35rem; font-weight: 700; color: #f2f2f2; }
@@ -888,18 +892,11 @@ HTML_PAGE = """<!DOCTYPE html>
         .news-title:hover { color: #38bdf8; }
         .news-meta { color: #8e918f; font-size: 0.74rem; margin-top: 4px; }
 
-        #bottom-bar { display: none; position: fixed; bottom: 0; left: 260px; right: 0; height: 76px; background: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%); align-items: center; justify-content: center; padding: 0 16px 6px; z-index: 50; transition: left 0.25s ease; }
+        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 80px; background: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%); align-items: center; justify-content: center; padding: 0 16px 8px; z-index: 50; }
         .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.92rem; }
 
-        @media (max-width: 900px) {
-            #sidebar-wrapper { transform: translateX(-100%); }
-            #sidebar-wrapper.open { transform: translateX(0); }
-            #content-wrapper { margin-left: 0 !important; }
-            #bottom-bar { left: 0 !important; }
-            .sidebar-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 90; }
-            .sidebar-overlay.open { display: block; }
-            #headerToggleBtn { display: flex !important; }
-        }
+        .sidebar-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 90; }
+        .sidebar-overlay.open { display: block; }
     </style>
 </head>
 <body>
@@ -939,10 +936,10 @@ HTML_PAGE = """<!DOCTYPE html>
     <div id="content-wrapper">
         <header>
             <div class="header-left">
-                <button class="gemini-menu-icon" id="headerToggleBtn" onclick="toggleSidebar()" style="display:none;">
+                <button class="gemini-menu-icon" id="headerToggleBtn" onclick="toggleSidebar()">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
                 </button>
-                <div class="logo-top" id="headerLogo" onclick="resetToHome()" style="display:none;">gaemiGTP</div>
+                <div class="logo-top" id="headerLogo" onclick="resetToHome()">gaemiGTP</div>
             </div>
             <button class="new-btn" onclick="resetToHome()" style="background:#1e1f20; border:1px solid #282a2c; color:#c4c7c5; padding:6px 14px; border-radius:20px; font-size:0.82rem; cursor:pointer;">+ 새 검색</button>
         </header>
@@ -1181,30 +1178,9 @@ HTML_PAGE = """<!DOCTYPE html>
         function toggleSidebar() {
             const side = document.getElementById('sidebar-wrapper');
             const overlay = document.getElementById('sideOverlay');
-            const content = document.getElementById('content-wrapper');
-            const bottom = document.getElementById('bottom-bar');
-            const headerBtn = document.getElementById('headerToggleBtn');
-            const headerLogo = document.getElementById('headerLogo');
             
-            if (window.innerWidth > 900) {
-                if (side.style.display === 'none') {
-                    side.style.display = 'flex';
-                    content.style.marginLeft = '260px';
-                    if (bottom) bottom.style.left = '260px';
-                    headerBtn.style.display = 'none';
-                    headerLogo.style.display = 'none';
-                } else {
-                    side.style.display = 'none';
-                    content.style.marginLeft = '0px';
-                    if (bottom) bottom.style.left = '0px';
-                    headerBtn.style.display = 'flex';
-                    headerLogo.style.display = 'block';
-                }
-                setTimeout(resizeChart, 260);
-            } else {
-                side.classList.toggle('open');
-                overlay.classList.toggle('open');
-            }
+            side.classList.toggle('open');
+            overlay.classList.toggle('open');
         }
 
         function toggleModelDropdown(target) {
@@ -1255,10 +1231,9 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('unifiedCard').style.display = 'none';
             document.getElementById('centerInput').value = '';
             document.getElementById('bottomInput').value = '';
-            if (window.innerWidth <= 900) {
-                document.getElementById('sidebar-wrapper').classList.remove('open');
-                document.getElementById('sideOverlay').classList.remove('open');
-            }
+            
+            document.getElementById('sidebar-wrapper').classList.remove('open');
+            document.getElementById('sideOverlay').classList.remove('open');
         }
 
         function toggleSignal() {
@@ -1286,10 +1261,8 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('loading').style.display = 'block';
             document.getElementById('result-card-wrap').style.display = 'none';
 
-            if (window.innerWidth <= 900) {
-                document.getElementById('sidebar-wrapper').classList.remove('open');
-                document.getElementById('sideOverlay').classList.remove('open');
-            }
+            document.getElementById('sidebar-wrapper').classList.remove('open');
+            document.getElementById('sideOverlay').classList.remove('open');
 
             try {
                 const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);

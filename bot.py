@@ -493,7 +493,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 5. 웹 프론트엔드 UI
+# 5. 웹 프론트엔드 UI (플래시 드롭다운 탑재)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -509,14 +509,32 @@ HTML_PAGE = """<!DOCTYPE html>
         .logo-top { font-weight: 700; font-size: 1.15rem; color: #e3e3e3; letter-spacing: -0.5px; cursor: pointer; }
         .new-btn { background: #282a2c; border: none; color: #c4c7c5; font-size: 0.82rem; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-weight: 500; transition: background 0.2s; white-space: nowrap; }
         .new-btn:hover { background: #37393b; color: #fff; }
+        
         #main-view { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
         .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
         .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
         
+        /* 검색창 및 플래시 드롭다운 셀렉터 */
         .search-container { width: 100%; max-width: 720px; position: relative; }
-        .search-box { width: 100%; height: 52px; background: #282a2c; border: none; border-radius: 32px; padding: 0 8px 0 20px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+        .search-box { width: 100%; height: 52px; background: #282a2c; border: none; border-radius: 32px; padding: 0 6px 0 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; }
         .search-box input::placeholder { color: #8e918f; }
+        
+        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 10px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; transition: all 0.2s; white-space: nowrap; }
+        .model-pill-btn:hover { background: rgba(255, 255, 255, 0.08); }
+        .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
+        .model-pill-arrow { font-size: 0.6rem; color: #8e918f; transition: transform 0.2s; }
+        
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: #282a2c; border: 1px solid #37393b; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
+        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
+        .model-dropdown-item:hover { background: rgba(255, 255, 255, 0.08); }
+        .model-dropdown-item.active { background: rgba(255, 255, 255, 0.12); }
+        .item-title { font-size: 0.88rem; font-weight: 600; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
+        .item-sub { font-size: 0.73rem; color: #8e918f; margin-top: 2px; }
+        .item-check { color: #38bdf8; font-weight: bold; display: none; font-size: 0.85rem; }
+        .model-dropdown-item.active .item-check { display: inline; }
+
         .send-btn { width: 38px; height: 38px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
         .send-btn:hover { background: #4a4d50; }
         .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
@@ -585,6 +603,28 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="search-container">
             <div class="search-box">
                 <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                
+                <div class="model-selector-wrap">
+                    <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
+                        <span class="model-pill-name" id="centerCurrentModel">Flash</span>
+                        <span class="model-pill-arrow">▲</span>
+                    </div>
+                    <div class="model-dropdown-menu" id="centerDropdown">
+                        <div class="model-dropdown-item active" onclick="selectModel('Flash', 'Flash')">
+                            <div class="item-title">Flash <span class="item-check">✓</span></div>
+                            <div class="item-sub">빠른 퀀트 분석</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('Info', 'Info')">
+                            <div class="item-title">Info <span class="item-check">✓</span></div>
+                            <div class="item-sub">종목 뉴스 및 정보</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('Pro', 'Pro')">
+                            <div class="item-title">Pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">정밀 시그널 검증</div>
+                        </div>
+                    </div>
+                </div>
+
                 <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
                     <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                 </button>
@@ -696,6 +736,28 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="search-container">
             <div class="search-box">
                 <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                
+                <div class="model-selector-wrap">
+                    <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
+                        <span class="model-pill-name" id="bottomCurrentModel">Flash</span>
+                        <span class="model-pill-arrow">▲</span>
+                    </div>
+                    <div class="model-dropdown-menu" id="bottomDropdown">
+                        <div class="model-dropdown-item active" onclick="selectModel('Flash', 'Flash')">
+                            <div class="item-title">Flash <span class="item-check">✓</span></div>
+                            <div class="item-sub">빠른 퀀트 분석</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('Info', 'Info')">
+                            <div class="item-title">Info <span class="item-check">✓</span></div>
+                            <div class="item-sub">종목 뉴스 및 정보</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('Pro', 'Pro')">
+                            <div class="item-title">Pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">정밀 시그널 검증</div>
+                        </div>
+                    </div>
+                </div>
+
                 <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
                     <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                 </button>
@@ -705,6 +767,46 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <script>
         let chart = null;
+        let selectedMode = 'Flash';
+
+        function toggleModelDropdown(target) {
+            const centerD = document.getElementById('centerDropdown');
+            const bottomD = document.getElementById('bottomDropdown');
+            const targetD = target === 'center' ? centerD : bottomD;
+            const otherD = target === 'center' ? bottomD : centerD;
+            if (otherD) otherD.style.display = 'none';
+            if (targetD) targetD.style.display = targetD.style.display === 'block' ? 'none' : 'block';
+        }
+
+        function selectModel(modeKey, modeName) {
+            selectedMode = modeKey;
+            document.getElementById('centerCurrentModel').innerText = modeName;
+            document.getElementById('bottomCurrentModel').innerText = modeName;
+
+            ['centerDropdown', 'bottomDropdown'].forEach(id => {
+                const menu = document.getElementById(id);
+                if (menu) {
+                    const items = menu.querySelectorAll('.model-dropdown-item');
+                    items.forEach(it => {
+                        if (it.innerText.includes(modeName)) {
+                            it.classList.add('active');
+                        } else {
+                            it.classList.remove('active');
+                        }
+                    });
+                    menu.style.display = 'none';
+                }
+            });
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.model-selector-wrap')) {
+                const cd = document.getElementById('centerDropdown');
+                const bd = document.getElementById('bottomDropdown');
+                if (cd) cd.style.display = 'none';
+                if (bd) bd.style.display = 'none';
+            }
+        });
 
         function resetToHome() {
             document.getElementById('main-view').style.display = 'flex';
@@ -850,6 +952,10 @@ HTML_PAGE = """<!DOCTYPE html>
                     vertLines: { color: 'rgba(0,0,0,0)' },
                     horzLines: { color: 'rgba(0,0,0,0)' }
                 },
+                crosshair: {
+                    vertLine: { visible: false },
+                    horzLine: { visible: false }
+                },
                 timeScale: { borderColor: '#37393b', timeVisible: true },
                 rightPriceScale: { borderColor: '#37393b' }
             });
@@ -861,19 +967,21 @@ HTML_PAGE = """<!DOCTYPE html>
                 borderUpColor: '#ef4444',
                 wickDownColor: '#38bdf8',
                 wickUpColor: '#ef4444',
+                priceLineVisible: false,
+                lastValueVisible: false
             });
             candleSeries.setData(candles);
 
-            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1 });
+            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
             lineMa20.setData(ma20);
 
-            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5 });
+            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
             lineMa60.setData(ma60);
 
-            const lineBbUp = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2 });
+            const lineBbUp = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
             lineBbUp.setData(bbUp);
 
-            const lineBbDn = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2 });
+            const lineBbDn = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
             lineBbDn.setData(bbDn);
 
             chart.timeScale().fitContent();

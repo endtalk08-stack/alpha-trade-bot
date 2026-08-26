@@ -690,7 +690,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (시그널 박스 에메랄드 그린 컬러 적용)
+# 6. 웹 프론트엔드 UI (모바일 강제 색상 적용 및 최적화 완료)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -877,18 +877,15 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .quant-item .q-val { color: #ffffff; font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
-        /* 32 동그라미 에메랄드 그린 컬러 적용된 시그널 카드 */
+        /* 모바일 렌더링 최우선 강제 적용된 에메랄드 그린 시그널 카드 */
         .signal-premium-card {
-            background: rgba(16, 185, 129, 0.04);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            border-radius: 16px;
-            padding: 16px;
-            margin-bottom: 16px;
+            background: rgba(16, 185, 129, 0.06) !important;
+            border: 1px solid rgba(16, 185, 129, 0.4) !important;
+            border-radius: 16px !important;
+            padding: 16px !important;
+            margin-bottom: 16px !important;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3) !important;
             transition: border-color 0.2s, background 0.2s;
-        }
-        .signal-premium-card:hover {
-            border-color: rgba(16, 185, 129, 0.5);
-            background: rgba(16, 185, 129, 0.06);
         }
 
         .signal-card-header {
@@ -901,22 +898,22 @@ HTML_PAGE = """<!DOCTYPE html>
             padding: 2px 0;
         }
         .signal-card-title {
-            font-size: 1.05rem;
-            font-weight: 700;
-            color: #10b981;
+            font-size: 1.05rem !important;
+            font-weight: 700 !important;
+            color: #10b981 !important;
             text-align: center;
             letter-spacing: -0.3px;
         }
         .signal-arrow-icon {
             width: 20px;
             height: 20px;
-            fill: #10b981;
+            fill: #10b981 !important;
             position: absolute;
             right: 4px;
             transition: transform 0.25s ease;
         }
 
-        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.55; color: #d1d5db; border-top: 1px solid #282a2c; }
+        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.55; color: #d1d5db; border-top: 1px solid rgba(16, 185, 129, 0.2); }
         .guide-title { font-weight: 700; color: #10b981; margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
 
         .news-item { padding: 10px 0; border-bottom: 1px solid #282a2c; text-decoration: none; display: block; }
@@ -1124,15 +1121,15 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 32 동그라미 에메랄드 그린 컬러로 변경된 시그널 박스 -->
-                    <div class="signal-premium-card">
+                    <!-- 모바일 렌더링 최우선 적용된 에메랄드 그린 시그널 박스 -->
+                    <div class="signal-premium-card" style="background:rgba(16,185,129,0.06) !important; border:1px solid rgba(16,185,129,0.4) !important;">
                         <div class="signal-card-header" onclick="toggleSignal()">
-                            <span class="signal-card-title">gaemiGTP 시그널</span>
-                            <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+                            <span class="signal-card-title" style="color:#10b981 !important;">gaemiGTP 시그널</span>
+                            <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24" style="fill:#10b981 !important;"><path d="M7 10l5 5 5-5z"/></svg>
                         </div>
                         
                         <div id="signalBody" style="display:none; margin-top:16px;">
-                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid #282a2c;">
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid rgba(16,185,129,0.2);">
                                 <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0;">
                                     <span style="font-size:1.0rem; font-weight:800; color:#fff; line-height:1;" id="rWinRateGauge"></span>
                                     <span style="font-size:0.55rem; color:#8e918f; margin-top:3px;">승률</span>
@@ -1167,20 +1164,20 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <div style="margin-top:16px; border-top:1px solid #282a2c; padding-top:10px;">
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
+                            <div style="margin-top:16px; border-top:1px solid rgba(16,185,129,0.2); padding-top:10px;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.82rem;">
                                     <div><span style="color:#ffffff; font-weight:600;">1차 매수 진입가</span></div>
                                     <div style="color:#ffffff; font-weight:700; white-space:nowrap;" id="rEntry1"></div>
                                 </div>
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.82rem;">
                                     <div><span style="color:#ffffff; font-weight:600;">2차 분할 진입가</span></div>
                                     <div style="color:#ffffff; font-weight:700; white-space:nowrap;" id="rEntry2"></div>
                                 </div>
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.82rem;">
                                     <div><span style="color:#10b981; font-weight:600;">1차 목표 수익가 (+4.5%)</span></div>
                                     <div style="color:#10b981; font-weight:700; white-space:nowrap;" id="rTarget1"></div>
                                 </div>
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.82rem;">
                                     <div><span style="color:#10b981; font-weight:600;">2차 목표 수익가 (+8.5%)</span></div>
                                     <div style="color:#10b981; font-weight:700; white-space:nowrap;" id="rTarget2"></div>
                                 </div>

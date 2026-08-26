@@ -685,7 +685,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (Gemini 공식: 좌측 로고 / 우측 닫기버튼 1:1 적용)
+# 6. 웹 프론트엔드 UI (Gemini 공식 닫기 아이콘 적용)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -723,7 +723,7 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: 10px 0 30px rgba(0,0,0,0.5);
         }
 
-        /* 사이드바 상단: 좌측 로고 / 우측 닫기 버튼 */
+        /* 사이드바 상단: 좌측 로고 / 우측 Gemini 공식 닫기 버튼 */
         .side-top-action {
             height: 44px;
             display: flex;
@@ -743,6 +743,7 @@ HTML_PAGE = """<!DOCTYPE html>
             display: flex;
             align-items: center;
             justify-content: center;
+            transition: background 0.15s, color 0.15s;
         }
         .gemini-menu-icon:hover { background: #282a2c; color: #fff; }
 
@@ -895,12 +896,17 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
-    <!-- Gemini 사이드바: 좌측 로고, 우측 닫기 버튼 배치 -->
+    <!-- Gemini 사이드바: 좌측 로고 / 우측 Gemini 공식 닫기 아이콘 배치 -->
     <div id="sidebar-wrapper">
         <div class="side-top-action">
             <span style="font-weight:700; font-size:1.15rem; color:#fff; cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
+            
+            <!-- Gemini 공식 패널 접기(Dock to left) 아이콘 -->
             <button class="gemini-menu-icon" onclick="toggleSidebar()" title="패널 접기">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="4" y1="4" x2="4" y2="20"></line>
+                    <polyline points="15 6 9 12 15 18"></polyline>
+                </svg>
             </button>
         </div>
 
@@ -924,6 +930,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <div id="content-wrapper">
         <header>
             <div class="header-left">
+                <!-- Gemini 공식 메인 햄버거 메뉴 아이콘 -->
                 <button class="gemini-menu-icon" id="headerToggleBtn" onclick="toggleSidebar()" title="패널 열기">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
                 </button>

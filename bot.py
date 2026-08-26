@@ -59,7 +59,7 @@ MACRO_SYMBOLS = [
 ]
 
 # ----------------------------------------------------
-# 2. 크롤링 및 데이터 수집
+# 2. 데이터 크롤링 모듈
 # ----------------------------------------------------
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -252,7 +252,7 @@ def fetch_market_consensus(symbol, market_name, raw_price):
                 "gauge_val": "18",
                 "gauge_label": "기관의견",
                 "badge_text": "적극 매수 (BUY)",
-                "dots": "<span style='color:#10b981;'>● 매수 16</span> &nbsp; <span style='color:#f97316;'>● 보유 2</span> &nbsp; <span style='color:#ef4444;'>● 매도 0</span>",
+                "dots": "<span style='color:#10b981;'>매수 16</span> &nbsp; <span style='color:#f97316;'>보유 2</span> &nbsp; <span style='color:#ef4444;'>매도 0</span>",
                 "primary_label": "평균 목표주가",
                 "primary_val": f"{int(target_p):,} 원",
                 "secondary_label": "현재가",
@@ -276,7 +276,7 @@ def fetch_market_consensus(symbol, market_name, raw_price):
                 "gauge_val": "32",
                 "gauge_label": "기관의견",
                 "badge_text": "강력 매수 (Strong Buy)",
-                "dots": "<span style='color:#10b981;'>● Buy 28</span> &nbsp; <span style='color:#f97316;'>● Hold 3</span> &nbsp; <span style='color:#ef4444;'>● Sell 1</span>",
+                "dots": "<span style='color:#10b981;'>Buy 28</span> &nbsp; <span style='color:#f97316;'>Hold 3</span> &nbsp; <span style='color:#ef4444;'>Sell 1</span>",
                 "primary_label": "평균 목표주가",
                 "primary_val": f"${target_p:,.2f}",
                 "secondary_label": "현재가",
@@ -295,16 +295,16 @@ def fetch_market_consensus(symbol, market_name, raw_price):
                 "gauge_val": "74",
                 "gauge_label": "탐욕지수",
                 "badge_text": "롱 우세 (탐욕 구간)",
-                "dots": "<span style='color:#10b981;'>● 롱 64.2%</span> &nbsp; <span style='color:#38bdf8;'>● 숏 35.8%</span> &nbsp; <span style='color:#fef08a;'>● 김프 +1.84%</span>",
+                "dots": "<span style='color:#10b981;'>롱 64.2%</span> &nbsp; <span style='color:#38bdf8;'>숏 35.8%</span> &nbsp; <span style='color:#fef08a;'>김프 +1.84%</span>",
                 "primary_label": "24H 글로벌 청산 규모",
                 "primary_val": "$184.2M",
                 "secondary_label": "실시간 김치프리미엄",
                 "secondary_val": "+1.84%",
                 "slider_left": "롱 64.2%",
-                "slider_mid": "바이낸스 선물 포지션 비율",
+                "slider_mid": "선물 포지션 비율",
                 "slider_right": "숏 35.8%",
-                "slider_bottom_left": "롱 포지션 우세 (과열 주의)",
-                "slider_bottom_right": "숏 스퀴즈 가능성 탐색",
+                "slider_bottom_left": "롱 포지션 우세",
+                "slider_bottom_right": "숏 스퀴즈 가능성",
                 "fill_pct": 64
             }
     except Exception:
@@ -371,7 +371,7 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
     }
 
 # ----------------------------------------------------
-# 3. 파이프라인 통합
+# 3. 파이프라인
 # ----------------------------------------------------
 def run_full_pipeline(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -467,62 +467,63 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 4. 프론트엔드 UI (중앙 메인 740px + 우측 슬림 360px & 행별 높이 일치)
+# 4. 프론트엔드 UI (순수 텍스트/미니멀 테마)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>gaemiGTP - 금융 퀀트 분석 플랫폼</title>
+    <title>gaemiGTP</title>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background-color: #1e1f20; color: #e3e3e3; min-height: 100vh; overflow-x: hidden; }
+        body { background-color: #202123; color: #ececf1; min-height: 100vh; overflow-x: hidden; }
         
-        header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 20px; z-index: 50; background: #1e1f20; border-bottom: 1px solid #282a2c; }
-        .header-left { display: flex; align-items: center; gap: 14px; }
-        .menu-btn { background: transparent; border: none; color: #c4c7c5; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 6px; border-radius: 8px; }
-        .menu-btn:hover { background: #282a2c; color: #fff; }
-        .logo-top { font-weight: 700; font-size: 1.15rem; color: #e3e3e3; letter-spacing: -0.5px; cursor: pointer; }
-        .pro-top-tag { font-size: 0.72rem; font-weight: 800; color: #f59e0b; background: rgba(245, 158, 11, 0.12); padding: 3px 8px; border-radius: 12px; border: 1px solid rgba(245, 158, 11, 0.3); }
+        /* 상단 헤더 */
+        header { position: fixed; top: 0; left: 0; width: 100%; height: 52px; display: flex; justify-content: space-between; align-items: center; padding: 0 16px; z-index: 50; background: #202123; border-bottom: 1px solid #2d2f34; }
+        .header-left { display: flex; align-items: center; gap: 12px; }
+        .menu-btn { background: transparent; border: none; color: #acacbe; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 6px; border-radius: 6px; }
+        .menu-btn:hover { background: #2f3037; color: #ececf1; }
+        .logo-top { font-weight: 600; font-size: 1.05rem; color: #ececf1; letter-spacing: -0.3px; cursor: pointer; }
+        .pro-top-tag { font-size: 0.72rem; font-weight: 600; color: #10a37f; background: rgba(16, 163, 127, 0.1); padding: 3px 8px; border-radius: 6px; border: 1px solid rgba(16, 163, 127, 0.25); }
 
-        /* 좌측 서랍 */
-        .drawer-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 90; opacity: 0; pointer-events: none; transition: opacity 0.25s ease; }
+        /* 좌측 사이드바 서랍 */
+        .drawer-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 90; opacity: 0; pointer-events: none; transition: opacity 0.2s ease; }
         .drawer-overlay.active { opacity: 1; pointer-events: auto; }
-        .drawer { position: fixed; top: 0; left: -290px; width: 290px; height: 100%; background: #17181a; border-right: 1px solid #282a2c; z-index: 100; transition: left 0.25s ease; display: flex; flex-direction: column; padding: 16px; }
+        .drawer { position: fixed; top: 0; left: -260px; width: 260px; height: 100%; background: #171717; border-right: 1px solid #2d2f34; z-index: 100; transition: left 0.2s ease; display: flex; flex-direction: column; padding: 12px; }
         .drawer.active { left: 0; }
-        .new-search-main-btn { width: 100%; height: 42px; background: #282a2c; border: 1px solid #37393b; color: #f2f2f2; font-size: 0.88rem; font-weight: 600; border-radius: 10px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; cursor: pointer; margin-bottom: 20px; }
-        .new-search-main-btn:hover { background: #323538; border-color: #38bdf8; color: #fff; }
+        .new-search-main-btn { width: 100%; height: 40px; background: transparent; border: 1px solid #3e3f4b; color: #ececf1; font-size: 0.85rem; font-weight: 500; border-radius: 6px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; cursor: pointer; margin-bottom: 16px; }
+        .new-search-main-btn:hover { background: #212121; }
         .drawer-scroll-area { flex: 1; overflow-y: auto; }
-        .drawer-section-title { font-size: 0.72rem; color: #8e918f; font-weight: 700; margin: 12px 6px 6px; }
-        .drawer-item { display: flex; align-items: center; justify-content: space-between; padding: 9px 10px; border-radius: 8px; color: #c4c7c5; font-size: 0.82rem; cursor: pointer; margin-bottom: 2px; }
-        .drawer-item:hover { background: #282a2c; color: #fff; }
-        .drawer-badge { font-size: 0.68rem; background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 2px 6px; border-radius: 4px; }
+        .drawer-section-title { font-size: 0.7rem; color: #8e8ea0; font-weight: 600; margin: 12px 6px 6px; }
+        .drawer-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-radius: 6px; color: #d1d5db; font-size: 0.82rem; cursor: pointer; margin-bottom: 2px; }
+        .drawer-item:hover { background: #212121; color: #ececf1; }
+        .drawer-badge { font-size: 0.68rem; color: #8e8ea0; border: 1px solid #3e3f4b; padding: 1px 5px; border-radius: 4px; }
 
         /* 메인 홈 화면 */
         #main-view { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
-        .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
-        .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
+        .hero-title { font-size: 2.4rem; font-weight: 600; margin-bottom: 6px; letter-spacing: -0.5px; color: #ececf1; }
+        .hero-sub { font-size: 0.95rem; color: #8e8ea0; margin-bottom: 24px; font-weight: 400; text-align: center; }
         
         .search-container { width: 100%; max-width: 740px; position: relative; }
-        .search-box { width: 100%; height: 52px; background: #282a2c; border: none; border-radius: 32px; padding: 0 8px 0 20px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
-        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; }
-        .send-btn { width: 38px; height: 38px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-        .send-btn:hover { background: #4a4d50; }
+        .search-box { width: 100%; height: 50px; background: #2f3037; border: 1px solid #3e3f4b; border-radius: 25px; padding: 0 8px 0 18px; display: flex; align-items: center; }
+        .search-box input { flex: 1; background: transparent; border: none; outline: none; color: #ececf1; font-size: 0.92rem; }
+        .send-btn { width: 34px; height: 34px; border-radius: 50%; background: #ececf1; border: none; color: #202123; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .send-btn:hover { opacity: 0.9; }
         
-        .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; }
-        .tag-btn:hover { background: #37393b; color: #fff; }
+        .popular-tags { display: flex; gap: 8px; margin-top: 18px; flex-wrap: wrap; justify-content: center; }
+        .tag-btn { background: #2f3037; border: 1px solid #3e3f4b; border-radius: 14px; padding: 5px 12px; font-size: 0.8rem; color: #acacbe; cursor: pointer; }
+        .tag-btn:hover { background: #3e3f4b; color: #ececf1; }
 
-        /* 결과 화면 2단 레이아웃: 메인(740px) + 우측(360px) */
-        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 72px 16px 80px; }
+        /* 결과 화면 2단 레이아웃 (메인 740px + 우측 340px) */
+        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 68px 16px 80px; }
         .dashboard-wrapper {
-            max-width: 1140px;
+            max-width: 1100px;
             margin: 0 auto;
             display: grid;
-            grid-template-columns: 740px 360px;
-            gap: 20px;
+            grid-template-columns: 740px 340px;
+            gap: 16px;
             justify-content: center;
             align-items: stretch;
         }
@@ -534,79 +535,76 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         .card { 
-            background: #282a2c; 
-            border-radius: 16px; 
-            padding: 20px; 
-            border: 1px solid #33363a; 
-            box-shadow: 0 4px 20px rgba(0,0,0,0.25); 
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
+            background: #2f3037; 
+            border-radius: 10px; 
+            padding: 16px; 
+            border: 1px solid #3e3f4b; 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: space-between; 
         }
 
-        /* 1~4행 좌우 높이 일치 클래스 */
-        .row-1-height { min-height: 400px; }
-        .row-2-height { min-height: 330px; }
-        .row-3-height { min-height: 230px; }
-        .row-4-height { min-height: 230px; }
+        .row-1-height { min-height: 380px; }
+        .row-2-height { min-height: 320px; }
+        .row-3-height { min-height: 220px; }
+        .row-4-height { min-height: 220px; }
 
-        .price-title { font-size: 1.4rem; font-weight: 700; color: #f2f2f2; }
-        .price-title span { color: #8e918f; font-size: 0.9rem; font-weight: 400; }
-        .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 4px 0; }
-        .price-meta { color: #8e918f; font-size: 0.78rem; text-align: right; }
-        .chart-box-wrap { width: 100%; height: 280px; margin-top: 10px; position: relative; background: #282a2c; border-radius: 8px; overflow: hidden; }
+        .price-title { font-size: 1.3rem; font-weight: 600; color: #ececf1; }
+        .price-title span { color: #8e8ea0; font-size: 0.85rem; font-weight: 400; }
+        .price-val { font-size: 2.1rem; font-weight: 700; color: #ececf1; margin: 2px 0; }
+        .price-meta { color: #8e8ea0; font-size: 0.75rem; text-align: right; }
+        .chart-box-wrap { width: 100%; height: 260px; margin-top: 10px; position: relative; background: #202123; border-radius: 6px; overflow: hidden; }
 
-        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-        .section-title { font-size: 1.02rem; font-weight: 700; color: #f2f2f2; }
-        .badge-tag { font-size: 0.72rem; color: #8e918f; background: #1e1f20; padding: 3px 8px; border-radius: 12px; border: 1px solid #37393b; }
+        .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .section-title { font-size: 0.95rem; font-weight: 600; color: #ececf1; }
+        .badge-tag { font-size: 0.7rem; color: #8e8ea0; background: #202123; padding: 2px 6px; border-radius: 4px; border: 1px solid #3e3f4b; }
 
-        .news-item { padding: 9px 0; border-bottom: 1px solid #2e3034; text-decoration: none; display: block; }
+        .news-item { padding: 8px 0; border-bottom: 1px solid #3e3f4b; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
-        .news-title { color: #e3e3e3; font-size: 0.85rem; font-weight: 600; line-height: 1.35; }
-        .news-meta { color: #8e918f; font-size: 0.7rem; margin-top: 2px; }
+        .news-title { color: #d1d5db; font-size: 0.82rem; font-weight: 500; line-height: 1.35; }
+        .news-meta { color: #8e8ea0; font-size: 0.68rem; margin-top: 2px; }
 
-        .gauge-row { display: flex; align-items: center; gap: 14px; padding-bottom: 10px; border-bottom: 1px solid #33363a; }
-        .circle-gauge { width: 52px; height: 52px; border-radius: 50%; border: 4px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #1e1f20; flex-shrink: 0; }
-        .slider-bar-wrap { width: 100%; height: 6px; background: #1e1f20; border-radius: 4px; position: relative; margin: 12px 0 6px; }
-        .slider-bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #10b981); border-radius: 4px; }
-        .slider-dot { position: absolute; top: -4px; width: 14px; height: 14px; border-radius: 50%; background: #10b981; border: 2px solid #282a2c; transform: translateX(-50%); }
+        .gauge-row { display: flex; align-items: center; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid #3e3f4b; }
+        .circle-gauge { width: 48px; height: 48px; border-radius: 50%; border: 3px solid #10a37f; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #202123; flex-shrink: 0; }
+        .slider-bar-wrap { width: 100%; height: 4px; background: #202123; border-radius: 2px; position: relative; margin: 10px 0 4px; }
+        .slider-bar-fill { height: 100%; background: #10a37f; border-radius: 2px; }
+        .slider-dot { position: absolute; top: -3px; width: 10px; height: 10px; border-radius: 50%; background: #10a37f; transform: translateX(-50%); }
 
-        .quant-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
-        .quant-box { background: #1e1f20; padding: 8px 10px; border-radius: 8px; border: 1px solid #2d3035; }
-        .q-name { color: #8e918f; font-size: 0.72rem; margin-bottom: 2px; }
-        .q-val { color: #fff; font-size: 0.88rem; font-weight: 700; }
+        .quant-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+        .quant-box { background: #202123; padding: 7px 9px; border-radius: 6px; border: 1px solid #3e3f4b; }
+        .q-name { color: #8e8ea0; font-size: 0.7rem; margin-bottom: 1px; }
+        .q-val { color: #ececf1; font-size: 0.85rem; font-weight: 600; }
 
-        .accordion-btn { width: 100%; height: 52px; background: #282a2c; border: 1px solid #33363a; border-radius: 32px; padding: 0 20px; color: #fff; font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
-        .accordion-arrow { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 20px; }
-        .accordion-body { background: #242628; border-radius: 16px; padding: 16px; margin-top: 10px; border: 1px solid #33363a; }
-        .signal-row { display: flex; justify-content: space-between; font-size: 0.84rem; padding: 6px 0; border-bottom: 1px solid #2e3034; }
+        .accordion-btn { width: 100%; height: 46px; background: #2f3037; border: 1px solid #3e3f4b; border-radius: 8px; padding: 0 16px; color: #ececf1; font-size: 0.9rem; font-weight: 600; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
+        .accordion-arrow { width: 16px; height: 16px; fill: #8e8ea0; transition: transform 0.2s; }
+        .accordion-body { background: #24252b; border-radius: 8px; padding: 14px; margin-top: 8px; border: 1px solid #3e3f4b; }
+        .signal-row { display: flex; justify-content: space-between; font-size: 0.82rem; padding: 5px 0; border-bottom: 1px solid #3e3f4b; }
         .signal-row:last-child { border-bottom: none; }
 
-        .macro-item { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid #2e3034; }
+        .macro-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #3e3f4b; }
         .macro-item:last-child { border-bottom: none; }
-        .macro-sym { font-size: 0.85rem; font-weight: 700; color: #fff; }
-        .val-up { color: #ef4444; font-weight: 700; }
-        .val-down { color: #38bdf8; font-weight: 700; }
+        .macro-sym { font-size: 0.82rem; font-weight: 600; color: #ececf1; }
+        .val-up { color: #ef4444; font-weight: 600; font-size: 0.75rem; }
+        .val-down { color: #38bdf8; font-weight: 600; font-size: 0.75rem; }
 
-        .brief-item { padding: 8px 0; }
-        .brief-title { font-size: 0.82rem; font-weight: 700; color: #fff; line-height: 1.35; margin-bottom: 4px; }
-        .brief-bullets { background: #1e1f20; padding: 8px 10px; border-radius: 6px; font-size: 0.72rem; color: #9ca3af; line-height: 1.45; }
+        .brief-item { padding: 6px 0; }
+        .brief-title { font-size: 0.8rem; font-weight: 600; color: #ececf1; line-height: 1.35; margin-bottom: 4px; }
+        .brief-bullets { background: #202123; padding: 6px 8px; border-radius: 4px; font-size: 0.7rem; color: #acacbe; line-height: 1.4; }
 
-        .cal-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid #2e3034; font-size: 0.76rem; }
+        .cal-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #3e3f4b; font-size: 0.74rem; }
         .cal-row:last-child { border-bottom: none; }
 
-        .pro-badge { background: linear-gradient(90deg, #f59e0b, #ef4444); color: #fff; font-size: 0.65rem; font-weight: 800; padding: 2px 6px; border-radius: 6px; margin-left: 6px; }
-        .master-content-box { position: relative; background: #1e1f20; padding: 12px; border-radius: 10px; border: 1px solid #2e3034; font-size: 0.8rem; line-height: 1.55; color: #d1d5db; overflow: hidden; }
-        .blur-text { filter: blur(3.5px); user-select: none; opacity: 0.5; margin-top: 4px; }
-        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(30, 31, 32, 0.75); border-radius: 10px; }
-        .lock-btn { background: linear-gradient(90deg, #f59e0b, #d97706); color: #121212; border: none; font-weight: 800; font-size: 0.78rem; padding: 7px 14px; border-radius: 20px; cursor: pointer; }
+        .master-content-box { position: relative; background: #202123; padding: 10px; border-radius: 6px; border: 1px solid #3e3f4b; font-size: 0.78rem; line-height: 1.45; color: #acacbe; overflow: hidden; }
+        .blur-text { filter: blur(3px); user-select: none; opacity: 0.4; margin-top: 4px; }
+        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(32, 33, 35, 0.8); }
+        .lock-btn { background: #10a37f; color: #fff; border: none; font-weight: 600; font-size: 0.75rem; padding: 6px 12px; border-radius: 4px; cursor: pointer; }
 
-        @media (max-width: 1140px) {
+        @media (max-width: 1100px) {
             .dashboard-wrapper { grid-template-columns: 1fr; max-width: 740px; }
             .row-1-height, .row-2-height, .row-3-height, .row-4-height { min-height: auto; }
         }
 
-        .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.95rem; }
+        .loading { display: none; text-align: center; color: #10a37f; margin: 30px 0; font-size: 0.9rem; }
     </style>
 </head>
 <body>
@@ -614,56 +612,56 @@ HTML_PAGE = """<!DOCTYPE html>
     <header>
         <div class="header-left">
             <button class="menu-btn" onclick="toggleDrawer()">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
             </button>
             <div class="logo-top" onclick="resetToHome()">gaemiGTP</div>
         </div>
-        <div class="pro-top-tag">PRO ACCESS</div>
+        <div class="pro-top-tag">PRO</div>
     </header>
 
     <div class="drawer-overlay" id="drawerOverlay" onclick="toggleDrawer()"></div>
     <div class="drawer" id="sideDrawer">
         <button class="new-search-main-btn" onclick="resetToHome(); toggleDrawer();">
-            <span>+ 새 종목 검색</span>
-            <span style="font-size:0.75rem; color:#8e918f;">메인</span>
+            <span>새 종목 검색</span>
+            <span style="font-size:0.75rem; color:#8e8ea0;">+</span>
         </button>
         <div class="drawer-scroll-area">
-            <div class="drawer-section-title">최근 검색한 종목</div>
+            <div class="drawer-section-title">최근 검색</div>
             <div id="recentSearchList">
-                <div class="drawer-item" onclick="doSearch('SK하이닉스'); toggleDrawer();"><span>🔥 SK하이닉스</span><span class="drawer-badge">국내</span></div>
-                <div class="drawer-item" onclick="doSearch('엔비디아'); toggleDrawer();"><span>🚀 엔비디아</span><span class="drawer-badge">미국</span></div>
-                <div class="drawer-item" onclick="doSearch('비트코인'); toggleDrawer();"><span>₿ 비트코인</span><span class="drawer-badge">코인</span></div>
+                <div class="drawer-item" onclick="doSearch('SK하이닉스'); toggleDrawer();"><span>SK하이닉스</span><span class="drawer-badge">국내</span></div>
+                <div class="drawer-item" onclick="doSearch('엔비디아'); toggleDrawer();"><span>엔비디아</span><span class="drawer-badge">미국</span></div>
+                <div class="drawer-item" onclick="doSearch('비트코인'); toggleDrawer();"><span>비트코인</span><span class="drawer-badge">코인</span></div>
             </div>
         </div>
     </div>
 
     <div id="main-view">
         <div class="hero-title">gaemiGTP</div>
-        <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
+        <div class="hero-sub">종목명 입력 시 퀀트 데이터 및 분석 지표를 조회합니다.</div>
         <div class="search-container">
             <div class="search-box">
-                <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                <input type="text" id="centerInput" placeholder="종목명 입력 (SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
                 <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
-                    <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                    <svg width="16" height="16" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                 </button>
             </div>
         </div>
         <div class="popular-tags">
-            <button class="tag-btn" onclick="doSearch('SK하이닉스')">🔥 SK하이닉스</button>
-            <button class="tag-btn" onclick="doSearch('삼성전자')">📱 삼성전자</button>
-            <button class="tag-btn" onclick="doSearch('알테오젠')">🧬 알테오젠</button>
-            <button class="tag-btn" onclick="doSearch('엔비디아')">🚀 엔비디아</button>
-            <button class="tag-btn" onclick="doSearch('비트코인')">₿ 비트코인</button>
+            <button class="tag-btn" onclick="doSearch('SK하이닉스')">SK하이닉스</button>
+            <button class="tag-btn" onclick="doSearch('삼성전자')">삼성전자</button>
+            <button class="tag-btn" onclick="doSearch('알테오젠')">알테오젠</button>
+            <button class="tag-btn" onclick="doSearch('엔비디아')">엔비디아</button>
+            <button class="tag-btn" onclick="doSearch('비트코인')">비트코인</button>
         </div>
     </div>
 
     <div id="result-scroll-view">
-        <div class="loading" id="loading">⚡ 실시간 퀀트 데이터 및 매크로 지표를 연산 중입니다...</div>
+        <div class="loading" id="loading">데이터를 분석 중입니다...</div>
         <div class="dashboard-wrapper" id="resultCardWrap" style="display:none;">
             
             <!-- [좌측 메인 컬럼: 740px] -->
             <div class="col-main">
-                <!-- 1행 좌: 시세 & 캔들 차트 (높이 400px) -->
+                <!-- 1행 좌: 시세 및 차트 -->
                 <div class="card row-1-height">
                     <div style="display:flex; justify-content:space-between; align-items:flex-end;">
                         <div>
@@ -675,16 +673,16 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="chart-box-wrap" id="tvChart"></div>
                 </div>
 
-                <!-- 2행 좌: 종목 고유 뉴스 4건 (높이 330px) -->
+                <!-- 2행 좌: 종목 뉴스 -->
                 <div class="card row-2-height">
                     <div class="section-header">
-                        <span class="section-title">📰 gaemiGTP 종목 뉴스</span>
+                        <span class="section-title">종목 뉴스</span>
                         <span class="badge-tag">실시간</span>
                     </div>
                     <div id="stockNewsList"></div>
                 </div>
 
-                <!-- 3행 좌: 컨센서스 & 수급 (높이 230px) -->
+                <!-- 3행 좌: 컨센서스 -->
                 <div class="card row-3-height" id="consensusCard">
                     <div class="section-header">
                         <span class="section-title" id="cTitle"></span>
@@ -692,134 +690,134 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                     <div class="gauge-row">
                         <div class="circle-gauge">
-                            <span style="font-size:1.05rem; font-weight:800; color:#fff; line-height:1;" id="cGaugeVal"></span>
-                            <span style="font-size:0.52rem; color:#8e918f;" id="cGaugeLabel"></span>
+                            <span style="font-size:0.95rem; font-weight:700; color:#ececf1; line-height:1;" id="cGaugeVal"></span>
+                            <span style="font-size:0.5rem; color:#8e8ea0;" id="cGaugeLabel"></span>
                         </div>
                         <div>
-                            <div style="font-size:0.8rem; margin-bottom:3px;">
-                                <span style="color:#8e918f;">전체 의견:</span>
-                                <strong style="color:#10b981; background:rgba(16,185,129,0.15); padding:2px 6px; border-radius:6px;" id="cBadge"></strong>
+                            <div style="font-size:0.78rem; margin-bottom:2px;">
+                                <span style="color:#8e8ea0;">종합 의견:</span>
+                                <strong style="color:#10a37f;" id="cBadge"></strong>
                             </div>
-                            <div style="font-size:0.72rem; color:#8e918f;" id="cDots"></div>
+                            <div style="font-size:0.7rem; color:#8e8ea0;" id="cDots"></div>
                         </div>
                     </div>
-                    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:8px;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:6px;">
                         <div>
-                            <div style="font-size:0.7rem; color:#8e918f;" id="cPrimaryLabel"></div>
-                            <div style="font-size:1.2rem; font-weight:800; color:#10b981;" id="cPrimaryVal"></div>
+                            <div style="font-size:0.68rem; color:#8e8ea0;" id="cPrimaryLabel"></div>
+                            <div style="font-size:1.1rem; font-weight:700; color:#10a37f;" id="cPrimaryVal"></div>
                         </div>
                         <div style="text-align:right;">
-                            <div style="font-size:0.7rem; color:#8e918f;" id="cSecondaryLabel"></div>
-                            <div style="font-size:1.05rem; font-weight:700; color:#ffffff;" id="cSecondaryVal"></div>
+                            <div style="font-size:0.68rem; color:#8e8ea0;" id="cSecondaryLabel"></div>
+                            <div style="font-size:0.95rem; font-weight:600; color:#ececf1;" id="cSecondaryVal"></div>
                         </div>
                     </div>
                     <div class="slider-bar-wrap">
                         <div class="slider-bar-fill" id="cBarFill"></div>
                         <div class="slider-dot" id="cDotMarker"></div>
                     </div>
-                    <div style="display:flex; justify-content:space-between; font-size:0.65rem; color:#6b7280;">
+                    <div style="display:flex; justify-content:space-between; font-size:0.65rem; color:#8e8ea0;">
                         <span id="cSliderLow"></span>
                         <span id="cSliderHigh"></span>
                     </div>
                 </div>
 
-                <!-- 4행 좌: 14대 퀀트 기술 지표 (높이 230px) -->
+                <!-- 4행 좌: 기술 지표 -->
                 <div class="card row-4-height">
                     <div class="section-header">
-                        <span class="section-title">⚡ gaemiGTP 기술 지표</span>
-                        <span style="font-size:0.78rem; color:#38bdf8; font-weight:700;" id="rTrend"></span>
+                        <span class="section-title">기술 지표</span>
+                        <span style="font-size:0.75rem; color:#38bdf8; font-weight:600;" id="rTrend"></span>
                     </div>
                     <div class="quant-grid">
                         <div class="quant-box"><div class="q-name">5일선</div><div class="q-val" id="qMa5"></div></div>
                         <div class="quant-box"><div class="q-name">20일선</div><div class="q-val" id="qMa20"></div></div>
-                        <div class="quant-box"><div class="q-name">볼린저 밴드 상/하</div><div class="q-val" id="qBb"></div></div>
+                        <div class="quant-box"><div class="q-name">볼린저 상/하</div><div class="q-val" id="qBb"></div></div>
                         <div class="quant-box"><div class="q-name">RSI (14)</div><div class="q-val" id="qRsi"></div></div>
                         <div class="quant-box"><div class="q-name">52주 위치</div><div class="q-val" id="qPos52w"></div></div>
-                        <div class="quant-box"><div class="q-name">20일 평균 거래대금</div><div class="q-val" id="qTval20d"></div></div>
+                        <div class="quant-box"><div class="q-name">20일 거래대금</div><div class="q-val" id="qTval20d"></div></div>
                     </div>
                 </div>
 
-                <!-- 5행 좌: 시그널 타점 토글 -->
+                <!-- 5행 좌: 시그널 타점 -->
                 <div>
                     <button class="accordion-btn" onclick="toggleAccordion('signalBody', 'signalArrow')">
-                        <span>⚡ gaemiGTP 시그널 타점</span>
+                        <span>시그널 타점 분석</span>
                         <svg class="accordion-arrow" id="signalArrow" style="transform:rotate(180deg);" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
                     </button>
                     <div class="accordion-body" id="signalBody">
-                        <div class="signal-row"><span>1차 매수 진입 타점</span><strong style="color:#fff;" id="sEntry1"></strong></div>
-                        <div class="signal-row"><span>2차 분할 진입 타점</span><strong style="color:#fff;" id="sEntry2"></strong></div>
-                        <div class="signal-row"><span>1차 목표 익절가 (+4.5%)</span><strong style="color:#ef4444;" id="sTarget1"></strong></div>
-                        <div class="signal-row"><span>2차 목표 익절가 (+8.5%)</span><strong style="color:#ef4444;" id="sTarget2"></strong></div>
-                        <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong style="color:#38bdf8;" id="sStop"></strong></div>
+                        <div class="signal-row"><span>1차 매수 타점</span><strong style="color:#ececf1;" id="sEntry1"></strong></div>
+                        <div class="signal-row"><span>2차 매수 타점</span><strong style="color:#ececf1;" id="sEntry2"></strong></div>
+                        <div class="signal-row"><span>1차 목표가 (+4.5%)</span><strong style="color:#ef4444;" id="sTarget1"></strong></div>
+                        <div class="signal-row"><span>2차 목표가 (+8.5%)</span><strong style="color:#ef4444;" id="sTarget2"></strong></div>
+                        <div class="signal-row"><span>손절가 (-5.5%)</span><strong style="color:#38bdf8;" id="sStop"></strong></div>
                     </div>
                 </div>
             </div>
 
-            <!-- [우측 슬림 보조 컬럼: 360px] -->
+            <!-- [우측 보조 컬럼: 340px] -->
             <div class="col-side">
-                <!-- 1행 우: 글로벌 매크로 6대 지수 (높이 400px 일치) -->
+                <!-- 1행 우: 글로벌 매크로 -->
                 <div class="card row-1-height">
                     <div class="section-header">
-                        <span class="section-title">🌐 글로벌 매크로 & ETF</span>
-                        <span class="badge-tag">• 실시간</span>
+                        <span class="section-title">글로벌 매크로 지표</span>
+                        <span class="badge-tag">실시간</span>
                     </div>
                     <div id="macroIndicesList"></div>
                 </div>
 
-                <!-- 2행 우: gaemiGTP 해외 뉴스 4건 (높이 330px 일치) -->
+                <!-- 2행 우: 해외 뉴스 -->
                 <div class="card row-2-height">
                     <div class="section-header">
-                        <span class="section-title">🌍 gaemiGTP 해외 뉴스</span>
-                        <span class="badge-tag">실시간 외신</span>
+                        <span class="section-title">해외 증시 뉴스</span>
+                        <span class="badge-tag">외신</span>
                     </div>
                     <div id="globalNewsList"></div>
                 </div>
 
-                <!-- 3행 우: 3줄 요약 글로벌 속보 (높이 230px 일치) -->
+                <!-- 3행 우: 속보 요약 -->
                 <div class="card row-3-height">
                     <div class="section-header">
-                        <span class="section-title">⚡ 3줄 요약 글로벌 속보</span>
-                        <span class="badge-tag">실시간 피드</span>
+                        <span class="section-title">글로벌 속보 요약</span>
+                        <span class="badge-tag">SaveTicker</span>
                     </div>
                     <div class="brief-item">
-                        <div class="brief-title">연준 "인플레이션 둔화세 확인, 정책 조정 시점 도래"</div>
+                        <div class="brief-title">연준 통화정책 조정 시점 도래 확인</div>
                         <div class="brief-bullets">
-                            <div>• 노동 시장 둔화 방지를 위한 선제적 완화 공감대 형성</div>
-                            <div>• 국채 금리 하락 및 기술주 중심의 글로벌 매수세 유입</div>
+                            <div>• 노동 시장 둔화 방지 선제적 대응 공감대</div>
+                            <div>• 국채 금리 하락 및 기술주 중심 자금 유입</div>
                         </div>
                     </div>
                 </div>
 
-                <!-- 4행 우: 주요 경제 일정 4건 (높이 230px 일치) -->
+                <!-- 4행 우: 경제 일정 -->
                 <div class="card row-4-height">
                     <div class="section-header">
-                        <span class="section-title">📅 주요 경제 일정</span>
-                        <span class="badge-tag">KST 기준</span>
+                        <span class="section-title">주요 경제 일정</span>
+                        <span class="badge-tag">KST</span>
                     </div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">08.28 (금)</span><span style="color:#fff; font-weight:600;">미국 근원 PCE 물가지수</span><span style="color:#8e918f;">예상 2.6%</span></div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">08.28 (금)</span><span style="color:#fff; font-weight:600;">엔비디아 (NVDA) 실적</span><span style="color:#8e918f;">장 마감후</span></div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">09.03 (목)</span><span style="color:#fff; font-weight:600;">미국 ISM 제조업지수</span><span style="color:#8e918f;">예상 47.5</span></div>
-                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">09.05 (금)</span><span style="color:#fff; font-weight:600;">미국 비농업 고용 (NFP)</span><span style="color:#8e918f;">21:30 발표</span></div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:600;">08.28 (금)</span><span style="color:#ececf1;">미국 근원 PCE 물가지수</span><span style="color:#8e8ea0;">예상 2.6%</span></div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:600;">08.28 (금)</span><span style="color:#ececf1;">엔비디아 (NVDA) 실적</span><span style="color:#8e8ea0;">장 마감후</span></div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:600;">09.03 (목)</span><span style="color:#ececf1;">미국 ISM 제조업지수</span><span style="color:#8e8ea0;">예상 47.5</span></div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:600;">09.05 (금)</span><span style="color:#ececf1;">미국 비농업 고용 (NFP)</span><span style="color:#8e8ea0;">21:30</span></div>
                 </div>
 
-                <!-- 5행 우: PRO 마스터 전략 토글 (높이 일치) -->
+                <!-- 5행 우: 마스터 전략 -->
                 <div>
                     <button class="accordion-btn" onclick="toggleAccordion('masterBody', 'masterArrow')">
-                        <span>✍️ gaemiGTP 마스터 전략 <span class="pro-badge">PRO</span></span>
+                        <span>마스터 전략 브리핑 (PRO)</span>
                         <svg class="accordion-arrow" id="masterArrow" style="transform:rotate(180deg);" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
                     </button>
                     <div class="accordion-body" id="masterBody">
                         <div class="master-content-box">
-                            <div style="color:#f59e0b; font-weight:700; font-size:0.82rem;">[수석 전략 뷰]</div>
-                            <p style="font-size:0.78rem; margin-top:3px;">
-                                외인 순매수 유입과 20일선 지지 안착이 확인되어 단기 상승 에너지가 축적된 상태입니다.
+                            <div style="color:#ececf1; font-weight:600; font-size:0.8rem;">수석 분석관 브리핑</div>
+                            <p style="font-size:0.75rem; margin-top:3px;">
+                                외인 순매수 전환 및 20일선 지지선 안착 확인.
                             </p>
                             <div class="blur-text">
-                                목표가 도달 전 구간에서의 매물대 소화 전략과 세력 수급 분할 매도 시점, 긴급 하방 리스크 방어 가이드 전문...
+                                목표가 도달 전 주요 매물대 분할 매도 및 하방 리스크 가이드 전문...
                             </div>
                             <div class="lock-overlay">
-                                <button class="lock-btn" onclick="alert('PRO 멤버십 가입 페이지로 연결됩니다!');">
-                                    PRO 멤버십으로 전문 확인 →
+                                <button class="lock-btn" onclick="alert('PRO 멤버십 안내');">
+                                    PRO 리포트 열람
                                 </button>
                             </div>
                         </div>
@@ -878,7 +876,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 document.getElementById('rTitle').innerHTML = `${data.name} <span>(${data.symbol})</span>`;
                 document.getElementById('rPrice').innerText = data.price;
-                document.getElementById('rMeta').innerText = `시장: ${data.market} · 시각: ${data.time}`;
+                document.getElementById('rMeta').innerText = `${data.market} · ${data.time}`;
 
                 const sNews = document.getElementById('stockNewsList');
                 sNews.innerHTML = '';
@@ -892,7 +890,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         `;
                     });
                 } else {
-                    sNews.innerHTML = '<div style="color:#8e918f; font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
+                    sNews.innerHTML = '<div style="color:#8e8ea0; font-size:0.8rem;">관련 뉴스가 없습니다.</div>';
                 }
 
                 const mList = document.getElementById('macroIndicesList');
@@ -903,7 +901,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         mList.innerHTML += `
                             <div class="macro-item">
                                 <div><span class="macro-sym">${m.name}</span> <span class="badge-tag">${m.badge}</span></div>
-                                <div style="text-align:right;"><span style="color:#fff; font-weight:700; font-size:0.88rem;">${m.price}</span> <span class="${cls}" style="font-size:0.75rem; margin-left:4px;">${m.rate}</span></div>
+                                <div style="text-align:right;"><span style="color:#ececf1; font-weight:600; font-size:0.82rem;">${m.price}</span> <span class="${cls}" style="margin-left:4px;">${m.rate}</span></div>
                             </div>
                         `;
                     });
@@ -967,7 +965,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 window.scrollTo({top: 0, behavior: 'smooth'});
             } catch (e) {
-                alert('서버와 통신할 수 없습니다.');
+                alert('서버 통신 오류가 발생했습니다.');
                 resetToHome();
             }
         }
@@ -978,12 +976,12 @@ HTML_PAGE = """<!DOCTYPE html>
 
             chart = LightweightCharts.createChart(container, {
                 width: container.clientWidth || 700,
-                height: 280,
-                layout: { background: { color: '#282a2c' }, textColor: '#8e918f' },
+                height: 260,
+                layout: { background: { color: '#202123' }, textColor: '#8e8ea0' },
                 grid: { vertLines: { color: 'rgba(0,0,0,0)' }, horzLines: { color: 'rgba(0,0,0,0)' } },
                 crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
-                timeScale: { borderColor: '#37393b', timeVisible: true },
-                rightPriceScale: { borderColor: '#37393b' }
+                timeScale: { borderColor: '#3e3f4b', timeVisible: true },
+                rightPriceScale: { borderColor: '#3e3f4b' }
             });
 
             const candleSeries = chart.addCandlestickSeries({

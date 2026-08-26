@@ -60,7 +60,7 @@ DOMESTIC_FAST_MAP = {
 }
 
 # ----------------------------------------------------
-# 2. 무료 데이터 수집 모듈 (네이버 / 야후 / 바이낸스 / 구글RSS)
+# 2. 데이터 수집 모듈
 # ----------------------------------------------------
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -349,7 +349,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 5. 웹 서버 및 프론트엔드 UI
+# 5. 웹 서버 및 렌더링 수정 프론트엔드
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -357,71 +357,83 @@ HTML_PAGE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>gaemiGTP - 10초 금융 퀀트 분석 엔진</title>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        html, body { height: 100%; background-color: #1e1f20; color: #e3e3e3; overflow: hidden; }
-        header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 20px; z-index: 50; }
+        html, body { height: 100%; background-color: #1e1f20; color: #e3e3e3; overflow-x: hidden; }
+        header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 20px; z-index: 50; background: #1e1f20; }
         .logo-top { font-weight: 700; font-size: 1.15rem; color: #e3e3e3; letter-spacing: -0.5px; cursor: pointer; }
         .new-btn { background: #282a2c; border: none; color: #c4c7c5; font-size: 0.82rem; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-weight: 500; transition: background 0.2s; white-space: nowrap; }
         .new-btn:hover { background: #37393b; color: #fff; }
-        #main-view { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; transition: all 0.3s; }
+        
+        #main-view { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
         .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
         .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
+        
         .search-container { width: 100%; max-width: 720px; position: relative; }
-        .search-box { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 4px 6px 4px 16px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
+        .search-box { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 4px 6px 4px 16px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; padding: 8px 4px; }
         .search-box input::placeholder { color: #8e918f; }
+        
         .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
-        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 10px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; transition: all 0.2s; white-space: nowrap; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 10px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; white-space: nowrap; }
         .model-pill-btn:hover { background: rgba(255, 255, 255, 0.08); }
         .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
         .model-pill-arrow { font-size: 0.6rem; color: #8e918f; }
-        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: #282a2c; border: none; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
-        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: #282a2c; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
+        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; display: flex; flex-direction: column; }
         .model-dropdown-item:hover { background: rgba(255, 255, 255, 0.08); }
         .model-dropdown-item.active { background: rgba(255, 255, 255, 0.12); }
         .item-title { font-size: 0.88rem; font-weight: 600; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
         .item-sub { font-size: 0.73rem; color: #8e918f; margin-top: 2px; }
-        .item-check { color: #e3e3e3; font-weight: bold; display: none; font-size: 0.85rem; }
+        .item-check { color: #e3e3e3; font-weight: bold; display: none; }
         .model-dropdown-item.active .item-check { display: inline; }
+        
         .send-btn { width: 34px; height: 34px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
         .send-btn:hover { background: #4a4d50; }
         .send-btn svg { width: 17px; height: 17px; fill: currentColor; }
+        
         .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
         .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; white-space: nowrap; }
         .tag-btn:hover { background: #37393b; color: #fff; }
-        #result-scroll-view { display: none; position: absolute; top: 56px; bottom: 84px; left: 0; width: 100%; overflow-y: auto; padding: 16px; }
+        
+        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 72px 16px 100px; }
         .result-inner { max-width: 720px; margin: 0 auto; }
+        
         .card { background: #282a2c; border-radius: 16px; padding: 20px; margin-bottom: 16px; }
         .price-title { font-size: 1.3rem; font-weight: 700; color: #f2f2f2; }
         .price-title span { color: #8e918f; font-size: 0.9rem; font-weight: 400; margin-left: 4px; }
         .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 8px 0; }
         .price-meta { color: #8e918f; font-size: 0.8rem; line-height: 1.4; }
-        .chart-wrap { width: 100%; height: 300px; margin-top: 14px; position: relative; }
-        .issue-wrap { margin-bottom: 16px; }
+        
+        .chart-box-wrap { width: 100%; height: 320px; margin-top: 16px; position: relative; background: #1e1f20; border-radius: 8px; overflow: hidden; }
+        
+        .issue-wrap { margin-bottom: 0; }
         .issue-title { font-size: 0.88rem; font-weight: 600; color: #c4c7c5; margin-bottom: 4px; }
-        .issue-highlight { font-size: 0.92rem; font-weight: 600; color: #fef08a; display: inline-block; animation: pulseFade 2.4s infinite ease-in-out; }
-        @keyframes pulseFade { 0% { opacity: 0.35; } 50% { opacity: 1; filter: brightness(1.2); } 100% { opacity: 0.35; } }
+        .issue-highlight { font-size: 0.92rem; font-weight: 600; color: #fef08a; display: inline-block; }
+        
         .section-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         .trend-badge { font-size: 0.88rem; color: #38bdf8; font-weight: 600; margin-bottom: 12px; }
+        
         .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         .quant-item { background: #1e1f20; padding: 14px; border-radius: 10px; }
         .quant-item .q-label { color: #8e918f; font-size: 0.78rem; margin-bottom: 4px; }
         .quant-item .q-val { color: #ffffff; font-size: 1.05rem; font-weight: 700; }
+        
         .signal-card { background: #202733; border: 1px solid #2b384a; }
         .signal-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #283344; font-size: 0.9rem; }
         .signal-item:last-child { border-bottom: none; }
         .signal-target { color: #ef4444; font-weight: 700; }
         .signal-stop { color: #38bdf8; font-weight: 700; }
+        
         .news-item { padding: 12px 0; border-bottom: 1px solid #37393b; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
         .news-title { color: #e3e3e3; font-size: 0.9rem; font-weight: 500; line-height: 1.4; }
         .news-title:hover { color: #fff; }
         .news-meta { color: #8e918f; font-size: 0.75rem; margin-top: 4px; }
+        
         #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 76px; background: linear-gradient(180deg, rgba(30,31,32,0) 0%, rgba(30,31,32,1) 40%); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
         .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.92rem; }
-        @media (max-width: 600px) { .hero-title { font-size: 2.6rem; } .search-box { padding: 3px 5px 3px 12px; } .search-box input { font-size: 0.88rem; } .card { padding: 16px; } }
     </style>
 </head>
 <body>
@@ -474,20 +486,24 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="result-inner">
             <div class="loading" id="loading">⚡ 실시간 팩트 데이터를 연산 중입니다...</div>
             <div id="result-card-wrap" style="display:none;">
+                
+                <!-- 1. 주가 & 캔들 차트 -->
                 <div class="card" id="cardPrice">
                     <div class="price-title" id="rTitle"></div>
                     <div class="price-val" id="rPrice"></div>
                     <div class="price-meta" id="rMeta"></div>
-                    <div class="chart-wrap" id="tvChart"></div>
+                    <div class="chart-box-wrap" id="tvChart"></div>
                 </div>
 
-                <div class="card" id="cardIssue" style="display:none;">
+                <!-- 2. 이슈 하이라이트 -->
+                <div class="card" id="cardIssue">
                     <div class="issue-wrap">
                         <div class="issue-title">gaemiGTP 이슈</div>
                         <div class="issue-highlight" id="issueText"></div>
                     </div>
                 </div>
 
+                <!-- 3. 퀀트 기술지표 -->
                 <div class="card" id="cardQuant">
                     <div class="section-title">퀀트 기술지표</div>
                     <div class="trend-badge" id="rTrend"></div>
@@ -503,6 +519,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
+                <!-- 4. 시그널 타점 -->
                 <div class="card signal-card" id="cardSignal">
                     <div class="section-title">
                         <span>⚡ gaemiGTP 시그널 타점</span>
@@ -518,10 +535,12 @@ HTML_PAGE = """<!DOCTYPE html>
                     </div>
                 </div>
 
+                <!-- 5. 최근 뉴스 -->
                 <div class="card" id="cardNews">
                     <div class="section-title">최근 뉴스</div>
                     <div id="newsList"></div>
                 </div>
+
             </div>
         </div>
     </div>
@@ -559,8 +578,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <script>
         let chart = null;
-        let candleSeries = null;
-        let lineSeries = null;
         let selectedMode = 'gaemi';
 
         function toggleModelDropdown(target) {
@@ -580,11 +597,8 @@ HTML_PAGE = """<!DOCTYPE html>
             ['centerDropdown', 'bottomDropdown'].forEach(id => {
                 const items = document.getElementById(id).querySelectorAll('.model-dropdown-item');
                 items.forEach(it => {
-                    if (it.innerText.includes(modeName)) {
-                        it.classList.add('active');
-                    } else {
-                        it.classList.remove('active');
-                    }
+                    if (it.innerText.includes(modeName)) it.classList.add('active');
+                    else it.classList.remove('active');
                 });
                 document.getElementById(id).style.display = 'none';
             });
@@ -592,23 +606,21 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function applyModelFilter() {
-            const price = document.getElementById('cardPrice');
             const quant = document.getElementById('cardQuant');
             const signal = document.getElementById('cardSignal');
             const news = document.getElementById('cardNews');
 
+            if (!quant || !signal || !news) return;
+
             if (selectedMode === 'gaemi') {
-                price.style.display = 'block';
                 quant.style.display = 'block';
                 signal.style.display = 'block';
                 news.style.display = 'block';
             } else if (selectedMode === 'info') {
-                price.style.display = 'block';
                 quant.style.display = 'none';
                 signal.style.display = 'none';
                 news.style.display = 'block';
             } else if (selectedMode === 'pro') {
-                price.style.display = 'block';
                 quant.style.display = 'block';
                 signal.style.display = 'block';
                 news.style.display = 'none';
@@ -633,8 +645,8 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function fmtNum(v, isKrw) {
-            if (isKrw) return parseInt(v).toLocaleString() + '원';
-            return parseFloat(v).toLocaleString(undefined, {minimumFractionDigits: 2}) + '달러';
+            if (isKrw) return parseInt(v).toLocaleString() + ' 원';
+            return parseFloat(v).toLocaleString(undefined, {minimumFractionDigits: 2}) + ' 달러';
         }
 
         async function doSearch(query) {
@@ -703,10 +715,14 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
-                document.getElementById('result-scroll-view').scrollTo({top: 0, behavior: 'smooth'});
-
                 applyModelFilter();
-                initTvChart(data.candles, data.ma20_line);
+                
+                // 차트 렌더링
+                setTimeout(() => {
+                    initTvChart(data.candles, data.ma20_line);
+                }, 50);
+
+                window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
                 alert('서버와 통신할 수 없습니다.');
@@ -715,19 +731,19 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function initTvChart(candles, ma20) {
-            const chartContainer = document.getElementById('tvChart');
-            chartContainer.innerHTML = '';
+            const container = document.getElementById('tvChart');
+            container.innerHTML = '';
 
-            chart = LightweightCharts.createChart(chartContainer, {
-                width: chartContainer.clientWidth,
-                height: 300,
-                layout: { background: { color: '#282a2c' }, textColor: '#8e918f' },
-                grid: { vertLines: { color: '#333538' }, horzLines: { color: '#333538' } },
-                timeScale: { borderColor: '#37393b' },
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth || 680,
+                height: 320,
+                layout: { background: { color: '#1e1f20' }, textColor: '#8e918f' },
+                grid: { vertLines: { color: '#282a2c' }, horzLines: { color: '#282a2c' } },
+                timeScale: { borderColor: '#37393b', timeVisible: true },
                 rightPriceScale: { borderColor: '#37393b' }
             });
 
-            candleSeries = chart.addCandlestickSeries({
+            const candleSeries = chart.addCandlestickSeries({
                 upColor: '#ef4444',
                 downColor: '#38bdf8',
                 borderDownColor: '#38bdf8',
@@ -737,7 +753,7 @@ HTML_PAGE = """<!DOCTYPE html>
             });
             candleSeries.setData(candles);
 
-            lineSeries = chart.addLineSeries({
+            const lineSeries = chart.addLineSeries({
                 color: '#fef08a',
                 lineWidth: 2,
             });
@@ -746,8 +762,8 @@ HTML_PAGE = """<!DOCTYPE html>
             chart.timeScale().fitContent();
 
             window.addEventListener('resize', () => {
-                if (chart && chartContainer) {
-                    chart.applyOptions({ width: chartContainer.clientWidth });
+                if (chart && container) {
+                    chart.applyOptions({ width: container.clientWidth });
                 }
             });
         }

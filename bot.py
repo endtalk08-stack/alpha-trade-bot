@@ -82,11 +82,262 @@ def find_stock_code(query):
 
     for name, code in DOMESTIC_FAST_MAP.items():
         if name.replace(" ", "").upper() == clean_q:
- shame shame shame shame shame shame shame shame이미지 상단(헤더/배경 영역)의 색상 정보입니다. 차트 배경 설정에 아래 색상 코드를 적용하시면 일치시킬 수 있습니다.
+            return code, name
 
-* **HEX 코드:** `#2B2D30`
-* **RGB 코드:** `rgb(43, 45, 48)`
+    try:
+        url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        items = res.get("result", {}).get("items", [])
+        if items:
+            for it in items:
+                name = str(it.get("name", "")).strip()
+                code = str(it.get("code", "")).strip()
+                if name.replace(" ", "").upper() == clean_q:
+                    return code, name
+            first = items[0]
+            return str(first.get("code", "")).strip(), str(first.get("name", "")).strip()
+    except Exception:
+        pass
+    return None, query.strip()
 
-**적용 팁**
-* **TradingView / 차트 라이브러리:** 차트 설정의 **Canvas(캔버스) / Background(배경색)** 항목에 `#2B2D30`을 입력해 단색(Solid)으로 설정하세요.
-* 만약 미세한 차이가 느껴질 경우 바로 인접한 톤인 `#26282B`도 함께 테스트해 보실 수 있습니다.
+def get_naver_realtime_price(code):
+    try:
+        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        datas = res.get("datas", [])
+        if datas:
+            p = str(datas[0].get("closePrice", "")).replace(",", "").strip()
+            if p and p.replace(".", "").isdigit():
+                return float(p), f"{int(float(p)):,} 원"
+    except Exception:
+        pass
+    return None, None
+
+def fetch_domestic_candles(code, anchor_price=None):
+    df_result = None
+    for suffix in [".KS", ".KQ"]:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
+            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+            result = res.get("chart", {}).get("result", [])
+            if result:
+                ts = result[0].get("timestamp", [])
+                quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+                records = [{
+                    "Date": pd.to_datetime(ts[i], unit='s'),
+                    "Open": float(quote['open'][i]),
+                    "High": float(quote['high'][i]),
+                    "Low": float(quote['low'][i]),
+                    "Close": float(quote['close'][i]),
+                    "Volume": float(quote['volume'][i] or 0.0)
+                } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+                if len(records) >= 30:
+                    df_result = pd.DataFrame(records).set_index("Date").sort_index()
+                    break
+        except Exception:
+            pass
+
+    if df_result is not None and anchor_price and anchor_price > 0:
+        last_close = float(df_result['Close'].iloc[-1])
+        if abs(last_close - anchor_price) / anchor_price > 0.3:
+            ratio = anchor_price / last_close
+            df_result['Open'] *= ratio
+            df_result['High'] *= ratio
+            df_result['Low'] *= ratio
+            df_result['Close'] *= ratio
+
+    return df_result
+
+def fetch_overseas_candles(symbol):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper()}?range=5y&interval=1d"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+        result = res.get("chart", {}).get("result", [])
+        if result:
+            ts = result[0].get("timestamp", [])
+            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+            records = [{
+                "Date": pd.to_datetime(ts[i], unit='s'),
+                "Open": float(quote['open'][i]),
+                "High": float(quote['high'][i]),
+                "Low": float(quote['low'][i]),
+                "Close": float(quote['close'][i]),
+                "Volume": float(quote['volume'][i] or 0.0)
+            } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+            if records:
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                curr_p = float(df['Close'].iloc[-1])
+                return curr_p, f"{curr_p:,.2f} 달러", df
+    except Exception:
+        pass
+    return None, None, None
+
+def fetch_crypto_candles(symbol):
+    clean_sym = symbol.upper().replace("-", "")
+    if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
+        clean_sym += "USDT"
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit=1000"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+        if isinstance(res, list) and len(res) > 5:
+            records = [{
+                "Date": pd.to_datetime(int(x[0]), unit='ms'),
+                "Open": float(x[1]), "High": float(x[2]), "Low": float(x[3]), "Close": float(x[4]), "Volume": float(x[5])
+            } for x in res]
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            curr_p = float(df['Close'].iloc[-1])
+            return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
+    except Exception:
+        pass
+    return None, None, None
+
+def fetch_rss_news(query_keyword, limit=5):
+    headlines = []
+    clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for it in root.findall('.//item')[:limit]:
+                t = it.find('title')
+                pub = it.find('pubDate')
+                link = it.find('link')
+                if t is not None and t.text:
+                    title_clean = html.unescape(t.text).strip()
+                    parts = title_clean.rsplit(' - ', 1)
+                    title_text = parts[0]
+                    media_name = parts[1] if len(parts) > 1 else "언론사"
+                    pub_text = pub.text if pub is not None else ""
+                    link_text = link.text if link is not None else "#"
+                    headlines.append({
+                        "title": title_text,
+                        "media": media_name,
+                        "pubDate": pub_text,
+                        "link": link_text
+                    })
+    except Exception:
+        pass
+    return headlines
+
+def fetch_single_world_index(item):
+    name = item["name"]
+    sym = item["sym"]
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=2d&interval=1d"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        result = res.get("chart", {}).get("result", [])
+        if result:
+            meta = result[0].get("meta", {})
+            curr_p = meta.get("regularMarketPrice", 0.0)
+            prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
+            change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+            return {
+                "name": name,
+                "price": f"{curr_p:,.2f}",
+                "rate": f"{change_rate:+.2f}%",
+                "up": change_rate >= 0
+            }
+    except Exception:
+        pass
+    return {"name": name, "price": "-", "rate": "-", "up": True}
+
+def fetch_all_world_indices_parallel():
+    with ThreadPoolExecutor(max_workers=9) as executor:
+        results = list(executor.map(fetch_single_world_index, WORLD_INDICES_CONFIG))
+    return results
+
+def get_trading_val_rank(symbol, is_krw=True):
+    if not is_krw:
+        return ""
+    try:
+        url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        stocks = res.get("stocks", [])
+        for idx, item in enumerate(stocks):
+            if str(item.get("itemCode", "")).strip() == symbol.strip():
+                return f" ({idx + 1}위)"
+    except Exception:
+        pass
+    return ""
+
+# ----------------------------------------------------
+# 3. 퀀트 기술지표 및 시그널 가이드 연산
+# ----------------------------------------------------
+def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
+    if df is None or len(df) < 10:
+        return None
+
+    round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"{round(float(v), 2):,.2f} 달러")
+    closes = df['Close']
+    volumes = df['Volume']
+    n_bars = len(df)
+
+    ma5 = round_fn(closes.tail(5).mean())
+    ma20_val = float(closes.tail(20).mean())
+    ma20 = round_fn(ma20_val)
+    ma60_val = float(closes.tail(60).mean()) if n_bars >= 60 else None
+    ma60 = round_fn(ma60_val) if ma60_val else "-"
+    ma120 = round_fn(closes.tail(120).mean()) if n_bars >= 120 else "-"
+    ma600 = round_fn(closes.tail(600).mean()) if n_bars >= 600 else "-"
+    ma1200 = round_fn(closes.tail(1200).mean()) if n_bars >= 1200 else "-"
+
+    rank_str = get_trading_val_rank(symbol, is_krw)
+    if n_bars >= 20:
+        val_20d = (closes.tail(20) * volumes.tail(20)).mean()
+        if is_krw:
+            if val_20d >= 100_000_000_000:
+                tval_20d_str = f"{val_20d / 100_000_000_000:.1f}천억원{rank_str}"
+            elif val_20d >= 100_000_000:
+                tval_20d_str = f"{val_20d / 100_000_000:.1f}억원{rank_str}"
+            else:
+                tval_20d_str = f"{int(val_20d):,}원{rank_str}"
+        else:
+            if val_20d >= 1_000_000_000:
+                tval_20d_str = f"{val_20d / 1_000_000_000:.2f}B 달러"
+            elif val_20d >= 1_000_000:
+                tval_20d_str = f"{val_20d / 1_000_000:.1f}M 달러"
+            else:
+                tval_20d_str = f"{val_20d:,.0f} 달러"
+    else:
+        tval_20d_str = "-"
+
+    bb_period = min(60, n_bars)
+    bb_mid = closes.tail(bb_period).mean()
+    bb_std = closes.tail(bb_period).std()
+    bb_upper = bb_mid + (bb_std * 2)
+    bb_lower = bb_mid - (bb_std * 2)
+    bb_str = f"{round_fn(bb_upper)} / {round_fn(bb_lower)}"
+
+    if n_bars >= 35:
+        ema12 = closes.ewm(span=12, adjust=False).mean()
+        ema26 = closes.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        macd_val = macd_line.iloc[-1]
+        sig_val = signal_line.iloc[-1]
+        macd_str = f"{macd_val:+.2f} (시그널: {sig_val:+.2f})"
+    else:
+        macd_str = "-"
+
+    df_1y = df.tail(250)
+    high_52w = float(df_1y['High'].max())
+    low_52w = float(df_1y['Low'].min())
+    if high_52w > low_52w:
+        pos_52w = ((raw_price - low_52w) / (high_52w - low_52w)) * 100
+        pos_52w_str = f"{pos_52w:.1f}% (고:{round_fn(high_52w)}/저:{round_fn(low_52w)})"
+    else:
+        pos_52w_str = "-"
+
+    disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
+    disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
+    disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"코드 파일에 텍스트가 잘못 붙여넣어져 발생한 오류입니다. 
+
+`bot.py` 파일의 **85번째 줄**에 AI 답변이나 클립보드 텍스트(`shame shame... 이미지 상단(헤더/배경 영역)...`)가 일반 코드로 삽입되어 파이썬 문법/들여쓰기 에러(`IndentationError`)가 발생했습니다.
+
+**해결 방법**
+
+* **1단계:** 프로젝트의 `bot.py` 파일을 엽니다.
+* **2단계:** **85번째 줄**(또는 그 주변)로 이동합니다.
+* **3단계:** 실수로 붙여넣어진 텍스트 줄을 완전히 삭제합니다.
+* **4단계:** 파일을 저장한 뒤 Git으로 다시 커밋(`commit`)하고 푸시(`push`)하여 Render에 재배포합니다.

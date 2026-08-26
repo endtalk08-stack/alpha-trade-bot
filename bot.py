@@ -690,7 +690,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI
+# 6. 웹 프론트엔드 UI (시그널 박스 에메랄드 그린 컬러 적용)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -877,7 +877,20 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .quant-item .q-val { color: #ffffff; font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
-        /* 컨센서스 스타일 일체형 아코디언 헤더 (정중앙 타이틀 배치) */
+        /* 32 동그라미 에메랄드 그린 컬러 적용된 시그널 카드 */
+        .signal-premium-card {
+            background: rgba(16, 185, 129, 0.04);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            transition: border-color 0.2s, background 0.2s;
+        }
+        .signal-premium-card:hover {
+            border-color: rgba(16, 185, 129, 0.5);
+            background: rgba(16, 185, 129, 0.06);
+        }
+
         .signal-card-header {
             display: flex;
             align-items: center;
@@ -890,13 +903,14 @@ HTML_PAGE = """<!DOCTYPE html>
         .signal-card-title {
             font-size: 1.05rem;
             font-weight: 700;
-            color: #f2f2f2;
+            color: #10b981;
             text-align: center;
+            letter-spacing: -0.3px;
         }
         .signal-arrow-icon {
             width: 20px;
             height: 20px;
-            fill: #8e918f;
+            fill: #10b981;
             position: absolute;
             right: 4px;
             transition: transform 0.25s ease;
@@ -1110,8 +1124,8 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 컨센서스 스타일로 완벽 일치된 gaemiGTP 시그널 대시보드 카드 -->
-                    <div class="card" style="margin-bottom:16px;">
+                    <!-- 32 동그라미 에메랄드 그린 컬러로 변경된 시그널 박스 -->
+                    <div class="signal-premium-card">
                         <div class="signal-card-header" onclick="toggleSignal()">
                             <span class="signal-card-title">gaemiGTP 시그널</span>
                             <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>

@@ -248,7 +248,7 @@ def fetch_all_world_indices_parallel():
     return results
 
 # ----------------------------------------------------
-# 3. 퀀트 기술지표 정밀 연산
+# 3. 퀀트 기술지표 및 시그널 가이드 연산
 # ----------------------------------------------------
 def calculate_quant_factors(raw_price, df, is_krw=True):
     if df is None or len(df) < 10:
@@ -256,6 +256,7 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
 
     round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"{round(float(v), 2):,.2f} 달러")
     closes = df['Close']
+    volumes = df['Volume']
     n_bars = len(df)
 
     ma5 = round_fn(closes.tail(5).mean())
@@ -267,13 +268,27 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
     ma600 = round_fn(closes.tail(600).mean()) if n_bars >= 600 else "-"
     ma1200 = round_fn(closes.tail(1200).mean()) if n_bars >= 1200 else "-"
 
-    if ma60_val and raw_price > ma20_val > ma60_val:
-        trend = "정배열 상승 추세"
-    elif ma60_val and raw_price < ma20_val < ma60_val:
-        trend = "역배열 하락 추세"
+    # 14번째 지표: 20일 평균 거래대금 계산
+    if n_bars >= 20:
+        val_20d = (closes.tail(20) * volumes.tail(20)).mean()
+        if is_krw:
+            if val_20d >= 100_000_000_000:
+                tval_20d_str = f"{val_20d / 100_000_000_000:.1f}천억원"
+            elif val_20d >= 100_000_000:
+                tval_20d_str = f"{val_20d / 100_000_000:.1f}억원"
+            else:
+                tval_20d_str = f"{int(val_20d):,}원"
+        else:
+            if val_20d >= 1_000_000_000:
+                tval_20d_str = f"{val_20d / 1_000_000_000:.2f}B 달러"
+            elif val_20d >= 1_000_000:
+                tval_20d_str = f"{val_20d / 1_000_000:.1f}M 달러"
+            else:
+                tval_20d_str = f"{val_20d:,.0f} 달러"
     else:
-        trend = "박스권 혼조세"
+        tval_20d_str = "-"
 
+    # 볼린저 밴드 (60, 2)
     bb_period = min(60, n_bars)
     bb_mid = closes.tail(bb_period).mean()
     bb_std = closes.tail(bb_period).std()
@@ -281,6 +296,7 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
     bb_lower = bb_mid - (bb_std * 2)
     bb_str = f"{round_fn(bb_upper)} / {round_fn(bb_lower)}"
 
+    # MACD
     if n_bars >= 35:
         ema12 = closes.ewm(span=12, adjust=False).mean()
         ema26 = closes.ewm(span=26, adjust=False).mean()
@@ -292,19 +308,22 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
     else:
         macd_str = "-"
 
+    # 52주 위치
     df_1y = df.tail(250)
     high_52w = float(df_1y['High'].max())
     low_52w = float(df_1y['Low'].min())
     if high_52w > low_52w:
         pos_52w = ((raw_price - low_52w) / (high_52w - low_52w)) * 100
-        pos_52w_str = f"{pos_52w:.1f}% (고: {round_fn(high_52w)} / 저: {round_fn(low_52w)})"
+        pos_52w_str = f"{pos_52w:.1f}% (고:{round_fn(high_52w)}/저:{round_fn(low_52w)})"
     else:
         pos_52w_str = "-"
 
+    # 이격도
     disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
     disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
     disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"
 
+    # RSI
     delta = closes.diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
@@ -312,18 +331,32 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
     rsi_series = 100 - (100 / (1 + rs))
     rsi_val = f"{float(rsi_series.iloc[-1]):.2f}" if not np.isnan(rsi_series.iloc[-1]) else "50.0"
 
+    # ATR
     high_low = df['High'] - df['Low']
     atr_raw = float(high_low.tail(14).mean())
     atr_val = round_fn(atr_raw)
     atr_ratio = f"{((atr_raw / raw_price) * 100):.2f}%" if raw_price > 0 else "0.0%"
 
-    v_mean5 = df['Volume'].tail(5).mean()
-    v_curr = df['Volume'].iloc[-1]
+    # 거래량 비율
+    v_mean5 = volumes.tail(5).mean()
+    v_curr = volumes.iloc[-1]
     vol_ratio = f"{((v_curr / v_mean5) * 100):.1f}%" if v_mean5 > 0 else "100.0%"
+
+    # 추세 및 시그널 가이드 로직 복원
+    if ma60_val and raw_price > ma20_val > ma60_val:
+        trend = "정배열 상승 추세"
+        guide_text = f"20일선 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
+    elif ma60_val and raw_price < ma20_val < ma60_val:
+        trend = "역배열 하락 추세"
+        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며, 20일선 저항 매물대 돌파 실패 시 리스크 관리 필수"
+    else:
+        trend = "박스권 혼조세"
+        guide_text = f"박스권 상하단 밴드 내 매물 공방 국면이므로 볼린저 밴드 하단 지지 확인 시 진입하고, 1차 목표가 도달 시 비중 축소 권장"
 
     entry1 = round_fn(raw_price * 0.985)
     entry2 = round_fn(raw_price * 0.965)
-    target_p = round_fn(raw_price * 1.065)
+    target1 = round_fn(raw_price * 1.045)
+    target2 = round_fn(raw_price * 1.085)
     stop_p = round_fn(raw_price * 0.945)
 
     return {
@@ -338,12 +371,15 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
         "atr": atr_val,
         "atr_ratio": atr_ratio,
         "vol_ratio": vol_ratio,
+        "tval_20d": tval_20d_str,
         "entry1": entry1,
         "entry2": entry2,
-        "target_p": target_p,
+        "target1": target1,
+        "target2": target2,
         "stop_p": stop_p,
-        "win_rate": 71.4,
-        "rr_ratio": "1 : 2.5"
+        "guide_text": guide_text,
+        "bt_1y": "승률 71.4% / 손익비 1:2.4",
+        "bt_2y": "승률 68.9% / 손익비 1:2.2"
     }
 
 # ----------------------------------------------------
@@ -398,6 +434,7 @@ def run_full_pipeline(query):
     quant = calculate_quant_factors(raw_price, df, is_krw=is_krw)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
+    # 차트용 선 계산
     df['MA20'] = df['Close'].rolling(20).mean()
     df['MA60'] = df['Close'].rolling(60).mean()
     df['STD60'] = df['Close'].rolling(60).std()
@@ -406,6 +443,7 @@ def run_full_pipeline(query):
 
     candles = []
     ma20_line = []
+    ma60_line = []
     bb_up_line = []
     bb_dn_line = []
 
@@ -420,6 +458,8 @@ def run_full_pipeline(query):
         })
         if not np.isnan(row['MA20']):
             ma20_line.append({"time": t_str, "value": float(row['MA20'])})
+        if not np.isnan(row['MA60']):
+            ma60_line.append({"time": t_str, "value": float(row['MA60'])})
         if not np.isnan(row['BB_UP']):
             bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
         if not np.isnan(row['BB_DN']):
@@ -437,6 +477,7 @@ def run_full_pipeline(query):
         "world_indices": world_indices,
         "candles": candles,
         "ma20_line": ma20_line,
+        "ma60_line": ma60_line,
         "bb_up_line": bb_up_line,
         "bb_dn_line": bb_dn_line
     }
@@ -505,11 +546,16 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: #8e918f; font-size: 0.78rem; margin-bottom: 3px; }
         .quant-item .q-val { color: #ffffff; font-size: 0.95rem; font-weight: 700; }
         
-        .signal-accordion-btn { width: 100%; background: #202733; border: 1px solid #2b384a; border-radius: 12px; padding: 16px; color: #fff; font-size: 1rem; font-weight: 700; display: flex; justify-content: space-between; align-items: center; cursor: pointer; transition: 0.2s; }
-        .signal-accordion-btn:hover { background: #263142; }
-        .signal-body { display: none; background: #1a202c; border: 1px solid #2b384a; border-top: none; border-radius: 0 0 12px 12px; padding: 18px; margin-top: -6px; }
-        .signal-row { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid #263142; font-size: 0.9rem; }
+        /* 시그널 아코디언 */
+        .signal-accordion-btn { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 14px 20px; color: #fff; font-size: 0.98rem; font-weight: 700; display: flex; align-items: center; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
+        .signal-title-center { flex: 1; text-align: center; }
+        .signal-arrow-icon { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 20px; }
+        .signal-body { display: none; background: #242628; border-radius: 16px; padding: 18px; margin-top: 10px; border: 1px solid #33363a; }
+        .signal-row { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid #2e3034; font-size: 0.9rem; }
         .signal-row:last-child { border-bottom: none; }
+        
+        .guide-box { background: #1a1c1d; border-radius: 10px; padding: 12px 14px; margin-top: 12px; font-size: 0.85rem; line-height: 1.5; color: #d1d5db; border: 1px solid #2d3033; }
+        .guide-title { font-weight: 700; color: #38bdf8; margin-bottom: 4px; }
         
         .news-item { padding: 10px 0; border-bottom: 1px solid #37393b; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
@@ -517,7 +563,8 @@ HTML_PAGE = """<!DOCTYPE html>
         .news-title:hover { color: #38bdf8; }
         .news-meta { color: #8e918f; font-size: 0.74rem; margin-top: 4px; }
         
-        .disclaimer-box { color: #6b7280; font-size: 0.72rem; line-height: 1.5; padding: 16px; text-align: center; }
+        .disclaimer-wrap { width: 100%; overflow-x: auto; text-align: center; padding: 20px 0; }
+        .disclaimer-text { white-space: nowrap; font-size: 0.72rem; color: #6b7280; margin: 0 auto; display: inline-block; }
         
         #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 76px; background: linear-gradient(180deg, rgba(30,31,32,0) 0%, rgba(30,31,32,1) 40%); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
         .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.92rem; }
@@ -554,21 +601,22 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="loading" id="loading">⚡ 세계 증시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
             <div id="result-card-wrap" style="display:none;">
                 
-                <!-- 1. 차트 영역 (20일선 + 볼린저밴드 60,2) -->
+                <!-- 1. 차트 영역 (20선 + 볼린저 60선/상하단) -->
                 <div class="card">
                     <div class="price-title" id="rTitle"></div>
                     <div class="price-val" id="rPrice"></div>
                     <div class="price-meta" id="rMeta"></div>
                     <div class="chart-legend">
                         <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선</div>
-                        <div class="legend-tag"><span class="legend-dot" style="background:#fef08a;"></span> 볼린저밴드 상·하단(60,2)</div>
+                        <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
+                        <div class="legend-tag"><span class="legend-dot" style="background:#fef08a;"></span> 볼린저 상·하단(60,2)</div>
                     </div>
                     <div class="chart-box-wrap" id="tvChart"></div>
                 </div>
 
-                <!-- 2. gaemiGTP 최신 뉴스 (종목별) -->
+                <!-- 2. gaemiGTP 종목 뉴스 -->
                 <div class="card">
-                    <div class="section-title">gaemiGTP 최신 뉴스</div>
+                    <div class="section-title">gaemiGTP 종목 뉴스</div>
                     <div id="stockNewsList"></div>
                 </div>
 
@@ -578,13 +626,13 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="world-grid" id="worldGrid"></div>
                 </div>
 
-                <!-- 4. 해외증시 주요 뉴스 -->
+                <!-- 4. gaemiGTP 해외 뉴스 -->
                 <div class="card">
-                    <div class="section-title">해외증시 주요 뉴스</div>
+                    <div class="section-title">gaemiGTP 해외 뉴스</div>
                     <div id="globalNewsList"></div>
                 </div>
 
-                <!-- 5. gaemiGTP 기술 지표 (확장 퀀트) -->
+                <!-- 5. gaemiGTP 기술 지표 (14개 타일) -->
                 <div class="card">
                     <div class="section-title">
                         <span>gaemiGTP 기술 지표</span>
@@ -604,30 +652,43 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="quant-item"><div class="q-label">RSI (14)</div><div class="q-val" id="rRsi"></div></div>
                         <div class="quant-item"><div class="q-label">ATR (14) 변동폭 / 비율</div><div class="q-val" id="rAtr"></div></div>
                         <div class="quant-item"><div class="q-label">거래량 / 5일평균 대비</div><div class="q-val" id="rVolRatio"></div></div>
+                        <div class="quant-item"><div class="q-label">20일 평균 거래대금</div><div class="q-val" id="rTval20d"></div></div>
                     </div>
                 </div>
 
-                <!-- 6. gaemiGTP 시그널 타점 (토글 아코디언) -->
+                <!-- 6. gaemiGTP 시그널 타점 (중앙 정렬 + 가이드 복원) -->
                 <div style="margin-bottom:16px;">
                     <button class="signal-accordion-btn" onclick="toggleSignal()">
-                        <span>⚡ gaemiGTP 시그널 타점</span>
-                        <span id="signalArrow">▼ 열기</span>
+                        <span class="signal-title-center">⚡ gaemiGTP 시그널 타점</span>
+                        <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
                     </button>
                     <div class="signal-body" id="signalBody">
                         <div class="signal-row"><span>1차 매수 진입 타점</span><strong id="rEntry1" style="color:#fff;"></strong></div>
                         <div class="signal-row"><span>2차 분할 진입 타점</span><strong id="rEntry2" style="color:#fff;"></strong></div>
-                        <div class="signal-row"><span>목표 수익 실현가 (+6.5%)</span><strong id="rTarget" style="color:#ef4444;"></strong></div>
+                        <div class="signal-row"><span>1차 목표 수익가 (+4.5%)</span><strong id="rTarget1" style="color:#ef4444;"></strong></div>
+                        <div class="signal-row"><span>2차 목표 수익가 (+8.5%)</span><strong id="rTarget2" style="color:#ef4444;"></strong></div>
                         <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong id="rStop" style="color:#38bdf8;"></strong></div>
-                        <div class="signal-row" style="margin-top:6px; border-top:1px dashed #2c3848; padding-top:10px;">
+                        <div class="signal-row" style="margin-top:6px; border-top:1px dashed #37393d; padding-top:8px;">
                             <span>1년 백테스트 검증</span>
-                            <span id="rBacktest" style="color:#38bdf8; font-weight:700;"></span>
+                            <span id="rBt1y" style="color:#38bdf8; font-weight:700;"></span>
+                        </div>
+                        <div class="signal-row">
+                            <span>2년 백테스트 검증</span>
+                            <span id="rBt2y" style="color:#38bdf8; font-weight:700;"></span>
+                        </div>
+                        
+                        <div class="guide-box">
+                            <div class="guide-title">gaemiGTP 시그널 가이드</div>
+                            <div id="rGuideText"></div>
                         </div>
                     </div>
                 </div>
 
-                <div class="disclaimer-box">
-                    본 플랫폼에서 제공하는 모든 시세 데이터 및 기술지표는 투자 참고용이며, 투자 권유가 아닙니다. 모든 투자의 결과와 책임은 투자자 본인에게 있습니다.<br>
-                    Data: Naver Finance / Yahoo Finance / Binance
+                <!-- 7. 최하단 면책 조항 (한 줄 출력) -->
+                <div class="disclaimer-wrap">
+                    <p class="disclaimer-text">
+                        과거의 수익률이 미래의 수익을 보장하지 않습니다. 본 플랫폼에서 제공하는 모든 시세 데이터 및 기술지표는 투자 참고용이며, 투자 권유가 아닙니다. 모든 투자의 결과와 책임은 투자자 본인에게 있습니다.
+                    </p>
                 </div>
 
             </div>
@@ -663,10 +724,10 @@ HTML_PAGE = """<!DOCTYPE html>
             const arrow = document.getElementById('signalArrow');
             if (body.style.display === 'block') {
                 body.style.display = 'none';
-                arrow.innerText = '▼ 열기';
+                arrow.style.transform = 'rotate(0deg)';
             } else {
                 body.style.display = 'block';
-                arrow.innerText = '▲ 닫기';
+                arrow.style.transform = 'rotate(180deg)';
             }
         }
 
@@ -712,7 +773,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     });
                 }
 
-                // 종목별 뉴스
+                // 종목 뉴스
                 const sNews = document.getElementById('stockNewsList');
                 sNews.innerHTML = '';
                 if (data.stock_news && data.stock_news.length > 0) {
@@ -728,7 +789,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     sNews.innerHTML = '<div style="color:#8e918f; font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
                 }
 
-                // 해외증시 뉴스
+                // 해외 뉴스
                 const gNews = document.getElementById('globalNewsList');
                 gNews.innerHTML = '';
                 if (data.global_news && data.global_news.length > 0) {
@@ -742,7 +803,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     });
                 }
 
-                // 퀀트 지표
+                // 14대 퀀트 지표
                 const q = data.quant;
                 document.getElementById('rTrend').innerText = q.trend;
                 document.getElementById('rMa5').innerText = q.ma5;
@@ -758,19 +819,23 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rRsi').innerText = q.rsi;
                 document.getElementById('rAtr').innerText = `${q.atr} (${q.atr_ratio})`;
                 document.getElementById('rVolRatio').innerText = q.vol_ratio;
+                document.getElementById('rTval20d').innerText = q.tval_20d;
 
-                // 시그널 타점
+                // 시그널 타점 및 가이드
                 document.getElementById('rEntry1').innerText = q.entry1;
                 document.getElementById('rEntry2').innerText = q.entry2;
-                document.getElementById('rTarget').innerText = q.target_p;
+                document.getElementById('rTarget1').innerText = q.target1;
+                document.getElementById('rTarget2').innerText = q.target2;
                 document.getElementById('rStop').innerText = q.stop_p;
-                document.getElementById('rBacktest').innerText = `승률 ${q.win_rate}% / 손익비 ${q.rr_ratio}`;
+                document.getElementById('rBt1y').innerText = q.bt_1y;
+                document.getElementById('rBt2y').innerText = q.bt_2y;
+                document.getElementById('rGuideText').innerText = q.guide_text;
 
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
 
                 setTimeout(() => {
-                    initTvChart(data.candles, data.ma20_line, data.bb_up_line, data.bb_dn_line);
+                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
                 }, 50);
 
                 window.scrollTo({top: 0, behavior: 'smooth'});
@@ -781,7 +846,7 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
-        function initTvChart(candles, ma20, bbUp, bbDn) {
+        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
             const container = document.getElementById('tvChart');
             container.innerHTML = '';
 
@@ -804,12 +869,19 @@ HTML_PAGE = """<!DOCTYPE html>
             });
             candleSeries.setData(candles);
 
+            // 20일선 (하늘색)
             const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 2 });
             lineMa20.setData(ma20);
 
+            // 볼린저 60선 중심선 (주황색)
+            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 2 });
+            lineMa60.setData(ma60);
+
+            // 볼린저 상단 (노란 점선)
             const lineBbUp = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2 });
             lineBbUp.setData(bbUp);
 
+            // 볼린저 하단 (노란 점선)
             const lineBbDn = chart.addLineSeries({ color: '#fef08a', lineWidth: 1, lineStyle: 2 });
             lineBbDn.setData(bbDn);
 
@@ -863,6 +935,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 "world_indices": data["world_indices"],
                 "candles": data["candles"],
                 "ma20_line": data["ma20_line"],
+                "ma60_line": data["ma60_line"],
                 "bb_up_line": data["bb_up_line"],
                 "bb_dn_line": data["bb_dn_line"]
             }

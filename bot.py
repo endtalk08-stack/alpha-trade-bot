@@ -16,7 +16,17 @@ import pandas as pd
 import numpy as np
 
 # ----------------------------------------------------
-# 1. 기본 설정 및 종목 매핑 (100% 보존)
+# 0. 고성능 네트워크 세션 (TCP 재사용으로 속도 극대화)
+# ----------------------------------------------------
+HTTP_SESSION = requests.Session()
+HTTP_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Connection": "keep-alive"
+})
+
+# ----------------------------------------------------
+# 1. 기본 설정 및 종목 매핑 (100% 원본 보존)
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
@@ -73,12 +83,12 @@ WORLD_INDICES_CONFIG = [
 ]
 
 # ----------------------------------------------------
-# 2. 데이터 크롤링 모듈 (병렬 멀티스레딩)
+# 2. 데이터 크롤링 모듈 (세션 재사용 최적화)
 # ----------------------------------------------------
 def get_realtime_usdkrw():
     try:
         url = "https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?range=1d&interval=1m"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=1.5).json()
+        res = HTTP_SESSION.get(url, timeout=1.5).json()
         meta = res.get("chart", {}).get("result", [{}])[0].get("meta", {})
         rate = meta.get("regularMarketPrice", 0.0)
         if rate > 500:
@@ -98,7 +108,7 @@ def find_stock_code(query):
 
     try:
         url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        res = HTTP_SESSION.get(url, timeout=1.8).json()
         items = res.get("result", {}).get("items", [])
         if items:
             for it in items:
@@ -115,7 +125,7 @@ def find_stock_code(query):
 def get_naver_realtime_price(code):
     try:
         url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        res = HTTP_SESSION.get(url, timeout=1.8).json()
         datas = res.get("datas", [])
         if datas:
             p = str(datas[0].get("closePrice", "")).replace(",", "").strip()
@@ -130,7 +140,7 @@ def fetch_domestic_candles(code, anchor_price=None):
     for suffix in [".KS", ".KQ"]:
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
-            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+            res = HTTP_SESSION.get(url, timeout=2.0).json()
             result = res.get("chart", {}).get("result", [])
             if result:
                 ts = result[0].get("timestamp", [])
@@ -163,7 +173,7 @@ def fetch_domestic_candles(code, anchor_price=None):
 def fetch_overseas_candles(symbol):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper()}?range=5y&interval=1d"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+        res = HTTP_SESSION.get(url, timeout=2.0).json()
         result = res.get("chart", {}).get("result", [])
         if result:
             ts = result[0].get("timestamp", [])
@@ -190,7 +200,7 @@ def fetch_crypto_candles(symbol):
         clean_sym += "USDT"
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit=1000"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+        res = HTTP_SESSION.get(url, timeout=2.0).json()
         if isinstance(res, list) and len(res) > 5:
             records = [{
                 "Date": pd.to_datetime(int(x[0]), unit='ms'),
@@ -212,7 +222,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             target_p = None
             try:
                 url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
-                res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+                res = HTTP_SESSION.get(url, timeout=1.8).json()
                 for item in res.get("totalInfos", []):
                     if item.get("code") in ["targetPrice", "consensusTargetPrice"]:
                         v = str(item.get("value", "")).replace(",", "").strip()
@@ -231,7 +241,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             recent_reports = []
             try:
                 rep_url = f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=4"
-                r_res = requests.get(rep_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+                r_res = HTTP_SESSION.get(rep_url, timeout=1.8).json()
                 items = r_res.get("items", []) or r_res.get("researches", [])
                 for it in items[:3]:
                     broker = it.get("writeCorpName") or it.get("companyName") or "증권사"
@@ -322,7 +332,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             funding_rate_str = "+0.0100%"
             try:
                 f_url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={clean_sym}&limit=1"
-                f_res = requests.get(f_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+                f_res = HTTP_SESSION.get(f_url, timeout=1.8).json()
                 if isinstance(f_res, list) and len(f_res) > 0:
                     fr = float(f_res[0].get("fundingRate", 0.0001)) * 100
                     funding_rate_str = f"{fr:+.4f}%"
@@ -333,7 +343,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             kimchi_str = "+1.84%"
             try:
                 upbit_sym = "KRW-BTC" if "BTC" in clean_sym else ("KRW-ETH" if "ETH" in clean_sym else ("KRW-XRP" if "XRP" in clean_sym else "KRW-DOGE"))
-                u_res = requests.get(f"https://api.upbit.com/v1/ticker?markets={upbit_sym}", timeout=2.0).json()
+                u_res = HTTP_SESSION.get(f"https://api.upbit.com/v1/ticker?markets={upbit_sym}", timeout=1.8).json()
                 if isinstance(u_res, list) and len(u_res) > 0:
                     upbit_krw = float(u_res[0].get("trade_price", 0))
                     approx_binance_krw = raw_price * usdkrw
@@ -345,7 +355,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
 
             fear_greed_score = "74"
             try:
-                fg_res = requests.get("https://api.alternative.me/fng/?limit=1", timeout=2.0).json()
+                fg_res = HTTP_SESSION.get("https://api.alternative.me/fng/?limit=1", timeout=1.8).json()
                 fear_greed_score = str(fg_res.get("data", [{}])[0].get("value", "74"))
             except Exception:
                 pass
@@ -379,15 +389,12 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
         pass
     return None
 
-# ----------------------------------------------------
-# 구글 RSS 뉴스 검색 모듈
-# ----------------------------------------------------
 def fetch_rss_news(query_keyword, limit=5):
     headlines = []
     clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=3.0)
+        r = HTTP_SESSION.get(url, timeout=2.5)
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             for it in root.findall('.//item')[:limit]:
@@ -416,7 +423,7 @@ def fetch_single_world_index(item):
     sym = item["sym"]
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=2d&interval=1d"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        res = HTTP_SESSION.get(url, timeout=1.8).json()
         result = res.get("chart", {}).get("result", [])
         if result:
             meta = result[0].get("meta", {})
@@ -443,7 +450,7 @@ def get_trading_val_rank(symbol, is_krw=True):
         return ""
     try:
         url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
-        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        res = HTTP_SESSION.get(url, timeout=1.8).json()
         stocks = res.get("stocks", [])
         for idx, item in enumerate(stocks):
             if str(item.get("itemCode", "")).strip() == symbol.strip():
@@ -453,7 +460,7 @@ def get_trading_val_rank(symbol, is_krw=True):
     return ""
 
 # ----------------------------------------------------
-# 4. 14대 퀀트 기술지표 및 시그널 가이드 연산
+# 4. 14대 퀀트 기술지표 및 시그널 가이드 연산 (100% 원본 보존)
 # ----------------------------------------------------
 def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if df is None or len(df) < 10:
@@ -593,7 +600,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     }
 
 # ----------------------------------------------------
-# 5. 전체 통합 파이프라인 (병렬 실행)
+# 5. 전체 통합 파이프라인 (동시성 8스레드 병렬 실행 + 키 매핑 완전 보정)
 # ----------------------------------------------------
 def run_full_pipeline(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -632,7 +639,7 @@ def run_full_pipeline(query):
     if raw_price is None or df is None:
         return None
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=8) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 5)
         f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 4)
         f_world_indices = executor.submit(fetch_all_world_indices_parallel)
@@ -674,11 +681,15 @@ def run_full_pipeline(query):
         if not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
 
+    # 프론트엔드 호환성을 위해 name/price 및 formal_name/price_str 동시 제공
     return {
+        "name": formal_name,
         "formal_name": formal_name,
         "symbol": symbol,
         "market": market_name,
+        "price": price_str,
         "price_str": price_str,
+        "time": now_str,
         "now_str": now_str,
         "quant": quant,
         "consensus": consensus,
@@ -693,7 +704,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (중복 ID 완벽 해결)
+# 6. 웹 프론트엔드 UI (ID 충돌 제거 및 최적화 완료)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1181,7 +1192,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- gaemiGTP 브랜드가 완벽 유지된 핵심 시그널 박스 (중복 ID uDots 제거 완료) -->
+                    <!-- gaemiGTP 브랜드가 완벽 유지된 핵심 시그널 박스 -->
                     <div class="signal-premium-card">
                         <div class="signal-card-header" onclick="toggleSignal()">
                             <span class="signal-card-title">gaemiGTP 시그널</span>
@@ -1329,7 +1340,6 @@ HTML_PAGE = """<!DOCTYPE html>
         function updateThemeIcon(isLight) {
             const area = document.getElementById('themeIconArea');
             if (!area) return;
-            // 라이트 모드일 때는 '달' 아이콘 표시, 다크 모드일 때는 '해' 아이콘 표시
             area.innerHTML = isLight 
                 ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`
                 : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
@@ -1447,9 +1457,13 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
 
                 const isKrw = data.market === '국내주식';
-                document.getElementById('rTitle').innerHTML = `${data.name} <span>(${data.symbol})</span>`;
-                document.getElementById('rPrice').innerText = data.price;
-                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'} · 시각: ${data.time}`;
+                const displayName = data.name || data.formal_name;
+                const displayPrice = data.price || data.price_str;
+                const displayTime = data.time || data.now_str;
+
+                document.getElementById('rTitle').innerHTML = `${displayName} <span>(${data.symbol})</span>`;
+                document.getElementById('rPrice').innerText = displayPrice;
+                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'} · 시각: ${displayTime}`;
 
                 const wGrid = document.getElementById('worldGrid');
                 wGrid.innerHTML = '';
@@ -1661,7 +1675,7 @@ HTML_PAGE = """<!DOCTYPE html>
 """
 
 # ----------------------------------------------------
-# 7. 서버 실행 핸들러 (100% 보존)
+# 7. 초경량 비동기/멀티스레드 웹 서버
 # ----------------------------------------------------
 class WebHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
@@ -1690,25 +1704,7 @@ class WebHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json; charset=utf-8')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            
-            res_obj = {
-                "name": data["formal_name"],
-                "symbol": data["symbol"],
-                "market": data["market"],
-                "price": data["price_str"],
-                "time": data["now_str"],
-                "quant": data["quant"],
-                "consensus": data["consensus"],
-                "stock_news": data["stock_news"],
-                "global_news": data["global_news"],
-                "world_indices": data["world_indices"],
-                "candles": data["candles"],
-                "ma20_line": data["ma20_line"],
-                "ma60_line": data["ma60_line"],
-                "bb_up_line": data["bb_up_line"],
-                "bb_dn_line": data["bb_dn_line"]
-            }
-            self.wfile.write(json.dumps(res_obj, ensure_ascii=False).encode('utf-8'))
+            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
             return
 
         self.send_response(200)

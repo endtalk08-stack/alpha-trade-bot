@@ -1,33 +1,3 @@
-대표님 요구사항을 정확하게 반영했습니다.
-
----
-
-### 수정한 내용
-
-1. **Gemini 공식 폰트 및 스타일 적용:**
-* Google Sans / Roboto 기반 폰트 적용 (`Google Sans`, `Roboto`, `Apple SD Gothic Neo`)
-* '새 종목 분석' 버튼에 **Gemini 공식 스파클/플러스 SVG 아이콘** 적용 및 폰트 크기(14px / `0.875rem`), 라운드 패딩(Gemini 알약 형태) 1:1 일치
-
-
-2. **사이드바 내 불필요한 이모티콘 및 뱃지 전면 삭제:**
-* `🔥`, `🚀`, `📱`, `₿` 등 조잡한 이모티콘 전부 제거
-* `국내`, `미국`, `코인` 뱃지 태그 전부 삭제 ➔ Gemini처럼 **깔끔하고 정돈된 종목명 텍스트만** 노출
-
-
-3. **가짜 데이터 '관심 핀' 영역 완전 삭제:**
-* `관심 핀` 고정값 영역을 사이드바에서 완전히 제거
-
-
-4. **차트 및 세계 증시 컨테이너 정합성 유지:**
-* 사이드바 토글 시 차트 자동 리사이즈 및 9대 세계 증시 그리드 렌더링 유지
-
-
-
----
-
-### `bot.py` 전체 소스 코드
-
-```python
 import os
 import re
 import io
@@ -46,7 +16,7 @@ import pandas as pd
 import numpy as np
 
 # ----------------------------------------------------
-# 1. 기본 설정 및 종목 매핑 (100% 보존)
+# 1. 기본 설정 및 종목 매핑
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
@@ -715,7 +685,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (Gemini 공식 UI/폰트/아이콘 1:1 일치)
+# 6. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -934,7 +904,6 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
-    <!-- Gemini 좌측 사이드바 (공식 아이콘 및 폰트 적용, 이모티콘/뱃지/관심핀 완전 삭제) -->
     <div class="sidebar-overlay" id="sideOverlay" onclick="toggleSidebar()"></div>
     <div id="sidebar-wrapper">
         <div class="side-top-action">
@@ -944,7 +913,6 @@ HTML_PAGE = """<!DOCTYPE html>
             <span style="font-weight:700; font-size:1.15rem; color:#fff; cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
         </div>
 
-        <!-- Gemini 공식 알약 스타일 새 분석 버튼 -->
         <button class="gemini-new-btn" onclick="resetToHome()">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 4v16m8-8H4" stroke-linecap="round" stroke-linejoin="round"/>
@@ -968,7 +936,6 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- 메인 컨텐츠 영역 -->
     <div id="content-wrapper">
         <header>
             <div class="header-left">
@@ -1591,5 +1558,3 @@ def run_web_server():
 
 if __name__ == "__main__":
     run_web_server()
-
-```

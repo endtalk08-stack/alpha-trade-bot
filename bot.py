@@ -13,7 +13,7 @@ import pandas as pd
 import numpy as np
 
 # ----------------------------------------------------
-# 1. 기본 설정 및 종목 매핑
+# 1. 종목 매핑 & 매크로 지표 설정
 # ----------------------------------------------------
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
@@ -22,8 +22,7 @@ CRYPTO_MAP = {
     "DOGE": "DOGEUSDT", "도지코인": "DOGEUSDT", "도지": "DOGEUSDT",
     "SOL": "SOLUSDT", "솔라나": "SOLUSDT",
     "ADA": "ADAUSDT", "에이다": "ADAUSDT",
-    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT",
-    "SKY": "SKYUSDT", "스카이": "SKYUSDT"
+    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT"
 }
 
 US_STOCK_MAP = {
@@ -42,21 +41,25 @@ US_STOCK_MAP = {
 
 DOMESTIC_FAST_MAP = {
     "SK하이닉스": "000660", "하이닉스": "000660",
-    "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150", "삼성중공업": "010140",
-    "SK증권": "001510", "SK스퀘어": "402340", "솔트룩스": "304100",
+    "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150",
     "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
     "레인보우로보틱스": "277810", "카카오": "035720", "네이버": "035420",
     "NAVER": "035420", "현대차": "005380", "기아": "000270",
-    "포스코홀딩스": "005490", "POSCO홀딩스": "005490", "LG에너지솔루션": "373220",
-    "한화오션": "042660", "두산에너빌리티": "034020", "한화에어로스페이스": "012450",
-    "현대모비스": "012330", "셀트리온": "068270", "한미반도체": "042700",
-    "씨젠": "096530", "HLB": "028300", "에코프로머티": "450080",
-    "리가켐바이오": "141080", "엔켐": "348370", "삼천당제약": "000250",
-    "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
+    "포스코홀딩스": "005490", "LG에너지솔루션": "373220", "한화오션": "042660",
+    "두산에너빌리티": "034020", "한화에어로스페이스": "012450", "셀트리온": "068270"
 }
 
+MACRO_SYMBOLS = [
+    {"name": "미국 10년 국채", "sym": "^TNX", "badge": "금리"},
+    {"name": "서부텍사스유", "sym": "CL=F", "badge": "유가"},
+    {"name": "달러 인덱스", "sym": "DX-Y.NYB", "badge": "환율"},
+    {"name": "나스닥 100", "sym": "QQQ", "badge": "ETF"},
+    {"name": "반도체 지수", "sym": "SOXX", "badge": "ETF"},
+    {"name": "비트코인", "sym": "BTC-USD", "badge": "코인"}
+]
+
 # ----------------------------------------------------
-# 2. 데이터 크롤링 및 파싱 모듈
+# 2. 데이터 크롤링 엔진
 # ----------------------------------------------------
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -108,10 +111,8 @@ def fetch_domestic_candles(code, anchor_price=None):
                 quote = result[0].get("indicators", {}).get("quote", [{}])[0]
                 records = [{
                     "Date": pd.to_datetime(ts[i], unit='s'),
-                    "Open": float(quote['open'][i]),
-                    "High": float(quote['high'][i]),
-                    "Low": float(quote['low'][i]),
-                    "Close": float(quote['close'][i]),
+                    "Open": float(quote['open'][i]), "High": float(quote['high'][i]),
+                    "Low": float(quote['low'][i]), "Close": float(quote['close'][i]),
                     "Volume": float(quote['volume'][i] or 0.0)
                 } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
                 if len(records) >= 30:
@@ -141,10 +142,8 @@ def fetch_overseas_candles(symbol):
             quote = result[0].get("indicators", {}).get("quote", [{}])[0]
             records = [{
                 "Date": pd.to_datetime(ts[i], unit='s'),
-                "Open": float(quote['open'][i]),
-                "High": float(quote['high'][i]),
-                "Low": float(quote['low'][i]),
-                "Close": float(quote['close'][i]),
+                "Open": float(quote['open'][i]), "High": float(quote['high'][i]),
+                "Low": float(quote['low'][i]), "Close": float(quote['close'][i]),
                 "Volume": float(quote['volume'][i] or 0.0)
             } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
             if records:
@@ -173,6 +172,56 @@ def fetch_crypto_candles(symbol):
     except Exception:
         pass
     return None, None, None
+
+def fetch_macro_indices():
+    results = []
+    for item in MACRO_SYMBOLS:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(item['sym'])}?range=2d&interval=1d"
+            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+            meta = res.get("chart", {}).get("result", [{}])[0].get("meta", {})
+            curr_p = meta.get("regularMarketPrice", 0.0)
+            prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
+            rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+            
+            price_fmt = f"{curr_p:,.2f}" if curr_p >= 10 else f"{curr_p:.2f}%" if "TNX" in item['sym'] else f"{curr_p:.2f}"
+            results.append({
+                "name": item["name"],
+                "badge": item["badge"],
+                "price": price_fmt,
+                "rate": f"{rate:+.2f}%",
+                "up": rate >= 0
+            })
+        except Exception:
+            results.append({"name": item["name"], "badge": item["badge"], "price": "-", "rate": "0.00%", "up": True})
+    return results
+
+def fetch_rss_news(query_keyword, limit=4):
+    headlines = []
+    clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for it in root.findall('.//item')[:limit]:
+                t = it.find('title')
+                pub = it.find('pubDate')
+                link = it.find('link')
+                if t is not None and t.text:
+                    title_clean = html.unescape(t.text).strip()
+                    parts = title_clean.rsplit(' - ', 1)
+                    title_text = parts[0]
+                    media_name = parts[1] if len(parts) > 1 else "언론사"
+                    headlines.append({
+                        "title": title_text,
+                        "media": media_name,
+                        "pubDate": pub.text if pub is not None else "",
+                        "link": link.text if link is not None else "#"
+                    })
+    except Exception:
+        pass
+    return headlines
 
 def fetch_market_consensus(symbol, market_name, raw_price):
     try:
@@ -262,38 +311,6 @@ def fetch_market_consensus(symbol, market_name, raw_price):
         pass
     return None
 
-def fetch_rss_news(query_keyword, limit=5):
-    headlines = []
-    clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
-    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
-    try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0)
-        if r.status_code == 200:
-            root = ET.fromstring(r.content)
-            for it in root.findall('.//item')[:limit]:
-                t = it.find('title')
-                pub = it.find('pubDate')
-                link = it.find('link')
-                if t is not None and t.text:
-                    title_clean = html.unescape(t.text).strip()
-                    parts = title_clean.rsplit(' - ', 1)
-                    title_text = parts[0]
-                    media_name = parts[1] if len(parts) > 1 else "언론사"
-                    pub_text = pub.text if pub is not None else ""
-                    link_text = link.text if link is not None else "#"
-                    headlines.append({
-                        "title": title_text,
-                        "media": media_name,
-                        "pubDate": pub_text,
-                        "link": link_text
-                    })
-    except Exception:
-        pass
-    return headlines
-
-# ----------------------------------------------------
-# 3. 퀀트 지표 계산기
-# ----------------------------------------------------
 def calculate_quant_factors(raw_price, df, is_krw=True):
     if df is None or len(df) < 10:
         return None
@@ -354,7 +371,7 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
     }
 
 # ----------------------------------------------------
-# 4. 통합 파이프라인
+# 3. 통합 파이프라인
 # ----------------------------------------------------
 def run_full_pipeline(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -393,11 +410,16 @@ def run_full_pipeline(query):
     if raw_price is None or df is None:
         return None
 
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 4)
         f_consensus = executor.submit(fetch_market_consensus, symbol, market_name, raw_price)
+        f_macro = executor.submit(fetch_macro_indices)
+        f_global_news = executor.submit(fetch_rss_news, "세계 증시 뉴욕증시", 3)
+
         stock_news = f_news.result()
         consensus = f_consensus.result()
+        macro_indices = f_macro.result()
+        global_news = f_global_news.result()
 
     quant = calculate_quant_factors(raw_price, df, is_krw=is_krw)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
@@ -435,6 +457,8 @@ def run_full_pipeline(query):
         "quant": quant,
         "consensus": consensus,
         "stock_news": stock_news,
+        "macro_indices": macro_indices,
+        "global_news": global_news,
         "candles": candles,
         "ma20_line": ma20_line,
         "ma60_line": ma60_line,
@@ -443,7 +467,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 5. 프론트엔드 UI 템플릿
+# 4. 프론트엔드 UI 템플릿 (중앙 피드 + 우측 위젯 완벽 결합)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -494,16 +518,17 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; }
         .tag-btn:hover { background: #37393b; color: #fff; }
 
-        /* 중앙 집중형 단일 피드 */
+        /* 2단 대시보드 레이아웃 (중앙 피드 + 우측 위젯) */
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 72px 16px 80px; }
-        .feed-container { max-width: 780px; margin: 0 auto; }
+        .dashboard-container { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: 1fr 390px; gap: 20px; align-items: start; }
+        
         .card { background: #282a2c; border-radius: 16px; padding: 20px; border: 1px solid #33363a; box-shadow: 0 4px 20px rgba(0,0,0,0.25); margin-bottom: 16px; }
         
         .price-title { font-size: 1.35rem; font-weight: 700; color: #f2f2f2; }
         .price-title span { color: #8e918f; font-size: 0.9rem; font-weight: 400; }
         .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 6px 0; }
         .price-meta { color: #8e918f; font-size: 0.78rem; }
-        .chart-box-wrap { width: 100%; height: 300px; margin-top: 14px; position: relative; background: #282a2c; border-radius: 8px; overflow: hidden; }
+        .chart-box-wrap { width: 100%; height: 280px; margin-top: 14px; position: relative; background: #282a2c; border-radius: 8px; overflow: hidden; }
 
         .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
         .section-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; }
@@ -528,9 +553,34 @@ HTML_PAGE = """<!DOCTYPE html>
         .accordion-btn { width: 100%; height: 52px; background: #282a2c; border: 1px solid #33363a; border-radius: 32px; padding: 0 20px; color: #fff; font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; margin-bottom: 16px; }
         .accordion-arrow { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 20px; }
         .accordion-body { background: #242628; border-radius: 16px; padding: 16px; margin-top: -6px; margin-bottom: 16px; border: 1px solid #33363a; }
-        
         .signal-row { display: flex; justify-content: space-between; font-size: 0.85rem; padding: 6px 0; border-bottom: 1px solid #2e3034; }
         .signal-row:last-child { border-bottom: none; }
+
+        /* 우측 위젯 스타일 */
+        .side-widget-col { display: flex; flex-direction: column; gap: 16px; }
+        .macro-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #2e3034; }
+        .macro-item:last-child { border-bottom: none; }
+        .macro-sym { font-size: 0.85rem; font-weight: 700; color: #fff; }
+        .val-up { color: #ef4444; font-weight: 700; }
+        .val-down { color: #38bdf8; font-weight: 700; }
+
+        .brief-item { padding: 8px 0; border-bottom: 1px solid #2e3034; }
+        .brief-item:last-child { border-bottom: none; }
+        .brief-title { font-size: 0.82rem; font-weight: 700; color: #fff; line-height: 1.35; margin-bottom: 4px; }
+        .brief-bullets { background: #1e1f20; padding: 8px 10px; border-radius: 6px; font-size: 0.72rem; color: #9ca3af; line-height: 1.45; }
+
+        .cal-row { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid #2e3034; font-size: 0.76rem; }
+        .cal-row:last-child { border-bottom: none; }
+
+        .pro-badge { background: linear-gradient(90deg, #f59e0b, #ef4444); color: #fff; font-size: 0.65rem; font-weight: 800; padding: 2px 6px; border-radius: 6px; margin-left: 6px; }
+        .master-content-box { position: relative; background: #1e1f20; padding: 12px; border-radius: 10px; border: 1px solid #2e3034; font-size: 0.8rem; line-height: 1.55; color: #d1d5db; overflow: hidden; }
+        .blur-text { filter: blur(3.5px); user-select: none; opacity: 0.5; margin-top: 4px; }
+        .lock-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(30, 31, 32, 0.75); border-radius: 10px; }
+        .lock-btn { background: linear-gradient(90deg, #f59e0b, #d97706); color: #121212; border: none; font-weight: 800; font-size: 0.78rem; padding: 7px 14px; border-radius: 20px; cursor: pointer; }
+
+        @media (max-width: 960px) {
+            .dashboard-container { grid-template-columns: 1fr; }
+        }
 
         .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.95rem; }
     </style>
@@ -585,12 +635,13 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- 중앙 집중형 단일 피드 결과 화면 -->
+    <!-- 2단 대시보드 결과 화면 (좌: 중앙 피드 / 우: 사이드 위젯) -->
     <div id="result-scroll-view">
-        <div class="feed-container">
-            <div class="loading" id="loading">⚡ 실시간 퀀트 데이터 및 차트를 연산 중입니다...</div>
-            <div id="resultCardWrap" style="display:none;">
-                
+        <div class="loading" id="loading">⚡ 실시간 퀀트 데이터 및 매크로 지표를 연산 중입니다...</div>
+        <div class="dashboard-container" id="resultCardWrap" style="display:none;">
+            
+            <!-- [좌측 메인 컬럼] -->
+            <div class="main-feed-col">
                 <!-- 1. 시세 & 캔들 차트 -->
                 <div class="card">
                     <div style="display:flex; justify-content:space-between; align-items:flex-end;">
@@ -681,8 +732,63 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong style="color:#38bdf8;" id="sStop"></strong></div>
                     </div>
                 </div>
-
             </div>
+
+            <!-- [우측 사이드바 위젯] -->
+            <div class="side-widget-col">
+                <!-- 1. 거시 매크로 6대 지수 -->
+                <div class="card">
+                    <div class="section-header">
+                        <span class="section-title">🌐 글로벌 매크로 & ETF</span>
+                        <span class="badge-tag">• 실시간</span>
+                    </div>
+                    <div id="macroIndicesList"></div>
+                </div>
+
+                <!-- 2. 3줄 요약 글로벌 속보 -->
+                <div class="card">
+                    <div class="section-header">
+                        <span class="section-title">⚡ 3줄 요약 글로벌 속보</span>
+                        <span class="badge-tag">실시간 피드</span>
+                    </div>
+                    <div id="globalNewsList"></div>
+                </div>
+
+                <!-- 3. 주요 경제 일정 -->
+                <div class="card">
+                    <div class="section-header">
+                        <span class="section-title">📅 주요 경제 일정</span>
+                        <span class="badge-tag">KST</span>
+                    </div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">08.28 (금)</span><span style="color:#fff; font-weight:600;">미국 근원 PCE 물가</span><span style="color:#8e918f;">예상 2.6%</span></div>
+                    <div class="cal-row"><span style="color:#38bdf8; font-weight:700;">08.28 (금)</span><span style="color:#fff; font-weight:600;">엔비디아 (NVDA) 실적</span><span style="color:#8e918f;">장 마감후</span></div>
+                </div>
+
+                <!-- 4. 마스터 전략 브리핑 (유료화 슬롯) -->
+                <div>
+                    <button class="accordion-btn" onclick="toggleAccordion('masterBody', 'masterArrow')">
+                        <span>✍️ gaemiGTP 마스터 전략 <span class="pro-badge">PRO</span></span>
+                        <svg class="accordion-arrow" id="masterArrow" style="transform:rotate(180deg);" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+                    </button>
+                    <div class="accordion-body" id="masterBody">
+                        <div class="master-content-box">
+                            <div style="color:#f59e0b; font-weight:700; font-size:0.82rem;">[수석 전략 뷰]</div>
+                            <p style="font-size:0.78rem; margin-top:3px;">
+                                외인 순매수 유입과 20일선 지지 안착이 확인되어 단기 상승 에너지가 축적된 상태입니다.
+                            </p>
+                            <div class="blur-text">
+                                목표가 도달 전 구간에서의 매물대 소화 전략과 세력 수급 분할 매도 시점, 긴급 하방 리스크 방어 가이드 전문...
+                            </div>
+                            <div class="lock-overlay">
+                                <button class="lock-btn" onclick="alert('PRO 멤버십 가입 페이지로 연결됩니다!');">
+                                    PRO 멤버십으로 전문 확인 →
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
@@ -751,6 +857,35 @@ HTML_PAGE = """<!DOCTYPE html>
                     sNews.innerHTML = '<div style="color:#8e918f; font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
                 }
 
+                // 우측 매크로 지표 렌더링
+                const mList = document.getElementById('macroIndicesList');
+                mList.innerHTML = '';
+                if (data.macro_indices) {
+                    data.macro_indices.forEach(m => {
+                        const cls = m.up ? 'val-up' : 'val-down';
+                        mList.innerHTML += `
+                            <div class="macro-item">
+                                <div><span class="macro-sym">${m.name}</span> <span class="badge-tag">${m.badge}</span></div>
+                                <div style="text-align:right;"><span style="color:#fff; font-weight:700; font-size:0.88rem;">${m.price}</span> <span class="${cls}" style="font-size:0.75rem; margin-left:4px;">${m.rate}</span></div>
+                            </div>
+                        `;
+                    });
+                }
+
+                // 우측 3줄 요약 속보 렌더링
+                const gList = document.getElementById('globalNewsList');
+                gList.innerHTML = '';
+                if (data.global_news && data.global_news.length > 0) {
+                    data.global_news.forEach(n => {
+                        gList.innerHTML += `
+                            <div class="brief-item">
+                                <div class="brief-title">${n.title}</div>
+                                <div class="brief-bullets">• ${n.media} 속보 취합 요약</div>
+                            </div>
+                        `;
+                    });
+                }
+
                 const c = data.consensus;
                 if (c) {
                     document.getElementById('cTitle').innerText = c.title;
@@ -788,7 +923,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('sStop').innerText = q.stop_p;
 
                 document.getElementById('loading').style.display = 'none';
-                document.getElementById('resultCardWrap').style.display = 'block';
+                document.getElementById('resultCardWrap').style.display = 'grid';
 
                 setTimeout(() => {
                     initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
@@ -806,8 +941,8 @@ HTML_PAGE = """<!DOCTYPE html>
             container.innerHTML = '';
 
             chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 740,
-                height: 300,
+                width: container.clientWidth || 700,
+                height: 280,
                 layout: { background: { color: '#282a2c' }, textColor: '#8e918f' },
                 grid: { vertLines: { color: 'rgba(0,0,0,0)' }, horzLines: { color: 'rgba(0,0,0,0)' } },
                 crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
@@ -842,7 +977,7 @@ HTML_PAGE = """<!DOCTYPE html>
 """
 
 # ----------------------------------------------------
-# 6. HTTP 웹 서버 핸들러
+# 5. 서버 실행 핸들러
 # ----------------------------------------------------
 class WebHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -872,6 +1007,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 "quant": data["quant"],
                 "consensus": data["consensus"],
                 "stock_news": data["stock_news"],
+                "macro_indices": data["macro_indices"],
+                "global_news": data["global_news"],
                 "candles": data["candles"],
                 "ma20_line": data["ma20_line"],
                 "ma60_line": data["ma60_line"],

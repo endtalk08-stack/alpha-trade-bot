@@ -118,30 +118,78 @@ def fetch_domestic_candles(code, anchor_price=None):
     for suffix in [".KS", ".KQ"]:
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
-            res`bot.py` 파일의 **583번 라인 근처에 따옴표(`"`) 개수가 맞지 않아 발생하는 문법 오류(SyntaxError)**입니다.
+            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+            result = res.get("chart", {}).get("result", [])
+            if result:
+                ts = result[0].get("timestamp", [])
+                quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+                records = [{
+                    "Date": pd.to_datetime(ts[i], unit='s'),
+                    "Open": float(quote['open'][i]),
+                    "High": float(quote['high'][i]),
+                    "Low": float(quote['low'][i]),
+                    "Close": float(quote['close'][i]),
+                    "Volume": float(quote['volume'][i] or 0.0)
+                } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+                if len(records) >= 30:
+                    df_result = pd.DataFrame(records).set_index("Date").sort_index()
+                    break
+        except Exception:
+            pass
 
-에러 메시지를 보면 삼중 따옴표(`"""`)가 제대로 닫히지 않았거나(unterminated triple-quoted string), 따옴표가 잘못 중첩되어 파이썬이 파일 끝(606번 라인)까지 문자열이 끝나지 않은 것으로 인식하고 있습니다.
+    if df_result is not None and anchor_price and anchor_price > 0:
+        last_close = float(df_result['Close'].iloc[-1])
+        if abs(last_close - anchor_price) / anchor_price > 0.3:
+            ratio = anchor_price / last_close
+            df_result['Open'] *= ratio
+            df_result['High'] *= ratio
+            df_result['Low'] *= ratio
+            df_result['Close'] *= ratio
 
----
+    return df_result
 
-**원인 및 해결 방법**
+def fetch_overseas_candles(symbol):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper()}?range=5y&interval=1d"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+        result = res.get("chart", {}).get("result", [])
+        if result:
+            ts = result[0].get("timestamp", [])
+            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+            records = [{
+                "Date": pd.to_datetime(ts[i], unit='s'),
+                "Open": float(quote['open'][i]),
+                "High": float(quote['high'][i]),
+                "Low": float(quote['low'][i]),
+                "Close": float(quote['close'][i]),
+                "Volume": float(quote['volume'][i] or 0.0)
+            } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+            if records:
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                curr_p = float(df['Close'].iloc[-1])
+                return curr_p, f"{curr_p:,.2f} 달러", df
+    except Exception:
+        pass
+    return None, None, None
 
-1. **따옴표 개수 확인**
-   * 에러 로그에 표시된 줄을 보면 따옴표가 총 7개(앞 3개 + 뒤 4개)로 찍혀 있습니다:
-     ```python
-     # 잘못된 예시 (따옴표 개수 불일치)
-     """ThreadPoolExecutor를 이용한 병렬 수집 실행기""""
-     ```
-   * 양쪽 따옴표 개수를 정확히 **3개씩** 맞추거나, 단순 한 줄 주석이라면 `#`으로 변경하세요.
+def fetch_crypto_candles(symbol):
+    clean_sym = symbol.upper().replace("-", "")
+    if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
+        clean_sym += "USDT"
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit=1000"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+        if isinstance(res, list) and len(res) > 5:
+            records = [{
+                "Date": pd.to_datetime(int(x[0]), shame shame shame shame shame shame shame shameAI 답변 텍스트(설명 문구)가 코드 파일(`bot.py`) 안에 그대로 잘못 붙여넣어져서 발생한 **문법 오류(SyntaxError)**입니다.
 
-2. **수정 예시**
-   * **삼중 따옴표로 유지할 경우:**
-     ```python
-     """ThreadPoolExecutor를 이용한 병렬 수집 실행기"""
-     ```
-   * **일반 주석으로 변경할 경우 (권장):**
-     ```python
-     # ThreadPoolExecutor를 이용한 병렬 수집 실행기
-     ```
+**원인 분석**
+* **에러 위치**: `bot.py` 파일의 **121번째 줄**
+* **내용**: `res'bot.py' 파일의 **583번 라인 근처에 [따옴표(`'`) 개수가 맞지 않아 발생하는 문법 오류(SyntaxError)**입니다.` 
+* 이전 질문에 대한 AI의 한글 설명 문구가 코드 내부에 실수로 삽입되어 따옴표가 닫히지 않은 문자열 형태로 인식되었습니다.
 
-코드를 수정한 뒤 다시 커밋하고 배포(Deploy)를 진행하면 정상 실행됩니다.
+**해결 방법**
+1. 에디터에서 `bot.py` 파일을 엽니다.
+2. **121번 줄**로 이동합니다.
+3. 해당 위치에 잘못 들어간 한글 설명 텍스트를 삭제하거나 주석(`#`) 처리합니다.
+4. 수정 사항을 저장 후 다시 배포(Git push)합니다.

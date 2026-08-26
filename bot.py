@@ -682,7 +682,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (이모티콘 완전 제거 및 정돈)
+# 6. 웹 프론트엔드 UI (컨센서스 톤앤매너 완벽 일치 디자인)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -861,7 +861,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .world-name { font-size: 0.72rem; color: #8e918f; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .world-val { font-size: 0.88rem; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .world-rate { font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
-        .val-up { color: #ef4444; }
+        .val-up { color: #10b981; }
         .val-down { color: #38bdf8; }
 
         .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -869,15 +869,19 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .quant-item .q-val { color: #ffffff; font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
-        .signal-accordion-btn { width: 100%; height: 50px; background: #1e1f20; border: 1px solid #282a2c; border-radius: 32px; padding: 0 16px; color: #fff; font-size: 0.92rem; font-weight: 700; display: flex; align-items: center; cursor: pointer; position: relative; }
+        /* 컨센서스 스타일로 통일된 시그널 아코디언 버튼 */
+        .signal-accordion-btn { width: 100%; height: 50px; background: #1e1f20; border: 1px solid #282a2c; border-radius: 32px; padding: 0 18px; color: #f2f2f2; font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; cursor: pointer; position: relative; transition: border-color 0.2s; }
+        .signal-accordion-btn:hover { border-color: #3b3d40; }
         .signal-title-center { flex: 1; text-align: center; }
-        .signal-arrow-icon { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 16px; }
-        .signal-body { display: none; background: #17181a; border-radius: 16px; padding: 16px; margin-top: 10px; border: 1px solid #282a2c; }
-        .signal-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #282a2c; font-size: 0.85rem; }
+        .signal-arrow-icon { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 18px; }
+        
+        .signal-body { display: none; background: #17181a; border-radius: 16px; padding: 18px 16px; margin-top: 10px; border: 1px solid #282a2c; }
+        .signal-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid #282a2c; font-size: 0.86rem; }
         .signal-row:last-child { border-bottom: none; }
+        .signal-row span { color: #c4c7c5; }
 
-        .guide-box { padding: 12px 0 0 0; margin-top: 12px; font-size: 0.82rem; line-height: 1.5; color: #d1d5db; }
-        .guide-title { font-weight: 700; color: #38bdf8; margin-bottom: 4px; }
+        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.55; color: #d1d5db; border-top: 1px solid #282a2c; }
+        .guide-title { font-weight: 700; color: #10b981; margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
         .guide-disclaimer { margin-top: 10px; font-size: 0.65rem; color: #6b7280; text-align: center; }
 
         .news-item { padding: 10px 0; border-bottom: 1px solid #282a2c; text-decoration: none; display: block; }
@@ -985,7 +989,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="chart-legend">
                             <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
                             <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
-                            <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
+                            <div class="legend-tag"><span class="legend-dot" style="background:#10b981;"></span> 볼린저 상단 (저항)</div>
                             <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
                         </div>
                         <div class="chart-box-wrap" id="tvChart"></div>
@@ -1006,13 +1010,14 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div id="globalNewsList"></div>
                     </div>
 
+                    <!-- 3대 시장 통합 컨센서스 카드 -->
                     <div class="card" id="unifiedCard" style="display:none;">
                         <div style="margin-bottom:16px;">
                             <span style="font-size:1.05rem; font-weight:700; color:#f2f2f2;" id="uTitle"></span>
                         </div>
 
                         <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid #282a2c;">
-                            <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0; display:flex;">
+                            <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0;">
                                 <span style="font-size:1.1rem; font-weight:800; color:#fff; line-height:1;" id="uGaugeVal"></span>
                                 <span style="font-size:0.55rem; color:#8e918f; margin-top:3px;" id="uGaugeLabel"></span>
                             </div>
@@ -1084,30 +1089,30 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 번개 이모티콘 완벽 제거된 시그널 아코디언 버튼 -->
+                    <!-- 오른쪽 컨센서스 분위기로 톤앤매너 완벽 일치된 시그널 영역 -->
                     <div style="margin-bottom:14px;">
                         <button class="signal-accordion-btn" onclick="toggleSignal()">
-                            <span class="signal-title-center">gaemiGTP 시그널 타점</span>
+                            <span class="signal-title-center">gaemiGTP 시그널</span>
                             <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
                         </button>
                         <div class="signal-body" id="signalBody">
-                            <div class="signal-row"><span>1차 매수 진입 타점</span><strong id="rEntry1" style="color:#fff;"></strong></div>
-                            <div class="signal-row"><span>2차 분할 진입 타점</span><strong id="rEntry2" style="color:#fff;"></strong></div>
-                            <div class="signal-row"><span>1차 목표 수익가 (+4.5%)</span><strong id="rTarget1" style="color:#ef4444;"></strong></div>
-                            <div class="signal-row"><span>2차 목표 수익가 (+8.5%)</span><strong id="rTarget2" style="color:#ef4444;"></strong></div>
-                            <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong id="rStop" style="color:#38bdf8;"></strong></div>
+                            <div class="signal-row"><span>1차 매수 진입가</span><strong id="rEntry1" style="color:#ffffff; font-weight:700;"></strong></div>
+                            <div class="signal-row"><span>2차 분할 진입가</span><strong id="rEntry2" style="color:#ffffff; font-weight:700;"></strong></div>
+                            <div class="signal-row"><span>1차 목표 수익가 (+4.5%)</span><strong id="rTarget1" style="color:#10b981; font-weight:700;"></strong></div>
+                            <div class="signal-row"><span>2차 목표 수익가 (+8.5%)</span><strong id="rTarget2" style="color:#10b981; font-weight:700;"></strong></div>
+                            <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong id="rStop" style="color:#38bdf8; font-weight:700;"></strong></div>
                             <div class="signal-row" style="margin-top:6px; border-top:1px dashed #282a2c; padding-top:8px;">
                                 <span>1년 백테스트 검증</span>
-                                <span id="rBt1y" style="color:#38bdf8; font-weight:700;"></span>
+                                <span id="rBt1y" style="color:#10b981; font-weight:700;"></span>
                             </div>
                             <div class="signal-row">
                                 <span>2년 백테스트 검증</span>
-                                <span id="rBt2y" style="color:#38bdf8; font-weight:700;"></span>
+                                <span id="rBt2y" style="color:#10b981; font-weight:700;"></span>
                             </div>
                             
                             <div class="guide-box">
                                 <div class="guide-title">gaemiGTP 시그널 가이드</div>
-                                <div id="rGuideText"></div>
+                                <div id="rGuideText" style="margin-top:4px; color:#c4c7c5;"></div>
                                 <div class="guide-disclaimer">과거의 수익률이 미래의 수익을 보장하지 않습니다.</div>
                             </div>
                         </div>
@@ -1425,12 +1430,12 @@ HTML_PAGE = """<!DOCTYPE html>
             });
 
             const candleSeries = chart.addCandlestickSeries({
-                upColor: '#ef4444',
+                upColor: '#10b981',
                 downColor: '#38bdf8',
                 borderDownColor: '#38bdf8',
-                borderUpColor: '#ef4444',
+                borderUpColor: '#10b981',
                 wickDownColor: '#38bdf8',
-                wickUpColor: '#ef4444',
+                wickUpColor: '#10b981',
                 priceLineVisible: false,
                 lastValueVisible: true
             });
@@ -1442,7 +1447,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
             lineMa60.setData(ma60);
 
-            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
+            const lineBbUp = chart.addLineSeries({ color: '#10b981', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
             lineBbUp.setData(bbUp);
 
             const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });

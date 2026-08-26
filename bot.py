@@ -685,7 +685,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (기본 닫힘 방식 적용)
+# 6. 웹 프론트엔드 UI (어두워짐 제거 / 불필요 요소 삭제 완벽 적용)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -701,7 +701,7 @@ HTML_PAGE = """<!DOCTYPE html>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
         body { background-color: #131314; color: #e3e3e3; min-height: 100vh; overflow-x: hidden; display: flex; }
         
-        /* 사이드바 기본 닫힘(숨김) */
+        /* Gemini 사이드바 (기본 닫힘, 그림자 강화) */
         #sidebar-wrapper {
             width: 260px;
             background-color: #1e1f20;
@@ -716,9 +716,11 @@ HTML_PAGE = """<!DOCTYPE html>
             border-right: 1px solid #282a2c;
             transform: translateX(-100%);
             transition: transform 0.25s ease;
+            box-shadow: none;
         }
         #sidebar-wrapper.open {
             transform: translateX(0);
+            box-shadow: 10px 0 30px rgba(0,0,0,0.5);
         }
 
         .side-top-action {
@@ -786,12 +788,6 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         .sidebar-item:hover { background: #282a2c; color: #fff; }
 
-        .sidebar-bottom {
-            padding-top: 12px;
-            border-top: 1px solid #282a2c;
-        }
-
-        /* 메인 컨텐츠 영역: 기본 마진 0 */
         #content-wrapper {
             margin-left: 0;
             width: 100%;
@@ -805,7 +801,6 @@ HTML_PAGE = """<!DOCTYPE html>
             height: 56px;
             display: flex;
             align-items: center;
-            justify-content: space-between;
             padding: 0 20px;
             background: #131314;
             border-bottom: 1px solid #282a2c;
@@ -894,14 +889,11 @@ HTML_PAGE = """<!DOCTYPE html>
 
         #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 80px; background: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%); align-items: center; justify-content: center; padding: 0 16px 8px; z-index: 50; }
         .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.92rem; }
-
-        .sidebar-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 90; }
-        .sidebar-overlay.open { display: block; }
     </style>
 </head>
 <body>
 
-    <div class="sidebar-overlay" id="sideOverlay" onclick="toggleSidebar()"></div>
+    <!-- 사이드바 -->
     <div id="sidebar-wrapper">
         <div class="side-top-action">
             <button class="gemini-menu-icon" onclick="toggleSidebar()">
@@ -924,15 +916,9 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="sidebar-item" onclick="doSearch('삼성전자');">삼성전자</div>
             <div class="sidebar-item" onclick="doSearch('비트코인');">비트코인</div>
         </div>
-
-        <div class="sidebar-bottom">
-            <div class="sidebar-item" style="color:#f59e0b; font-weight:600; justify-content:space-between;">
-                <span>PRO 멤버십 관리</span>
-                <span>→</span>
-            </div>
-        </div>
     </div>
 
+    <!-- 메인 컨텐츠 영역 -->
     <div id="content-wrapper">
         <header>
             <div class="header-left">
@@ -941,7 +927,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 </button>
                 <div class="logo-top" id="headerLogo" onclick="resetToHome()">gaemiGTP</div>
             </div>
-            <button class="new-btn" onclick="resetToHome()" style="background:#1e1f20; border:1px solid #282a2c; color:#c4c7c5; padding:6px 14px; border-radius:20px; font-size:0.82rem; cursor:pointer;">+ 새 검색</button>
         </header>
 
         <div id="main-view">
@@ -1177,10 +1162,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function toggleSidebar() {
             const side = document.getElementById('sidebar-wrapper');
-            const overlay = document.getElementById('sideOverlay');
-            
             side.classList.toggle('open');
-            overlay.classList.toggle('open');
         }
 
         function toggleModelDropdown(target) {
@@ -1220,6 +1202,12 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (cd) cd.style.display = 'none';
                 if (bd) bd.style.display = 'none';
             }
+            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
+                const side = document.getElementById('sidebar-wrapper');
+                if (side && side.classList.contains('open')) {
+                    side.classList.remove('open');
+                }
+            }
         });
 
         function resetToHome() {
@@ -1232,8 +1220,8 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('centerInput').value = '';
             document.getElementById('bottomInput').value = '';
             
-            document.getElementById('sidebar-wrapper').classList.remove('open');
-            document.getElementById('sideOverlay').classList.remove('open');
+            const side = document.getElementById('sidebar-wrapper');
+            if (side) side.classList.remove('open');
         }
 
         function toggleSignal() {
@@ -1261,8 +1249,8 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('loading').style.display = 'block';
             document.getElementById('result-card-wrap').style.display = 'none';
 
-            document.getElementById('sidebar-wrapper').classList.remove('open');
-            document.getElementById('sideOverlay').classList.remove('open');
+            const side = document.getElementById('sidebar-wrapper');
+            if (side) side.classList.remove('open');
 
             try {
                 const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);

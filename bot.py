@@ -685,7 +685,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (어두워짐 제거 / 불필요 요소 삭제 완벽 적용)
+# 6. 웹 프론트엔드 UI (Gemini 공식: 좌측 로고 / 우측 닫기버튼 1:1 적용)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -701,7 +701,7 @@ HTML_PAGE = """<!DOCTYPE html>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
         body { background-color: #131314; color: #e3e3e3; min-height: 100vh; overflow-x: hidden; display: flex; }
         
-        /* Gemini 사이드바 (기본 닫힘, 그림자 강화) */
+        /* Gemini 사이드바 (기본 닫힘) */
         #sidebar-wrapper {
             width: 260px;
             background-color: #1e1f20;
@@ -723,12 +723,14 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: 10px 0 30px rgba(0,0,0,0.5);
         }
 
+        /* 사이드바 상단: 좌측 로고 / 우측 닫기 버튼 */
         .side-top-action {
             height: 44px;
             display: flex;
             align-items: center;
-            gap: 12px;
+            justify-content: space-between;
             margin-bottom: 12px;
+            padding: 0 4px;
         }
 
         .gemini-menu-icon {
@@ -893,13 +895,13 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
-    <!-- 사이드바 -->
+    <!-- Gemini 사이드바: 좌측 로고, 우측 닫기 버튼 배치 -->
     <div id="sidebar-wrapper">
         <div class="side-top-action">
-            <button class="gemini-menu-icon" onclick="toggleSidebar()">
+            <span style="font-weight:700; font-size:1.15rem; color:#fff; cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
+            <button class="gemini-menu-icon" onclick="toggleSidebar()" title="패널 접기">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
             </button>
-            <span style="font-weight:700; font-size:1.15rem; color:#fff; cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
         </div>
 
         <button class="gemini-new-btn" onclick="resetToHome()">
@@ -922,7 +924,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <div id="content-wrapper">
         <header>
             <div class="header-left">
-                <button class="gemini-menu-icon" id="headerToggleBtn" onclick="toggleSidebar()">
+                <button class="gemini-menu-icon" id="headerToggleBtn" onclick="toggleSidebar()" title="패널 열기">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
                 </button>
                 <div class="logo-top" id="headerLogo" onclick="resetToHome()">gaemiGTP</div>

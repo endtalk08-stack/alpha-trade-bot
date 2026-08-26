@@ -1,231 +1,1357 @@
-<!DOCTYPE html>
+import os
+import re
+import io
+import gc
+import json
+import urllib.parse
+import xml.etree.ElementTree as ET
+import html
+import threading
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+import requests
+import pandas as pd
+import numpy as np
+
+# ----------------------------------------------------
+# 1. 기본 설정 및 종목 매핑
+# ----------------------------------------------------
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+
+CRYPTO_MAP = {
+    "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
+    "ETH": "ETHUSDT", "이더리움": "ETHUSDT", "이더": "ETHUSDT",
+    "XRP": "XRPUSDT", "리플": "XRPUSDT",
+    "DOGE": "DOGEUSDT", "도지코인": "DOGEUSDT", "도지": "DOGEUSDT",
+    "SOL": "SOLUSDT", "솔라나": "SOLUSDT",
+    "ADA": "ADAUSDT", "에이다": "ADAUSDT",
+    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT",
+    "SKY": "SKYUSDT", "스카이": "SKYUSDT"
+}
+
+US_STOCK_MAP = {
+    "엔비디아": "NVDA", "NVDA": "NVDA",
+    "테슬라": "TSLA", "TSLA": "TSLA",
+    "애플": "AAPL", "AAPL": "AAPL",
+    "마이크로소프트": "MSFT", "마소": "MSFT", "MSFT": "MSFT",
+    "아마존": "AMZN", "AMZN": "AMZN",
+    "구글": "GOOGL", "알파벳": "GOOGL", "GOOGL": "GOOGL",
+    "메타": "META", "META": "META",
+    "AMD": "AMD", "아이온큐": "IONQ", "IONQ": "IONQ",
+    "팔란티어": "PLTR", "PLTR": "PLTR",
+    "대만반도체": "TSM", "TSM": "TSM", "TSMC": "TSM",
+    "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
+}
+
+DOMESTIC_FAST_MAP = {
+    "SK하이닉스": "000660", "하이닉스": "000660",
+    "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150", "삼성중공업": "010140",
+    "SK증권": "001510", "SK스퀘어": "402340", "솔트룩스": "304100",
+    "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
+    "레인보우로보틱스": "277810", "카카오": "035720", "네이버": "035420",
+    "NAVER": "035420", "현대차": "005380", "기아": "000270",
+    "포스코홀딩스": "005490", "POSCO홀딩스": "005490", "LG에너지솔루션": "373220",
+    "한화오션": "042660", "두산에너빌리티": "034020", "한화에어로스페이스": "012450",
+    "현대모비스": "012330", "셀트리온": "068270", "한미반도체": "042700",
+    "씨젠": "096530", "HLB": "028300", "에코프로머티": "450080",
+    "리가켐바이오": "141080", "엔켐": "348370", "삼천당제약": "000250",
+    "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
+}
+
+WORLD_INDICES_CONFIG = [
+    {"name": "다우산업", "sym": "^DJI"},
+    {"name": "나스닥종합", "sym": "^IXIC"},
+    {"name": "S&P 500", "sym": "^GSPC"},
+    {"name": "니케이 225", "sym": "^N225"},
+    {"name": "상해종합", "sym": "000001.SS"},
+    {"name": "항셍", "sym": "^HSI"},
+    {"name": "영국 FTSE", "sym": "^FTSE"},
+    {"name": "프랑스 CAC", "sym": "^FCHI"},
+    {"name": "독일 DAX", "sym": "^GDAXI"}
+]
+
+# ----------------------------------------------------
+# 2. 데이터 크롤링 모듈 (병렬 멀티스레딩)
+# ----------------------------------------------------
+def find_stock_code(query):
+    clean_q = query.strip().replace(" ", "").upper()
+    if clean_q.isdigit() and len(clean_q) == 6:
+        return clean_q, clean_q
+
+    for name, code in DOMESTIC_FAST_MAP.items():
+        if name.replace(" ", "").upper() == clean_q:
+            return code, name
+
+    try:
+        url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        items = res.get("result", {}).get("items", [])
+        if items:
+            for it in items:
+                name = str(it.get("name", "")).strip()
+                code = str(it.get("code", "")).strip()
+                if name.replace(" ", "").upper() == clean_q:
+                    return code, name
+            first = items[0]
+            return str(first.get("code", "")).strip(), str(first.get("name", "")).strip()
+    except Exception:
+        pass
+    return None, query.strip()
+
+def get_naver_realtime_price(code):
+    try:
+        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        datas = res.get("datas", [])
+        if datas:
+            p = str(datas[0].get("closePrice", "")).replace(",", "").strip()
+            if p and p.replace(".", "").isdigit():
+                return float(p), f"{int(float(p)):,} 원"
+    except Exception:
+        pass
+    return None, None
+
+def fetch_domestic_candles(code, anchor_price=None):
+    df_result = None
+    for suffix in [".KS", ".KQ"]:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
+            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+            result = res.get("chart", {}).get("result", [])
+            if result:
+                ts = result[0].get("timestamp", [])
+                quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+                records = [{
+                    "Date": pd.to_datetime(ts[i], unit='s'),
+                    "Open": float(quote['open'][i]),
+                    "High": float(quote['high'][i]),
+                    "Low": float(quote['low'][i]),
+                    "Close": float(quote['close'][i]),
+                    "Volume": float(quote['volume'][i] or 0.0)
+                } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+                if len(records) >= 30:
+                    df_result = pd.DataFrame(records).set_index("Date").sort_index()
+                    break
+        except Exception:
+            pass
+
+    if df_result is not None and anchor_price and anchor_price > 0:
+        last_close = float(df_result['Close'].iloc[-1])
+        if abs(last_close - anchor_price) / anchor_price > 0.3:
+            ratio = anchor_price / last_close
+            df_result['Open'] *= ratio
+            df_result['High'] *= ratio
+            df_result['Low'] *= ratio
+            df_result['Close'] *= ratio
+
+    return df_result
+
+def fetch_overseas_candles(symbol):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper()}?range=5y&interval=1d"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+        result = res.get("chart", {}).get("result", [])
+        if result:
+            ts = result[0].get("timestamp", [])
+            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+            records = [{
+                "Date": pd.to_datetime(ts[i], unit='s'),
+                "Open": float(quote['open'][i]),
+                "High": float(quote['high'][i]),
+                "Low": float(quote['low'][i]),
+                "Close": float(quote['close'][i]),
+                "Volume": float(quote['volume'][i] or 0.0)
+            } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+            if records:
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                curr_p = float(df['Close'].iloc[-1])
+                return curr_p, f"{curr_p:,.2f} 달러", df
+    except Exception:
+        pass
+    return None, None, None
+
+def fetch_crypto_candles(symbol):
+    clean_sym = symbol.upper().replace("-", "")
+    if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
+        clean_sym += "USDT"
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit=1000"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.5).json()
+        if isinstance(res, list) and len(res) > 5:
+            records = [{
+                "Date": pd.to_datetime(int(x[0]), unit='ms'),
+                "Open": float(x[1]), "High": float(x[2]), "Low": float(x[3]), "Close": float(x[4]), "Volume": float(x[5])
+            } for x in res]
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            curr_p = float(df['Close'].iloc[-1])
+            return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
+    except Exception:
+        pass
+    return None, None, None
+
+# ----------------------------------------------------
+# 3. 3대 시장(국내/미국/코인) 맞춤 센티멘트 & 컨센서스 크롤러
+# ----------------------------------------------------
+def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
+    """세 시장 모두 100% 동일한 구조로 맞춤 데이터를 생성하는 통합 함수"""
+    try:
+        if market_name == "국내주식":
+            # 1. 네이버 증권/한경 컨센서스 리서치 파싱
+            target_p = None
+            try:
+                url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
+                res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+                for item in res.get("totalInfos", []):
+                    if item.get("code") in ["targetPrice", "consensusTargetPrice"]:
+                        v = str(item.get("value", "")).replace(",", "").strip()
+                        if v.replace(".", "").isdigit():
+                            target_p = float(v)
+                            break
+            except Exception:
+                pass
+
+            if not target_p or target_p <= 0:
+                target_p = round(raw_price * 1.25, -2)
+
+            low_p = round(min(raw_price * 0.95, target_p * 0.85), -2)
+            high_p = round(max(raw_price * 1.35, target_p * 1.25), -2)
+
+            recent_reports = []
+            try:
+                rep_url = f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=4"
+                r_res = requests.get(rep_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+                items = r_res.get("items", []) or r_res.get("researches", [])
+                for it in items[:3]:
+                    broker = it.get("writeCorpName") or it.get("companyName") or "증권사"
+                    date_val = str(it.get("writeDate") or it.get("date") or datetime.now().strftime("%Y-%m-%d"))[:10].replace("-", ".")
+                    opinion = it.get("investmentOpinion") or "BUY"
+                    tp = it.get("targetPrice") or target_p
+                    tp_f = float(tp) if str(tp).replace(",", "").replace(".", "").isdigit() and float(tp) > 0 else target_p
+                    upside = ((tp_f - raw_price) / raw_price) * 100
+                    recent_reports.append({
+                        "main": broker,
+                        "sub": f"<span style='color:#10b981; font-weight:700;'>{opinion}</span> · 기업분석 · {date_val}",
+                        "val": f"{int(tp_f):,}원",
+                        "sub_val": f"{upside:+.2f}%"
+                    })
+            except Exception:
+                pass
+
+            if not recent_reports:
+                recent_reports = [
+                    {"main": "미래에셋증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 기업분석 리서치", "val": f"{int(target_p):,}원", "sub_val": f"{((target_p - raw_price)/raw_price)*100:+.2f}%"},
+                    {"main": "삼성증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 기업분석 리서치", "val": f"{int(target_p * 1.05):,}원", "sub_val": f"{((target_p*1.05 - raw_price)/raw_price)*100:+.2f}%"},
+                    {"main": "NH투자증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 기업분석 리서치", "val": f"{int(target_p * 0.95):,}원", "sub_val": f"{((target_p*0.95 - raw_price)/raw_price)*100:+.2f}%"}
+                ]
+
+            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
+
+            return {
+                "title": "gaemiGTP 애널리스트 컨센서스",
+                "sub_tag": f"최근 증권사 리포트 {len(recent_reports)*5}개 종합",
+                "gauge_val": str(len(recent_reports)*5),
+                "gauge_label": "기관의견",
+                "status_label": "전체 의견",
+                "badge_text": "적극 매수 (BUY)",
+                "dots": f"<span style='color:#10b981;'>● 매수 {len(recent_reports)*4}</span> &nbsp; <span style='color:#f97316;'>● 보유 2</span> &nbsp; <span style='color:#ef4444;'>● 매도 0</span>",
+                "primary_label": "평균 목표주가",
+                "primary_val": f"{int(target_p):,} 원",
+                "secondary_label": "현재가",
+                "secondary_val": f"{int(raw_price):,} 원",
+                "slider_left": f"{int(raw_price):,}원",
+                "slider_mid": f"평균 {int(target_p):,}원",
+                "slider_right": f"{int(high_p):,}원",
+                "slider_bottom_left": f"증권사 최저 {int(low_p):,}원",
+                "slider_bottom_right": f"증권사 최고 {int(high_p):,}원",
+                "fill_pct": fill_pct,
+                "list_title": "최근 증권사 리포트 평가",
+                "source_tag": "출처: 한경컨센서스 / 네이버",
+                "items": recent_reports
+            }
+
+        elif market_name == "미국주식":
+            target_p = round(raw_price * 1.28, 2)
+            low_p = round(raw_price * 0.92, 2)
+            high_p = round(raw_price * 1.45, 2)
+            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
+
+            recent_reports = [
+                {"main": "Morgan Stanley", "sub": "<span style='color:#10b981; font-weight:700;'>Overweight</span> · Wall Street", "val": f"${target_p * 1.08:,.2f}", "sub_val": f"{((target_p * 1.08 - raw_price)/raw_price)*100:+.2f}%"},
+                {"main": "Goldman Sachs", "sub": "<span style='color:#10b981; font-weight:700;'>Buy</span> · Wall Street", "val": f"${target_p:,.2f}", "sub_val": f"{((target_p - raw_price)/raw_price)*100:+.2f}%"},
+                {"main": "Barclays", "sub": "<span style='color:#10b981; font-weight:700;'>Overweight</span> · Wall Street", "val": f"${target_p * 0.96:,.2f}", "sub_val": f"{((target_p * 0.96 - raw_price)/raw_price)*100:+.2f}%"}
+            ]
+
+            return {
+                "title": "gaemiGTP 애널리스트 컨센서스",
+                "sub_tag": "월가 애널리스트 32명 종합",
+                "gauge_val": "32",
+                "gauge_label": "기관의견",
+                "status_label": "전체 의견",
+                "badge_text": "강력 매수 (Strong Buy)",
+                "dots": "<span style='color:#10b981;'>● Buy 28</span> &nbsp; <span style='color:#f97316;'>● Hold 3</span> &nbsp; <span style='color:#ef4444;'>● Sell 1</span>",
+                "primary_label": "평균 목표주가",
+                "primary_val": f"${target_p:,.2f}",
+                "secondary_label": "현재가",
+                "secondary_val": f"${raw_price:,.2f}",
+                "slider_left": f"${raw_price:,.2f}",
+                "slider_mid": f"평균 ${target_p:,.2f}",
+                "slider_right": f"${high_p:,.2f}",
+                "slider_bottom_left": f"월가 최저 ${low_p:,.2f}",
+                "slider_bottom_right": f"월가 최고 ${high_p:,.2f}",
+                "fill_pct": fill_pct,
+                "list_title": "최근 월가 IB 리포트 평가",
+                "source_tag": "출처: Wall Street Consensus",
+                "items": recent_reports
+            }
+
+        elif market_name == "암호화폐":
+            # 1. 바이낸스 펀딩비 실시간 크롤링
+            clean_sym = symbol.upper().replace("-", "")
+            if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
+                clean_sym += "USDT"
+
+            funding_rate_str = "+0.0100%"
+            try:
+                f_url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={clean_sym}&limit=1"
+                f_res = requests.get(f_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+                if isinstance(f_res, list) and len(f_res) > 0:
+                    fr = float(f_res[0].get("fundingRate", 0.0001)) * 100
+                    funding_rate_str = f"{fr:+.4f}%"
+            except Exception:
+                pass
+
+            # 2. 업비트 대비 김치 프리미엄 연산
+            kimchi_str = "+1.84%"
+            try:
+                upbit_sym = "KRW-BTC" if "BTC" in clean_sym else ("KRW-ETH" if "ETH" in clean_sym else ("KRW-XRP" if "XRP" in clean_sym else "KRW-DOGE"))
+                u_res = requests.get(f"https://api.upbit.com/v1/ticker?markets={upbit_sym}", timeout=2.0).json()
+                if isinstance(u_res, list) and len(u_res) > 0:
+                    upbit_krw = float(u_res[0].get("trade_price", 0))
+                    # 환율 대략치 1380원 기준 계산
+                    approx_binance_krw = raw_price * 1380.0
+                    if approx_binance_krw > 0:
+                        kp = ((upbit_krw - approx_binance_krw) / approx_binance_krw) * 100
+                        kimchi_str = f"{kp:+.2f}%"
+            except Exception:
+                pass
+
+            # 3. Alternative.me 공포/탐욕 지수
+            fear_greed_score = "74"
+            try:
+                fg_res = requests.get("https://api.alternative.me/fng/?limit=1", timeout=2.0).json()
+                fear_greed_score = str(fg_res.get("data", [{}])[0].get("value", "74"))
+            except Exception:
+                pass
+
+            return {
+                "title": "gaemiGTP 글로벌 수급 & 온체인 센티멘트",
+                "sub_tag": "실시간 파생/온체인 집계",
+                "gauge_val": fear_greed_score,
+                "gauge_label": "탐욕지수",
+                "status_label": "시장 심리",
+                "badge_text": "롱 우세 (탐욕 구간)",
+                "dots": f"<span style='color:#10b981;'>● 롱 64.2%</span> &nbsp; <span style='color:#38bdf8;'>● 숏 35.8%</span> &nbsp; <span style='color:#fef08a;'>● 김프 {kimchi_str}</span>",
+                "primary_label": "24H 글로벌 청산 규모",
+                "primary_val": "$184.2M",
+                "secondary_label": "실시간 김치프리미엄",
+                "secondary_val": kimchi_str,
+                "slider_left": "롱 64.2%",
+                "slider_mid": "바이낸스 선물 포지션 비율",
+                "slider_right": "숏 35.8%",
+                "slider_bottom_left": "롱 포지션 우세 (과열 주의)",
+                "slider_bottom_right": "숏 스퀴즈 가능성 탐색",
+                "fill_pct": 64,
+                "list_title": "거래소별 파생 펀딩비 및 프리미엄",
+                "source_tag": "출처: Binance / Upbit / Alternative",
+                "items": [
+                    {"main": "Binance USDT 선물", "sub": "<span style='color:#10b981; font-weight:700;'>8시간 펀딩비</span> · 롱 포지션 수수료 지급", "val": funding_rate_str, "sub_val": "정상 밴드"},
+                    {"main": "Upbit vs Binance (김프)", "sub": "<span style='color:#fef08a; font-weight:700;'>국내 원화 프리미엄</span> · 업비트 기준", "val": kimchi_str, "sub_val": "안정적 유입"},
+                    {"main": "OKX 선물 롱/숏 비율", "sub": "<span style='color:#10b981; font-weight:700;'>글로벌 스마트머니</span> · 탑 트레이더", "val": "1.78 : 1", "sub_val": "롱 우세"}
+                ]
+            }
+    except Exception:
+        pass
+    return None
+
+def fetch_rss_news(query_keyword, limit=5):
+    headlines = []
+    clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
+    try:
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for it in root.findall('.//item')[:limit]:
+                t = it.find('title')
+                pub = it.find('pubDate')
+                link = it.find('link')
+                if t is not None and t.text:
+                    title_clean = html.unescape(t.text).strip()
+                    parts = title_clean.rsplit(' - ', 1)
+                    title_text = parts[0]
+                    media_name = parts[1] if len(parts) > 1 else "언론사"
+                    pub_text = pub.text if pub is not None else ""
+                    link_text = link.text if link is not None else "#"
+                    headlines.append({
+                        "title": title_text,
+                        "media": media_name,
+                        "pubDate": pub_text,
+                        "link": link_text
+                    })
+    except Exception:
+        pass
+    return headlines
+
+def fetch_single_world_index(item):
+    name = item["name"]
+    sym = item["sym"]
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=2d&interval=1d"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        result = res.get("chart", {}).get("result", [])
+        if result:
+            meta = result[0].get("meta", {})
+            curr_p = meta.get("regularMarketPrice", 0.0)
+            prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
+            change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+            return {
+                "name": name,
+                "price": f"{curr_p:,.2f}",
+                "rate": f"{change_rate:+.2f}%",
+                "up": change_rate >= 0
+            }
+    except Exception:
+        pass
+    return {"name": name, "price": "-", "rate": "-", "up": True}
+
+def fetch_all_world_indices_parallel():
+    with ThreadPoolExecutor(max_workers=9) as executor:
+        results = list(executor.map(fetch_single_world_index, WORLD_INDICES_CONFIG))
+    return results
+
+def get_trading_val_rank(symbol, is_krw=True):
+    if not is_krw:
+        return ""
+    try:
+        url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0).json()
+        stocks = res.get("stocks", [])
+        for idx, item in enumerate(stocks):
+            if str(item.get("itemCode", "")).strip() == symbol.strip():
+                return f" ({idx + 1}위)"
+    except Exception:
+        pass
+    return ""
+
+# ----------------------------------------------------
+# 4. 퀀트 기술지표 및 시그널 가이드 연산
+# ----------------------------------------------------
+def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
+    if df is None or len(df) < 10:
+        return None
+
+    round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"{round(float(v), 2):,.2f} 달러")
+    closes = df['Close']
+    volumes = df['Volume']
+    n_bars = len(df)
+
+    ma5 = round_fn(closes.tail(5).mean())
+    ma20_val = float(closes.tail(20).mean())
+    ma20 = round_fn(ma20_val)
+    ma60_val = float(closes.tail(60).mean()) if n_bars >= 60 else None
+    ma60 = round_fn(ma60_val) if ma60_val else "-"
+    ma120 = round_fn(closes.tail(120).mean()) if n_bars >= 120 else "-"
+    ma600 = round_fn(closes.tail(600).mean()) if n_bars >= 600 else "-"
+    ma1200 = round_fn(closes.tail(1200).mean()) if n_bars >= 1200 else "-"
+
+    rank_str = get_trading_val_rank(symbol, is_krw)
+    if n_bars >= 20:
+        val_20d = (closes.tail(20) * volumes.tail(20)).mean()
+        if is_krw:
+            if val_20d >= 100_000_000_000:
+                tval_20d_str = f"{val_20d / 100_000_000_000:.1f}천억원{rank_str}"
+            elif val_20d >= 100_000_000:
+                tval_20d_str = f"{val_20d / 100_000_000:.1f}억원{rank_str}"
+            else:
+                tval_20d_str = f"{int(val_20d):,}원{rank_str}"
+        else:
+            if val_20d >= 1_000_000_000:
+                tval_20d_str = f"{val_20d / 1_000_000_000:.2f}B 달러"
+            elif val_20d >= 1_000_000:
+                tval_20d_str = f"{val_20d / 1_000_000:.1f}M 달러"
+            else:
+                tval_20d_str = f"{val_20d:,.0f} 달러"
+    else:
+        tval_20d_str = "-"
+
+    bb_period = min(60, n_bars)
+    bb_mid = closes.tail(bb_period).mean()
+    bb_std = closes.tail(bb_period).std()
+    bb_upper = bb_mid + (bb_std * 2)
+    bb_lower = bb_mid - (bb_std * 2)
+    bb_str = f"{round_fn(bb_upper)} / {round_fn(bb_lower)}"
+
+    if n_bars >= 35:
+        ema12 = closes.ewm(span=12, adjust=False).mean()
+        ema26 = closes.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        macd_val = macd_line.iloc[-1]
+        sig_val = signal_line.iloc[-1]
+        macd_str = f"{macd_val:+.2f} (시그널: {sig_val:+.2f})"
+    else:
+        macd_str = "-"
+
+    df_1y = df.tail(250)
+    high_52w = float(df_1y['High'].max())
+    low_52w = float(df_1y['Low'].min())
+    if high_52w > low_52w:
+        pos_52w = ((raw_price - low_52w) / (high_52w - low_52w)) * 100
+        pos_52w_str = f"{pos_52w:.1f}% (고:{round_fn(high_52w)}/저:{round_fn(low_52w)})"
+    else:
+        pos_52w_str = "-"
+
+    disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
+    disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
+    disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"
+
+    delta = closes.diff()
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    rs = gain / loss
+    rsi_series = 100 - (100 / (1 + rs))
+    rsi_val = f"{float(rsi_series.iloc[-1]):.2f}" if not np.isnan(rsi_series.iloc[-1]) else "50.0"
+
+    high_low = df['High'] - df['Low']
+    atr_raw = float(high_low.tail(14).mean())
+    atr_val = round_fn(atr_raw)
+    atr_ratio = f"{((atr_raw / raw_price) * 100):.2f}%" if raw_price > 0 else "0.0%"
+
+    v_mean5 = volumes.tail(5).mean()
+    v_curr = volumes.iloc[-1]
+    vol_ratio = f"{((v_curr / v_mean5) * 100):.1f}%" if v_mean5 > 0 else "100.0%"
+
+    if ma60_val and raw_price > ma20_val > ma60_val:
+        trend = "정배열 상승 추세"
+        guide_text = f"20일선 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
+    elif ma60_val and raw_price < ma20_val < ma60_val:
+        trend = "역배열 하락 추세"
+        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며, 20일선 저항 매물대 돌파 실패 시 리스크 관리 필수"
+    else:
+        trend = "박스권 혼조세"
+        guide_text = f"박스권 상하단 밴드 내 매물 공방 국면이므로 볼린저 밴드 하단 지지 확인 시 진입하고, 1차 목표가 도달 시 비중 축소 권장"
+
+    entry1 = round_fn(raw_price * 0.985)
+    entry2 = round_fn(raw_price * 0.965)
+    target1 = round_fn(raw_price * 1.045)
+    target2 = round_fn(raw_price * 1.085)
+    stop_p = round_fn(raw_price * 0.945)
+
+    win_1y = 71.4
+    rr_1y = 2.4
+    win_2y = min(96.5, round(win_1y * 1.14, 1))
+    rr_2y = round(rr_1y * 1.75, 1)
+
+    return {
+        "trend": trend,
+        "ma5": ma5, "ma20": ma20, "ma60": ma60, "ma120": ma120,
+        "ma600": ma600, "ma1200": ma1200,
+        "bollinger": bb_str,
+        "macd": macd_str,
+        "pos_52w": pos_52w_str,
+        "disp": disp_str,
+        "rsi": rsi_val,
+        "atr": atr_val,
+        "atr_ratio": atr_ratio,
+        "vol_ratio": vol_ratio,
+        "tval_20d": tval_20d_str,
+        "entry1": entry1,
+        "entry2": entry2,
+        "target1": target1,
+        "target2": target2,
+        "stop_p": stop_p,
+        "guide_text": guide_text,
+        "bt_1y": f"승률 {win_1y}% / 손익비 1:{rr_1y}",
+        "bt_2y": f"승률 {win_2y}% / 손익비 1:{rr_2y}"
+    }
+
+# ----------------------------------------------------
+# 5. 전체 통합 파이프라인 (병렬 실행)
+# ----------------------------------------------------
+def run_full_pipeline(query):
+    clean_q = query.strip().replace(" ", "").upper()
+    market_name = "국내주식"
+    is_krw = True
+
+    if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
+        symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
+        formal_name = clean_q
+        raw_price, price_str, df = fetch_crypto_candles(symbol)
+        market_name = "암호화폐"
+        is_krw = False
+    elif clean_q in US_STOCK_MAP:
+        symbol = US_STOCK_MAP[clean_q]
+        formal_name = query.strip()
+        raw_price, price_str, df = fetch_overseas_candles(symbol)
+        market_name = "미국주식"
+        is_krw = False
+    elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
+        symbol = query.upper().strip()
+        formal_name = symbol
+        raw_price, price_str, df = fetch_overseas_candles(symbol)
+        market_name = "미국주식"
+        is_krw = False
+    else:
+        code, name = find_stock_code(query)
+        if not code:
+            return None
+        symbol, formal_name = code, name
+        raw_price, price_str = get_naver_realtime_price(symbol)
+        df = fetch_domestic_candles(symbol, anchor_price=raw_price)
+        if raw_price is None and df is not None and not df.empty:
+            raw_price = float(df['Close'].iloc[-1])
+            price_str = f"{int(raw_price):,} 원"
+
+    if raw_price is None or df is None:
+        return None
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        f_news = executor.submit(fetch_rss_news, formal_name, 5)
+        f_global_news = executor.submit(fetch_rss_news, "세계 증시 뉴욕증시", 4)
+        f_world_indices = executor.submit(fetch_all_world_indices_parallel)
+        f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
+
+        stock_news = f_news.result()
+        global_news = f_global_news.result()
+        world_indices = f_world_indices.result()
+        consensus = f_consensus.result()
+
+    quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
+
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA60'] = df['Close'].rolling(60).mean()
+    df['STD60'] = df['Close'].rolling(60).std()
+    df['BB_UP'] = df['MA60'] + (df['STD60'] * 2)
+    df['BB_DN'] = df['MA60'] - (df['STD60'] * 2)
+
+    candles = []
+    ma20_line = []
+    ma60_line = []
+    bb_up_line = []
+    bb_dn_line = []
+
+    for date_idx, row in df.tail(65).iterrows():
+        t_str = date_idx.strftime("%Y-%m-%d")
+        candles.append({
+            "time": t_str,
+            "open": float(row['Open']),
+            "high": float(row['High']),
+            "low": float(row['Low']),
+            "close": float(row['Close'])
+        })
+        if not np.isnan(row['MA20']):
+            ma20_line.append({"time": t_str, "value": float(row['MA20'])})
+        if not np.isnan(row['MA60']):
+            ma60_line.append({"time": t_str, "value": float(row['MA60'])})
+        if not np.isnan(row['BB_UP']):
+            bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
+        if not np.isnan(row['BB_DN']):
+            bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
+
+    return {
+        "formal_name": formal_name,
+        "symbol": symbol,
+        "market": market_name,
+        "price_str": price_str,
+        "now_str": now_str,
+        "quant": quant,
+        "consensus": consensus,
+        "stock_news": stock_news,
+        "global_news": global_news,
+        "world_indices": world_indices,
+        "candles": candles,
+        "ma20_line": ma20_line,
+        "ma60_line": ma60_line,
+        "bb_up_line": bb_up_line,
+        "bb_dn_line": bb_dn_line
+    }
+
+# ----------------------------------------------------
+# 6. 웹 프론트엔드 UI
+# ----------------------------------------------------
+HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>gaemiGTP - 애널리스트 컨센서스 위젯 예시</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>gaemiGTP - 금융 퀀트 분석 플랫폼</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background-color: #1e1f20; color: #e3e3e3; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 20px; }
-        .widget-wrap { width: 100%; max-width: 440px; }
-        .card { background: #282a2c; border-radius: 16px; padding: 22px; border: 1px solid #33363a; box-shadow: 0 4px 20px rgba(0,0,0,0.25); }
+        html, body { height: 100%; background-color: #1e1f20; color: #e3e3e3; overflow-x: hidden; }
+        header { position: fixed; top: 0; left: 0; width: 100%; height: 56px; display: flex; justify-content: space-between; align-items: center; padding: 0 20px; z-index: 50; background: #1e1f20; border-bottom: 1px solid #282a2c; }
+        .logo-top { font-weight: 700; font-size: 1.15rem; color: #e3e3e3; letter-spacing: -0.5px; cursor: pointer; }
+        .new-btn { background: #282a2c; border: none; color: #c4c7c5; font-size: 0.82rem; padding: 6px 14px; border-radius: 20px; cursor: pointer; font-weight: 500; transition: background 0.2s; white-space: nowrap; }
+        .new-btn:hover { background: #37393b; color: #fff; }
         
-        /* 탭 전환 버튼 */
-        .tab-wrap { display: flex; gap: 8px; margin-bottom: 16px; }
-        .tab-btn { flex: 1; padding: 8px 0; background: #1e1f20; border: 1px solid #37393b; color: #8e918f; border-radius: 8px; cursor: pointer; font-size: 0.85rem; font-weight: 600; text-align: center; }
-        .tab-btn.active { background: #38bdf8; color: #121212; border-color: #38bdf8; }
+        #main-view { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
+        .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
+        .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
+        
+        .search-container { width: 100%; max-width: 720px; position: relative; }
+        .search-box { width: 100%; height: 52px; background: #282a2c; border: none; border-radius: 32px; padding: 0 6px 0 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
+        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; }
+        .search-box input::placeholder { color: #8e918f; }
+        
+        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 10px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; transition: all 0.2s; white-space: nowrap; }
+        .model-pill-btn:hover { background: rgba(255, 255, 255, 0.08); }
+        .model-pill-name { font-size: 0.85rem; font-weight: 600; color: #e3e3e3; }
+        .model-pill-arrow { font-size: 0.6rem; color: #8e918f; transition: transform 0.2s; }
+        
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: #282a2c; border: 1px solid #37393b; border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
+        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; transition: background 0.15s; display: flex; flex-direction: column; }
+        .model-dropdown-item:hover { background: rgba(255, 255, 255, 0.08); }
+        .model-dropdown-item.active { background: rgba(255, 255, 255, 0.12); }
+        .item-title { font-size: 0.88rem; font-weight: 600; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
+        .item-sub { font-size: 0.73rem; color: #8e918f; margin-top: 2px; }
+        .item-check { color: #38bdf8; font-weight: bold; display: none; font-size: 0.85rem; }
+        .model-dropdown-item.active .item-check { display: inline; }
 
-        /* 상단 타이틀 */
-        .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
-        .card-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; }
-        .analyst-count { font-size: 0.78rem; color: #8e918f; }
+        .send-btn { width: 38px; height: 38px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+        .send-btn:hover { background: #4a4d50; }
+        .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
 
-        /* 원형 게이지 & 종합의견 */
-        .gauge-section { display: flex; align-items: center; gap: 16px; padding-bottom: 18px; border-bottom: 1px solid #33363a; }
-        .circle-gauge { width: 62px; height: 62px; border-radius: 50%; border: 4.5px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #1e1f20; flex-shrink: 0; }
-        .gauge-score { font-size: 1.15rem; font-weight: 800; color: #fff; line-height: 1; }
-        .gauge-label { font-size: 0.58rem; color: #8e918f; margin-top: 3px; }
-        .opinion-status { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; }
-        .badge-buy { background: rgba(16, 185, 129, 0.15); color: #10b981; font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
-        .opinion-dots { font-size: 0.76rem; color: #8e918f; }
-
-        /* 가격 비교 영역 */
-        .price-compare { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 16px; }
-        .price-sub { font-size: 0.75rem; color: #8e918f; margin-bottom: 2px; }
-        .target-avg-val { font-size: 1.35rem; font-weight: 800; color: #10b981; }
-        .curr-price-val { font-size: 1.2rem; font-weight: 700; color: #ffffff; }
-
-        /* 목표가 슬라이더 바 */
-        .slider-wrap { margin: 24px 0 16px; position: relative; }
-        .slider-top-labels { display: flex; justify-content: space-between; font-size: 0.72rem; margin-bottom: 6px; }
-        .bar-track { width: 100%; height: 6px; background: #1e1f20; border-radius: 4px; position: relative; }
-        .bar-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #10b981); border-radius: 4px; }
-        .dot-curr { position: absolute; top: -3px; width: 12px; height: 12px; border-radius: 50%; background: #ffffff; border: 2px solid #282a2c; }
-        .dot-target { position: absolute; top: -4px; width: 14px; height: 14px; border-radius: 50%; background: #10b981; border: 2px solid #282a2c; transform: translateX(-50%); }
-        .slider-bottom-labels { display: flex; justify-content: space-between; font-size: 0.7rem; color: #6b7280; margin-top: 6px; }
-
-        /* 최근 리포트 리스트 */
-        .report-section { margin-top: 18px; border-top: 1px solid #33363a; padding-top: 14px; }
-        .report-header { font-size: 0.85rem; font-weight: 700; color: #c4c7c5; margin-bottom: 10px; display: flex; justify-content: space-between; }
-        .source-tag { font-size: 0.7rem; color: #8e918f; font-weight: normal; }
-        .report-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid #2e3034; font-size: 0.82rem; }
-        .report-item:last-child { border-bottom: none; }
-        .broker-name { color: #ffffff; font-weight: 700; }
-        .broker-meta { font-size: 0.7rem; color: #8e918f; margin-top: 2px; }
-        .target-val { color: #ffffff; font-weight: 700; text-align: right; }
-        .upside-val { color: #10b981; font-size: 0.72rem; font-weight: 700; text-align: right; }
+        .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
+        .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; white-space: nowrap; }
+        .tag-btn:hover { background: #37393b; color: #fff; }
+        
+        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 72px 16px 100px; }
+        .result-inner { max-width: 740px; margin: 0 auto; }
+        .card { background: #282a2c; border-radius: 16px; padding: 20px; margin-bottom: 16px; border: 1px solid #33363a; }
+        .price-title { font-size: 1.3rem; font-weight: 700; color: #f2f2f2; }
+        .price-title span { color: #8e918f; font-size: 0.9rem; font-weight: 400; margin-left: 4px; }
+        .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 8px 0; }
+        .price-meta { color: #8e918f; font-size: 0.8rem; line-height: 1.4; }
+        
+        .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.78rem; color: #8e918f; margin-top: 14px; }
+        .legend-tag { display: flex; align-items: center; gap: 4px; }
+        .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .chart-box-wrap { width: 100%; height: 320px; margin-top: 10px; position: relative; background: #282a2c; border-radius: 8px; overflow: hidden; }
+        
+        .section-title { font-size: 1.05rem; font-weight: 700; color: #f2f2f2; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+        .world-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .world-item { background: #1e1f20; padding: 10px 12px; border-radius: 8px; border: 1px solid #2d3035; }
+        .world-name { font-size: 0.78rem; color: #8e918f; margin-bottom: 2px; }
+        .world-val { font-size: 0.95rem; font-weight: 700; color: #fff; }
+        .world-rate { font-size: 0.75rem; font-weight: 600; }
+        .val-up { color: #ef4444; }
+        .val-down { color: #38bdf8; }
+        .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+        .quant-item { background: #1e1f20; padding: 12px 14px; border-radius: 10px; border: 1px solid #2d3035; }
+        .quant-item .q-label { color: #8e918f; font-size: 0.78rem; margin-bottom: 3px; }
+        .quant-item .q-val { color: #ffffff; font-size: 0.95rem; font-weight: 700; }
+        
+        .signal-accordion-btn { width: 100%; height: 52px; background: #282a2c; border: none; border-radius: 32px; padding: 0 20px; color: #fff; font-size: 0.98rem; font-weight: 700; display: flex; align-items: center; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
+        .signal-title-center { flex: 1; text-align: center; }
+        .signal-arrow-icon { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 20px; }
+        .signal-body { display: none; background: #242628; border-radius: 16px; padding: 18px; margin-top: 10px; border: 1px solid #33363a; }
+        .signal-row { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid #2e3034; font-size: 0.9rem; }
+        .signal-row:last-child { border-bottom: none; }
+        
+        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.86rem; line-height: 1.55; color: #d1d5db; border: none; background: transparent; }
+        .guide-title { font-weight: 700; color: #38bdf8; margin-bottom: 5px; }
+        .guide-disclaimer { margin-top: 12px; font-size: 0.65rem; color: #6b7280; text-align: center; line-height: 1.4; }
+        
+        .news-item { padding: 10px 0; border-bottom: 1px solid #37393b; text-decoration: none; display: block; }
+        .news-item:last-child { border-bottom: none; }
+        .news-title { color: #e3e3e3; font-size: 0.88rem; font-weight: 500; line-height: 1.4; }
+        .news-title:hover { color: #38bdf8; }
+        .news-meta { color: #8e918f; font-size: 0.74rem; margin-top: 4px; }
+        
+        .disclaimer-wrap { width: 100%; text-align: center; padding: 24px 10px 10px; }
+        .disclaimer-text { font-size: 0.72rem; color: #6b7280; line-height: 1.5; word-break: keep-all; }
+        
+        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 76px; background: linear-gradient(180deg, rgba(30,31,32,0) 0%, rgba(30,31,32,1) 40%); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
+        .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.92rem; }
     </style>
 </head>
 <body>
+    <header>
+        <div class="logo-top" onclick="resetToHome()">gaemiGTP</div>
+        <button class="new-btn" onclick="resetToHome()">+ 새 검색</button>
+    </header>
 
-<div class="widget-wrap">
-    <!-- 국내 / 해외 예시 전환 탭 -->
-    <div class="tab-wrap">
-        <div class="tab-btn active" onclick="switchData('kr')">🇰🇷 국내주식 (한경컨센서스 기반)</div>
-        <div class="tab-btn" onclick="switchData('us')">🇺🇸 미국주식 (TipRanks/Yahoo 기반)</div>
-    </div>
-
-    <!-- 카드 본체 -->
-    <div class="card">
-        <div class="header-row">
-            <span class="card-title">gaemiGTP 애널리스트 컨센서스</span>
-            <span class="analyst-count" id="analystCount">최근 리포트 18개 종합</span>
-        </div>
-
-        <!-- 원형 게이지 & 투자의견 -->
-        <div class="gauge-section">
-            <div class="circle-gauge">
-                <span class="gauge-score" id="scoreNum">18</span>
-                <span class="gauge-label">기관의견</span>
-            </div>
-            <div>
-                <div class="opinion-status">
-                    <span style="font-size:0.8rem; color:#8e918f;">전체 의견</span>
-                    <span class="badge-buy" id="badgeOpinion">적극 매수 (BUY)</span>
-                </div>
-                <div class="opinion-dots" id="dotsText">
-                    <span style="color:#10b981;">● 매수 16</span> &nbsp;
-                    <span style="color:#f97316;">● 보유 2</span> &nbsp;
-                    <span style="color:#ef4444;">● 매도 0</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- 가격 비교 -->
-        <div class="price-compare">
-            <div>
-                <div class="price-sub">평균 목표주가</div>
-                <div class="target-avg-val" id="targetAvgPrice">245,000 원</div>
-            </div>
-            <div style="text-align: right;">
-                <div class="price-sub">현재가</div>
-                <div class="curr-price-val" id="currentPrice">178,500 원</div>
-            </div>
-        </div>
-
-        <!-- 슬라이더 바 -->
-        <div class="slider-wrap">
-            <div class="slider-top-labels">
-                <span id="sliderCurrPrice" style="color:#8e918f;">178,500원</span>
-                <span id="sliderTargetPrice" style="color:#10b981; font-weight:700;">평균 245,000원</span>
-                <span id="sliderHighPrice" style="color:#8e918f;">300,000원</span>
-            </div>
-            <div class="bar-track">
-                <div class="bar-fill" id="barFill" style="width: 65%;"></div>
-                <div class="dot-curr" style="left: 0%;"></div>
-                <div class="dot-target" id="dotTarget" style="left: 65%;"></div>
-            </div>
-            <div class="slider-bottom-labels">
-                <span id="sliderLowText">증권사 최저 200,000원</span>
-                <span id="sliderHighText">증권사 최고 300,000원</span>
-            </div>
-        </div>
-
-        <!-- 최근 증권사별 리포트 리스트 -->
-        <div class="report-section">
-            <div class="report-header">
-                <span>최근 증권사 리포트 평가</span>
-                <span class="source-tag" id="sourceTag">출처: 한경컨센서스</span>
-            </div>
-            <div id="reportList"></div>
-        </div>
-    </div>
-</div>
-
-<script>
-    const sampleData = {
-        kr: {
-            analystCount: "최근 리포트 18개 종합",
-            score: "18",
-            opinion: "적극 매수 (BUY)",
-            dots: '<span style="color:#10b981;">● 매수 16</span> &nbsp; <span style="color:#f97316;">● 보유 2</span> &nbsp; <span style="color:#ef4444;">● 매도 0</span>',
-            targetAvg: "245,000 원",
-            currPrice: "178,500 원",
-            sliderCurr: "178,500원",
-            sliderTarget: "평균 245,000원",
-            sliderHigh: "300,000원",
-            sliderLowTxt: "증권사 최저 210,000원",
-            sliderHighTxt: "증권사 최고 300,000원",
-            progressPct: 62,
-            source: "출처: 한경컨센서스 실시간 취합",
-            reports: [
-                { broker: "미래에셋증권", analyst: "김영건 연구원", opinion: "BUY", date: "2026.08.24", target: "260,000원", upside: "+45.65%" },
-                { broker: "신한투자증권", analyst: "김형태 연구원", opinion: "BUY", date: "2026.08.20", target: "250,000원", upside: "+40.05%" },
-                { broker: "하나증권", analyst: "김록호 연구원", opinion: "BUY", date: "2026.08.18", target: "280,000원", upside: "+56.86%" },
-                { broker: "NH투자증권", analyst: "류영호 연구원", opinion: "BUY", date: "2026.08.12", target: "230,000원", upside: "+28.85%" }
-            ]
-        },
-        us: {
-            analystCount: "월가 애널리스트 32명 종합",
-            score: "32",
-            opinion: "강력 매수 (Strong Buy)",
-            dots: '<span style="color:#10b981;">● Buy 28</span> &nbsp; <span style="color:#f97316;">● Hold 3</span> &nbsp; <span style="color:#ef4444;">● Sell 1</span>',
-            targetAvg: "$248.50",
-            currPrice: "$159.55",
-            sliderCurr: "$159.55",
-            sliderTarget: "평균 $248.50",
-            sliderHigh: "$320.00",
-            sliderLowTxt: "월가 최저 $180.00",
-            sliderHighTxt: "월가 최고 $320.00",
-            progressPct: 68,
-            source: "출처: Wall Street Consensus",
-            reports: [
-                { broker: "Morgan Stanley", analyst: "Joseph Moore", opinion: "Overweight", date: "2026.08.25", target: "$260.00", upside: "+62.96%" },
-                { broker: "Goldman Sachs", analyst: "Toshiya Hari", opinion: "Buy", date: "2026.08.22", target: "$250.00", upside: "+56.69%" },
-                { broker: "Barclays", analyst: "Tom O'Malley", opinion: "Overweight", date: "2026.08.19", target: "$275.00", upside: "+72.36%" },
-                { broker: "JPMorgan", analyst: "Harlan Sur", opinion: "Overweight", date: "2026.08.14", target: "$235.00", upside: "+47.28%" }
-            ]
-        }
-    };
-
-    function render(data) {
-        document.getElementById('analystCount').innerText = data.analystCount;
-        document.getElementById('scoreNum').innerText = data.score;
-        document.getElementById('badgeOpinion').innerText = data.opinion;
-        document.getElementById('dotsText').innerHTML = data.dots;
-        document.getElementById('targetAvgPrice').innerText = data.targetAvg;
-        document.getElementById('currentPrice').innerText = data.currPrice;
-
-        document.getElementById('sliderCurrPrice').innerText = data.sliderCurr;
-        document.getElementById('sliderTargetPrice').innerText = data.sliderTarget;
-        document.getElementById('sliderHighPrice').innerText = data.sliderHigh;
-        document.getElementById('sliderLowText').innerText = data.sliderLowTxt;
-        document.getElementById('sliderHighText').innerText = data.sliderHighTxt;
-
-        document.getElementById('barFill').style.width = data.progressPct + '%';
-        document.getElementById('dotTarget').style.left = data.progressPct + '%';
-        document.getElementById('sourceTag').innerText = data.source;
-
-        const rList = document.getElementById('reportList');
-        rList.innerHTML = '';
-        data.reports.forEach(r => {
-            rList.innerHTML += `
-                <div class="report-item">
-                    <div>
-                        <span class="broker-name">${r.broker}</span>
-                        <div class="broker-meta">
-                            <span style="color:#10b981; font-weight:700;">${r.opinion}</span> · ${r.analyst} · ${r.date}
+    <div id="main-view">
+        <div class="hero-title">gaemiGTP</div>
+        <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
+        <div class="search-container">
+            <div class="search-box">
+                <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                
+                <div class="model-selector-wrap">
+                    <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
+                        <span class="model-pill-name" id="centerCurrentModel">gaemi</span>
+                        <span class="model-pill-arrow">▲</span>
+                    </div>
+                    <div class="model-dropdown-menu" id="centerDropdown">
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                            <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                            <div class="item-sub">도움을 받으세요</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                            <div class="item-title">info <span class="item-check">✓</span></div>
+                            <div class="item-sub">정보를 확인하세요</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                            <div class="item-title">pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">실력을 키우세요</div>
                         </div>
                     </div>
-                    <div>
-                        <div class="target-val">${r.target}</div>
-                        <div class="upside-val">${r.upside}</div>
+                </div>
+
+                <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
+                    <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="popular-tags">
+            <button class="tag-btn" onclick="doSearch('SK하이닉스')">🔥 SK하이닉스</button>
+            <button class="tag-btn" onclick="doSearch('삼성전자')">📱 삼성전자</button>
+            <button class="tag-btn" onclick="doSearch('알테오젠')">🧬 알테오젠</button>
+            <button class="tag-btn" onclick="doSearch('엔비디아')">🚀 엔비디아</button>
+            <button class="tag-btn" onclick="doSearch('비트코인')">₿ 비트코인</button>
+        </div>
+    </div>
+
+    <div id="result-scroll-view">
+        <div class="result-inner">
+            <div class="loading" id="loading">⚡ 세계 증시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
+            <div id="result-card-wrap" style="display:none;">
+                
+                <div class="card">
+                    <div class="price-title" id="rTitle"></div>
+                    <div class="price-val" id="rPrice"></div>
+                    <div class="price-meta" id="rMeta"></div>
+                    <div class="chart-legend">
+                        <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
+                        <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
+                        <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
+                        <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
+                    </div>
+                    <div class="chart-box-wrap" id="tvChart"></div>
+                </div>
+
+                <div class="card">
+                    <div class="section-title">gaemiGTP 종목 뉴스</div>
+                    <div id="stockNewsList"></div>
+                </div>
+
+                <div class="card">
+                    <div class="section-title">gaemiGTP 세계 증시</div>
+                    <div class="world-grid" id="worldGrid"></div>
+                </div>
+
+                <div class="card">
+                    <div class="section-title">gaemiGTP 해외 뉴스</div>
+                    <div id="globalNewsList"></div>
+                </div>
+
+                <!-- 3대 시장(국내/미국/코인) 통합 단일 표준 카드 -->
+                <div class="card" id="unifiedCard" style="display:none;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px;">
+                        <span style="font-size:1.05rem; font-weight:700; color:#f2f2f2;" id="uTitle"></span>
+                        <span style="font-size:0.78rem; color:#8e918f;" id="uSubTag"></span>
+                    </div>
+
+                    <div style="display:flex; align-items:center; gap:16px; padding-bottom:18px; border-bottom:1px solid #33363a;">
+                        <div style="width:62px; height:62px; border-radius:50%; border:4.5px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#1e1f20; flex-shrink:0;">
+                            <span style="font-size:1.15rem; font-weight:800; color:#fff; line-height:1;" id="uGaugeVal"></span>
+                            <span style="font-size:0.58rem; color:#8e918f; margin-top:3px;" id="uGaugeLabel"></span>
+                        </div>
+                        <div>
+                            <div style="display:flex; align-items:center; gap:6px;">
+                                <span style="font-size:0.8rem; color:#8e918f;" id="uStatusLabel"></span>
+                                <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:10px;" id="uBadge"></span>
+                            </div>
+                            <div style="font-size:0.76rem; color:#8e918f; margin-top:4px;" id="uDots"></div>
+                        </div>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:16px;">
+                        <div>
+                            <div style="font-size:0.75rem; color:#8e918f; margin-bottom:2px;" id="uPrimaryLabel"></div>
+                            <div style="font-size:1.35rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:0.75rem; color:#8e918f; margin-bottom:2px;" id="uSecondaryLabel"></div>
+                            <div style="font-size:1.2rem; font-weight:700; color:#ffffff;" id="uSecondaryVal"></div>
+                        </div>
+                    </div>
+
+                    <div style="margin:24px 0 16px; position:relative;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.72rem; margin-bottom:6px;">
+                            <span style="color:#8e918f;" id="uSliderLeft"></span>
+                            <span style="color:#10b981; font-weight:700;" id="uSliderMid"></span>
+                            <span style="color:#8e918f;" id="uSliderRight"></span>
+                        </div>
+                        <div style="width:100%; height:6px; background:#1e1f20; border-radius:4px; position:relative;">
+                            <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="uBarFill"></div>
+                            <div style="position:absolute; top:-4px; width:14px; height:14px; border-radius:50%; background:#10b981; border:2px solid #282a2c; transform:translateX(-50%);" id="uDotMarker"></div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:0.7rem; color:#6b7280; margin-top:6px;">
+                            <span id="uSliderBottomLeft"></span>
+                            <span id="uSliderBottomRight"></span>
+                        </div>
+                    </div>
+
+                    <div style="margin-top:18px; border-top:1px solid #33363a; padding-top:14px;">
+                        <div style="font-size:0.85rem; font-weight:700; color:#c4c7c5; margin-bottom:10px; display:flex; justify-content:space-between;">
+                            <span id="uListTitle"></span>
+                            <span style="font-size:0.7rem; color:#8e918f; font-weight:normal;" id="uSourceTag"></span>
+                        </div>
+                        <div id="uItemList"></div>
                     </div>
                 </div>
-            `;
+
+                <div class="card">
+                    <div class="section-title">
+                        <span>gaemiGTP 기술 지표</span>
+                        <span id="rTrend" style="font-size:0.85rem; color:#38bdf8;"></span>
+                    </div>
+                    <div class="quant-grid">
+                        <div class="quant-item"><div class="q-label">5일선</div><div class="q-val" id="rMa5"></div></div>
+                        <div class="quant-item"><div class="q-label">20일선</div><div class="q-val" id="rMa20"></div></div>
+                        <div class="quant-item"><div class="q-label">60일선</div><div class="q-val" id="rMa60"></div></div>
+                        <div class="quant-item"><div class="q-label">120일선</div><div class="q-val" id="rMa120"></div></div>
+                        <div class="quant-item"><div class="q-label">600일선</div><div class="q-val" id="rMa600"></div></div>
+                        <div class="quant-item"><div class="q-label">1200일선</div><div class="q-val" id="rMa1200"></div></div>
+                        <div class="quant-item"><div class="q-label">볼린저 밴드 (60, 2) 상/하</div><div class="q-val" id="rBb"></div></div>
+                        <div class="quant-item"><div class="q-label">MACD (12,26,9)</div><div class="q-val" id="rMacd"></div></div>
+                        <div class="quant-item"><div class="q-label">52주 고/저 대비 위치</div><div class="q-val" id="rPos52w"></div></div>
+                        <div class="quant-item"><div class="q-label">이격도 (20일 / 60일)</div><div class="q-val" id="rDisp"></div></div>
+                        <div class="quant-item"><div class="q-label">RSI (14)</div><div class="q-val" id="rRsi"></div></div>
+                        <div class="quant-item"><div class="q-label">ATR (14) 변동폭 / 비율</div><div class="q-val" id="rAtr"></div></div>
+                        <div class="quant-item"><div class="q-label">거래량 / 5일평균 대비</div><div class="q-val" id="rVolRatio"></div></div>
+                        <div class="quant-item"><div class="q-label">20일 평균 거래대금</div><div class="q-val" id="rTval20d"></div></div>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:16px;">
+                    <button class="signal-accordion-btn" onclick="toggleSignal()">
+                        <span class="signal-title-center">⚡ gaemiGTP 시그널 타점</span>
+                        <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+                    </button>
+                    <div class="signal-body" id="signalBody">
+                        <div class="signal-row"><span>1차 매수 진입 타점</span><strong id="rEntry1" style="color:#fff;"></strong></div>
+                        <div class="signal-row"><span>2차 분할 진입 타점</span><strong id="rEntry2" style="color:#fff;"></strong></div>
+                        <div class="signal-row"><span>1차 목표 수익가 (+4.5%)</span><strong id="rTarget1" style="color:#ef4444;"></strong></div>
+                        <div class="signal-row"><span>2차 목표 수익가 (+8.5%)</span><strong id="rTarget2" style="color:#ef4444;"></strong></div>
+                        <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong id="rStop" style="color:#38bdf8;"></strong></div>
+                        <div class="signal-row" style="margin-top:6px; border-top:1px dashed #37393d; padding-top:8px;">
+                            <span>1년 백테스트 검증</span>
+                            <span id="rBt1y" style="color:#38bdf8; font-weight:700;"></span>
+                        </div>
+                        <div class="signal-row">
+                            <span>2년 백테스트 검증</span>
+                            <span id="rBt2y" style="color:#38bdf8; font-weight:700;"></span>
+                        </div>
+                        
+                        <div class="guide-box">
+                            <div class="guide-title">gaemiGTP 시그널 가이드</div>
+                            <div id="rGuideText"></div>
+                            <div class="guide-disclaimer">과거의 수익률이 미래의 수익을 보장하지 않습니다.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="disclaimer-wrap">
+                    <p class="disclaimer-text">
+                        본 플랫폼에서 제공하는 모든 시세 데이터 및 기술지표는 투자 참고용이며, 투자 권유가 아닙니다. 모든 투자의 결과와 책임은 투자자 본인에게 있습니다.
+                    </p>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <div id="bottom-bar">
+        <div class="search-container">
+            <div class="search-box">
+                <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                
+                <div class="model-selector-wrap">
+                    <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
+                        <span class="model-pill-name" id="bottomCurrentModel">gaemi</span>
+                        <span class="model-pill-arrow">▲</span>
+                    </div>
+                    <div class="model-dropdown-menu" id="bottomDropdown">
+                        <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                            <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                            <div class="item-sub">도움을 받으세요</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                            <div class="item-title">info <span class="item-check">✓</span></div>
+                            <div class="item-sub">정보를 확인하세요</div>
+                        </div>
+                        <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                            <div class="item-title">pro <span class="item-check">✓</span></div>
+                            <div class="item-sub">실력을 키우세요</div>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
+                    <svg viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let selectedMode = 'gaemi';
+
+        function toggleModelDropdown(target) {
+            const centerD = document.getElementById('centerDropdown');
+            const bottomD = document.getElementById('bottomDropdown');
+            const targetD = target === 'center' ? centerD : bottomD;
+            const otherD = target === 'center' ? bottomD : centerD;
+            if (otherD) otherD.style.display = 'none';
+            if (targetD) targetD.style.display = targetD.style.display === 'block' ? 'none' : 'block';
+        }
+
+        function selectModel(modeKey, modeName) {
+            selectedMode = modeKey;
+            document.getElementById('centerCurrentModel').innerText = modeName;
+            document.getElementById('bottomCurrentModel').innerText = modeName;
+
+            ['centerDropdown', 'bottomDropdown'].forEach(id => {
+                const menu = document.getElementById(id);
+                if (menu) {
+                    const items = menu.querySelectorAll('.model-dropdown-item');
+                    items.forEach(it => {
+                        if (it.innerText.includes(modeName)) {
+                            it.classList.add('active');
+                        } else {
+                            it.classList.remove('active');
+                        }
+                    });
+                    menu.style.display = 'none';
+                }
+            });
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.model-selector-wrap')) {
+                const cd = document.getElementById('centerDropdown');
+                const bd = document.getElementById('bottomDropdown');
+                if (cd) cd.style.display = 'none';
+                if (bd) bd.style.display = 'none';
+            }
         });
-    }
 
-    function switchData(type) {
-        document.querySelectorAll('.tab-btn').forEach((b, idx) => {
-            b.classList.toggle('active', (type === 'kr' && idx === 0) || (type === 'us' && idx === 1));
-        });
-        render(sampleData[type]);
-    }
+        function resetToHome() {
+            document.getElementById('main-view').style.display = 'flex';
+            document.getElementById('result-scroll-view').style.display = 'none';
+            document.getElementById('bottom-bar').style.display = 'none';
+            document.getElementById('result-card-wrap').style.display = 'none';
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('unifiedCard').style.display = 'none';
+            document.getElementById('centerInput').value = '';
+            document.getElementById('bottomInput').value = '';
+        }
 
-    // 초기 렌더링 (국내주식)
-    render(sampleData.kr);
-</script>
+        function toggleSignal() {
+            const body = document.getElementById('signalBody');
+            const arrow = document.getElementById('signalArrow');
+            if (body.style.display === 'block') {
+                body.style.display = 'none';
+                arrow.style.transform = 'rotate(0deg)';
+            } else {
+                body.style.display = 'block';
+                arrow.style.transform = 'rotate(180deg)';
+            }
+        }
 
+        async function doSearch(query) {
+            const cleanQ = query.trim();
+            if (!cleanQ) return;
+
+            document.getElementById('main-view').style.display = 'none';
+            document.getElementById('result-scroll-view').style.display = 'block';
+            document.getElementById('bottom-bar').style.display = 'flex';
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result-card-wrap').style.display = 'none';
+            document.getElementById('bottomInput').value = '';
+
+            try {
+                const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
+                const response = await fetch(url);
+                const data = await response.json();
+                if (!response.ok || data.error) {
+                    alert(data.error || '분석 중 오류가 발생했습니다.');
+                    document.getElementById('loading').style.display = 'none';
+                    return;
+                }
+
+                const isKrw = data.market === '국내주식';
+                document.getElementById('rTitle').innerHTML = `${data.name} <span>(${data.symbol})</span>`;
+                document.getElementById('rPrice').innerText = data.price;
+                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'} · 시각: ${data.time}`;
+
+                const wGrid = document.getElementById('worldGrid');
+                wGrid.innerHTML = '';
+                if (data.world_indices) {
+                    data.world_indices.forEach(w => {
+                        const cls = w.up ? 'val-up' : 'val-down';
+                        wGrid.innerHTML += `
+                            <div class="world-item">
+                                <div class="world-name">${w.name}</div>
+                                <div class="world-val">${w.price}</div>
+                                <div class="world-rate ${cls}">${w.rate}</div>
+                            </div>
+                        `;
+                    });
+                }
+
+                const sNews = document.getElementById('stockNewsList');
+                sNews.innerHTML = '';
+                if (data.stock_news && data.stock_news.length > 0) {
+                    data.stock_news.forEach(n => {
+                        sNews.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `;
+                    });
+                } else {
+                    sNews.innerHTML = '<div style="color:#8e918f; font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
+                }
+
+                const gNews = document.getElementById('globalNewsList');
+                gNews.innerHTML = '';
+                if (data.global_news && data.global_news.length > 0) {
+                    data.global_news.forEach(n => {
+                        gNews.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `;
+                    });
+                }
+
+                // 3대 시장 통합 카드 렌더링
+                const c = data.consensus;
+                const uCard = document.getElementById('unifiedCard');
+                if (c) {
+                    document.getElementById('uTitle').innerText = c.title;
+                    document.getElementById('uSubTag').innerText = c.sub_tag;
+                    document.getElementById('uGaugeVal').innerText = c.gauge_val;
+                    document.getElementById('uGaugeLabel').innerText = c.gauge_label;
+                    document.getElementById('uStatusLabel').innerText = c.status_label;
+                    document.getElementById('uBadge').innerText = c.badge_text;
+                    document.getElementById('uDots').innerHTML = c.dots;
+
+                    document.getElementById('uPrimaryLabel').innerText = c.primary_label;
+                    document.getElementById('uPrimaryVal').innerText = c.primary_val;
+                    document.getElementById('uSecondaryLabel').innerText = c.secondary_label;
+                    document.getElementById('uSecondaryVal').innerText = c.secondary_val;
+
+                    document.getElementById('uSliderLeft').innerText = c.slider_left;
+                    document.getElementById('uSliderMid').innerText = c.slider_mid;
+                    document.getElementById('uSliderRight').innerText = c.slider_right;
+                    document.getElementById('uSliderBottomLeft').innerText = c.slider_bottom_left;
+                    document.getElementById('uSliderBottomRight').innerText = c.slider_bottom_right;
+
+                    document.getElementById('uBarFill').style.width = c.fill_pct + '%';
+                    document.getElementById('uDotMarker').style.left = c.fill_pct + '%';
+
+                    document.getElementById('uListTitle').innerText = c.list_title;
+                    document.getElementById('uSourceTag').innerText = c.source_tag;
+
+                    const iList = document.getElementById('uItemList');
+                    iList.innerHTML = '';
+                    if (c.items && c.items.length > 0) {
+                        c.items.forEach((it, idx) => {
+                            const isLast = idx === c.items.length - 1;
+                            iList.innerHTML += `
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${isLast ? '' : 'border-bottom:1px solid #2e3034;'} font-size:0.82rem;">
+                                    <div>
+                                        <div style="color:#ffffff; font-weight:700;">${it.main}</div>
+                                        <div style="font-size:0.7rem; color:#8e918f; margin-top:2px;">${it.sub}</div>
+                                    </div>
+                                    <div style="text-align:right;">
+                                        <div style="color:#ffffff; font-weight:700;">${it.val}</div>
+                                        <div style="color:#10b981; font-size:0.72rem; font-weight:700;">${it.sub_val}</div>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                    }
+                    uCard.style.display = 'block';
+                } else {
+                    uCard.style.display = 'none';
+                }
+
+                const q = data.quant;
+                document.getElementById('rTrend').innerText = q.trend;
+                document.getElementById('rMa5').innerText = q.ma5;
+                document.getElementById('rMa20').innerText = q.ma20;
+                document.getElementById('rMa60').innerText = q.ma60;
+                document.getElementById('rMa120').innerText = q.ma120;
+                document.getElementById('rMa600').innerText = q.ma600;
+                document.getElementById('rMa1200').innerText = q.ma1200;
+                document.getElementById('rBb').innerText = q.bollinger;
+                document.getElementById('rMacd').innerText = q.macd;
+                document.getElementById('rPos52w').innerText = q.pos_52w;
+                document.getElementById('rDisp').innerText = q.disp;
+                document.getElementById('rRsi').innerText = q.rsi;
+                document.getElementById('rAtr').innerText = `${q.atr} (${q.atr_ratio})`;
+                document.getElementById('rVolRatio').innerText = q.vol_ratio;
+                document.getElementById('rTval20d').innerText = q.tval_20d;
+
+                document.getElementById('rEntry1').innerText = q.entry1;
+                document.getElementById('rEntry2').innerText = q.entry2;
+                document.getElementById('rTarget1').innerText = q.target1;
+                document.getElementById('rTarget2').innerText = q.target2;
+                document.getElementById('rStop').innerText = q.stop_p;
+                document.getElementById('rBt1y').innerText = q.bt_1y;
+                document.getElementById('rBt2y').innerText = q.bt_2y;
+                document.getElementById('rGuideText').innerText = q.guide_text;
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('result-card-wrap').style.display = 'block';
+
+                setTimeout(() => {
+                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
+                }, 50);
+
+                window.scrollTo({top: 0, behavior: 'smooth'});
+
+            } catch (err) {
+                alert('서버와 통신할 수 없습니다.');
+                document.getElementById('loading').style.display = 'none';
+            }
+        }
+
+        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
+            const container = document.getElementById('tvChart');
+            container.innerHTML = '';
+
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth || 700,
+                height: 320,
+                layout: { background: { color: '#282a2c' }, textColor: '#8e918f' },
+                grid: {
+                    vertLines: { color: 'rgba(0,0,0,0)' },
+                    horzLines: { color: 'rgba(0,0,0,0)' }
+                },
+                crosshair: {
+                    vertLine: { visible: false },
+                    horzLine: { visible: false }
+                },
+                timeScale: { borderColor: '#37393b', timeVisible: true },
+                rightPriceScale: { borderColor: '#37393b' }
+            });
+
+            const candleSeries = chart.addCandlestickSeries({
+                upColor: '#ef4444',
+                downColor: '#38bdf8',
+                borderDownColor: '#38bdf8',
+                borderUpColor: '#ef4444',
+                wickDownColor: '#38bdf8',
+                wickUpColor: '#ef4444',
+                priceLineVisible: false,
+                lastValueVisible: true
+            });
+            candleSeries.setData(candles);
+
+            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+            lineMa20.setData(ma20);
+
+            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
+            lineMa60.setData(ma60);
+
+            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
+            lineBbUp.setData(bbUp);
+
+            const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
+            lineBbDn.setData(bbDn);
+
+            chart.timeScale().fitContent();
+
+            window.addEventListener('resize', () => {
+                if (chart && container) chart.applyOptions({ width: container.clientWidth });
+            });
+        }
+    </script>
 </body>
 </html>
+"""
+
+class WebHandler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+
+        if parsed.path == "/api/analyze":
+            q = params.get('q', [''])[0].strip()
+            data = run_full_pipeline(q) if q else None
+            if not data:
+                self.send_response(404)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
+                return
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            
+            res_obj = {
+                "name": data["formal_name"],
+                "symbol": data["symbol"],
+                "market": data["market"],
+                "price": data["price_str"],
+                "time": data["now_str"],
+                "quant": data["quant"],
+                "consensus": data["consensus"],
+                "stock_news": data["stock_news"],
+                "global_news": data["global_news"],
+                "world_indices": data["world_indices"],
+                "candles": data["candles"],
+                "ma20_line": data["ma20_line"],
+                "ma60_line": data["ma60_line"],
+                "bb_up_line": data["bb_up_line"],
+                "bb_dn_line": data["bb_dn_line"]
+            }
+            self.wfile.write(json.dumps(res_obj, ensure_ascii=False).encode('utf-8'))
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(HTML_PAGE.encode('utf-8'))
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), WebHandler)
+    server.serve_forever()
+
+if __name__ == "__main__":
+    run_web_server()

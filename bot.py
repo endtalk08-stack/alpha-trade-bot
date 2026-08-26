@@ -577,8 +577,10 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "target2": target2,
         "stop_p": stop_p,
         "guide_text": guide_text,
-        "bt_1y": f"승률 {win_1y}% / 손익비 1:{rr_1y}",
-        "bt_2y": f"승률 {win_2y}% / 손익비 1:{rr_2y}"
+        "bt_1y": f"1년 {win_1y}%",
+        "bt_2y": f"2년 {win_2y}%",
+        "win_rate_num": f"{int(win_2y)}%",
+        "rr_str": f"손익비 1:{rr_2y}"
     }
 
 # ----------------------------------------------------
@@ -682,7 +684,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (컨센서스 톤앤매너 완벽 일치 디자인)
+# 6. 웹 프론트엔드 UI (컨센서스 스타일로 통일된 시그널 대시보드)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -869,20 +871,25 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .quant-item .q-val { color: #ffffff; font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
-        /* 컨센서스 스타일로 통일된 시그널 아코디언 버튼 */
-        .signal-accordion-btn { width: 100%; height: 50px; background: #1e1f20; border: 1px solid #282a2c; border-radius: 32px; padding: 0 18px; color: #f2f2f2; font-size: 0.95rem; font-weight: 700; display: flex; align-items: center; cursor: pointer; position: relative; transition: border-color 0.2s; }
-        .signal-accordion-btn:hover { border-color: #3b3d40; }
-        .signal-title-center { flex: 1; text-align: center; }
-        .signal-arrow-icon { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 18px; }
-        
-        .signal-body { display: none; background: #17181a; border-radius: 16px; padding: 18px 16px; margin-top: 10px; border: 1px solid #282a2c; }
-        .signal-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid #282a2c; font-size: 0.86rem; }
-        .signal-row:last-child { border-bottom: none; }
-        .signal-row span { color: #c4c7c5; }
-
-        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.55; color: #d1d5db; border-top: 1px solid #282a2c; }
-        .guide-title { font-weight: 700; color: #10b981; margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
-        .guide-disclaimer { margin-top: 10px; font-size: 0.65rem; color: #6b7280; text-align: center; }
+        /* 컨센서스 스타일 일체형 아코디언 헤더 */
+        .signal-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            user-select: none;
+        }
+        .signal-card-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: #f2f2f2;
+        }
+        .signal-arrow-icon {
+            width: 20px;
+            height: 20px;
+            fill: #8e918f;
+            transition: transform 0.25s ease;
+        }
 
         .news-item { padding: 10px 0; border-bottom: 1px solid #282a2c; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
@@ -1089,27 +1096,75 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 오른쪽 컨센서스 분위기로 톤앤매너 완벽 일치된 시그널 영역 -->
-                    <div style="margin-bottom:14px;">
-                        <button class="signal-accordion-btn" onclick="toggleSignal()">
-                            <span class="signal-title-center">gaemiGTP 시그널</span>
+                    <!-- 컨센서스 스타일로 완벽 일치된 gaemiGTP 시그널 대시보드 카드 -->
+                    <div class="card" style="margin-bottom:16px;">
+                        <div class="signal-card-header" onclick="toggleSignal()">
+                            <span class="signal-card-title">gaemiGTP 시그널</span>
                             <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-                        </button>
-                        <div class="signal-body" id="signalBody">
-                            <div class="signal-row"><span>1차 매수 진입가</span><strong id="rEntry1" style="color:#ffffff; font-weight:700;"></strong></div>
-                            <div class="signal-row"><span>2차 분할 진입가</span><strong id="rEntry2" style="color:#ffffff; font-weight:700;"></strong></div>
-                            <div class="signal-row"><span>1차 목표 수익가 (+4.5%)</span><strong id="rTarget1" style="color:#10b981; font-weight:700;"></strong></div>
-                            <div class="signal-row"><span>2차 목표 수익가 (+8.5%)</span><strong id="rTarget2" style="color:#10b981; font-weight:700;"></strong></div>
-                            <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong id="rStop" style="color:#38bdf8; font-weight:700;"></strong></div>
-                            <div class="signal-row" style="margin-top:6px; border-top:1px dashed #282a2c; padding-top:8px;">
-                                <span>1년 백테스트 검증</span>
-                                <span id="rBt1y" style="color:#10b981; font-weight:700;"></span>
+                        </div>
+                        
+                        <div id="signalBody" style="display:none; margin-top:16px;">
+                            <!-- 상단 승률 링 게이지 & 뱃지 영역 -->
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid #282a2c;">
+                                <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0;">
+                                    <span style="font-size:1.1rem; font-weight:800; color:#fff; line-height:1;" id="rWinRateGauge"></span>
+                                    <span style="font-size:0.55rem; color:#8e918f; margin-top:3px;">승률</span>
+                                </div>
+                                <div style="min-width:0;">
+                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <span style="font-size:0.78rem; color:#8e918f;">시그널 종합</span>
+                                        <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:700; padding:2px 7px; border-radius:10px;">분할 매수 유효</span>
+                                    </div>
+                                    <div style="font-size:0.74rem; color:#8e918f; margin-top:4px; word-break:keep-all;">
+                                        <span style="color:#10b981; font-weight:700;" id="rBt1yTag"></span> &nbsp; 
+                                        <span style="color:#10b981; font-weight:700;" id="rBt2yTag"></span> &nbsp; 
+                                        <span style="color:#38bdf8;" id="rRrTag"></span>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="signal-row">
-                                <span>2년 백테스트 검증</span>
-                                <span id="rBt2y" style="color:#10b981; font-weight:700;"></span>
+
+                            <!-- 중앙 가격 밴드 수평 슬라이더 바 -->
+                            <div style="margin:20px 0 14px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px;">
+                                    <span style="color:#38bdf8; font-weight:700;" id="rSliderStop"></span>
+                                    <span style="color:#ffffff; font-weight:700;" id="rSliderEntry"></span>
+                                    <span style="color:#10b981; font-weight:700;" id="rSliderTarget"></span>
+                                </div>
+                                <div style="width:100%; height:6px; background:#131314; border-radius:4px; position:relative;">
+                                    <div style="height:100%; width:45%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;"></div>
+                                    <div style="position:absolute; top:-4px; left:45%; width:14px; height:14px; border-radius:50%; background:#ffffff; border:2px solid #10b981; transform:translateX(-50%);"></div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:#6b7280; margin-top:6px;">
+                                    <span>손절 방어선 (-5.5%)</span>
+                                    <span>목표 수익선 (+8.5%)</span>
+                                </div>
                             </div>
-                            
+
+                            <!-- 하단 주요 진입/목표가 목록 (컨센서스 리포트 스타일) -->
+                            <div style="margin-top:16px; border-top:1px solid #282a2c; padding-top:10px;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
+                                    <div><span style="color:#ffffff; font-weight:600;">1차 매수 진입가</span></div>
+                                    <div style="color:#ffffff; font-weight:700;" id="rEntry1"></div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
+                                    <div><span style="color:#ffffff; font-weight:600;">2차 분할 진입가</span></div>
+                                    <div style="color:#ffffff; font-weight:700;" id="rEntry2"></div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
+                                    <div><span style="color:#10b981; font-weight:600;">1차 목표 수익가 (+4.5%)</span></div>
+                                    <div style="color:#10b981; font-weight:700;" id="rTarget1"></div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
+                                    <div><span style="color:#10b981; font-weight:600;">2차 목표 수익가 (+8.5%)</span></div>
+                                    <div style="color:#10b981; font-weight:700;" id="rTarget2"></div>
+                                </div>
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; font-size:0.82rem;">
+                                    <div><span style="color:#38bdf8; font-weight:600;">리스크 방어 손절가 (-5.5%)</span></div>
+                                    <div style="color:#38bdf8; font-weight:700;" id="rStop"></div>
+                                </div>
+                            </div>
+
+                            <!-- 가이드 텍스트 -->
                             <div class="guide-box">
                                 <div class="guide-title">gaemiGTP 시그널 가이드</div>
                                 <div id="rGuideText" style="margin-top:4px; color:#c4c7c5;"></div>
@@ -1385,13 +1440,21 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rVolRatio').innerText = q.vol_ratio;
                 document.getElementById('rTval20d').innerText = q.tval_20d;
 
+                // 시그널 컨센서스 스타일 바인딩
+                document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
+                document.getElementById('rBt1yTag').innerText = `● ${q.bt_1y}`;
+                document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;
+                document.getElementById('rRrTag').innerText = `● ${q.rr_str}`;
+
+                document.getElementById('rSliderStop').innerText = q.stop_p;
+                document.getElementById('rSliderEntry').innerText = `진입 ${q.entry1}`;
+                document.getElementById('rSliderTarget').innerText = q.target2;
+
                 document.getElementById('rEntry1').innerText = q.entry1;
                 document.getElementById('rEntry2').innerText = q.entry2;
                 document.getElementById('rTarget1').innerText = q.target1;
                 document.getElementById('rTarget2').innerText = q.target2;
                 document.getElementById('rStop').innerText = q.stop_p;
-                document.getElementById('rBt1y').innerText = q.bt_1y;
-                document.getElementById('rBt2y').innerText = q.bt_2y;
                 document.getElementById('rGuideText').innerText = q.guide_text;
 
                 document.getElementById('loading').style.display = 'none';

@@ -1,29 +1,3 @@
-대표님께서 말씀하신 핵심을 정확히 파악했습니다.
-
-직전 코드에 들어간 것은 단순한 `| <` 형태의 선형 아이콘이었고, 실제 **Google Gemini 공식 웹사이트**에서 사용하는 사이드바 접기 아이콘은 **Google Material Symbols의 `left_panel_close` (네모 박스 안에 좌측 패널 분할선이 그어진 공식 아이콘)** 형태입니다.
-
----
-
-### Gemini 공식 사이드바 접기/열기 아이콘 비교
-
-* **Gemini 공식 닫기 아이콘 (`left_panel_close`):**
-* 둥근 직사각형 박스 좌측에 세로 분할 바가 있고, 패널을 접는 형태의 Google 공식 시스템 아이콘
-
-
-* **Gemini 공식 열기 아이콘 (`menu` / 햄버거):**
-* 삼선 메뉴 아이콘
-
-
-
----
-
-기존의 14대 퀀트 연산 및 백엔드 파이프라인은 단 1글자도 변경 없이 100% 유지하고, **아이콘만 Google Gemini 공식 `left_panel_close` SVG로 정확하게 교체**한 전체 `bot.py` 코드입니다.
-
----
-
-### `bot.py` 전체 소스 코드 (사전 검증 완료)
-
-```python
 import os
 import re
 import io
@@ -711,7 +685,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (Gemini 공식 `left_panel_close` 아이콘 100% 일치)
+# 6. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -727,7 +701,6 @@ HTML_PAGE = """<!DOCTYPE html>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
         body { background-color: #131314; color: #e3e3e3; min-height: 100vh; overflow-x: hidden; display: flex; }
         
-        /* Gemini 사이드바 (기본 닫힘) */
         #sidebar-wrapper {
             width: 260px;
             background-color: #1e1f20;
@@ -749,7 +722,6 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: 10px 0 30px rgba(0,0,0,0.5);
         }
 
-        /* 사이드바 상단: 좌측 로고 / 우측 Gemini 공식 패널 닫기 버튼 */
         .side-top-action {
             height: 44px;
             display: flex;
@@ -922,12 +894,11 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
-    <!-- Gemini 사이드바: 좌측 로고 / 우측 Google Gemini 공식 left_panel_close 아이콘 -->
+    <!-- Gemini 사이드바: '새 종목' 및 '최근'으로 텍스트 정돈 -->
     <div id="sidebar-wrapper">
         <div class="side-top-action">
             <span style="font-weight:700; font-size:1.15rem; color:#fff; cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
             
-            <!-- Gemini 공식 Left Panel Close 아이콘 -->
             <button class="gemini-menu-icon" onclick="toggleSidebar()" title="사이드 패널 닫기">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M4 19V5C4 4.45 4.19583 3.97917 4.5875 3.5875C4.97917 3.19583 5.45 3 6 3H18C18.55 3 19.0208 3.19583 19.4125 3.5875C19.8042 3.97917 20 4.45 20 5V19C20 19.55 19.8042 20.0208 19.4125 20.4125C19.0208 20.8042 18.55 21 18 21H6C5.45 21 4.97917 20.8042 4.5875 20.4125C4.19583 20.0208 4 19.55 4 19ZM9 19H18V5H9V19ZM6 5V19V5Z"/>
@@ -939,11 +910,11 @@ HTML_PAGE = """<!DOCTYPE html>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 4v16m8-8H4" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <span>새 종목 분석</span>
+            <span>새 종목</span>
         </button>
 
         <div class="sidebar-scroll-area">
-            <div class="sidebar-section-title">최근 분석</div>
+            <div class="sidebar-section-title">최근</div>
             <div class="sidebar-item" onclick="doSearch('SK하이닉스');">SK하이닉스</div>
             <div class="sidebar-item" onclick="doSearch('엔비디아');">엔비디아</div>
             <div class="sidebar-item" onclick="doSearch('삼성전자');">삼성전자</div>
@@ -955,7 +926,6 @@ HTML_PAGE = """<!DOCTYPE html>
     <div id="content-wrapper">
         <header>
             <div class="header-left">
-                <!-- Gemini 공식 메인 햄버거 메뉴 아이콘 -->
                 <button class="gemini-menu-icon" id="headerToggleBtn" onclick="toggleSidebar()" title="사이드 패널 열기">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
                 </button>
@@ -1553,5 +1523,3 @@ def run_web_server():
 
 if __name__ == "__main__":
     run_web_server()
-
-```

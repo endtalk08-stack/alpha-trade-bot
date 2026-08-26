@@ -493,7 +493,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 5. 웹 프론트엔드 UI
+# 5. 웹 프론트엔드 UI (현재가 라벨만 축에 표시)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -550,7 +550,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .price-val { font-size: 2.3rem; font-weight: 800; color: #ffffff; margin: 8px 0; }
         .price-meta { color: #8e918f; font-size: 0.8rem; line-height: 1.4; }
         
-        /* 갱신된 선명한 범례 스타일 */
         .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.78rem; color: #8e918f; margin-top: 14px; }
         .legend-tag { display: flex; align-items: center; gap: 4px; }
         .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
@@ -963,6 +962,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 rightPriceScale: { borderColor: '#37393b' }
             });
 
+            /* 현재가 가로 점선(priceLine)은 끄고, 우측 축의 현재가 뱃지(lastValue)만 켬 */
             const candleSeries = chart.addCandlestickSeries({
                 upColor: '#ef4444',
                 downColor: '#38bdf8',
@@ -971,7 +971,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 wickDownColor: '#38bdf8',
                 wickUpColor: '#ef4444',
                 priceLineVisible: false,
-                lastValueVisible: false
+                lastValueVisible: true
             });
             candleSeries.setData(candles);
 
@@ -981,11 +981,9 @@ HTML_PAGE = """<!DOCTYPE html>
             const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
             lineMa60.setData(ma60);
 
-            /* 볼린저 상단: 코랄 레드 실선 */
             const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
             lineBbUp.setData(bbUp);
 
-            /* 볼린저 하단: 스카이 블루 실선 */
             const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
             lineBbDn.setData(bbDn);
 

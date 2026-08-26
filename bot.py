@@ -553,6 +553,11 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     target2 = round_fn(raw_price * 1.085)
     stop_p = round_fn(raw_price * 0.945)
 
+    raw_stop = raw_price * 0.945
+    raw_target = raw_price * 1.085
+    raw_entry = raw_price * 0.985
+    sig_fill_pct = min(92, max(8, int(((raw_entry - raw_stop) / max(1, raw_target - raw_stop)) * 100)))
+
     win_1y = 71.4
     rr_1y = 2.4
     win_2y = min(96.5, round(win_1y * 1.14, 1))
@@ -576,6 +581,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "target1": target1,
         "target2": target2,
         "stop_p": stop_p,
+        "sig_fill_pct": sig_fill_pct,
         "guide_text": guide_text,
         "bt_1y": f"1년 {win_1y}%",
         "bt_2y": f"2년 {win_2y}%",
@@ -684,7 +690,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (전통 차트 빨간색/파란색 100% 원상 복구)
+# 6. 웹 프론트엔드 UI (정중앙 정렬 + 동적 슬라이더 + 모바일 최적화)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -871,22 +877,28 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .quant-item .q-val { color: #ffffff; font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
+        /* 컨센서스 스타일 일체형 아코디언 헤더 (완벽한 정중앙 타이틀 배치) */
         .signal-card-header {
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            justify-content: center;
+            position: relative;
             cursor: pointer;
             user-select: none;
+            padding: 2px 0;
         }
         .signal-card-title {
             font-size: 1.05rem;
             font-weight: 700;
             color: #f2f2f2;
+            text-align: center;
         }
         .signal-arrow-icon {
             width: 20px;
             height: 20px;
             fill: #8e918f;
+            position: absolute;
+            right: 4px;
             transition: transform 0.25s ease;
         }
 
@@ -1028,7 +1040,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                         <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid #282a2c;">
                             <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0;">
-                                <span style="font-size:1.1rem; font-weight:800; color:#fff; line-height:1;" id="uGaugeVal"></span>
+                                <span style="font-size:1.0rem; font-weight:800; color:#fff; line-height:1;" id="uGaugeVal"></span>
                                 <span style="font-size:0.55rem; color:#8e918f; margin-top:3px;" id="uGaugeLabel"></span>
                             </div>
                             <div style="min-width:0;">
@@ -1052,7 +1064,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
 
                         <div style="margin:20px 0 14px; position:relative;">
-                            <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
                                 <span style="color:#8e918f;" id="uSliderLeft"></span>
                                 <span style="color:#10b981; font-weight:700;" id="uSliderMid"></span>
                                 <span style="color:#8e918f;" id="uSliderRight"></span>
@@ -1061,7 +1073,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="uBarFill"></div>
                                 <div style="position:absolute; top:-4px; width:14px; height:14px; border-radius:50%; background:#10b981; border:2px solid #1e1f20; transform:translateX(-50%);" id="uDotMarker"></div>
                             </div>
-                            <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:#6b7280; margin-top:6px;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:#6b7280; margin-top:6px; white-space:nowrap;">
                                 <span id="uSliderBottomLeft"></span>
                                 <span id="uSliderBottomRight"></span>
                             </div>
@@ -1109,7 +1121,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div id="signalBody" style="display:none; margin-top:16px;">
                             <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid #282a2c;">
                                 <div style="width:58px; height:58px; border-radius:50%; border:4px solid #10b981; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#131314; flex-shrink:0;">
-                                    <span style="font-size:1.1rem; font-weight:800; color:#fff; line-height:1;" id="rWinRateGauge"></span>
+                                    <span style="font-size:1.0rem; font-weight:800; color:#fff; line-height:1;" id="rWinRateGauge"></span>
                                     <span style="font-size:0.55rem; color:#8e918f; margin-top:3px;">승률</span>
                                 </div>
                                 <div style="min-width:0;">
@@ -1125,17 +1137,18 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
+                            <!-- 동적 마커가 반영된 수평 가격 밴드 슬라이더 -->
                             <div style="margin:20px 0 14px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
                                     <span style="color:#38bdf8; font-weight:700;" id="rSliderStop"></span>
                                     <span style="color:#ffffff; font-weight:700;" id="rSliderEntry"></span>
                                     <span style="color:#10b981; font-weight:700;" id="rSliderTarget"></span>
                                 </div>
                                 <div style="width:100%; height:6px; background:#131314; border-radius:4px; position:relative;">
-                                    <div style="height:100%; width:45%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;"></div>
-                                    <div style="position:absolute; top:-4px; left:45%; width:14px; height:14px; border-radius:50%; background:#ffffff; border:2px solid #10b981; transform:translateX(-50%);"></div>
+                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="rSigBarFill"></div>
+                                    <div style="position:absolute; top:-4px; width:14px; height:14px; border-radius:50%; background:#ffffff; border:2px solid #10b981; transform:translateX(-50%);" id="rSigDotMarker"></div>
                                 </div>
-                                <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:#6b7280; margin-top:6px;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:#6b7280; margin-top:6px; white-space:nowrap;">
                                     <span>손절 방어선 (-5.5%)</span>
                                     <span>목표 수익선 (+8.5%)</span>
                                 </div>
@@ -1144,29 +1157,29 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div style="margin-top:16px; border-top:1px solid #282a2c; padding-top:10px;">
                                 <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
                                     <div><span style="color:#ffffff; font-weight:600;">1차 매수 진입가</span></div>
-                                    <div style="color:#ffffff; font-weight:700;" id="rEntry1"></div>
+                                    <div style="color:#ffffff; font-weight:700; white-space:nowrap;" id="rEntry1"></div>
                                 </div>
                                 <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
                                     <div><span style="color:#ffffff; font-weight:600;">2차 분할 진입가</span></div>
-                                    <div style="color:#ffffff; font-weight:700;" id="rEntry2"></div>
+                                    <div style="color:#ffffff; font-weight:700; white-space:nowrap;" id="rEntry2"></div>
                                 </div>
                                 <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
                                     <div><span style="color:#10b981; font-weight:600;">1차 목표 수익가 (+4.5%)</span></div>
-                                    <div style="color:#10b981; font-weight:700;" id="rTarget1"></div>
+                                    <div style="color:#10b981; font-weight:700; white-space:nowrap;" id="rTarget1"></div>
                                 </div>
                                 <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid #282a2c; font-size:0.82rem;">
                                     <div><span style="color:#10b981; font-weight:600;">2차 목표 수익가 (+8.5%)</span></div>
-                                    <div style="color:#10b981; font-weight:700;" id="rTarget2"></div>
+                                    <div style="color:#10b981; font-weight:700; white-space:nowrap;" id="rTarget2"></div>
                                 </div>
                                 <div style="display:flex; justify-content:space-between; align-items:center; padding:7px 0; font-size:0.82rem;">
                                     <div><span style="color:#38bdf8; font-weight:600;">리스크 방어 손절가 (-5.5%)</span></div>
-                                    <div style="color:#38bdf8; font-weight:700;" id="rStop"></div>
+                                    <div style="color:#38bdf8; font-weight:700; white-space:nowrap;" id="rStop"></div>
                                 </div>
                             </div>
 
                             <div class="guide-box">
                                 <div class="guide-title">gaemiGTP 시그널 가이드</div>
-                                <div id="rGuideText" style="margin-top:4px; color:#c4c7c5;"></div>
+                                <div id="rGuideText" style="margin-top:4px; color:#c4c7c5; word-break:keep-all;"></div>
                                 <div class="guide-disclaimer">과거의 수익률이 미래의 수익을 보장하지 않습니다.</div>
                             </div>
                         </div>
@@ -1439,7 +1452,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rVolRatio').innerText = q.vol_ratio;
                 document.getElementById('rTval20d').innerText = q.tval_20d;
 
-                // 시그널 컨센서스 스타일 바인딩
+                // 시그널 컨센서스 스타일 바인딩 (동적 마커 슬라이더 포함)
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
                 document.getElementById('rBt1yTag').innerText = `● ${q.bt_1y}`;
                 document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;
@@ -1448,6 +1461,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rSliderStop').innerText = q.stop_p;
                 document.getElementById('rSliderEntry').innerText = `진입 ${q.entry1}`;
                 document.getElementById('rSliderTarget').innerText = q.target2;
+
+                document.getElementById('rSigBarFill').style.width = q.sig_fill_pct + '%';
+                document.getElementById('rSigDotMarker').style.left = q.sig_fill_pct + '%';
 
                 document.getElementById('rEntry1').innerText = q.entry1;
                 document.getElementById('rEntry2').innerText = q.entry2;
@@ -1471,7 +1487,6 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
-        // 한국 증시 표준: 상승(양봉) = #ef4444(빨간색), 하락(음봉) = #38bdf8(파란색) 원본 100% 복구
         function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
             const container = document.getElementById('tvChart');
             container.innerHTML = '';

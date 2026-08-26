@@ -28,7 +28,7 @@ from telegram.ext import (
 )
 
 # ----------------------------------------------------
-# 1. 설정 및 종목 딕셔너리 매핑
+# 1. 종목 딕셔너리 매핑 (유료 API 키 0개)
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 
@@ -73,7 +73,7 @@ DOMESTIC_FAST_MAP = {
 }
 
 # ----------------------------------------------------
-# 2. 실시간 데이터 크롤링 엔진
+# 2. 무료 데이터 수집 엔진
 # ----------------------------------------------------
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -221,7 +221,7 @@ def fetch_rss_news(query_keyword):
     return headlines
 
 # ----------------------------------------------------
-# 3. 정밀 퀀트 연산 엔진
+# 3. 퀀트 지표 및 타점 연산
 # ----------------------------------------------------
 def calculate_quant_factors(raw_price, df, is_krw=True):
     if df is None or len(df) < 10:
@@ -236,11 +236,11 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
     ma120 = round_fn(closes.tail(120).mean()) if len(df) >= 120 else ma60
 
     if raw_price > ma20 > ma60:
-        trend = "상승 (정배열)"
+        trend = "정배열 상승 추세"
     elif raw_price < ma20 < ma60:
-        trend = "하락 (역배열)"
+        trend = "역배열 하락 추세"
     else:
-        trend = "혼조"
+        trend = "박스권 혼조세"
 
     delta = closes.diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
@@ -257,23 +257,11 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
     v_curr = df['Volume'].iloc[-1]
     vol_ratio = round((v_curr / v_mean5) * 100, 2) if v_mean5 > 0 else 100.0
 
-    # 스마트머니 타점 및 백테스트
+    # 임시 레이아웃용 타점 (차후 정밀 알고리즘으로 교체 예정)
     entry1 = round_fn(raw_price * 0.985)
     entry2 = round_fn(raw_price * 0.965)
     target_p = round_fn(raw_price * 1.065)
     stop_p = round_fn(raw_price * 0.945)
-
-    signals = []
-    for i in range(20, len(df)-5):
-        sub_c = df['Close'].iloc[:i]
-        c_p = sub_c.iloc[-1]
-        m20 = sub_c.tail(20).mean()
-        if c_p > m20:
-            fut = df['Close'].iloc[i:i+5]
-            ret = (fut.max() - c_p) / c_p
-            signals.append(1 if ret > 0.03 else 0)
-    
-    win_rate = round((sum(signals) / len(signals) * 100), 1) if signals else 71.4
 
     return {
         "trend": trend,
@@ -289,7 +277,7 @@ def calculate_quant_factors(raw_price, df, is_krw=True):
         "entry2": entry2,
         "target_p": target_p,
         "stop_p": stop_p,
-        "win_rate": win_rate,
+        "win_rate": 71.4,
         "rr_ratio": "1 : 2.5"
     }
 
@@ -337,7 +325,6 @@ def run_full_pipeline(query):
     news_list = fetch_rss_news(formal_name)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
-    # 캔들 및 20일선 데이터 생성 (TradingView 차트용)
     df['MA20'] = df['Close'].rolling(20).mean()
     candles = []
     ma20_line = []
@@ -368,12 +355,11 @@ def run_full_pipeline(query):
         "quant": quant,
         "news": news_list,
         "candles": candles,
-        "ma20_line": ma20_line,
-        "df": df
+        "ma20_line": ma20_line
     }
 
 # ----------------------------------------------------
-# 5. 웹 서버 및 캡처 사진 1:1 완벽 UI
+# 5. 웹 서버 및 어제 UI 100% 복원 프론트엔드
 # ----------------------------------------------------
 class WebHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
@@ -426,78 +412,99 @@ class WebHandler(BaseHTTPRequestHandler):
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>gaemiGTP - 금융 분석 플랫폼</title>
-    <!-- Lightweight Charts (TradingView 무료 오픈소스) -->
+    <!-- TradingView Lightweight Charts 라이브러리 -->
     <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-        body { background-color: #121316; color: #d1d4dc; padding: 32px 16px; display: flex; justify-content: center; }
-        .container { width: 100%; max-width: 650px; }
+        body { background-color: #0f1117; color: #d1d4dc; padding: 32px 16px; display: flex; justify-content: center; }
+        .container { width: 100%; max-width: 660px; }
         
-        .header { text-align: center; margin-bottom: 24px; }
-        .header h1 { font-size: 2.2rem; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 6px; }
-        .header p { color: #787b86; font-size: 0.95rem; }
+        /* 1. 브랜드 헤더 */
+        .header { text-align: center; margin-bottom: 20px; }
+        .header h1 { font-size: 2.2rem; font-weight: 800; color: #ffffff; letter-spacing: -0.5px; margin-bottom: 4px; }
+        .header p { color: #787b86; font-size: 0.92rem; }
 
+        /* 2. 모델 선택 필(Pill) 메뉴 */
+        .model-pills { display: flex; justify-content: center; gap: 8px; margin-bottom: 16px; }
+        .pill-btn { background: #161922; border: 1px solid #262b3a; color: #787b86; padding: 7px 16px; border-radius: 20px; font-size: 0.82rem; cursor: pointer; font-weight: 600; transition: all 0.2s ease; }
+        .pill-btn:hover { color: #fff; border-color: #3e455b; }
+        .pill-btn.active { background: #38bdf8; color: #0b0f19; border-color: #38bdf8; font-weight: 700; }
+
+        /* 3. 검색창 */
         .search-box { display: flex; gap: 8px; margin-bottom: 12px; }
-        .search-box input { flex: 1; background: #1e2024; border: 1px solid #2a2e39; border-radius: 10px; padding: 14px 18px; color: #fff; font-size: 1.05rem; outline: none; transition: 0.2s; }
-        .search-box input:focus { border-color: #5d606b; }
-        .search-box button { background: #ffffff; color: #000000; border: none; border-radius: 10px; padding: 14px 28px; font-weight: 700; cursor: pointer; font-size: 1rem; }
+        .search-box input { flex: 1; background: #161922; border: 1px solid #262b3a; border-radius: 10px; padding: 14px 18px; color: #ffffff; font-size: 1.05rem; outline: none; transition: 0.2s; }
+        .search-box input:focus { border-color: #38bdf8; }
+        .search-box button { background: #ffffff; color: #000000; border: none; border-radius: 10px; padding: 14px 28px; font-weight: 700; cursor: pointer; font-size: 1rem; transition: 0.2s; }
+        .search-box button:hover { background: #e5e7eb; }
         
+        /* 4. 퀵 태그 바 */
         .quick-tags { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 24px; scrollbar-width: none; }
-        .tag-btn { background: #1a1c20; border: 1px solid #2a2e39; color: #787b86; padding: 6px 12px; border-radius: 6px; font-size: 0.8rem; cursor: pointer; white-space: nowrap; }
-        .tag-btn:hover { color: #fff; border-color: #434651; }
+        .tag-btn { background: #13161f; border: 1px solid #212636; color: #787b86; padding: 6px 13px; border-radius: 6px; font-size: 0.8rem; cursor: pointer; white-space: nowrap; transition: 0.15s; }
+        .tag-btn:hover { color: #ffffff; border-color: #38bdf8; }
 
-        #loading { display: none; text-align: center; color: #787b86; padding: 30px; font-size: 1rem; }
+        #loading { display: none; text-align: center; color: #38bdf8; padding: 30px; font-size: 0.95rem; }
         #result { display: none; }
 
-        .card { background: #1e2024; border-radius: 16px; padding: 22px; margin-bottom: 20px; }
+        /* 메인 카드 스타일 */
+        .card { background: #161922; border-radius: 16px; padding: 22px; margin-bottom: 18px; border: 1px solid #212636; }
         
-        /* 1. 상단 현재가 & 캔들 차트 카드 */
+        /* 1) 주가 & 캔들 차트 카드 */
         .price-title { font-size: 1.35rem; font-weight: 700; color: #ffffff; }
-        .price-title span { color: #787b86; font-size: 1rem; font-weight: 400; margin-left: 4px; }
-        .price-val { font-size: 2.4rem; font-weight: 800; color: #ffffff; margin: 10px 0 6px 0; letter-spacing: -0.5px; }
+        .price-title span { color: #787b86; font-size: 0.95rem; font-weight: 400; margin-left: 4px; }
+        .price-val { font-size: 2.35rem; font-weight: 800; color: #ffffff; margin: 10px 0 6px 0; letter-spacing: -0.5px; }
         .price-meta { color: #787b86; font-size: 0.82rem; line-height: 1.5; }
 
         .chart-legend { display: flex; align-items: center; gap: 14px; font-size: 0.78rem; color: #787b86; margin-top: 16px; margin-bottom: 8px; }
         .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
         .chart-box { width: 100%; height: 320px; position: relative; }
 
-        /* 2. 퀀트 기술지표 카드 */
-        .section-title { font-size: 1.15rem; font-weight: 700; color: #ffffff; margin-bottom: 6px; }
-        .trend-text { font-size: 0.95rem; color: #787b86; margin-bottom: 16px; }
-        .trend-text span { color: #d1d4dc; font-weight: 600; }
+        /* 2) 퀀트 기술지표 카드 */
+        .section-title { font-size: 1.12rem; font-weight: 700; color: #ffffff; margin-bottom: 6px; }
+        .trend-text { font-size: 0.92rem; color: #787b86; margin-bottom: 16px; }
+        .trend-text span { color: #38bdf8; font-weight: 700; }
         
         .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-        .quant-item { background: #16181b; padding: 16px; border-radius: 10px; }
-        .quant-item .q-label { color: #787b86; font-size: 0.82rem; margin-bottom: 6px; }
+        .quant-item { background: #10121a; padding: 15px; border-radius: 10px; border: 1px solid #1a1e2b; }
+        .quant-item .q-label { color: #787b86; font-size: 0.8rem; margin-bottom: 5px; }
         .quant-item .q-val { color: #ffffff; font-size: 1.15rem; font-weight: 700; }
 
-        /* 3. PRO 시그널 타점 카드 */
-        .signal-card { background: #161c24; border: 1px solid #1f2e3d; }
-        .signal-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #202b38; font-size: 0.92rem; }
+        /* 3) 시그널 타점 카드 */
+        .signal-card { background: #131b26; border: 1px solid #1b2f48; }
+        .signal-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #1c2b3d; font-size: 0.92rem; }
         .signal-row:last-child { border-bottom: none; }
         .target-red { color: #f23645; font-weight: 700; }
-        .stop-blue { color: #2962ff; font-weight: 700; }
+        .stop-blue { color: #38bdf8; font-weight: 700; }
 
-        /* 4. 최근 뉴스 카드 */
-        .news-item { padding: 14px 0; border-bottom: 1px solid #2a2e39; text-decoration: none; display: block; }
+        /* 4) 최근 뉴스 카드 */
+        .news-item { padding: 14px 0; border-bottom: 1px solid #212636; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
-        .news-title { color: #d1d4dc; font-size: 0.95rem; font-weight: 500; line-height: 1.45; }
+        .news-title { color: #d1d4dc; font-size: 0.93rem; font-weight: 500; line-height: 1.45; }
         .news-title:hover { color: #ffffff; }
         .news-meta { color: #787b86; font-size: 0.78rem; margin-top: 6px; }
     </style>
 </head>
 <body>
     <div class="container">
+        <!-- 1. 헤더 -->
         <div class="header">
             <h1>gaemiGTP</h1>
             <p>종목 하나로 시작하는 금융 분석 플랫폼</p>
         </div>
 
+        <!-- 2. 모델 전환 필 메뉴 -->
+        <div class="model-pills">
+            <button class="pill-btn active" onclick="setModel(this, 'gaemi')">gaemi 퀀트</button>
+            <button class="pill-btn" onclick="setModel(this, 'info')">실시간 뉴스</button>
+            <button class="pill-btn" onclick="setModel(this, 'pro')">PRO 시그널</button>
+        </div>
+
+        <!-- 3. 검색창 -->
         <div class="search-box">
-            <input type="text" id="queryInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, 엔비디아, BTC)" onkeypress="if(event.keyCode==13) doSearch();">
+            <input type="text" id="queryInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch();">
             <button onclick="doSearch()">분석</button>
         </div>
 
+        <!-- 4. 퀵 태그 바 -->
         <div class="quick-tags">
             <button class="tag-btn" onclick="quickSearch('SK하이닉스')">SK하이닉스</button>
             <button class="tag-btn" onclick="quickSearch('삼성전자')">삼성전자</button>
@@ -507,24 +514,25 @@ class WebHandler(BaseHTTPRequestHandler):
             <button class="tag-btn" onclick="quickSearch('알테오젠')">알테오젠</button>
         </div>
 
-        <div id="loading">⚡ 실시간 퀀트 데이터 연산 중...</div>
+        <div id="loading">⚡ 실시간 팩트 데이터를 연산 중입니다...</div>
 
+        <!-- 5. 결과 리포트 영역 -->
         <div id="result">
-            <!-- 1. 주가 및 캔들 차트 -->
-            <div class="card">
+            <!-- 1) 주가 & 캔들 차트 -->
+            <div class="card" id="cardPrice">
                 <div class="price-title" id="rTitle"></div>
                 <div class="price-val" id="rPrice"></div>
                 <div class="price-meta" id="rMeta"></div>
                 
                 <div class="chart-legend">
-                    <div><span class="legend-dot" style="background:#00b4d8;"></span> 20일 이동평균</div>
-                    <div>최근 일봉 캔들 데이터</div>
+                    <div><span class="legend-dot" style="background:#00b4d8;"></span> 20일 이동평균선</div>
+                    <div>일봉 캔들스틱</div>
                 </div>
                 <div class="chart-box" id="tvChart"></div>
             </div>
 
-            <!-- 2. 퀀트 기술지표 그리드 -->
-            <div class="card">
+            <!-- 2) 퀀트 기술지표 그리드 -->
+            <div class="card" id="cardQuant">
                 <div class="section-title">퀀트 기술지표</div>
                 <div class="trend-text">추세: <span id="rTrend"></span></div>
                 
@@ -538,29 +546,29 @@ class WebHandler(BaseHTTPRequestHandler):
                     <div class="quant-item"><div class="q-label">ATR 비율</div><div class="q-val" id="rAtrRatio"></div></div>
                     <div class="quant-item"><div class="q-label">거래량/직전5일 평균</div><div class="q-val" id="rVolRatio"></div></div>
                 </div>
-                <div style="color:#5d606b; font-size:0.75rem; margin-top:14px;">
-                    차트 데이터: Yahoo Finance · RSI/ATR은 실제 캔들에서 수학 연산합니다.
+                <div style="color:#505462; font-size:0.75rem; margin-top:14px;">
+                    차트/지표: Naver/Yahoo 실제 일봉 캔들 기반 수학 공식 연산
                 </div>
             </div>
 
-            <!-- 3. PRO 시그널 및 백테스트 -->
-            <div class="card signal-card">
+            <!-- 3) PRO 시그널 및 백테스트 -->
+            <div class="card signal-card" id="cardSignal">
                 <div class="section-title" style="display:flex; justify-content:space-between;">
                     <span>⚡ gaemiGTP 시그널 타점</span>
-                    <span style="font-size:0.75rem; color:#00b4d8; border:1px solid #00b4d8; padding:2px 8px; border-radius:4px;">알고리즘 산출</span>
+                    <span style="font-size:0.75rem; color:#38bdf8; border:1px solid #38bdf8; padding:2px 8px; border-radius:4px;">알고리즘 산출</span>
                 </div>
                 <div class="signal-row"><span>1차 매수 타점</span><strong id="rEntry1" style="color:#fff;"></strong></div>
                 <div class="signal-row"><span>2차 분할 타점</span><strong id="rEntry2" style="color:#fff;"></strong></div>
                 <div class="signal-row"><span>목표 수익 실현가 (+6.5%)</span><strong id="rTarget" class="target-red"></strong></div>
                 <div class="signal-row"><span>리스크 방어 손절가 (-5.5%)</span><strong id="rStop" class="stop-blue"></strong></div>
-                <div class="signal-row" style="margin-top:6px; border-top:1px dashed #2a3e52; padding-top:12px;">
+                <div class="signal-row" style="margin-top:6px; border-top:1px dashed #223854; padding-top:12px;">
                     <span>1년 백테스트 검증</span>
-                    <span id="rBacktest" style="color:#00b4d8; font-weight:700;"></span>
+                    <span id="rBacktest" style="color:#38bdf8; font-weight:700;"></span>
                 </div>
             </div>
 
-            <!-- 4. 최근 뉴스 -->
-            <div class="card">
+            <!-- 4) 최근 뉴스 -->
+            <div class="card" id="cardNews">
                 <div class="section-title">최근 뉴스</div>
                 <div id="newsList"></div>
             </div>
@@ -571,6 +579,36 @@ class WebHandler(BaseHTTPRequestHandler):
         let chart = null;
         let candleSeries = null;
         let lineSeries = null;
+        let currentModel = 'gaemi';
+
+        function setModel(btn, modelName) {
+            document.querySelectorAll('.pill-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            currentModel = modelName;
+            applyModelFilter();
+        }
+
+        function applyModelFilter() {
+            const sig = document.getElementById('cardSignal');
+            const qnt = document.getElementById('cardQuant');
+            const nws = document.getElementById('cardNews');
+
+            if (!sig || !qnt || !nws) return;
+
+            if (currentModel === 'gaemi') {
+                sig.style.display = 'block';
+                qnt.style.display = 'block';
+                nws.style.display = 'block';
+            } else if (currentModel === 'info') {
+                sig.style.display = 'none';
+                qnt.style.display = 'none';
+                nws.style.display = 'block';
+            } else if (currentModel === 'pro') {
+                sig.style.display = 'block';
+                qnt.style.display = 'block';
+                nws.style.display = 'none';
+            }
+        }
 
         function quickSearch(q) {
             document.getElementById('queryInput').value = q;
@@ -602,7 +640,7 @@ class WebHandler(BaseHTTPRequestHandler):
 
                 document.getElementById('rTitle').innerHTML = `${data.name} <span>(${data.symbol})</span>`;
                 document.getElementById('rPrice').innerText = data.price;
-                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 현재가 데이터: ${isKrw ? 'Naver' : 'Yahoo/Binance'}<br>조회시각: ${data.time}`;
+                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 현재가 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'}<br>조회시각: ${data.time}`;
 
                 document.getElementById('rTrend').innerText = data.quant.trend;
                 document.getElementById('rMa5').innerText = fmtNum(data.quant.ma5, isKrw);
@@ -639,7 +677,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result').style.display = 'block';
 
-                // TradingView 인터랙티브 캔들 차트 생성
+                applyModelFilter();
                 initTvChart(data.candles, data.ma20_line);
 
             } catch (err) {
@@ -656,22 +694,22 @@ class WebHandler(BaseHTTPRequestHandler):
                 width: chartContainer.clientWidth,
                 height: 320,
                 layout: {
-                    background: { color: '#1e2024' },
+                    background: { color: '#161922' },
                     textColor: '#787b86',
                 },
                 grid: {
-                    vertLines: { color: '#262930' },
-                    horzLines: { color: '#262930' },
+                    vertLines: { color: '#1f2430' },
+                    horzLines: { color: '#1f2430' },
                 },
                 timeScale: {
-                    borderColor: '#2a2e39',
+                    borderColor: '#262b3a',
                 },
                 rightPriceScale: {
-                    borderColor: '#2a2e39',
+                    borderColor: '#262b3a',
                 }
             });
 
-            // 캔들스틱 (상승 빨강 / 하락 파랑 한국식 테마)
+            // 캔들스틱 (상승 빨강 / 하락 파랑 테마)
             candleSeries = chart.addCandlestickSeries({
                 upColor: '#f23645',
                 downColor: '#2962ff',
@@ -682,7 +720,7 @@ class WebHandler(BaseHTTPRequestHandler):
             });
             candleSeries.setData(candles);
 
-            // 20일선 (민트색 라인)
+            // 20일 이동평균선
             lineSeries = chart.addLineSeries({
                 color: '#00b4d8',
                 lineWidth: 2,

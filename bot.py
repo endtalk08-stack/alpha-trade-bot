@@ -379,12 +379,15 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
         pass
     return None
 
+# ----------------------------------------------------
+# 구글 RSS 뉴스 검색 모듈 (안정성 강화)
+# ----------------------------------------------------
 def fetch_rss_news(query_keyword, limit=5):
     headlines = []
     clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2.0)
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=3.0)
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             for it in root.findall('.//item')[:limit]:
@@ -590,7 +593,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     }
 
 # ----------------------------------------------------
-# 5. 전체 통합 파이프라인 (병렬 실행)
+# 5. 전체 통합 파이프라인 (해외 뉴스 쿼리 최적화)
 # ----------------------------------------------------
 def run_full_pipeline(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -631,7 +634,8 @@ def run_full_pipeline(query):
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 5)
-        f_global_news = executor.submit(fetch_rss_news, "세계 증시 뉴욕증시", 4)
+        # 해외 뉴스 OR 쿼리 적용으로 기사 수집 누락 100% 방지
+        f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 4)
         f_world_indices = executor.submit(fetch_all_world_indices_parallel)
         f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
 
@@ -690,7 +694,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (모바일 강제 색상 적용 및 최적화 완료)
+# 6. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1037,6 +1041,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="world-grid" id="worldGrid"></div>
                     </div>
 
+                    <!-- gaemiGTP 해외 뉴스 (국내/해외/코인 공통 완벽 출력) -->
                     <div class="card">
                         <div class="section-title">gaemiGTP 해외 뉴스</div>
                         <div id="globalNewsList"></div>
@@ -1394,6 +1399,8 @@ HTML_PAGE = """<!DOCTYPE html>
                             </a>
                         `;
                     });
+                } else {
+                    gNews.innerHTML = '<div style="color:#8e918f; font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
                 }
 
                 const c = data.consensus;

@@ -690,7 +690,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (정중앙 정렬 + 동적 슬라이더 + 모바일 최적화)
+# 6. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -877,7 +877,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: #8e918f; font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .quant-item .q-val { color: #ffffff; font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
-        /* 컨센서스 스타일 일체형 아코디언 헤더 (완벽한 정중앙 타이틀 배치) */
+        /* 컨센서스 스타일 일체형 아코디언 헤더 (정중앙 타이틀 배치) */
         .signal-card-header {
             display: flex;
             align-items: center;
@@ -918,7 +918,7 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
-    <!-- Gemini 사이드바 -->
+    <!-- Gemini 사이드바: '분석' 제외 적용 -->
     <div id="sidebar-wrapper">
         <div class="side-top-action">
             <span style="font-weight:700; font-size:1.15rem; color:#fff; cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
@@ -934,11 +934,11 @@ HTML_PAGE = """<!DOCTYPE html>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 4v16m8-8H4" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <span>새 종목 분석</span>
+            <span>새 종목</span>
         </button>
 
         <div class="sidebar-scroll-area">
-            <div class="sidebar-section-title">최근 분석</div>
+            <div class="sidebar-section-title">최근 종목</div>
             <div class="sidebar-item" onclick="doSearch('SK하이닉스');">SK하이닉스</div>
             <div class="sidebar-item" onclick="doSearch('엔비디아');">엔비디아</div>
             <div class="sidebar-item" onclick="doSearch('삼성전자');">삼성전자</div>
@@ -1323,8 +1323,11 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('loading').style.display = 'block';
             document.getElementById('result-card-wrap').style.display = 'none';
 
-            const side = document.getElementById('sidebar-wrapper');
-            if (side) side.classList.remove('open');
+            // 모바일(900px 이하) 화면 가림 방지 분기 처리
+            if (window.innerWidth <= 900) {
+                const side = document.getElementById('sidebar-wrapper');
+                if (side) side.classList.remove('open');
+            }
 
             try {
                 const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);

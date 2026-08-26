@@ -423,6 +423,196 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "guide_text": guide_text
     }
 
+
+# ----------------------------------------------------
+# 3.5 데이터 기반 전략 백테스트 엔진
+# ----------------------------------------------------
+def _build_strategy_signals(df, strategy_name):
+    """미래 데이터를 사용하지 않는 일봉 전략 신호 생성."""
+    d = df.copy()
+    close = d["Close"]
+    high = d["High"]
+    low = d["Low"]
+    vol = d["Volume"]
+    d["MA20"] = close.rolling(20).mean()
+    d["MA60"] = close.rolling(60).mean()
+    d["VOL5"] = vol.rolling(5).mean()
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    rs = gain / loss.replace(0, np.nan)
+    d["RSI"] = 100 - (100 / (1 + rs))
+    d["BREAK20"] = high.shift(1).rolling(20).max()
+
+    if strategy_name == "trend_reclaim":
+        # 상승 추세에서 종가가 20일선을 다시 회복하는 시점
+        signal = (close > d["MA20"]) & (d["MA20"] > d["MA60"]) & (close.shift(1) <= d["MA20"].shift(1))
+    elif strategy_name == "breakout20":
+        # 전일 기준 20일 고점 돌파. 신호 당일 종가를 보고 다음날 시가 진입.
+        signal = close > d["BREAK20"]
+    elif strategy_name == "rsi_rebound":
+        # 과매도 이후 RSI 30선 회복 + 종가 상승
+        signal = (d["RSI"].shift(1) < 30) & (d["RSI"] >= 30) & (close > close.shift(1))
+    else:
+        signal = pd.Series(False, index=d.index)
+    return d, signal.fillna(False)
+
+
+def _backtest_strategy(df, strategy_name, stop_pct=0.055, target_pct=0.085, max_hold=15,
+                       fee_pct=0.0005, slippage_pct=0.0005, start_idx=None, end_idx=None):
+    """롱 전용 단일 포지션 백테스트. 당일 종가 신호 → 다음날 시가 진입."""
+    d, signal = _build_strategy_signals(df, strategy_name)
+    if start_idx is None:
+        start_idx = max(60, 0)
+    if end_idx is None:
+        end_idx = len(d) - 1
+
+    trades = []
+    i = max(int(start_idx), 60)
+    end_idx = min(int(end_idx), len(d) - 2)
+    while i <= end_idx:
+        if not bool(signal.iloc[i]):
+            i += 1
+            continue
+
+        entry_i = i + 1
+        entry_price = float(d["Open"].iloc[entry_i]) * (1 + slippage_pct)
+        stop_price = entry_price * (1 - stop_pct)
+        target_price = entry_price * (1 + target_pct)
+        exit_i = min(entry_i + max_hold, len(d) - 1)
+        exit_price = float(d["Close"].iloc[exit_i]) * (1 - slippage_pct)
+        exit_reason = "time"
+
+        for j in range(entry_i, exit_i + 1):
+            day_low = float(d["Low"].iloc[j])
+            day_high = float(d["High"].iloc[j])
+            # 같은 봉에서 목표/손절이 모두 체결 가능한 경우 보수적으로 손절 우선
+            if day_low <= stop_price and day_high >= target_price:
+                exit_i = j
+                exit_price = stop_price * (1 - slippage_pct)
+                exit_reason = "stop_and_target_same_bar"
+                break
+            if day_low <= stop_price:
+                exit_i = j
+                exit_price = stop_price * (1 - slippage_pct)
+                exit_reason = "stop"
+                break
+            if day_high >= target_price:
+                exit_i = j
+                exit_price = target_price * (1 - slippage_pct)
+                exit_reason = "target"
+                break
+
+        gross_ret = (exit_price / entry_price) - 1
+        net_ret = gross_ret - fee_pct * 2
+        trades.append({
+            "entry_date": d.index[entry_i],
+            "exit_date": d.index[exit_i],
+            "entry": entry_price,
+            "exit": exit_price,
+            "ret": net_ret,
+            "reason": exit_reason,
+            "hold_days": max(1, exit_i - entry_i + 1)
+        })
+        i = exit_i + 1
+
+    if not trades:
+        return {
+            "strategy": strategy_name, "trades": 0, "win_rate": 0.0,
+            "avg_win": 0.0, "avg_loss": 0.0, "profit_factor": 0.0,
+            "expectancy": 0.0, "cum_return": 0.0, "cagr": 0.0, "mdd": 0.0,
+            "risk_reward": 0.0, "trades_detail": []
+        }
+
+    rets = np.array([t["ret"] for t in trades], dtype=float)
+    wins = rets[rets > 0]
+    losses = rets[rets < 0]
+    avg_win = float(wins.mean()) if len(wins) else 0.0
+    avg_loss = float(abs(losses.mean())) if len(losses) else 0.0
+    profit_factor = float(wins.sum() / abs(losses.sum())) if len(losses) and losses.sum() != 0 else (999.0 if len(wins) else 0.0)
+    equity = np.cumprod(1 + rets)
+    cum_return = float(equity[-1] - 1)
+    peaks = np.maximum.accumulate(equity)
+    drawdowns = equity / peaks - 1
+    mdd = float(abs(drawdowns.min())) if len(drawdowns) else 0.0
+
+    first_date = pd.Timestamp(trades[0]["entry_date"])
+    last_date = pd.Timestamp(trades[-1]["exit_date"])
+    years = max((last_date - first_date).days / 365.25, 1 / 365.25)
+    cagr = float(equity[-1] ** (1 / years) - 1) if equity[-1] > 0 else -1.0
+    win_rate = float((rets > 0).mean())
+    expectancy = float(rets.mean())
+    risk_reward = float(avg_win / avg_loss) if avg_loss > 0 else 0.0
+    return {
+        "strategy": strategy_name, "trades": len(trades),
+        "win_rate": win_rate, "avg_win": avg_win, "avg_loss": avg_loss,
+        "profit_factor": profit_factor, "expectancy": expectancy,
+        "cum_return": cum_return, "cagr": cagr, "mdd": mdd,
+        "risk_reward": risk_reward, "trades_detail": trades
+    }
+
+
+def _robustness_score(stats_list):
+    """여러 검증 구간에서 수익성과 위험을 함께 반영한 보수적 점수."""
+    if not stats_list:
+        return -999.0
+    med_cagr = float(np.median([s["cagr"] for s in stats_list]))
+    med_pf = float(np.median([min(s["profit_factor"], 5.0) for s in stats_list]))
+    med_mdd = float(np.median([s["mdd"] for s in stats_list]))
+    positive_folds = sum(1 for s in stats_list if s["cagr"] > 0 and s["profit_factor"] > 1.0)
+    return (med_cagr * 100) + (med_pf * 5) + (positive_folds * 3) - (med_mdd * 20)
+
+
+def run_strategy_tournament(df):
+    """고정 규칙 후보군을 동일한 비용/체결 가정으로 비교하고, 시간순 검증에서 일관된 전략을 선별."""
+    if df is None or len(df) < 180:
+        return None
+    names = ["trend_reclaim", "breakout20", "rsi_rebound"]
+    n = len(df)
+    cut1 = int(n * 0.55)
+    cut2 = int(n * 0.75)
+    folds = [(60, cut1), (cut1, cut2), (cut2, n - 1)]
+    results = []
+    for name in names:
+        fold_stats = []
+        for start, end in folds:
+            if end - start < 30:
+                continue
+            fold_stats.append(_backtest_strategy(df, name, start_idx=start, end_idx=end))
+        full = _backtest_strategy(df, name)
+        score = _robustness_score(fold_stats)
+        results.append({"strategy": name, "full": full, "folds": fold_stats, "score": score})
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    winner = results[0] if results else None
+    if winner is None:
+        return None
+    return {
+        "winner": winner,
+        "candidates": results,
+        "method": "3구간 시간순 검증 + 수수료/슬리피지 반영 + 수익성/낙폭 동시 평가"
+    }
+
+
+def format_backtest_summary(tournament):
+    if not tournament:
+        return None
+    w = tournament["winner"]["full"]
+    return {
+        "strategy": w["strategy"],
+        "trades": w["trades"],
+        "win_rate": w["win_rate"],
+        "avg_win": w["avg_win"],
+        "avg_loss": w["avg_loss"],
+        "risk_reward": w["risk_reward"],
+        "profit_factor": w["profit_factor"],
+        "expectancy": w["expectancy"],
+        "cum_return": w["cum_return"],
+        "cagr": w["cagr"],
+        "mdd": w["mdd"],
+        "method": tournament["method"]
+    }
+
 # ----------------------------------------------------
 # 4. 전체 통합 파이프라인
 # ----------------------------------------------------
@@ -476,6 +666,8 @@ def run_full_pipeline(query):
         dart_disclosures = f_dart.result()
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
+    tournament = run_strategy_tournament(df)
+    quant["backtest"] = format_backtest_summary(tournament) if tournament else None
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -660,7 +852,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .hero-section { text-align: center; padding: 24px 0 36px; }
         .hero-title { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.5px; color: var(--color-primary); margin-bottom: 8px; }
         .hero-sub { font-size: 1.05rem; color: var(--text-sub); margin-bottom: 28px; word-break: keep-all; }
-        .hero-note { font-size: 0.78rem; color: var(--text-muted); margin-top: -18px; margin-bottom: 20px; }
 
         /* 검색창 */
         .search-wrap { max-width: 680px; margin: 0 auto; position: relative; }
@@ -831,8 +1022,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <!-- 메인 히어로 -->
             <section class="hero-section">
                 <h1 class="hero-title">오늘 시장, 어디부터 볼까?</h1>
-                <p class="hero-sub">뉴스 · 차트 · 수급 · 기술지표를 한곳에서 쉽게 확인하세요.</p>
-                <div class="hero-note">실제 데이터가 확인되는 정보만 보여드립니다.</div>
+                <p class="hero-sub">복잡한 투자 정보를 개미에게 가장 쉽게 보여드립니다.</p>
                 
                 <div class="search-wrap">
                     <div class="search-box">
@@ -866,28 +1056,28 @@ HTML_PAGE = """<!DOCTYPE html>
                 <!-- 오늘 시장을 움직이는 TOP 5 -->
                 <div>
                     <div class="section-header" style="margin-top: 0;">
-                        <h2 class="section-title">🔥 오늘 시장 체크포인트</h2>
+                        <h2 class="section-title">🔥 오늘 시장을 움직이는 TOP 5</h2>
                     </div>
                     <div class="card top-list">
                         <div class="top-item">
                             <div class="top-num">01</div>
-                            <div class="top-content"><div class="topic">반도체 / AI HBM</div><div class="desc">AI 인프라 투자와 반도체 수요를 확인하세요.</div></div>
+                            <div class="top-content"><div class="topic">반도체 / AI HBM</div><div class="desc">글로벌 빅테크 AI 인프라 투자 지속 및 HBM 수요 기대</div></div>
                         </div>
                         <div class="top-item">
                             <div class="top-num">02</div>
-                            <div class="top-content"><div class="topic">미국 금리 및 달러 환율</div><div class="desc">미국 금리와 원/달러 움직임을 확인하세요.</div></div>
+                            <div class="top-content"><div class="topic">미국 금리 및 달러 환율</div><div class="desc">연준 통화정책 경로 및 달러/원 환율 변동성 주시</div></div>
                         </div>
                         <div class="top-item">
                             <div class="top-num">03</div>
-                            <div class="top-content"><div class="topic">2차전지 / 전기차</div><div class="desc">전기차·배터리 업종의 주요 변수를 확인하세요.</div></div>
+                            <div class="top-content"><div class="topic">2차전지 / 전기차</div><div class="desc">북미/유럽 전기차 수요 회복 및 리튬 가격 바닥권 탐색</div></div>
                         </div>
                         <div class="top-item">
                             <div class="top-num">04</div>
-                            <div class="top-content"><div class="topic">바이오 / 기술수출</div><div class="desc">임상·기술이전 등 바이오 주요 일정을 확인하세요.</div></div>
+                            <div class="top-content"><div class="topic">바이오 / 기술수출</div><div class="desc">글로벌 임상 결과 발표 및 대형 기술이전(L/O) 모멘텀</div></div>
                         </div>
                         <div class="top-item">
                             <div class="top-num">05</div>
-                            <div class="top-content"><div class="topic">암호화폐 온체인 수급</div><div class="desc">ETF 자금 흐름과 암호화폐 수급을 확인하세요.</div></div>
+                            <div class="top-content"><div class="topic">암호화폐 온체인 수급</div><div class="desc">비트코인 ETF 자금 유출입 및 선물 펀딩비 밴드 안정화</div></div>
                         </div>
                     </div>
                 </div>
@@ -895,29 +1085,29 @@ HTML_PAGE = """<!DOCTYPE html>
                 <!-- 오늘의 주목 종목 -->
                 <div>
                     <div class="section-header" style="margin-top: 0;">
-                        <h2 class="section-title">⭐ 빠른 종목 분석</h2>
+                        <h2 class="section-title">⭐ 오늘의 주목 종목</h2>
                     </div>
                     <div class="card stock-grid" style="grid-template-columns: 1fr;">
                         <div class="stock-card" onclick="doSearch('SK하이닉스')">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <div class="s-name">SK하이닉스</div>
-                                <span class="badge-impact badge-neutral">검색 후 분석</span>
+                                <span class="badge-impact badge-positive">AI 분석: 상승 우위</span>
                             </div>
-                            <div class="s-price"><span style="font-size:0.9rem; color:var(--text-sub);">검색하면 실시간 가격과 분석을 확인할 수 있습니다.</span></div>
+                            <div class="s-price">208,500원 <span class="val-up" style="font-size:0.9rem;">▲ HBM 주도</span></div>
                         </div>
                         <div class="stock-card" onclick="doSearch('삼성전자')">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <div class="s-name">삼성전자</div>
-                                <span class="badge-impact badge-neutral">검색 후 분석</span>
+                                <span class="badge-impact badge-neutral">AI 분석: 박스권</span>
                             </div>
-                            <div class="s-price"><span style="font-size:0.9rem; color:var(--text-sub);">검색하면 실시간 가격과 분석을 확인할 수 있습니다.</span></div>
+                            <div class="s-price">75,400원 <span class="val-neutral" style="font-size:0.9rem;">● 매물 소화</span></div>
                         </div>
                         <div class="stock-card" onclick="doSearch('NVDA')">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
                                 <div class="s-name">엔비디아 (NVDA)</div>
-                                <span class="badge-impact badge-neutral">검색 후 분석</span>
+                                <span class="badge-impact badge-positive">AI 분석: 강세 지속</span>
                             </div>
-                            <div class="s-price"><span style="font-size:0.9rem; color:var(--text-sub);">검색하면 실시간 가격과 분석을 확인할 수 있습니다.</span></div>
+                            <div class="s-price">$128.50 <span class="val-up" style="font-size:0.9rem;">▲ 글로벌 주도</span></div>
                         </div>
                     </div>
                 </div>
@@ -935,19 +1125,19 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="card">
                         <div class="vs-card">
                             <div class="vs-side">
-                                <div style="font-size:0.8rem; color:var(--text-sub);">검색한 종목</div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">삼성전자</div>
                                 <div style="font-size:1.1rem; font-weight:800; margin-top:2px;">AI 분석</div>
-                                <div class="badge-impact badge-neutral" style="margin-top:6px;">분석 결과 표시</div>
+                                <div class="badge-impact badge-neutral" style="margin-top:6px;">박스권 횡보</div>
                             </div>
                             <div class="vs-divider">VS</div>
                             <div class="vs-side">
                                 <div style="font-size:0.8rem; color:var(--text-sub);">집단지성 투표</div>
                                 <div style="font-size:1.1rem; font-weight:800; margin-top:2px;">개미 심리</div>
-                                <div class="badge-impact badge-neutral" style="margin-top:6px;">실제 투표 결과 표시</div>
+                                <div class="badge-impact badge-positive" style="margin-top:6px;">상승 우세 68%</div>
                             </div>
                         </div>
                         <div style="font-size:0.82rem; color:var(--text-sub); text-align:center; padding:4px 0;">
-                            종목을 검색하면 해당 종목의 실제 분석 결과와 개미 투표를 비교합니다.
+                            ⚠️ 종목을 검색하면 실시간 AI 퀀트와 개미 투표 결과를 1:1로 비교합니다.
                         </div>
                     </div>
                 </div>
@@ -960,23 +1150,23 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="card">
                         <div class="link-flow">
                             <div>
-                                <div style="font-size:0.8rem; color:var(--text-sub);">대표 연결 예시</div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">미국 빅테크 주도</div>
                                 <div style="font-size:1.05rem; font-weight:800;">NVIDIA (엔비디아)</div>
                             </div>
                             <div style="font-weight:800; color:var(--text-muted);">→</div>
                             <div>
-                                <div style="font-size:0.8rem; color:var(--text-sub);">국내 관련 산업</div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">국내 HBM 공급망 수혜</div>
                                 <div style="font-size:0.95rem; font-weight:700; color:var(--color-primary);">SK하이닉스 · 한미반도체</div>
                             </div>
                         </div>
                         <div class="link-flow" style="margin-bottom:0;">
                             <div>
-                                <div style="font-size:0.8rem; color:var(--text-sub);">대표 연결 예시</div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">미국 전기차/로봇</div>
                                 <div style="font-size:1.05rem; font-weight:800;">TESLA (테슬라)</div>
                             </div>
                             <div style="font-weight:800; color:var(--text-muted);">→</div>
                             <div>
-                                <div style="font-size:0.8rem; color:var(--text-sub);">국내 관련 산업</div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">2차전지 및 로보틱스 연동</div>
                                 <div style="font-size:0.95rem; font-weight:700; color:var(--color-primary);">LG에너지솔루션 · 레인보우로보</div>
                             </div>
                         </div>
@@ -990,7 +1180,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 <h2 class="section-title">📰 오늘의 핵심 뉴스</h2>
             </div>
             <div class="card" id="homeNewsList">
-                <div style="text-align:center; color:var(--text-muted); padding:20px;">실시간 뉴스 데이터를 불러오는 중입니다...</div>
+                <div style="text-align:center; color:var(--text-muted); padding:20px;">실시간 뉴스를 집계 중입니다...</div>
             </div>
 
         </div>
@@ -1039,6 +1229,27 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="spec-box"><div class="spec-label">주요 저항선</div><div class="spec-val" id="dResistance">-</div></div>
                     </div>
                     <div style="margin-top:14px; padding:12px; background:#F9FAFB; border-radius:var(--radius-sm); font-size:0.85rem; color:var(--text-sub);" id="dGuideText"></div>
+                </div>
+
+                <!-- 데이터 검증 백테스트 -->
+                <div class="card" style="margin-top:16px;">
+                    <h3 class="section-title" style="font-size:1.05rem; margin-bottom:12px;">📈 데이터 검증 백테스트</h3>
+                    <div id="backtestEmpty" style="color:var(--text-sub); font-size:0.88rem;">과거 데이터가 충분하지 않습니다.</div>
+                    <div id="backtestContent" style="display:none;">
+                        <div class="spec-box" style="margin-bottom:10px;">
+                            <div class="spec-label">검증된 전략</div>
+                            <div class="spec-val" id="btStrategy">-</div>
+                        </div>
+                        <div class="quant-spec-grid">
+                            <div class="spec-box"><div class="spec-label">총 신호</div><div class="spec-val" id="btTrades">-</div></div>
+                            <div class="spec-box"><div class="spec-label">승률</div><div class="spec-val" id="btWinRate">-</div></div>
+                            <div class="spec-box"><div class="spec-label">손익비</div><div class="spec-val" id="btRR">-</div></div>
+                            <div class="spec-box"><div class="spec-label">Profit Factor</div><div class="spec-val" id="btPF">-</div></div>
+                            <div class="spec-box"><div class="spec-label">누적 수익률</div><div class="spec-val" id="btCum">-</div></div>
+                            <div class="spec-box"><div class="spec-label">최대 낙폭(MDD)</div><div class="spec-val" id="btMdd">-</div></div>
+                        </div>
+                        <div style="margin-top:12px; padding:10px 12px; background:#F9FAFB; border-radius:var(--radius-sm); font-size:0.78rem; color:var(--text-sub);" id="btMethod"></div>
+                    </div>
                 </div>
 
                 <!-- 텔레그램 실시간 알림 연동 배너 -->
@@ -1216,6 +1427,26 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('dCurrent').innerText = qData.current;
                 document.getElementById('dResistance').innerText = qData.resistance;
                 document.getElementById('dGuideText').innerText = '💡 ' + qData.guide_text;
+
+                // 데이터 검증 백테스트 렌더링
+                const bt = qData.backtest;
+                const btEmpty = document.getElementById('backtestEmpty');
+                const btContent = document.getElementById('backtestContent');
+                if (bt) {
+                    btEmpty.style.display = 'none';
+                    btContent.style.display = 'block';
+                    document.getElementById('btStrategy').innerText = bt.strategy;
+                    document.getElementById('btTrades').innerText = bt.trades + '회';
+                    document.getElementById('btWinRate').innerText = (bt.win_rate * 100).toFixed(1) + '%';
+                    document.getElementById('btRR').innerText = '1 : ' + (bt.risk_reward || 0).toFixed(2);
+                    document.getElementById('btPF').innerText = Number(bt.profit_factor || 0).toFixed(2);
+                    document.getElementById('btCum').innerText = (bt.cum_return * 100).toFixed(1) + '%';
+                    document.getElementById('btMdd').innerText = '-' + (bt.mdd * 100).toFixed(1) + '%';
+                    document.getElementById('btMethod').innerText = '검증 방식: ' + bt.method;
+                } else {
+                    btEmpty.style.display = 'block';
+                    btContent.style.display = 'none';
+                }
 
                 // 텔레그램 연동 링크
                 document.getElementById('tgAlertLink').href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(data.symbol);

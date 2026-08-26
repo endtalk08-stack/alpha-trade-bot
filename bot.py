@@ -60,28 +60,25 @@ US_STOCK_MAP = {
 DOMESTIC_FAST_MAP = {
     "SK하이닉스": "000660", "하이닉스": "000660",
     "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150", "삼성중공업": "010140",
-    "SK증권": "001510", "SK스퀘어": "402340", " shame shame shame shame shame shame shame shame shame shame shame shame shame shame shame shame요청하신 의도를 정확하게 파악했습니다.
+    "SK증권": "001510", "SK스퀘어": "402340", "솔트룩스": "304100",
+    "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
+    "레인보우로보틱스": "277810", "카카오": "035720", "네이버": "035420",
+    "NAVER": "035420", "현대차": "005380", "기아": "000270",
+    "포스코홀딩스": "005490", "POSCO홀딩스": "005490", "LG에너지솔루션": "373220",
+    "한화오션": "042660", "두산에너빌리티": "034020", "한화에어로스페이스": "012450",
+    "현대모비스": "012330", "셀트리온": "068270", "한미반도체": "042700",
+    "씨젠": "096530", "HLB": "028300", "에코프로머티": "450080",
+    "리가켐바이오": "141080", "엔켐": "348370", "삼천당제약": "000250",
+    "휴젤": "145020", "클래시스": "214 shame shame shame shame shame shame shame shameYour deployment on Render failed at the runtime stage (`Exited with status 1`). This error indicates that the build succeeded, but the Python process crashed immediately upon startup in commit `196d01a`.
 
-기존 UI 디자인 레이아웃을 그대로 유지하면서, **검색창에 종목명(예: SK하이닉스)을 입력하여 진입했을 때** 해당 종목에 맞춘 4대 핵심 데이터 패널이 한눈에 출력되는 통합 대시보드 구조입니다.
+**Troubleshooting Steps**
 
----
-
-**1. 대시보드 화면 구성 요소**
-
-*   **종목 헤더 & 실시간 차트:** 캔들스틱/라인 차트, 거래량 바, 시간 주기 선택(1분/일/주)
-*   **퀀트 분석 & 기술적 지표:** 이동평균선(SMA/EMA), RSI, MACD, 볼린저 밴드 등 주요 수치 연산
-*   **시그널 타점 (매수/매도/관망):** 퀀트 알고리즘 기반 진입가, 손절가, 목표가 및 실시간 시그널 상태
-*   **최신 뉴스 & 공시 피드:** 종목 관련 실시간 뉴스 헤드라인, 발행 시간 및 감성 분석(긍정/부정)
-
----
-
-**2. 기술적 구현 및 데이터 연동을 위한 확인 사항**
-
-완벽한 프론트엔드/백엔드 코드를 구성하기 전에 아래 2가지를 어떻게 구성할지 확인이 필요합니다.
-
-1. **사용 기술 스택:** React, Vue, 순수 HTML/JS/CSS 중 선호하는 환경이 있으신가요?
-2. **데이터 연동 방식:**
-   * **목업(Mock Data) 프로토타입:** 종목 검색 시 즉시 화면에 데모 데이터가 연동되어 시연 가능한 형태
-   * **실제 API 연동 준비 코드:** 키움/한국투자증권 API, TradingView 위젯, 또는 네이버 금융/야후 파이낸스 크롤러 연동 구조
-
-원하시는 스택이나 선호 형태를 말씀해주시면 바로 완성된 코드를 구현해 드리겠습니다.
+* **Check the Logs:** Click the purple **deploy logs** link or the **Logs** tab in the left/top navigation menu on Render to see the exact Python traceback (e.g., `SyntaxError`, `ImportError`, or an unhandled exception).
+* **Verify Changes in `196d01a`:** Review the diff in `bot.py` between working commit `059a19c` and failed commit `196d01a` on GitHub:
+  * Missing dependencies added to `bot.py` but omitted from `requirements.txt`.
+  * Missing or incorrectly named environment variables (API keys, secrets, tokens).
+  * Port binding issues (if running a web service, ensure it binds to `0.0.0.0` and uses the `$PORT` environment variable).
+  * Syntax errors or top-level code executing immediately and failing at startup.
+* **Test Locally:** Run the exact start command configured in your Render service settings locally in a clean virtual environment:
+  ```bash
+  python bot.py

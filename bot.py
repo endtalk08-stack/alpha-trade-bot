@@ -904,7 +904,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
         .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.82rem; line-height: 1.55; color: #d1d5db; border-top: 1px solid #282a2c; }
         .guide-title { font-weight: 700; color: #10b981; margin-bottom: 4px; display: flex; align-items: center; gap: 4px; }
-        .guide-disclaimer { margin-top: 10px; font-size: 0.65rem; color: #6b7280; text-align: center; }
 
         .news-item { padding: 10px 0; border-bottom: 1px solid #282a2c; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
@@ -918,7 +917,7 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
-    <!-- Gemini 사이드바: '분석' 제외 적용 -->
+    <!-- Gemini 사이드바 -->
     <div id="sidebar-wrapper">
         <div class="side-top-action">
             <span style="font-weight:700; font-size:1.15rem; color:#fff; cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
@@ -1180,7 +1179,6 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="guide-box">
                                 <div class="guide-title">gaemiGTP 시그널 가이드</div>
                                 <div id="rGuideText" style="margin-top:4px; color:#c4c7c5; word-break:keep-all;"></div>
-                                <div class="guide-disclaimer">과거의 수익률이 미래의 수익을 보장하지 않습니다.</div>
                             </div>
                         </div>
                     </div>
@@ -1455,7 +1453,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rVolRatio').innerText = q.vol_ratio;
                 document.getElementById('rTval20d').innerText = q.tval_20d;
 
-                // 시그널 컨센서스 스타일 바인딩 (동적 마커 슬라이더 포함)
+                // 시그널 바인딩
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
                 document.getElementById('rBt1yTag').innerText = `● ${q.bt_1y}`;
                 document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;

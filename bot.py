@@ -385,7 +385,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "stop_p": stop_p,
         "guide_text": guide_text,
         "bt_1y": "승률 71.4% / 손익비 1:2.4",
-        "bt_2y": "승률 81.6% / 손익비 1:4.2 (1년 대비 1.75배)"
+        "bt_2y": "승률 81.6% / 손익비 1:4.2"
     }
 
 # ----------------------------------------------------
@@ -507,16 +507,20 @@ HTML_PAGE = """<!DOCTYPE html>
         #main-view { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
         .hero-title { font-size: 3.2rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: #f2f2f2; }
         .hero-sub { font-size: 1rem; color: #8e918f; margin-bottom: 24px; font-weight: 400; text-align: center; }
+        
+        /* 중앙 및 하단 검색창 규격 동일화 */
         .search-container { width: 100%; max-width: 720px; position: relative; }
-        .search-box { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 4px 6px 4px 16px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
-        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; padding: 8px 4px; }
+        .search-box { width: 100%; height: 52px; background: #282a2c; border: none; border-radius: 32px; padding: 0 8px 0 20px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #f2f2f2; font-size: 0.95rem; }
         .search-box input::placeholder { color: #8e918f; }
-        .send-btn { width: 34px; height: 34px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+        .send-btn { width: 38px; height: 38px; border-radius: 50%; background: #37393b; border: none; color: #ffffff; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
         .send-btn:hover { background: #4a4d50; }
-        .send-btn svg { width: 17px; height: 17px; fill: currentColor; }
+        .send-btn svg { width: 18px; height: 18px; fill: currentColor; }
+
         .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
         .tag-btn { background: #282a2c; border: none; border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: #c4c7c5; cursor: pointer; white-space: nowrap; }
         .tag-btn:hover { background: #37393b; color: #fff; }
+        
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 72px 16px 100px; }
         .result-inner { max-width: 740px; margin: 0 auto; }
         .card { background: #282a2c; border-radius: 16px; padding: 20px; margin-bottom: 16px; border: 1px solid #33363a; }
@@ -540,21 +544,29 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item { background: #1e1f20; padding: 12px 14px; border-radius: 10px; border: 1px solid #2d3035; }
         .quant-item .q-label { color: #8e918f; font-size: 0.78rem; margin-bottom: 3px; }
         .quant-item .q-val { color: #ffffff; font-size: 0.95rem; font-weight: 700; }
-        .signal-accordion-btn { width: 100%; background: #282a2c; border: none; border-radius: 32px; padding: 14px 20px; color: #fff; font-size: 0.98rem; font-weight: 700; display: flex; align-items: center; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
+        
+        /* 시그널 아코디언 */
+        .signal-accordion-btn { width: 100%; height: 52px; background: #282a2c; border: none; border-radius: 32px; padding: 0 20px; color: #fff; font-size: 0.98rem; font-weight: 700; display: flex; align-items: center; cursor: pointer; box-shadow: 0 4px 20px rgba(0,0,0,0.2); position: relative; }
         .signal-title-center { flex: 1; text-align: center; }
         .signal-arrow-icon { width: 18px; height: 18px; fill: #8e918f; transition: transform 0.2s; position: absolute; right: 20px; }
         .signal-body { display: none; background: #242628; border-radius: 16px; padding: 18px; margin-top: 10px; border: 1px solid #33363a; }
         .signal-row { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px solid #2e3034; font-size: 0.9rem; }
         .signal-row:last-child { border-bottom: none; }
-        .guide-box { background: #1a1c1d; border-radius: 10px; padding: 14px; margin-top: 14px; font-size: 0.86rem; line-height: 1.55; color: #d1d5db; border: none; }
+        
+        /* 가이드 영역 테두리/라인 완전 제거 */
+        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.86rem; line-height: 1.55; color: #d1d5db; border: none; background: transparent; }
         .guide-title { font-weight: 700; color: #38bdf8; margin-bottom: 5px; }
+        .guide-disclaimer { margin-top: 10px; font-size: 0.74rem; color: #6b7280; line-height: 1.4; }
+        
         .news-item { padding: 10px 0; border-bottom: 1px solid #37393b; text-decoration: none; display: block; }
         .news-item:last-child { border-bottom: none; }
         .news-title { color: #e3e3e3; font-size: 0.88rem; font-weight: 500; line-height: 1.4; }
         .news-title:hover { color: #38bdf8; }
         .news-meta { color: #8e918f; font-size: 0.74rem; margin-top: 4px; }
+        
         .disclaimer-wrap { width: 100%; text-align: center; padding: 24px 10px 10px; }
         .disclaimer-text { font-size: 0.72rem; color: #6b7280; line-height: 1.5; word-break: keep-all; }
+        
         #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; width: 100%; height: 76px; background: linear-gradient(180deg, rgba(30,31,32,0) 0%, rgba(30,31,32,1) 40%); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
         .loading { display: none; text-align: center; color: #38bdf8; margin: 40px 0; font-size: 0.92rem; }
     </style>
@@ -663,13 +675,13 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="guide-box">
                             <div class="guide-title">gaemiGTP 시그널 가이드</div>
                             <div id="rGuideText"></div>
+                            <div class="guide-disclaimer">※ 과거의 수익률이 미래의 수익을 보장하지 않습니다.</div>
                         </div>
                     </div>
                 </div>
 
                 <div class="disclaimer-wrap">
                     <p class="disclaimer-text">
-                        과거의 수익률이 미래의 수익을 보장하지 않습니다.<br>
                         본 플랫폼에서 제공하는 모든 시세 데이터 및 기술지표는 투자 참고용이며, 투자 권유가 아닙니다. 모든 투자의 결과와 책임은 투자자 본인에게 있습니다.
                     </p>
                 </div>

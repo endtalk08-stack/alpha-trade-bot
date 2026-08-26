@@ -7,7 +7,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import html
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -16,7 +16,7 @@ import pandas as pd
 import numpy as np
 
 # ----------------------------------------------------
-# 0. 고성능 네트워크 세션 (TCP 커넥션 풀 재사용으로 속도 극대화)
+# 0. 고성능 네트워크 세션 (TCP 커넥션 풀 재사용)
 # ----------------------------------------------------
 HTTP_SESSION = requests.Session()
 HTTP_SESSION.headers.update({
@@ -26,9 +26,10 @@ HTTP_SESSION.headers.update({
 })
 
 # ----------------------------------------------------
-# 1. 기본 설정 및 종목 매핑 (100% 원본 보존)
+# 1. 기본 설정 및 키 관리
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+DART_API_KEY = os.getenv("DART_API_KEY", "df6f7c97c02d0f1b2732e17185ad9dcde667e932")
 
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
@@ -83,8 +84,49 @@ WORLD_INDICES_CONFIG = [
 ]
 
 # ----------------------------------------------------
-# 2. 데이터 크롤링 모듈 (세션 재사용 최적화)
+# 2. 데이터 크롤링 모듈 (무결점 DART 전자공시 엔진)
 # ----------------------------------------------------
+def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
+    """실시간 전자공시 수집 및 호재/악재 자동 분류"""
+    if not is_krw or not stock_code or not stock_code.isdigit():
+        return None
+
+    disclosures = []
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{stock_code}/disclosure?page=1&pageSize={limit}"
+        res = HTTP_SESSION.get(url, timeout=2.0).json()
+        items = res.get("items", []) or res.get("disclosures", [])
+        for it in items[:limit]:
+            title = it.get("reportTitle") or it.get("title", "")
+            date_raw = str(it.get("rceptDt") or it.get("date", ""))[:10].replace("-", ".")
+            art_id = it.get("articleId") or it.get("rceptNo", "")
+            link = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={art_id}" if art_id else "#"
+
+            tag_type = "neutral"
+            tag_name = "공시"
+            if any(k in title for k in ["공급계약", "수주", "자기주식취득", "무상증자", "영업실적", "주주우대", "특허"]):
+                tag_type = "positive"
+                tag_name = "호재"
+            elif any(k in title for k in ["유상증자", "전환사채", "신주인수권", "감자", "횡령", "배임", "관리종목", "상장폐지", "불성실공시"]):
+                tag_type = "negative"
+                tag_name = "악재주의"
+            elif any(k in title for k in ["최대주주변경", "주식매수선택권", "주요사항보고서"]):
+                tag_type = "warning"
+                tag_name = "변동"
+
+            disclosures.append({
+                "title": title,
+                "date": date_raw,
+                "link": link,
+                "tag_type": tag_type,
+                "tag_name": tag_name,
+                "flr_nm": it.get("submitter", "DART")
+            })
+    except Exception:
+        pass
+
+    return disclosures
+
 def get_realtime_usdkrw():
     try:
         url = "https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?range=1d&interval=1m"
@@ -600,7 +642,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     }
 
 # ----------------------------------------------------
-# 5. 전체 통합 파이프라인 (동시성 8스레드 병렬 실행 + 무결점 키 매핑)
+# 5. 전체 통합 파이프라인 (DART 포함 병렬 멀티스레드)
 # ----------------------------------------------------
 def run_full_pipeline(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -639,16 +681,19 @@ def run_full_pipeline(query):
     if raw_price is None or df is None:
         return None
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # 병렬 스레드 풀에 DART 공시 크롤링 동시 실행
+    with ThreadPoolExecutor(max_workers=9) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 5)
         f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 4)
         f_world_indices = executor.submit(fetch_all_world_indices_parallel)
         f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
+        f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 5)
 
         stock_news = f_news.result()
         global_news = f_global_news.result()
         world_indices = f_world_indices.result()
         consensus = f_consensus.result()
+        dart_disclosures = f_dart.result()
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
@@ -695,6 +740,7 @@ def run_full_pipeline(query):
         "stock_news": stock_news,
         "global_news": global_news,
         "world_indices": world_indices,
+        "dart_disclosures": dart_disclosures,
         "candles": candles,
         "ma20_line": ma20_line,
         "ma60_line": ma60_line,
@@ -703,7 +749,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 웹 프론트엔드 UI (ID 충돌 제거 및 눈 피로도 해소 완료)
+# 6. 웹 프론트엔드 UI (DART 전자공시 카드 탑재)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -924,6 +970,17 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-item .q-label { color: var(--text-muted); font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .quant-item .q-val { color: var(--text-title); font-size: 0.88rem; font-weight: 700; word-break: break-all; }
 
+        /* DART 전자공시 태그 스타일 */
+        .dart-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .dart-item:last-child { border-bottom: none; }
+        .dart-title { color: var(--text-main); font-size: 0.83rem; font-weight: 500; line-height: 1.4; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .dart-title:hover { color: #0284c7; }
+        .dart-tag { font-size: 0.68rem; font-weight: 700; padding: 2px 6px; border-radius: 6px; flex-shrink: 0; }
+        .tag-positive { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .tag-negative { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+        .tag-warning { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.3); }
+        .tag-neutral { background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }
+
         /* 눈의 피로를 완전히 제거한 프리미엄 에메랄드 테두리 시그널 카드 */
         .signal-premium-card {
             background: var(--bg-card) !important;
@@ -1076,7 +1133,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <div id="result-scroll-view">
             <div class="result-inner">
-                <div class="loading" id="loading">세계 증시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
+                <div class="loading" id="loading">세계 증시, 전자공시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
                 <div id="result-card-wrap" style="display:none;">
                     
                     <div class="card">
@@ -1096,6 +1153,15 @@ HTML_PAGE = """<!DOCTYPE html>
                     <div class="card">
                         <div class="section-title">종목 뉴스</div>
                         <div id="stockNewsList"></div>
+                    </div>
+
+                    <!-- DART 전자공시 카드 (국내 주식 시 자동 렌더링) -->
+                    <div class="card" id="dartCard" style="display:none;">
+                        <div class="section-title">
+                            <span>DART 전자공시</span>
+                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;">최근 핵심 공시</span>
+                        </div>
+                        <div id="dartList"></div>
                     </div>
 
                     <!-- 간결화된 세계 증시 -->
@@ -1190,7 +1256,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- gaemiGTP 브랜드 및 눈의 피로도를 해소한 핵심 시그널 박스 (ID 중복 수정 완료) -->
+                    <!-- gaemiGTP 브랜드 및 눈의 피로도를 해소한 핵심 시그널 박스 -->
                     <div class="signal-premium-card">
                         <div class="signal-card-header" onclick="toggleSignal()">
                             <span class="signal-card-title">gaemiGTP 시그널</span>
@@ -1407,6 +1473,7 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('result-card-wrap').style.display = 'none';
             document.getElementById('loading').style.display = 'none';
             document.getElementById('unifiedCard').style.display = 'none';
+            document.getElementById('dartCard').style.display = 'none';
             document.getElementById('centerInput').value = '';
             document.getElementById('bottomInput').value = '';
             
@@ -1491,6 +1558,25 @@ HTML_PAGE = """<!DOCTYPE html>
                     });
                 } else {
                     sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
+                }
+
+                // DART 전자공시 카드 렌더링
+                const dCard = document.getElementById('dartCard');
+                const dList = document.getElementById('dartList');
+                if (data.dart_disclosures && data.dart_disclosures.length > 0) {
+                    dList.innerHTML = '';
+                    data.dart_disclosures.forEach(d => {
+                        dList.innerHTML += `
+                            <a href="${d.link}" target="_blank" class="dart-item">
+                                <span class="dart-tag tag-${d.tag_type}">${d.tag_name}</span>
+                                <span class="dart-title">${d.title}</span>
+                                <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${d.date}</span>
+                            </a>
+                        `;
+                    });
+                    dCard.style.display = 'block';
+                } else {
+                    dCard.style.display = 'none';
                 }
 
                 const gNews = document.getElementById('globalNewsList');

@@ -1,20 +1,3 @@
-약속드린 대로 기준 코드를 바탕으로 **요청하신 UI 명칭 및 순서 3가지만 정확하게 수정**했습니다.
-
-다른 백엔드 퀀트 연산, 크롤러, 텔레그램 연동, Supabase 로직 등은 **단 한 글자도 건드리지 않고 100% 온전히 보존**했습니다.
-
----
-
-### 수정한 내용 요약
-
-1. **명칭 변경 1:** `집단지성 심리 투표` ➔ `개미 투표`로 변경
-2. **명칭 변경 2:** `실시간 개미 토론방` ➔ `개미 토론`으로 변경
-3. **위치 이동:** 종목 분석 결과 화면에서 **`개미 토론` 카드를 `개미 투표` 카드 바로 밑으로 배치** 완료
-
----
-
-### 수정된 전체 소스 코드 (`bot.py`)
-
-```python
 import os
 import re
 import io
@@ -1074,27 +1057,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-warning { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.3); }
         .tag-neutral { background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }
 
-        /* 텔레그램 실시간 알림 구독 버튼 스타일 */
-        .tg-alert-btn {
-            width: 100%;
-            background: #229ED9;
-            color: #ffffff;
-            border: none;
-            border-radius: 12px;
-            padding: 12px 16px;
-            font-size: 0.9rem;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            cursor: pointer;
-            text-decoration: none;
-            margin-bottom: 14px;
-            transition: opacity 0.2s;
-        }
-        .tg-alert-btn:hover { opacity: 0.9; }
-
         /* 개미 투표 스타일 */
         .vote-btn-wrap { display: flex; gap: 10px; margin-top: 10px; }
         .vote-btn { flex: 1; padding: 10px; border-radius: 12px; border: 1px solid var(--border-line); background: var(--bg-subcard); color: var(--text-title); font-size: 0.88rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; }
@@ -1146,6 +1108,35 @@ HTML_PAGE = """<!DOCTYPE html>
             position: absolute;
             right: 4px;
             transition: transform 0.25s ease;
+        }
+
+        /* gaemiGTP 시그널 스타일과 일치시킨 프리미엄 텔레그램 연동 버튼 */
+        .signal-premium-btn {
+            width: 100%;
+            background: var(--bg-card);
+            border: 1.5px solid var(--signal-border);
+            border-radius: 16px;
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            color: var(--text-title);
+            font-size: 0.92rem;
+            font-weight: 700;
+            text-decoration: none;
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+            margin-bottom: 16px;
+            transition: all 0.2s;
+        }
+        .signal-premium-btn:hover {
+            background: rgba(16, 185, 129, 0.08);
+            border-color: #10b981;
+        }
+        .signal-premium-btn svg {
+            fill: #10b981;
+            flex-shrink: 0;
         }
 
         .gauge-inner-box {
@@ -1280,81 +1271,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div class="chart-box-wrap" id="tvChart"></div>
                     </div>
 
-                    <!-- 텔레그램 실시간 알림 구독 버튼 (회원가입 X) -->
-                    <a id="tgAlertLink" href="#" target="_blank" class="tg-alert-btn">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
-                        <span id="tgAlertBtnText">이 종목 텔레그램 실시간 알림 받기</span>
-                    </a>
-
-                    <!-- 개미 투표 카드 (명칭 변경 완료) -->
-                    <div class="card">
-                        <div class="section-title">
-                            <span>개미 투표</span>
-                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;">내일 주가 전망</span>
-                        </div>
-                        <div style="margin:8px 0;">
-                            <div style="display:flex; justify-content:space-between; font-size:0.75rem; font-weight:700; margin-bottom:6px;">
-                                <span style="color:#10b981;" id="voteLongPct">상승 50%</span>
-                                <span style="color:#38bdf8;" id="voteShortPct">하락 50%</span>
-                            </div>
-                            <div style="width:100%; height:8px; background:var(--bg-subcard); border-radius:4px; overflow:hidden; display:flex; border:1px solid var(--border-line);">
-                                <div style="height:100%; background:#10b981; width:50%; transition:width 0.3s;" id="voteLongBar"></div>
-                                <div style="height:100%; background:#38bdf8; width:50%; transition:width 0.3s;" id="voteShortBar"></div>
-                            </div>
-                            <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted); margin-top:4px;">
-                                <span id="voteLongCount">0명</span>
-                                <span id="voteShortCount">0명</span>
-                            </div>
-                        </div>
-                        <div class="vote-btn-wrap">
-                            <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">🚀 상승할 것 같아요</button>
-                            <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">📉 하락할 것 같아요</button>
-                        </div>
-                    </div>
-
-                    <!-- 개미 토론 카드 (명칭 변경 및 개미 투표 바로 밑으로 이동 완료) -->
-                    <div class="card">
-                        <div class="section-title">
-                            <span>개미 토론</span>
-                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;" id="commentCountTag">0개의 의견</span>
-                        </div>
-                        <div id="commentList" style="margin-top:8px;">
-                            <div style="color:var(--text-muted); font-size:0.8rem; padding:10px 0; text-align:center;">첫 번째 한마디를 남겨보세요!</div>
-                        </div>
-                        <div class="comment-input-box">
-                            <input type="text" id="commentInput" placeholder="이 종목에 대한 생각을 자유롭게 적어주세요" onkeypress="if(event.keyCode==13) postComment();" autocomplete="off" maxlength="80">
-                            <button onclick="postComment()">등록</button>
-                        </div>
-                    </div>
-
-                    <!-- 간결화된 종목 뉴스 -->
-                    <div class="card">
-                        <div class="section-title">종목 뉴스</div>
-                        <div id="stockNewsList"></div>
-                    </div>
-
-                    <!-- DART 전자공시 카드 -->
-                    <div class="card" id="dartCard" style="display:none;">
-                        <div class="section-title">
-                            <span>DART 전자공시</span>
-                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;">최근 핵심 공시</span>
-                        </div>
-                        <div id="dartList"></div>
-                    </div>
-
-                    <!-- 간결화된 세계 증시 -->
-                    <div class="card">
-                        <div class="section-title">세계 증시</div>
-                        <div class="world-grid" id="worldGrid"></div>
-                    </div>
-
-                    <!-- 간결화된 해외 뉴스 -->
-                    <div class="card">
-                        <div class="section-title">해외 뉴스</div>
-                        <div id="globalNewsList"></div>
-                    </div>
-
-                    <!-- 3대 시장 통합 컨센서스 카드 -->
+                    <!-- 3대 시장 통합 컨센서스 (애널리스트 컨센서스) 카드 -->
                     <div class="card" id="unifiedCard" style="display:none;">
                         <div style="margin-bottom:16px;">
                             <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
@@ -1408,6 +1325,74 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                             <div id="uItemList"></div>
                         </div>
+                    </div>
+
+                    <!-- 개미 투표 카드 -->
+                    <div class="card">
+                        <div class="section-title">
+                            <span>개미 투표</span>
+                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;">내일 주가 전망</span>
+                        </div>
+                        <div style="margin:8px 0;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.75rem; font-weight:700; margin-bottom:6px;">
+                                <span style="color:#10b981;" id="voteLongPct">상승 50%</span>
+                                <span style="color:#38bdf8;" id="voteShortPct">하락 50%</span>
+                            </div>
+                            <div style="width:100%; height:8px; background:var(--bg-subcard); border-radius:4px; overflow:hidden; display:flex; border:1px solid var(--border-line);">
+                                <div style="height:100%; background:#10b981; width:50%; transition:width 0.3s;" id="voteLongBar"></div>
+                                <div style="height:100%; background:#38bdf8; width:50%; transition:width 0.3s;" id="voteShortBar"></div>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted); margin-top:4px;">
+                                <span id="voteLongCount">0명</span>
+                                <span id="voteShortCount">0명</span>
+                            </div>
+                        </div>
+                        <div class="vote-btn-wrap">
+                            <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">🚀 상승할 것 같아요</button>
+                            <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">📉 하락할 것 같아요</button>
+                        </div>
+                    </div>
+
+                    <!-- 개미 토론 카드 -->
+                    <div class="card">
+                        <div class="section-title">
+                            <span>개미 토론</span>
+                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;" id="commentCountTag">0개의 의견</span>
+                        </div>
+                        <div id="commentList" style="margin-top:8px;">
+                            <div style="color:var(--text-muted); font-size:0.8rem; padding:10px 0; text-align:center;">첫 번째 한마디를 남겨보세요!</div>
+                        </div>
+                        <div class="comment-input-box">
+                            <input type="text" id="commentInput" placeholder="이 종목에 대한 생각을 자유롭게 적어주세요" onkeypress="if(event.keyCode==13) postComment();" autocomplete="off" maxlength="80">
+                            <button onclick="postComment()">등록</button>
+                        </div>
+                    </div>
+
+                    <!-- 간결화된 종목 뉴스 -->
+                    <div class="card">
+                        <div class="section-title">종목 뉴스</div>
+                        <div id="stockNewsList"></div>
+                    </div>
+
+                    <!-- DART 전자공시 카드 -->
+                    <div class="card" id="dartCard" style="display:none;">
+                        <div class="section-title">
+                            <span>DART 전자공시</span>
+                            <span style="font-size:0.72rem; color:var(--text-muted); font-weight:normal;">최근 핵심 공시</span>
+                        </div>
+                        <div id="dartList"></div>
+                    </div>
+
+                    <!-- 간결화된 세계 증시 -->
+                    <div class="card">
+                        <div class="section-title">세계 증시</div>
+                        <div class="world-grid" id="worldGrid"></div>
+                    </div>
+
+                    <!-- 간결화된 해외 뉴스 -->
+                    <div class="card">
+                        <div class="section-title">해외 뉴스</div>
+                        <div id="globalNewsList"></div>
                     </div>
 
                     <!-- 간결화된 기술 지표 -->
@@ -1508,6 +1493,12 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
+                    <!-- gaemiGTP 시그널 아래로 이동 및 깔끔한 에메랄드 테두리 버튼으로 디자인 변경 완료 -->
+                    <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
+                        <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
+                        <span id="tgAlertBtnText">이 종목 텔레그램 실시간 알림 받기</span>
+                    </a>
+
                 </div>
             </div>
         </div>
@@ -1599,7 +1590,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (!area) return;
             area.innerHTML = isLight 
                 ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`
-                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
+                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="12" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
         }
 
         function resizeChart() {
@@ -1911,6 +1902,57 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 loadCommunityData(data.symbol);
 
+                const c = data.consensus;
+                const uCard = document.getElementById('unifiedCard');
+                if (c) {
+                    document.getElementById('uTitle').innerText = c.title;
+                    document.getElementById('uGaugeVal').innerText = c.gauge_val;
+                    document.getElementById('uGaugeLabel').innerText = c.gauge_label;
+                    document.getElementById('uStatusLabel').innerText = c.status_label;
+                    document.getElementById('uBadge').innerText = c.badge_text;
+                    document.getElementById('uDots').innerHTML = c.dots;
+
+                    document.getElementById('uPrimaryLabel').innerText = c.primary_label;
+                    document.getElementById('uPrimaryVal').innerText = c.primary_val;
+                    document.getElementById('uSecondaryLabel').innerText = c.secondary_label;
+                    document.getElementById('uSecondaryVal').innerText = c.secondary_val;
+
+                    document.getElementById('uSliderLeft').innerText = c.slider_left;
+                    document.getElementById('uSliderMid').innerText = c.slider_mid;
+                    document.getElementById('uSliderRight').innerText = c.slider_right;
+                    document.getElementById('uSliderBottomLeft').innerText = c.slider_bottom_left;
+                    document.getElementById('uSliderBottomRight').innerText = c.slider_bottom_right;
+
+                    document.getElementById('uBarFill').style.width = c.fill_pct + '%';
+                    document.getElementById('uDotMarker').style.left = c.fill_pct + '%';
+
+                    document.getElementById('uListTitle').innerText = c.list_title;
+                    document.getElementById('uSourceTag').innerText = c.source_tag;
+
+                    const iList = document.getElementById('uItemList');
+                    iList.innerHTML = '';
+                    if (c.items && c.items.length > 0) {
+                        c.items.forEach((it, idx) => {
+                            const isLast = idx === c.items.length - 1;
+                            iList.innerHTML += `
+                                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${isLast ? '' : 'border-bottom:1px solid var(--border-line);'} font-size:0.82rem;">
+                                    <div>
+                                        <div style="color:var(--text-title); font-weight:700;">${it.main}</div>
+                                        <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">${it.sub}</div>
+                                    </div>
+                                    <div style="text-align:right;">
+                                        <div style="color:var(--text-title); font-weight:700;">${it.val}</div>
+                                        <div style="color:#10b981; font-size:0.72rem; font-weight:700;">${it.sub_val}</div>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                    }
+                    uCard.style.display = 'block';
+                } else {
+                    uCard.style.display = 'none';
+                }
+
                 const wGrid = document.getElementById('worldGrid');
                 wGrid.innerHTML = '';
                 if (data.world_indices) {
@@ -1972,57 +2014,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     });
                 } else {
                     gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
-                }
-
-                const c = data.consensus;
-                const uCard = document.getElementById('unifiedCard');
-                if (c) {
-                    document.getElementById('uTitle').innerText = c.title;
-                    document.getElementById('uGaugeVal').innerText = c.gauge_val;
-                    document.getElementById('uGaugeLabel').innerText = c.gauge_label;
-                    document.getElementById('uStatusLabel').innerText = c.status_label;
-                    document.getElementById('uBadge').innerText = c.badge_text;
-                    document.getElementById('uDots').innerHTML = c.dots;
-
-                    document.getElementById('uPrimaryLabel').innerText = c.primary_label;
-                    document.getElementById('uPrimaryVal').innerText = c.primary_val;
-                    document.getElementById('uSecondaryLabel').innerText = c.secondary_label;
-                    document.getElementById('uSecondaryVal').innerText = c.secondary_val;
-
-                    document.getElementById('uSliderLeft').innerText = c.slider_left;
-                    document.getElementById('uSliderMid').innerText = c.slider_mid;
-                    document.getElementById('uSliderRight').innerText = c.slider_right;
-                    document.getElementById('uSliderBottomLeft').innerText = c.slider_bottom_left;
-                    document.getElementById('uSliderBottomRight').innerText = c.slider_bottom_right;
-
-                    document.getElementById('uBarFill').style.width = c.fill_pct + '%';
-                    document.getElementById('uDotMarker').style.left = c.fill_pct + '%';
-
-                    document.getElementById('uListTitle').innerText = c.list_title;
-                    document.getElementById('uSourceTag').innerText = c.source_tag;
-
-                    const iList = document.getElementById('uItemList');
-                    iList.innerHTML = '';
-                    if (c.items && c.items.length > 0) {
-                        c.items.forEach((it, idx) => {
-                            const isLast = idx === c.items.length - 1;
-                            iList.innerHTML += `
-                                <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${isLast ? '' : 'border-bottom:1px solid var(--border-line);'} font-size:0.82rem;">
-                                    <div>
-                                        <div style="color:var(--text-title); font-weight:700;">${it.main}</div>
-                                        <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">${it.sub}</div>
-                                    </div>
-                                    <div style="text-align:right;">
-                                        <div style="color:var(--text-title); font-weight:700;">${it.val}</div>
-                                        <div style="color:#10b981; font-size:0.72rem; font-weight:700;">${it.sub_val}</div>
-                                    </div>
-                                </div>
-                            `;
-                        });
-                    }
-                    uCard.style.display = 'block';
-                } else {
-                    uCard.style.display = 'none';
                 }
 
                 const q = data.quant;
@@ -2181,5 +2172,3 @@ def run_web_server():
 
 if __name__ == "__main__":
     run_web_server()
-
-```

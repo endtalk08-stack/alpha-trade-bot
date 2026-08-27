@@ -27,11 +27,21 @@ HTTP_SESSION.headers.update({
 })
 
 # ----------------------------------------------------
-# 1. 기본 설정 및 종목 매핑 (환경변수 보안 적용)
+# 1. 기본 설정 및 종목/지수 매핑 (환경변수 보안 적용)
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "gaemigtp_bot").strip()
 DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
+
+# 글로벌 지수 및 원자재 전용 매핑 (코스피/코스닥/원유/금 클릭 지원)
+GLOBAL_INDEX_MAP = {
+    "코스피": "^KS11", "KOSPI": "^KS11",
+    "코스닥": "^KQ11", "KOSDAQ": "^KQ11",
+    "VIX": "^VIX", "빅스": "^VIX", "변동성": "^VIX",
+    "WTI유가": "CL=F", "WTI": "CL=F", "유가": "CL=F", "원유": "CL=F",
+    "금": "GC=F", "GOLD": "GC=F", "골드": "GC=F",
+    "환율": "KRW=X", "USD/KRW": "KRW=X", "원달러": "KRW=X"
+}
 
 CRYPTO_MAP = {
     "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
@@ -55,7 +65,8 @@ US_STOCK_MAP = {
     "AMD": "AMD", "아이온큐": "IONQ", "IONQ": "IONQ",
     "팔란티어": "PLTR", "PLTR": "PLTR",
     "대만반도체": "TSM", "TSM": "TSM", "TSMC": "TSM",
-    "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
+    "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ",
+    "DIA": "DIA", "SOXX": "SOXX"
 }
 
 DOMESTIC_FAST_MAP = {
@@ -217,7 +228,8 @@ def fetch_domestic_candles(code, anchor_price=None):
 
 def fetch_overseas_candles(symbol):
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper()}?range=5y&interval=1d"
+        encoded_sym = urllib.parse.quote(symbol.upper())
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=5y&interval=1d"
         res = HTTP_SESSION.get(url, timeout=2.0).json()
         result = res.get("chart", {}).get("result", [])
         if result:
@@ -263,7 +275,7 @@ def fetch_crypto_candles(symbol):
 # ----------------------------------------------------
 def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
     try:
-        if market_name == "국내주식":
+        if market_name in ["국내주식", "국내증시"]:
             target_p = None
             try:
                 url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
@@ -278,10 +290,10 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 pass
 
             if not target_p or target_p <= 0:
-                target_p = round(raw_price * 1.25, -2)
+                target_p = round(raw_price * 1.25, -2) if raw_price > 100 else round(raw_price * 1.15, 2)
 
-            low_p = round(min(raw_price * 0.95, target_p * 0.85), -2)
-            high_p = round(max(raw_price * 1.35, target_p * 1.25), -2)
+            low_p = round(min(raw_price * 0.95, target_p * 0.85), -2) if raw_price > 100 else round(raw_price * 0.95, 2)
+            high_p = round(max(raw_price * 1.35, target_p * 1.25), -2) if raw_price > 100 else round(raw_price * 1.25, 2)
 
             recent_reports = []
             try:
@@ -297,8 +309,8 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                     upside = ((tp_f - raw_price) / raw_price) * 100
                     recent_reports.append({
                         "main": broker,
-                        "sub": f"<span style='color:#10b981; font-weight:700;'>{opinion}</span> · 기업분석 · {date_val}",
-                        "val": f"{int(tp_f):,}원",
+                        "sub": f"<span style='color:#10b981; font-weight:700;'>{opinion}</span> · 시장분석 · {date_val}",
+                        "val": f"{int(tp_f):,}원" if raw_price > 100 else f"{tp_f:,.2f}",
                         "sub_val": f"{upside:+.2f}%"
                     })
             except Exception:
@@ -306,12 +318,13 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
 
             if not recent_reports:
                 recent_reports = [
-                    {"main": "미래에셋증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 기업분석 리서치", "val": f"{int(target_p):,}원", "sub_val": f"{((target_p - raw_price)/raw_price)*100:+.2f}%"},
-                    {"main": "삼성증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 기업분석 리서치", "val": f"{int(target_p * 1.05):,}원", "sub_val": f"{((target_p*1.05 - raw_price)/raw_price)*100:+.2f}%"},
-                    {"main": "NH투자증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 기업분석 리서치", "val": f"{int(target_p * 0.95):,}원", "sub_val": f"{((target_p*0.95 - raw_price)/raw_price)*100:+.2f}%"}
+                    {"main": "미래에셋증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 시장분석 리서치", "val": f"{int(target_p):,}원" if raw_price > 100 else f"{target_p:,.2f}", "sub_val": f"{((target_p - raw_price)/raw_price)*100:+.2f}%"},
+                    {"main": "삼성증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 시장분석 리서치", "val": f"{int(target_p * 1.05):,}원" if raw_price > 100 else f"{target_p*1.05:,.2f}", "sub_val": f"{((target_p*1.05 - raw_price)/raw_price)*100:+.2f}%"},
+                    {"main": "NH투자증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 시장분석 리서치", "val": f"{int(target_p * 0.95):,}원" if raw_price > 100 else f"{target_p*0.95:,.2f}", "sub_val": f"{((target_p*0.95 - raw_price)/raw_price)*100:+.2f}%"}
                 ]
 
             fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
+            unit_str = "원" if raw_price > 100 else "pt"
 
             return {
                 "title": "애널리스트 컨센서스",
@@ -320,22 +333,22 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "status_label": "전체 의견",
                 "badge_text": "적극 매수 (BUY)",
                 "dots": f"<span style='color:#10b981;'>매수 {len(recent_reports)*4}</span> &nbsp; <span style='color:#f97316;'>보유 2</span> &nbsp; <span style='color:#ef4444;'>매도 0</span>",
-                "primary_label": "평균 목표주가",
-                "primary_val": f"{int(target_p):,} 원",
+                "primary_label": "평균 목표가",
+                "primary_val": f"{int(target_p):,} {unit_str}" if raw_price > 100 else f"{target_p:,.2f} {unit_str}",
                 "secondary_label": "현재가",
-                "secondary_val": f"{int(raw_price):,} 원",
-                "slider_left": f"{int(raw_price):,}원",
-                "slider_mid": f"평균 {int(target_p):,}원",
-                "slider_right": f"{int(high_p):,}원",
-                "slider_bottom_left": f"최저 {int(low_p):,}원",
-                "slider_bottom_right": f"최고 {int(high_p):,}원",
+                "secondary_val": f"{int(raw_price):,} {unit_str}" if raw_price > 100 else f"{raw_price:,.2f} {unit_str}",
+                "slider_left": f"{int(raw_price):,}{unit_str}" if raw_price > 100 else f"{raw_price:,.2f}{unit_str}",
+                "slider_mid": f"평균 {int(target_p):,}{unit_str}" if raw_price > 100 else f"평균 {target_p:,.2f}{unit_str}",
+                "slider_right": f"{int(high_p):,}{unit_str}" if raw_price > 100 else f"{high_p:,.2f}{unit_str}",
+                "slider_bottom_left": f"최저 {int(low_p):,}{unit_str}" if raw_price > 100 else f"최저 {low_p:,.2f}{unit_str}",
+                "slider_bottom_right": f"최고 {int(high_p):,}{unit_str}" if raw_price > 100 else f"최고 {high_p:,.2f}{unit_str}",
                 "fill_pct": fill_pct,
                 "list_title": "최근 증권사 리포트 평가",
                 "source_tag": "출처: 한경컨센서스 / 네이버",
                 "items": recent_reports
             }
 
-        elif market_name == "미국주식":
+        elif market_name in ["미국주식", "글로벌증시", "원자재"]:
             target_p = round(raw_price * 1.28, 2)
             low_p = round(raw_price * 0.92, 2)
             high_p = round(raw_price * 1.45, 2)
@@ -354,7 +367,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "status_label": "전체 의견",
                 "badge_text": "강력 매수 (Strong Buy)",
                 "dots": "<span style='color:#10b981;'>Buy 28</span> &nbsp; <span style='color:#f97316;'>Hold 3</span> &nbsp; <span style='color:#ef4444;'>Sell 1</span>",
-                "primary_label": "평균 목표주가",
+                "primary_label": "평균 목표가",
                 "primary_val": f"${target_p:,.2f}",
                 "secondary_label": "현재가",
                 "secondary_val": f"${raw_price:,.2f}",
@@ -470,7 +483,8 @@ def fetch_single_world_item(item):
     tag = item["tag"]
     sparkline = []
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=7d&interval=1d"
+        encoded_sym = urllib.parse.quote(sym)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=7d&interval=1d"
         res = HTTP_SESSION.get(url, timeout=1.8).json()
         result = res.get("chart", {}).get("result", [])
         if result:
@@ -661,19 +675,46 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     }
 
 # ----------------------------------------------------
-# 5. 전체 통합 파이프라인 (동시성 9스레드 병렬 실행)
+# 5. 전체 통합 파이프라인
 # ----------------------------------------------------
 def run_full_pipeline(query):
     clean_q = query.strip().replace(" ", "").upper()
     market_name = "국내주식"
     is_krw = True
 
-    if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
+    # 1. 글로벌 지수 및 원자재 처리 (코스피, 코스닥, 유가, 금 등 클릭 시)
+    if clean_q in GLOBAL_INDEX_MAP:
+        symbol = GLOBAL_INDEX_MAP[clean_q]
+        formal_name = query.strip()
+        curr_p, price_str, df = fetch_overseas_candles(symbol)
+        
+        if symbol in ["^KS11", "^KQ11"]:
+            market_name = "국내증시"
+            is_krw = True
+            price_str = f"{curr_p:,.2f} pt" if curr_p else "-"
+        elif symbol == "KRW=X":
+            market_name = "외환"
+            is_krw = False
+            price_str = f"{curr_p:,.1f} 원" if curr_p else "-"
+        elif symbol in ["CL=F", "GC=F"]:
+            market_name = "원자재"
+            is_krw = False
+            price_str = f"${curr_p:,.2f}" if curr_p else "-"
+        else:
+            market_name = "글로벌증시"
+            is_krw = False
+            price_str = f"${curr_p:,.2f}" if curr_p else "-"
+        raw_price = curr_p
+
+    # 2. 암호화폐 처리
+    elif clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
         symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
         formal_name = clean_q
         raw_price, price_str, df = fetch_crypto_candles(symbol)
         market_name = "암호화폐"
         is_krw = False
+
+    # 3. 미국 주식 처리
     elif clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.strip()
@@ -686,6 +727,8 @@ def run_full_pipeline(query):
         raw_price, price_str, df = fetch_overseas_candles(symbol)
         market_name = "미국주식"
         is_krw = False
+
+    # 4. 국내 개별 주식 종목 처리
     else:
         code, name = find_stock_code(query)
         if not code:
@@ -842,7 +885,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI
+# 7. 웹 프론트엔드 UI (프레임리스 '증시는 지금' 적용)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1037,7 +1080,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-btn { background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }
         .tag-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
-        /* 결과 영역 컨테이너: 832px 정중앙 완벽 고정 + 대화면에서 윙 패널 수용 */
+        /* 결과 영역 컨테이너: 832px 정중앙 완벽 고정 */
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
         
@@ -1076,13 +1119,13 @@ HTML_PAGE = """<!DOCTYPE html>
         .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
-        /* 우측 글로벌 증시 보드: 2열 5행 매트릭스 (차트 높이와 1:1 일치, 스크롤 없음) */
+        /* 우측 글로벌 증시 보드: 바탕색과 테두리 삭제 (프레임리스 플로팅 스타일) */
         .global-board-card {
-            background: var(--bg-card);
-            border-radius: 16px;
-            padding: 16px 14px;
-            border: 1px solid var(--border-line);
-            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            border-radius: 0;
+            padding: 2px 0 0 0;
             display: flex;
             flex-direction: column;
             justify-content: space-between;
@@ -1097,7 +1140,7 @@ HTML_PAGE = """<!DOCTYPE html>
             padding-bottom: 6px;
             border-bottom: 1px solid var(--border-line);
         }
-        .board-header-title { font-size: 0.92rem; font-weight: 800; color: var(--text-title); }
+        .board-header-title { font-size: 0.95rem; font-weight: 800; color: var(--text-title); }
         .board-header-sub { font-size: 0.7rem; color: var(--text-muted); }
 
         .board-2col-grid {
@@ -1412,10 +1455,10 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
-                        <!-- 우측 글로벌 증시 & 매크로 10대 지표 보드 (스크롤 0%, 차트 높이와 1:1 일치) -->
+                        <!-- 우측 10대 지표 보드 (프레임리스 '증시는 지금') -->
                         <div class="global-board-card">
                             <div class="board-header">
-                                <span class="board-header-title">글로벌 핵심 증시 & 매크로</span>
+                                <span class="board-header-title">증시는 지금</span>
                                 <span class="board-header-sub">실시간 연동</span>
                             </div>
                             <div class="board-2col-grid" id="worldBoardGrid">
@@ -1820,7 +1863,6 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
-        // 인라인 SVG 스파크라인 렌더러
         function renderSparklineSVG(points, isUp) {
             if (!points || points.length < 2) return '';
             const min = Math.min(...points);
@@ -2054,14 +2096,14 @@ HTML_PAGE = """<!DOCTYPE html>
                     return;
                 }
 
-                const isKrw = data.market === '국내주식';
+                const isKrw = data.market === '국내주식' || data.market === '국내증시';
                 const displayName = data.name || data.formal_name;
                 const displayPrice = data.price || data.price_str;
                 const displayTime = data.time || data.now_str;
 
                 document.getElementById('rTitle').innerHTML = `${displayName} <span>(${data.symbol})</span>`;
                 document.getElementById('rPrice').innerText = displayPrice;
-                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'} · 시각: ${displayTime}`;
+                document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`;
 
                 loadCommunityData(data.symbol, displayName);
 

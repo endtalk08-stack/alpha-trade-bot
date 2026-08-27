@@ -32,6 +32,7 @@ HTTP_SESSION.headers.update({
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "gaemigtp_bot").strip()
 DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 
 GLOBAL_INDEX_MAP = {
     "코스피": "^KS11", "KOSPI": "^KS11",
@@ -210,122 +211,139 @@ MAJOR_US_TECH_TICKERS = [
 ]
 
 # ----------------------------------------------------
-# [수정] 100% 실시간 무오류 실적 수집 엔진 (배치 + 옵션 백업망)
+# [수정] Finnhub 정식 API 기반 무오류 실적 일정 파서
 # ----------------------------------------------------
-def fetch_all_real_earnings():
+def fetch_finnhub_earnings():
+    if not FINNHUB_API_KEY:
+        return []
+    
+    events = []
+    days_map = ["일", "월", "화", "수", "목", "금", "토"]
+    sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
+    
+    try:
+        now_kst = datetime.now(timezone(timedelta(hours=9)))
+        from_d = (now_kst - timedelta(days=14)).strftime("%Y-%m-%d")
+        to_d = (now_kst + timedelta(days=45)).strftime("%Y-%m-%d")
+        
+        url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
+        res = HTTP_SESSION.get(url, timeout=3.0).json()
+        items = res.get("earningsCalendar", [])
+        
+        for it in items:
+            sym = str(it.get("symbol", "")).upper()
+            if sym not in sym_to_ko:
+                continue
+
+            ko_name = sym_to_ko[sym]
+            raw_date = str(it.get("date", "")) # "YYYY-MM-DD"
+            hour = str(it.get("hour", "")).lower() # "amc", "bmo", "dmh"
+            
+            eps_est = it.get("epsEstimate")
+            eps_act = it.get("epsActual")
+            rev_est = it.get("revenueEstimate")
+            
+            eps_str = f"예상 EPS ${eps_est:.2f}" if eps_est is not None else "예상치 집계중"
+            rev_str = f"예상 매출 ${rev_est/1e9:.1f}B" if rev_est is not None else "-"
+            val_str = f"발표치 EPS ${eps_act:.2f}" if eps_act is not None else "발표예정"
+            
+            # 미국 날짜 파싱
+            us_dt = datetime.strptime(raw_date, "%Y-%m-%d")
+            
+            if hour == "amc":
+                time_str = "06:00"
+                kst_dt = us_dt + timedelta(days=1, hours=6) # 미국 장 마감 후 = 한국 다음날 아침
+                hour_label = "(美장마감후)"
+            elif hour == "bmo":
+                time_str = "21:30"
+                kst_dt = us_dt + timedelta(hours=21, minutes=30)
+                hour_label = "(美장시작전)"
+            else:
+                time_str = "23:00"
+                kst_dt = us_dt + timedelta(hours=23)
+                hour_label = ""
+                
+            d_key = kst_dt.strftime("%Y.%m.%d")
+            wk = days_map[int(kst_dt.strftime('%w'))]
+            d_header = f"{kst_dt.month}월 {kst_dt.day}일 {wk}요일"
+            d_str = f"{kst_dt.month}.{kst_dt.day} ({wk})"
+            
+            # 1. 한국 시간 기준 등록
+            events.append({
+                "ts": kst_dt.timestamp(),
+                "date_key": d_key,
+                "date_str": d_str,
+                "date_header": d_header,
+                "time": time_str,
+                "stars": 3,
+                "star_str": "★★★",
+                "type": "earn",
+                "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
+                "ticker": sym,
+                "val": val_str,
+                "exp": eps_str,
+                "prev": rev_str
+            })
+            
+            # 2. 미국 장마감(한국 익일 새벽)인 경우 미국 현지일(한국 오늘 밤)에서도 보이도록 이중 매핑
+            if hour == "amc":
+                prev_key = us_dt.strftime("%Y.%m.%d")
+                prev_wk = days_map[int(us_dt.strftime('%w'))]
+                events.append({
+                    "ts": kst_dt.timestamp() - 1,
+                    "date_key": prev_key,
+                    "date_str": f"{us_dt.month}.{us_dt.day} ({prev_wk})",
+                    "date_header": f"{us_dt.month}월 {us_dt.day}일 {prev_wk}요일",
+                    "time": "새벽 06:00",
+                    "stars": 3,
+                    "star_str": "★★★",
+                    "type": "earn",
+                    "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
+                    "ticker": sym,
+                    "val": val_str,
+                    "exp": eps_str,
+                    "prev": rev_str
+                })
+    except Exception as e:
+        print("[FINNHUB] Earnings API error:", e)
+        
+    return events
+
+# Finnhub 키가 없을 때를 위한 Yahoo Quote 백업 파서
+def fetch_backup_yahoo_earnings():
     events = []
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
     sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
     symbols_list = list(sym_to_ko.keys())
 
-    # 1. 고속 무차단 Quote 배치 API 조회
-    quote_results = []
-    for host in ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]:
-        try:
-            url = f"https://{host}/v7/finance/quote?symbols={','.join(symbols_list)}"
-            res = HTTP_SESSION.get(url, timeout=3.0).json()
-            items = res.get("quoteResponse", {}).get("result", [])
-            if items:
-                quote_results = items
-                break
-        except Exception:
-            pass
-
-    found_syms = set()
-    now_utc = datetime.now(timezone.utc)
-
-    for item in quote_results:
-        sym = item.get("symbol", "").upper()
-        if sym not in sym_to_ko:
-            continue
-
-        raw_ts = item.get("earningsTimestamp") or item.get("earningsTimestampStart")
-        if not raw_ts:
-            continue
-
-        try:
-            dt = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
-            # 최근/당일/예정 실적만 반영 (±90일 범위)
-            if abs((dt - now_utc).days) > 90:
-                continue
-
-            found_syms.add(sym)
-            ko_name = sym_to_ko[sym]
-            kst_dt = dt.astimezone(timezone(timedelta(hours=9)))
-            date_key = kst_dt.strftime("%Y.%m.%d")
-            weekday = days_map[int(kst_dt.strftime('%w'))]
-            date_str = f"{kst_dt.month}.{kst_dt.day} ({weekday})"
-            date_header = f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일"
-            time_str = kst_dt.strftime("%H:%M")
-
-            eps_f = item.get("epsForward")
-            eps_str = f"예상 EPS ${eps_f:.2f}" if eps_f is not None else "예상치 집계중"
-            prev_eps = item.get("epsTrailingTwelveMonths")
-            prev_str = f"TTM EPS ${prev_eps:.2f}" if prev_eps is not None else "-"
-            val_str = "발표완료" if dt <= now_utc else "발표예정"
-
-            # 1) 한국 시간 기준 등록
-            events.append({
-                "ts": dt.timestamp(),
-                "date_key": date_key,
-                "date_str": date_str,
-                "date_header": date_header,
-                "time": time_str,
-                "stars": 3,
-                "star_str": "★★★",
-                "type": "earn",
-                "name": f"{ko_name} ({sym}) 실적 발표",
-                "ticker": sym,
-                "val": val_str,
-                "exp": eps_str,
-                "prev": prev_str
-            })
-
-            # 2) 미국 현지 당일 장마감(한국 새벽 00~08시) 발표일 경우, 전날 밤(한국 오늘)에도 조회되도록 이중 등록
-            if kst_dt.hour < 8:
-                prev_kst = kst_dt - timedelta(days=1)
-                prev_key = prev_kst.strftime("%Y.%m.%d")
-                prev_wk = days_map[int(prev_kst.strftime('%w'))]
-                events.append({
-                    "ts": dt.timestamp() - 1,
-                    "date_key": prev_key,
-                    "date_str": f"{prev_kst.month}.{prev_kst.day} ({prev_wk})",
-                    "date_header": f"{prev_kst.month}월 {prev_kst.day}일 {prev_wk}요일",
-                    "time": f"새벽 {time_str}",
-                    "stars": 3,
-                    "star_str": "★★★",
-                    "type": "earn",
-                    "name": f"{ko_name} ({sym}) 실적 발표 (美장마감후)",
-                    "ticker": sym,
-                    "val": val_str,
-                    "exp": eps_str,
-                    "prev": prev_str
-                })
-        except Exception:
-            pass
-
-    # 2. 배치에서 누락된 핵심 종목(NVDA 등) Options API 개별 백업망
-    missing_syms = [s for s in symbols_list if s not in found_syms]
-    for sym in missing_syms:
-        try:
-            url = f"https://query1.finance.yahoo.com/v7/finance/options/{sym}"
-            res = HTTP_SESSION.get(url, timeout=2.0).json()
-            q = res.get("optionChain", {}).get("result", [{}])[0].get("quote", {})
-            raw_ts = q.get("earningsTimestamp") or q.get("earningsTimestampStart")
-            if raw_ts:
+    try:
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(symbols_list)}"
+        res = HTTP_SESSION.get(url, timeout=2.5).json()
+        items = res.get("quoteResponse", {}).get("result", [])
+        now_utc = datetime.now(timezone.utc)
+        
+        for item in items:
+            sym = item.get("symbol", "").upper()
+            raw_ts = item.get("earningsTimestamp") or item.get("earningsTimestampStart")
+            if sym in sym_to_ko and raw_ts:
                 dt = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                if abs((dt - now_utc).days) > 90:
+                    continue
                 ko_name = sym_to_ko[sym]
                 kst_dt = dt.astimezone(timezone(timedelta(hours=9)))
                 date_key = kst_dt.strftime("%Y.%m.%d")
-                weekday = days_map[int(kst_dt.strftime('%w'))]
+                wk = days_map[int(kst_dt.strftime('%w'))]
                 time_str = kst_dt.strftime("%H:%M")
+                
+                eps_f = item.get("epsForward")
+                eps_str = f"예상 EPS ${eps_f:.2f}" if eps_f is not None else "예상치 집계중"
                 val_str = "발표완료" if dt <= now_utc else "발표예정"
-
+                
                 events.append({
                     "ts": dt.timestamp(),
                     "date_key": date_key,
-                    "date_str": f"{kst_dt.month}.{kst_dt.day} ({weekday})",
-                    "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일",
+                    "date_str": f"{kst_dt.month}.{kst_dt.day} ({wk})",
+                    "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {wk}요일",
                     "time": time_str,
                     "stars": 3,
                     "star_str": "★★★",
@@ -333,38 +351,18 @@ def fetch_all_real_earnings():
                     "name": f"{ko_name} ({sym}) 실적 발표",
                     "ticker": sym,
                     "val": val_str,
-                    "exp": "예상치 집계중",
+                    "exp": eps_str,
                     "prev": "-"
                 })
-                if kst_dt.hour < 8:
-                    prev_kst = kst_dt - timedelta(days=1)
-                    prev_key = prev_kst.strftime("%Y.%m.%d")
-                    prev_wk = days_map[int(prev_kst.strftime('%w'))]
-                    events.append({
-                        "ts": dt.timestamp() - 1,
-                        "date_key": prev_key,
-                        "date_str": f"{prev_kst.month}.{prev_kst.day} ({prev_wk})",
-                        "date_header": f"{prev_kst.month}월 {prev_kst.day}일 {prev_wk}요일",
-                        "time": f"새벽 {time_str}",
-                        "stars": 3,
-                        "star_str": "★★★",
-                        "type": "earn",
-                        "name": f"{ko_name} ({sym}) 실적 발표 (美장마감후)",
-                        "ticker": sym,
-                        "val": val_str,
-                        "exp": "예상치 집계중",
-                        "prev": "-"
-                    })
-        except Exception:
-            pass
-
+    except Exception:
+        pass
     return events
 
 def fetch_real_market_calendar_live():
     combined_events = []
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
-    # 1. 글로벌 경제 지표 API 연동
+    # 1. 글로벌 경제 지표
     try:
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         res = HTTP_SESSION.get(url, timeout=2.5).json()
@@ -417,9 +415,11 @@ def fetch_real_market_calendar_live():
     except Exception:
         pass
 
-    # 2. 미국 주요 테크기업 실적 발표 결합
+    # 2. 미국 빅테크 실적 (Finnhub 우선 ➔ 실패 시 Yahoo 백업)
     try:
-        earnings_events = fetch_all_real_earnings()
+        earnings_events = fetch_finnhub_earnings()
+        if not earnings_events:
+            earnings_events = fetch_backup_yahoo_earnings()
         combined_events.extend(earnings_events)
     except Exception:
         pass
@@ -1530,7 +1530,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
 
-        /* 모델 선택기 */
+        /* 모델 선택기 (gaemi / info / pro) */
         .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
         .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
         .model-pill-btn:hover { background: var(--btn-hover); }
@@ -2011,6 +2011,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
+                            <!-- 최근 60거래일 상승 모멘텀 흐름 곡선 -->
                             <div style="margin:16px 0 12px; position:relative;">
                                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                                     <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 상승 모멘텀 흐름</span>
@@ -2021,6 +2022,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
+                            <!-- 52주 가격 위치 슬라이더 바 -->
                             <div style="margin:12px 0 12px; position:relative;">
                                 <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
                                     <span style="color:var(--text-muted);" id="qLow52w"></span>
@@ -2033,6 +2035,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
+                            <!-- 세부 지표 리스트 -->
                             <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
                                 <div id="quantDetailList"></div>
                             </div>

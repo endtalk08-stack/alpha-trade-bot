@@ -231,98 +231,150 @@ MAJOR_KR_EARNINGS = {
 }
 
 # ----------------------------------------------------
-# 3. 단일 KST 기준 실적 일정 수집기 (중복/오표기 원천 차단)
+# 3. 실적 수집 엔진 (중복 제거 & 실제 확정 일자 단일 등록)
 # ----------------------------------------------------
-def build_single_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc"):
-    days_map = ["일", "월", "화", "수", "목", "금", "토"]
-    kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-    
-    date_key = kst_dt.strftime("%Y.%m.%d")
-    weekday = days_map[int(kst_dt.strftime('%w'))]
-    date_str = f"{kst_dt.month}.{kst_dt.day} ({weekday})"
-    date_header = f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일"
-    time_str = kst_dt.strftime("%H:%M")
-    
-    val_str = "발표완료" if dt_utc <= datetime.now(timezone.utc) else "발표예정"
-    hour_label = "(美장마감후)" if hour == "amc" else ("(美장시작전)" if hour == "bmo" else "")
-
-    return {
-        "ts": dt_utc.timestamp(),
-        "date_key": date_key,
-        "date_str": date_str,
-        "date_header": date_header,
-        "time": time_str,
-        "stars": 3,
-        "star_str": "★★★",
-        "type": "earn",
-        "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
-        "ticker": sym,
-        "val": val_str,
-        "exp": eps_str,
-        "prev": rev_str
-    }
-
 def fetch_all_real_earnings():
     events = []
-    sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
-    for k_code, k_name in MAJOR_KR_EARNINGS.items():
-        sym_to_ko[k_code] = k_name
-        
-    captured_syms = set()
+    days_map = ["일", "월", "화", "수", "목", "금", "토"]
+    
+    us_stock_dict = dict(MAJOR_US_TECH_TICKERS)
+    kr_stock_dict = dict(MAJOR_KR_EARNINGS)
+    
+    seen_keys = set()
     now_kst = datetime.now(timezone(timedelta(hours=9)))
 
-    # 1. Finnhub API 연동
+    # 1. Finnhub 정식 API 수집
     if FINNHUB_API_KEY:
         try:
             from_d = (now_kst - timedelta(days=7)).strftime("%Y-%m-%d")
-            to_d = (now_kst + timedelta(days=60)).strftime("%Y-%m-%d")
+            to_d = (now_kst + timedelta(days=90)).strftime("%Y-%m-%d")
             url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
             res = HTTP_SESSION.get(url, timeout=3.0).json()
             items = res.get("earningsCalendar", [])
             for it in items:
-                sym_raw = str(it.get("symbol", "")).upper().split('.')[0]
-                if sym_raw in sym_to_ko and sym_raw not in captured_syms:
-                    raw_date = str(it.get("date", ""))
-                    hour = str(it.get("hour", "amc")).lower()
-                    eps_est = it.get("epsEstimate")
-                    rev_est = it.get("revenueEstimate")
-                    eps_str = f"예상 EPS ${eps_est:.2f}" if eps_est is not None else "예상치 집계중"
-                    rev_str = f"예상 매출 ${rev_est/1e9:.1f}B" if rev_est is not None else "-"
+                raw_sym = str(it.get("symbol", "")).upper()
+                clean_sym = raw_sym.split(".")[0]
+                
+                ko_name = us_stock_dict.get(raw_sym) or kr_stock_dict.get(clean_sym)
+                if not ko_name:
+                    continue
+                
+                raw_date = str(it.get("date", ""))[:10]
+                if not raw_date or len(raw_date) < 10:
+                    continue
                     
-                    us_dt = datetime.strptime(raw_date, "%Y-%m-%d")
-                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21 if hour == "amc" else 12)
-                    
-                    events.append(build_single_earnings_event(sym_raw, sym_to_ko[sym_raw], dt_utc, eps_str, rev_str, hour))
-                    captured_syms.add(sym_raw)
-        except Exception:
-            pass
+                hour = str(it.get("hour", "")).lower()
+                us_dt = datetime.strptime(raw_date, "%Y-%m-%d")
+                
+                # 시간대 변환 (KST 기준 단일 시각 확정)
+                if hour == "amc":
+                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21) # 익일 새벽 06:00 KST
+                    time_str = "06:00"
+                    hour_label = "(美장마감후)"
+                elif hour == "bmo":
+                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=12, minutes=30) # 당일 밤 21:30 KST
+                    time_str = "21:30"
+                    hour_label = "(美장시작전)"
+                else:
+                    if clean_sym.isdigit():
+                        dt_utc = us_dt.replace(tzinfo=timezone(timedelta(hours=9))).astimezone(timezone.utc)
+                        time_str = "09:00"
+                        hour_label = ""
+                    else:
+                        dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21)
+                        time_str = "시간미정"
+                        hour_label = ""
 
-    # 2. Yahoo Finance API 배치 백업
-    missing = [s for s in [item[0] for item in MAJOR_US_TECH_TICKERS] if s not in captured_syms]
-    if missing:
+                kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
+                date_key = kst_dt.strftime("%Y.%m.%d")
+                weekday = days_map[int(kst_dt.strftime('%w'))]
+
+                dedup_key = (clean_sym, date_key)
+                if dedup_key in seen_keys:
+                    continue
+                seen_keys.add(dedup_key)
+
+                eps_est = it.get("epsEstimate")
+                eps_act = it.get("epsActual")
+                rev_est = it.get("revenueEstimate")
+
+                eps_str = f"예상 EPS ${eps_est:.2f}" if eps_est is not None else "예상치 집계중"
+                rev_str = f"예상 매출 ${rev_est/1e9:.1f}B" if rev_est is not None else "-"
+                val_str = f"발표치 EPS ${eps_act:.2f}" if eps_act is not None else ("발표완료" if dt_utc <= datetime.now(timezone.utc) else "발표예정")
+
+                events.append({
+                    "ts": dt_utc.timestamp(),
+                    "date_key": date_key,
+                    "date_str": f"{kst_dt.month}.{kst_dt.day} ({weekday})",
+                    "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일",
+                    "time": time_str,
+                    "stars": 3,
+                    "star_str": "★★★",
+                    "type": "earn",
+                    "name": f"{ko_name} ({clean_sym}) 실적 {hour_label}".strip(),
+                    "ticker": clean_sym,
+                    "val": val_str,
+                    "exp": eps_str,
+                    "prev": rev_str
+                })
+        except Exception as e:
+            print("[FINNHUB] Earnings fetch error:", e)
+
+    # 2. Yahoo Finance API 백업 (Finnhub에서 누락된 미국 빅테크만 실제 Timestamp 조회)
+    missing_us = [sym for sym, _ in MAJOR_US_TECH_TICKERS if not any(k[0] == sym for k in seen_keys)]
+    if missing_us:
         try:
-            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing)}"
+            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing_us)}"
             res = HTTP_SESSION.get(url, timeout=2.5).json()
             items = res.get("quoteResponse", {}).get("result", [])
+            now_utc = datetime.now(timezone.utc)
             for it in items:
-                sym = it.get("symbol", "").upper().split('.')[0]
+                sym = it.get("symbol", "").upper()
                 raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
-                if sym in sym_to_ko and raw_ts and sym not in captured_syms:
+                if sym in us_stock_dict and raw_ts:
                     dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                    if abs((dt_utc - now_utc).days) > 90:
+                        continue
+                    
+                    kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
+                    date_key = kst_dt.strftime("%Y.%m.%d")
+                    weekday = days_map[int(kst_dt.strftime('%w'))]
+                    
+                    dedup_key = (sym, date_key)
+                    if dedup_key in seen_keys:
+                        continue
+                    seen_keys.add(dedup_key)
+                    
                     eps_f = it.get("epsForward")
                     eps_str = f"예상 EPS ${eps_f:.2f}" if eps_f is not None else "예상치 집계중"
-                    events.append(build_single_earnings_event(sym, sym_to_ko[sym], dt_utc, eps_str, "-", "amc"))
-                    captured_syms.add(sym)
-        except Exception:
-            pass
+                    val_str = "발표완료" if dt_utc <= now_utc else "발표예정"
+                    
+                    events.append({
+                        "ts": dt_utc.timestamp(),
+                        "date_key": date_key,
+                        "date_str": f"{kst_dt.month}.{kst_dt.day} ({weekday})",
+                        "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일",
+                        "time": kst_dt.strftime("%H:%M"),
+                        "stars": 3,
+                        "star_str": "★★★",
+                        "type": "earn",
+                        "name": f"{us_stock_dict[sym]} ({sym}) 실적",
+                        "ticker": sym,
+                        "val": val_str,
+                        "exp": eps_str,
+                        "prev": "-"
+                    })
+        except Exception as e:
+            print("[YAHOO] Earnings backup error:", e)
 
+    events.sort(key=lambda x: x["ts"])
     return events
 
 def fetch_real_market_calendar_live():
     combined_events = []
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
-    # 1. 글로벌 경제 지표 API
+    # 1. 글로벌 경제 지표 API 연동
     try:
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         res = HTTP_SESSION.get(url, timeout=3.5).json()
@@ -375,14 +427,13 @@ def fetch_real_market_calendar_live():
     except Exception as exc:
         print("[CALENDAR][ECO] 경제지표 파싱 에러:", exc)
 
-    # 2. 미국/국내 기업 실적 발표 결합
+    # 2. 실적 발표 데이터 결합
     try:
         earnings_events = fetch_all_real_earnings()
         combined_events.extend(earnings_events)
     except Exception as exc:
-        print("[CALENDAR][EARN] 실적 데이터 파싱 에러:", exc)
+        print("[CALENDAR][EARN] 실적 데이터 결합 에러:", exc)
 
-    # 시간순 정렬 (ts 기준)
     combined_events.sort(key=lambda x: x["ts"])
     return combined_events
 
@@ -390,13 +441,11 @@ def background_worker():
     global CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
     while True:
         try:
-            # 증시 시세 갱신 (30초 주기)
             with ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
             if results and any(r["price"] != "-" for r in results):
                 CACHED_WORLD_BOARD = results
             
-            # 경제지표/실적 캘린더 갱신 (Rate Limit 방지를 위해 5분 주기 적용)
             now_t = time.time()
             if now_t - LAST_CALENDAR_FETCH_TIME > 300 or not CACHED_MARKET_CALENDAR:
                 cal_live = fetch_real_market_calendar_live()
@@ -1624,7 +1673,6 @@ HTML_PAGE = """<!DOCTYPE html>
             justify-content: flex-start;
         }
 
-        /* 캘린더 카드 */
         .cal-card-item {
             background: var(--bg-cal-card);
             border: 1px solid var(--border-line);
@@ -2559,7 +2607,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             if (currentCalFilter === 'earn') {
                 filtered = normalizedCalendar.filter(ev => ev.type === 'earn');
-                setTxt('calDayHeader', '주요 빅테크 및 국내 기업 실적 발표');
+                setTxt('calDayHeader', '주요 기업 실적 발표 일정');
             } else {
                 filtered = normalizedCalendar.filter(ev => ev.date_key === dateStr);
                 
@@ -2608,10 +2656,12 @@ HTML_PAGE = """<!DOCTYPE html>
                 const clickAttr = isEarn && ev.ticker ? `onclick="doSearch('${ev.ticker}')"` : '';
                 const timePrefix = (currentCalFilter === 'earn' && ev.date_str) ? `${ev.date_str} ` : '';
                 
+                // 1. 상태 뱃지 판별
                 const isCompleted = ev.val && !ev.val.includes('대기') && !ev.val.includes('예정');
                 const badgeClass = isCompleted ? 'cal-badge-completed' : 'cal-badge-upcoming';
                 const statusBadgeHtml = `<span class="cal-status-badge ${badgeClass}">${ev.val}</span>`;
 
+                // 2. 중요도 뱃지 판별
                 let impactBadgeHtml = '';
                 if (ev.stars === 3) {
                     impactBadgeHtml = `<span class="cal-impact-badge impact-3">★★★ HIGH</span>`;
@@ -2621,6 +2671,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     impactBadgeHtml = `<span class="cal-impact-badge impact-1">★☆☆ LOW</span>`;
                 }
 
+                // 3. 지표 수치 정돈
                 const metricsText = (ev.exp !== '-' || ev.prev !== '-')
                     ? `<span class="cal-metrics-text">${ev.exp} · ${ev.prev}</span>`
                     : '';

@@ -1316,7 +1316,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (좌측 832px 단일 정렬 + 우측 348px 분리)
+# 7. 웹 프론트엔드 UI (Row 단위 대칭 및 모바일 Order 완벽 제어)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1414,6 +1414,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
 
+        /* 모델 선택기 (gaemi / info / pro) */
         .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
         .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
         .model-pill-btn:hover { background: var(--btn-hover); }
@@ -1439,30 +1440,33 @@ HTML_PAGE = """<!DOCTYPE html>
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
 
-        /* [핵심 레이아웃] 좌측 832px 전담 열 vs 우측 348px 사이드바 열 */
-        .main-dashboard-grid {
+        /* [핵심 마스터 그리드] PC: 완벽한 832px + 348px 2열 구조 */
+        .dashboard-master-grid {
             display: grid;
             grid-template-columns: 832px 348px;
             gap: 16px;
             margin: 0 auto;
             max-width: 1196px;
             justify-content: center;
-            align-items: start;
+            align-items: stretch;
         }
 
-        .left-main-column {
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-            width: 832px;
-        }
+        /* 1:1 세로 높이 동기화 행 */
+        #rowChart { grid-column: 1; grid-row: 1; height: 100%; }
+        #rowWorld { grid-column: 2; grid-row: 1; height: 100%; }
 
-        .right-sidebar-column {
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-            width: 348px;
-        }
+        #rowQuant { grid-column: 1; grid-row: 2; height: 100%; }
+        #rowCalendar { grid-column: 2; grid-row: 2; height: 100%; }
+
+        /* 좌측 832px 단독 배치 행들 */
+        #rowNews { grid-column: 1; grid-row: 3; }
+        #rowConsensus { grid-column: 1; grid-row: 4; }
+        #rowVote { grid-column: 1; grid-row: 5; }
+        #rowComment { grid-column: 1; grid-row: 6; }
+        #rowDart { grid-column: 1; grid-row: 7; }
+        #rowGlobalNews { grid-column: 1; grid-row: 8; }
+        #rowSignal { grid-column: 1; grid-row: 9; }
+        #rowTelegram { grid-column: 1; grid-row: 10; }
 
         .card {
             background: var(--bg-card);
@@ -1471,6 +1475,9 @@ HTML_PAGE = """<!DOCTYPE html>
             border: 1px solid var(--border-line);
             box-shadow: 0 2px 10px rgba(0,0,0,0.03);
             width: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
         }
 
         .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
@@ -1486,7 +1493,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-line); }
         .board-header-title { font-size: 0.95rem; font-weight: 800; color: var(--text-title); }
         .board-header-sub { font-size: 0.7rem; color: var(--text-muted); }
-        .board-2col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .board-2col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; flex: 1; }
 
         .mini-index-card {
             background: var(--bg-subcard);
@@ -1618,7 +1625,31 @@ HTML_PAGE = """<!DOCTYPE html>
         .news-title:hover { color: #0284c7; }
         .news-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; }
 
-        #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 74px; background: var(--bottom-fade); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
+        #bottom-bar {
+            display: none;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 74px;
+            background: var(--bottom-fade);
+            align-items: center;
+            justify-content: center;
+            padding: 0 12px 6px;
+            z-index: 50;
+        }
+        
+        /* 하단 검색창을 좌측 832px 열과 수직 1:1 정렬 */
+        .bottom-bar-grid-wrapper {
+            width: 100%;
+            max-width: 1196px;
+            display: grid;
+            grid-template-columns: 832px 348px;
+            gap: 16px;
+            margin: 0 auto;
+            justify-content: center;
+        }
+
         .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }
 
         .dot-marker-style {
@@ -1636,13 +1667,37 @@ HTML_PAGE = """<!DOCTYPE html>
         .val-up { color: #ef4444; }
         .val-down { color: #38bdf8; }
 
+        /* [모바일 완벽 대응] 1200px 이하에서는 요청하신 순서대로 1열 정렬 */
         @media (max-width: 1200px) {
-            .main-dashboard-grid {
-                grid-template-columns: 1fr;
+            .dashboard-master-grid {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                max-width: 832px;
+                gap: 14px;
+            }
+            .card, .signal-premium-card, .signal-premium-btn {
+                width: 100%;
                 max-width: 832px;
             }
-            .left-main-column, .right-sidebar-column {
-                width: 100%;
+            
+            /* 모바일 순서 지정: 좌측 위젯 10종 먼저 ➔ 우측 위젯 2종 맨 아래로 */
+            #rowChart { order: 1; }
+            #rowQuant { order: 2; }
+            #rowNews { order: 3; }
+            #rowConsensus { order: 4; }
+            #rowVote { order: 5; }
+            #rowComment { order: 6; }
+            #rowDart { order: 7; }
+            #rowGlobalNews { order: 8; }
+            #rowSignal { order: 9; }
+            #rowTelegram { order: 10; }
+            #rowWorld { order: 11; width: 100%; max-width: 832px; }
+            #rowCalendar { order: 12; width: 100%; max-width: 832px; }
+
+            .bottom-bar-grid-wrapper {
+                display: flex;
+                justify-content: center;
                 max-width: 832px;
             }
         }
@@ -1733,313 +1788,305 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="loading" id="loading">세계 증시, 전자공시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
                 <div id="result-card-wrap" style="display:none;">
                     
-                    <!-- [마스터 그리드] 좌측 832px 열 vs 우측 348px 열 -->
-                    <div class="main-dashboard-grid">
+                    <!-- [마스터 그리드] PC: 완벽한 832px + 348px 2열 / 모바일: 순차 1열 -->
+                    <div class="dashboard-master-grid">
                         
-                        <!-- 좌측 메인 열 (모든 메인 위젯 832px 중앙 정렬 순차 나열) -->
-                        <div class="left-main-column">
-                            
-                            <!-- 1. 메인 차트 -->
-                            <div class="card">
+                        <!-- 1. 메인 차트 (832px) -->
+                        <div class="card" id="rowChart">
+                            <div>
+                                <div class="price-title" id="rTitle"></div>
+                                <div class="price-val" id="rPrice"></div>
+                                <div class="price-meta" id="rMeta"></div>
+                                <div class="chart-legend">
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
+                                </div>
+                            </div>
+                            <div class="chart-box-wrap" id="tvChart"></div>
+                        </div>
+
+                        <!-- 2. 우측 1행: 증시는 지금 (348px, 차트와 높이 100% 일치) -->
+                        <div class="card" id="rowWorld">
+                            <div class="board-header">
+                                <span class="board-header-title">증시는 지금</span>
+                                <span class="board-header-sub">실시간 연동</span>
+                            </div>
+                            <div class="board-2col-grid" id="worldBoardGrid"></div>
+                        </div>
+
+                        <!-- 3. 좌측 2행: 퀀트 분석 (832px) -->
+                        <div class="card" id="rowQuant">
+                            <div style="margin-bottom:14px;">
+                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
+                            </div>
+
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--border-line);">
+                                <div class="gauge-inner-box">
+                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="qScoreVal"></span>
+                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">모멘텀</span>
+                                </div>
+                                <div style="min-width:0;">
+                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <span style="font-size:0.78rem; color:var(--text-muted);">계량 상태</span>
+                                        <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="qScoreBadge"></span>
+                                    </div>
+                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="qScoreDots"></div>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
                                 <div>
-                                    <div class="price-title" id="rTitle"></div>
-                                    <div class="price-val" id="rPrice"></div>
-                                    <div class="price-meta" id="rMeta"></div>
-                                    <div class="chart-legend">
-                                        <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
-                                        <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
-                                        <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
-                                        <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
-                                    </div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">통계적 Z-Score (20D 표준편차)</div>
+                                    <div style="font-size:1.15rem; font-weight:800; color:#10b981;" id="qZScoreVal"></div>
                                 </div>
-                                <div class="chart-box-wrap" id="tvChart"></div>
+                                <div style="text-align:right;">
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">연환산 변동성 (20D σ)</div>
+                                    <div style="font-size:1.1rem; font-weight:700; color:var(--text-title);" id="qVolVal"></div>
+                                </div>
                             </div>
 
-                            <!-- 2. 퀀트 분석 -->
-                            <div class="card">
-                                <div style="margin-bottom:14px;">
-                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
+                            <!-- 최근 60거래일 상승 모멘텀 흐름 곡선 -->
+                            <div style="margin:16px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                    <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 상승 모멘텀 흐름</span>
+                                    <span style="font-size:0.7rem; color:#10b981; font-weight:800;" id="qMomentumValTxt">현재 -</span>
                                 </div>
+                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
+                                    <svg id="qSignalChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
+                                </div>
+                            </div>
 
-                                <div style="display:flex; align-items:center; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--border-line);">
+                            <!-- 52주 가격 위치 슬라이더 바 -->
+                            <div style="margin:12px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);" id="qLow52w"></span>
+                                    <span style="color:#10b981; font-weight:700;" id="qPos52wLabel">52주 가격 위치</span>
+                                    <span style="color:var(--text-muted);" id="qHigh52w"></span>
+                                </div>
+                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
+                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="qSliderFill"></div>
+                                    <div class="dot-marker-style" id="qDotMarker"></div>
+                                </div>
+                            </div>
+
+                            <!-- 세부 지표 리스트 -->
+                            <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
+                                <div id="quantDetailList"></div>
+                            </div>
+                        </div>
+
+                        <!-- 4. 우측 2행: 캘린더 (348px, 퀀트 분석 카드와 높이 100% 일치) -->
+                        <div class="card" id="rowCalendar">
+                            <div class="cal-top-title-area">
+                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">캘린더</span>
+                            </div>
+
+                            <div class="cal-top-nav">
+                                <div class="cal-date-ctrl">
+                                    <button class="cal-arrow-btn" onclick="shiftCalendarDate(-1)">&#10094;</button>
+                                    <span class="cal-current-date" id="calDisplayDate">--</span>
+                                    <button class="cal-arrow-btn" onclick="shiftCalendarDate(1)">&#10095;</button>
+                                </div>
+                                <button class="cal-today-btn" onclick="resetCalendarDate()">오늘</button>
+                            </div>
+
+                            <div class="cal-filter-bar">
+                                <button class="cal-filter-pill active" id="filterAll" onclick="setCalendarFilter('all')">전체</button>
+                                <button class="cal-filter-pill" id="filterStar3" onclick="setCalendarFilter('star3')"><span class="star-gold">★★★</span></button>
+                                <button class="cal-filter-pill" id="filterStar2" onclick="setCalendarFilter('star2')"><span class="star-gold">★★☆</span></button>
+                                <button class="cal-filter-pill" id="filterEarn" onclick="setCalendarFilter('earn')">실적</button>
+                                <button class="cal-filter-pill" id="filterEco" onclick="setCalendarFilter('eco')">경제</button>
+                            </div>
+
+                            <div class="cal-day-header" id="calDayHeader">--</div>
+
+                            <div class="cal-event-list-wrap" id="calEventList"></div>
+                        </div>
+
+                        <!-- 5. 종목 뉴스 (832px) -->
+                        <div class="card" id="rowNews">
+                            <div class="board-header-title" style="margin-bottom:12px;">종목 뉴스</div>
+                            <div id="stockNewsList"></div>
+                        </div>
+
+                        <!-- 6. 애널리스트 컨센서스 (832px) -->
+                        <div class="card" id="rowConsensus" style="display:none;">
+                            <div style="margin-bottom:16px;">
+                                <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
+                            </div>
+
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid var(--border-line);">
+                                <div class="gauge-inner-box">
+                                    <span style="font-size:1.0rem; font-weight:800; color:var(--text-title); line-height:1;" id="uGaugeVal"></span>
+                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px;" id="uGaugeLabel"></span>
+                                </div>
+                                <div style="min-width:0;">
+                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <span style="font-size:0.78rem; color:var(--text-muted);" id="uStatusLabel"></span>
+                                        <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:700; padding:2px 7px; border-radius:10px;" id="uBadge"></span>
+                                    </div>
+                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="uDots"></div>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
+                                <div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uPrimaryLabel"></div>
+                                    <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uSecondaryLabel"></div>
+                                    <div style="font-size:1.15rem; font-weight:700; color:var(--text-title);" id="uSecondaryVal"></div>
+                                </div>
+                            </div>
+
+                            <div style="margin:20px 0 14px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);" id="uSliderLeft"></span>
+                                    <span style="color:#10b981; font-weight:700;" id="uSliderMid"></span>
+                                    <span style="color:var(--text-muted);" id="uSliderRight"></span>
+                                </div>
+                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
+                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="uBarFill"></div>
+                                    <div class="dot-marker-style" id="uDotMarker"></div>
+                                </div>
+                            </div>
+
+                            <div style="margin-top:16px; border-top:1px solid var(--border-line); padding-top:12px;">
+                                <div style="font-size:0.82rem; font-weight:700; color:var(--text-sub); margin-bottom:8px; display:flex; justify-content:space-between;">
+                                    <span id="uListTitle"></span>
+                                    <span style="font-size:0.68rem; color:var(--text-muted); font-weight:normal;" id="uSourceTag"></span>
+                                </div>
+                                <div id="uItemList"></div>
+                            </div>
+                        </div>
+
+                        <!-- 7. 개미 투표 (832px) -->
+                        <div class="card" id="rowVote">
+                            <div class="board-header">
+                                <span class="board-header-title">개미 투표</span>
+                                <span style="font-size:0.72rem; color:var(--text-muted);">내일 주가 전망</span>
+                            </div>
+                            <div style="margin:8px 0;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.75rem; font-weight:700; margin-bottom:6px;">
+                                    <span style="color:#10b981;" id="voteLongPct">상승 50%</span>
+                                    <span style="color:#38bdf8;" id="voteShortPct">하락 50%</span>
+                                </div>
+                                <div style="width:100%; height:8px; background:var(--bg-subcard); border-radius:4px; overflow:hidden; display:flex; border:1px solid var(--border-line);">
+                                    <div style="height:100%; background:#10b981; width:50%; transition:width 0.3s;" id="voteLongBar"></div>
+                                    <div style="height:100%; background:#38bdf8; width:50%; transition:width 0.3s;" id="voteShortBar"></div>
+                                </div>
+                            </div>
+                            <div class="vote-btn-wrap">
+                                <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">상승 전망</button>
+                                <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">하락 전망</button>
+                            </div>
+                        </div>
+
+                        <!-- 8. 개미 토론 (832px) -->
+                        <div class="card" id="rowComment">
+                            <div class="board-header">
+                                <span class="board-header-title">개미 토론</span>
+                                <span style="font-size:0.72rem; color:var(--text-muted);" id="commentCountTag">0개의 의견</span>
+                            </div>
+                            <div id="commentList" style="margin-top:8px;"></div>
+                            <div class="comment-input-box">
+                                <input type="text" id="commentInput" placeholder="이 종목에 대한 생각을 자유롭게 적어주세요" onkeypress="if(event.keyCode==13) postComment();" autocomplete="off" maxlength="80">
+                                <button onclick="postComment()">등록</button>
+                            </div>
+                        </div>
+
+                        <!-- 9. DART 전자공시 (832px) -->
+                        <div class="card" id="rowDart" style="display:none;">
+                            <div class="board-header">
+                                <span class="board-header-title">DART 전자공시</span>
+                                <span style="font-size:0.72rem; color:var(--text-muted);">최근 핵심 공시</span>
+                            </div>
+                            <div id="dartList"></div>
+                        </div>
+
+                        <!-- 10. 해외 뉴스 (832px) -->
+                        <div class="card" id="rowGlobalNews">
+                            <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
+                            <div id="globalNewsList"></div>
+                        </div>
+
+                        <!-- 11. gaemiGTP 시그널 박스 (832px) -->
+                        <div class="signal-premium-card" id="rowSignal">
+                            <div class="signal-card-header" onclick="toggleSignal()">
+                                <span class="signal-card-title">gaemiGTP 시그널</span>
+                                <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
+                            </div>
+                            
+                            <div id="signalBody" style="display:none; margin-top:16px;">
+                                <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid rgba(16,185,129,0.2);">
                                     <div class="gauge-inner-box">
-                                        <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="qScoreVal"></span>
-                                        <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">모멘텀</span>
+                                        <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="rWinRateGauge"></span>
+                                        <span style="font-size:0.6rem; color:var(--text-muted); margin-top:3px; font-weight:700;">승률</span>
                                     </div>
                                     <div style="min-width:0;">
                                         <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                            <span style="font-size:0.78rem; color:var(--text-muted);">계량 상태</span>
-                                            <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="qScoreBadge"></span>
+                                            <span style="font-size:0.82rem; color:var(--text-muted);">시그널 종합</span>
+                                            <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.75rem; font-weight:800; padding:3px 8px; border-radius:10px;">분할 대응 유효</span>
                                         </div>
-                                        <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="qScoreDots"></div>
-                                    </div>
-                                </div>
-
-                                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
-                                    <div>
-                                        <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">통계적 Z-Score (20D 표준편차)</div>
-                                        <div style="font-size:1.15rem; font-weight:800; color:#10b981;" id="qZScoreVal"></div>
-                                    </div>
-                                    <div style="text-align:right;">
-                                        <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">연환산 변동성 (20D σ)</div>
-                                        <div style="font-size:1.1rem; font-weight:700; color:var(--text-title);" id="qVolVal"></div>
-                                    </div>
-                                </div>
-
-                                <!-- 최근 60거래일 상승 모멘텀 흐름 곡선 -->
-                                <div style="margin:16px 0 12px; position:relative;">
-                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                                        <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 상승 모멘텀 흐름</span>
-                                        <span style="font-size:0.7rem; color:#10b981; font-weight:800;" id="qMomentumValTxt">현재 -</span>
-                                    </div>
-                                    <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
-                                        <svg id="qSignalChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
-                                    </div>
-                                </div>
-
-                                <!-- 52주 가격 위치 슬라이더 바 -->
-                                <div style="margin:12px 0 12px; position:relative;">
-                                    <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
-                                        <span style="color:var(--text-muted);" id="qLow52w"></span>
-                                        <span style="color:#10b981; font-weight:700;" id="qPos52wLabel">52주 가격 위치</span>
-                                        <span style="color:var(--text-muted);" id="qHigh52w"></span>
-                                    </div>
-                                    <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                        <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="qSliderFill"></div>
-                                        <div class="dot-marker-style" id="qDotMarker"></div>
-                                    </div>
-                                </div>
-
-                                <!-- 세부 지표 리스트 -->
-                                <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
-                                    <div id="quantDetailList"></div>
-                                </div>
-                            </div>
-
-                            <!-- 3. 종목 뉴스 -->
-                            <div class="card">
-                                <div class="board-header-title" style="margin-bottom:12px;">종목 뉴스</div>
-                                <div id="stockNewsList"></div>
-                            </div>
-
-                            <!-- 4. 애널리스트 컨센서스 -->
-                            <div class="card" id="unifiedCard" style="display:none;">
-                                <div style="margin-bottom:16px;">
-                                    <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
-                                </div>
-
-                                <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid var(--border-line);">
-                                    <div class="gauge-inner-box">
-                                        <span style="font-size:1.0rem; font-weight:800; color:var(--text-title); line-height:1;" id="uGaugeVal"></span>
-                                        <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px;" id="uGaugeLabel"></span>
-                                    </div>
-                                    <div style="min-width:0;">
-                                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                            <span style="font-size:0.78rem; color:var(--text-muted);" id="uStatusLabel"></span>
-                                            <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:700; padding:2px 7px; border-radius:10px;" id="uBadge"></span>
+                                        <div style="font-size:0.78rem; color:var(--text-muted); margin-top:5px; word-break:keep-all;">
+                                            <span style="color:#10b981; font-weight:800;" id="rBt1yTag"></span> &nbsp; 
+                                            <span style="color:#10b981; font-weight:800;" id="rBt2yTag"></span> &nbsp; 
+                                            <span style="color:#38bdf8; font-weight:800;" id="rRrTag"></span>
                                         </div>
-                                        <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="uDots"></div>
-                                    </div>
-                                </div>
-
-                                <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
-                                    <div>
-                                        <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">평균 목표가</div>
-                                        <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
-                                    </div>
-                                    <div style="text-align:right;">
-                                        <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재가</div>
-                                        <div style="font-size:1.15rem; font-weight:700; color:var(--text-title);" id="uSecondaryVal"></div>
                                     </div>
                                 </div>
 
                                 <div style="margin:20px 0 14px; position:relative;">
-                                    <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
-                                        <span style="color:var(--text-muted);" id="uSliderLeft"></span>
-                                        <span style="color:#10b981; font-weight:700;" id="uSliderMid"></span>
-                                        <span style="color:var(--text-muted);" id="uSliderRight"></span>
+                                    <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:6px; white-space:nowrap;">
+                                        <span style="color:#38bdf8; font-weight:800;" id="rSliderStop"></span>
+                                        <span style="color:var(--text-title); font-weight:800;" id="rSliderEntry"></span>
+                                        <span style="color:#10b981; font-weight:800;" id="rSliderTarget"></span>
                                     </div>
-                                    <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                        <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="uBarFill"></div>
-                                        <div class="dot-marker-style" id="uDotMarker"></div>
+                                    <div style="width:100%; height:7px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
+                                        <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="rSigBarFill"></div>
+                                        <div class="dot-marker-style" id="rSigDotMarker"></div>
                                     </div>
                                 </div>
 
-                                <div style="margin-top:16px; border-top:1px solid var(--border-line); padding-top:12px;">
-                                    <div style="font-size:0.82rem; font-weight:700; color:var(--text-sub); margin-bottom:8px; display:flex; justify-content:space-between;">
-                                        <span id="uListTitle"></span>
-                                        <span style="font-size:0.68rem; color:var(--text-muted); font-weight:normal;" id="uSourceTag"></span>
+                                <div style="margin-top:16px; border-top:1px solid rgba(16,185,129,0.2); padding-top:10px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
+                                        <div><span style="color:var(--text-title); font-weight:700;">1차 진입 기준가</span></div>
+                                        <div style="color:var(--text-title); font-weight:800;" id="rEntry1"></div>
                                     </div>
-                                    <div id="uItemList"></div>
+                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
+                                        <div><span style="color:var(--text-title); font-weight:700;">2차 분할 기준가</span></div>
+                                        <div style="color:var(--text-title); font-weight:800;" id="rEntry2"></div>
+                                    </div>
+                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
+                                        <div><span style="color:#10b981; font-weight:700;">1차 목표가</span></div>
+                                        <div style="color:#10b981; font-weight:800;" id="rTarget1"></div>
+                                    </div>
+                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
+                                        <div><span style="color:#10b981; font-weight:700;">2차 목표가</span></div>
+                                        <div style="color:#10b981; font-weight:800;" id="rTarget2"></div>
+                                    </div>
+                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; font-size:0.86rem;">
+                                        <div><span style="color:#38bdf8; font-weight:700;">리스크 방어선</span></div>
+                                        <div style="color:#38bdf8; font-weight:800;" id="rStop"></div>
+                                    </div>
+                                </div>
+
+                                <div class="guide-box">
+                                    <div class="guide-title">gaemiGTP 시그널 가이드</div>
+                                    <div id="rGuideText" style="margin-top:4px; color:var(--text-sub); word-break:keep-all;"></div>
                                 </div>
                             </div>
+                        </div>
 
-                            <!-- 5. 개미 투표 -->
-                            <div class="card">
-                                <div class="board-header">
-                                    <span class="board-header-title">개미 투표</span>
-                                    <span style="font-size:0.72rem; color:var(--text-muted);">내일 주가 전망</span>
-                                </div>
-                                <div style="margin:8px 0;">
-                                    <div style="display:flex; justify-content:space-between; font-size:0.75rem; font-weight:700; margin-bottom:6px;">
-                                        <span style="color:#10b981;" id="voteLongPct">상승 50%</span>
-                                        <span style="color:#38bdf8;" id="voteShortPct">하락 50%</span>
-                                    </div>
-                                    <div style="width:100%; height:8px; background:var(--bg-subcard); border-radius:4px; overflow:hidden; display:flex; border:1px solid var(--border-line);">
-                                        <div style="height:100%; background:#10b981; width:50%; transition:width 0.3s;" id="voteLongBar"></div>
-                                        <div style="height:100%; background:#38bdf8; width:50%; transition:width 0.3s;" id="voteShortBar"></div>
-                                    </div>
-                                </div>
-                                <div class="vote-btn-wrap">
-                                    <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">상승 전망</button>
-                                    <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">하락 전망</button>
-                                </div>
-                            </div>
-
-                            <!-- 6. 개미 토론 -->
-                            <div class="card">
-                                <div class="board-header">
-                                    <span class="board-header-title">개미 토론</span>
-                                    <span style="font-size:0.72rem; color:var(--text-muted);" id="commentCountTag">0개의 의견</span>
-                                </div>
-                                <div id="commentList" style="margin-top:8px;"></div>
-                                <div class="comment-input-box">
-                                    <input type="text" id="commentInput" placeholder="이 종목에 대한 생각을 자유롭게 적어주세요" onkeypress="if(event.keyCode==13) postComment();" autocomplete="off" maxlength="80">
-                                    <button onclick="postComment()">등록</button>
-                                </div>
-                            </div>
-
-                            <!-- 7. DART 전자공시 -->
-                            <div class="card" id="dartCard" style="display:none;">
-                                <div class="board-header">
-                                    <span class="board-header-title">DART 전자공시</span>
-                                    <span style="font-size:0.72rem; color:var(--text-muted);">최근 핵심 공시</span>
-                                </div>
-                                <div id="dartList"></div>
-                            </div>
-
-                            <!-- 8. 해외 뉴스 -->
-                            <div class="card">
-                                <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
-                                <div id="globalNewsList"></div>
-                            </div>
-
-                            <!-- 9. gaemiGTP 시그널 박스 -->
-                            <div class="signal-premium-card">
-                                <div class="signal-card-header" onclick="toggleSignal()">
-                                    <span class="signal-card-title">gaemiGTP 시그널</span>
-                                    <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
-                                </div>
-                                
-                                <div id="signalBody" style="display:none; margin-top:16px;">
-                                    <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid rgba(16,185,129,0.2);">
-                                        <div class="gauge-inner-box">
-                                            <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="rWinRateGauge"></span>
-                                            <span style="font-size:0.6rem; color:var(--text-muted); margin-top:3px; font-weight:700;">승률</span>
-                                        </div>
-                                        <div style="min-width:0;">
-                                            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                                <span style="font-size:0.82rem; color:var(--text-muted);">시그널 종합</span>
-                                                <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.75rem; font-weight:800; padding:3px 8px; border-radius:10px;">분할 대응 유효</span>
-                                            </div>
-                                            <div style="font-size:0.78rem; color:var(--text-muted); margin-top:5px; word-break:keep-all;">
-                                                <span style="color:#10b981; font-weight:800;" id="rBt1yTag"></span> &nbsp; 
-                                                <span style="color:#10b981; font-weight:800;" id="rBt2yTag"></span> &nbsp; 
-                                                <span style="color:#38bdf8; font-weight:800;" id="rRrTag"></span>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div style="margin:20px 0 14px; position:relative;">
-                                        <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:6px; white-space:nowrap;">
-                                            <span style="color:#38bdf8; font-weight:800;" id="rSliderStop"></span>
-                                            <span style="color:var(--text-title); font-weight:800;" id="rSliderEntry"></span>
-                                            <span style="color:#10b981; font-weight:800;" id="rSliderTarget"></span>
-                                        </div>
-                                        <div style="width:100%; height:7px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                            <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="rSigBarFill"></div>
-                                            <div class="dot-marker-style" id="rSigDotMarker"></div>
-                                        </div>
-                                    </div>
-
-                                    <div style="margin-top:16px; border-top:1px solid rgba(16,185,129,0.2); padding-top:10px;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                            <div><span style="color:var(--text-title); font-weight:700;">1차 진입 기준가</span></div>
-                                            <div style="color:var(--text-title); font-weight:800;" id="rEntry1"></div>
-                                        </div>
-                                        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                            <div><span style="color:var(--text-title); font-weight:700;">2차 분할 기준가</span></div>
-                                            <div style="color:var(--text-title); font-weight:800;" id="rEntry2"></div>
-                                        </div>
-                                        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                            <div><span style="color:#10b981; font-weight:700;">1차 목표가</span></div>
-                                            <div style="color:#10b981; font-weight:800;" id="rTarget1"></div>
-                                        </div>
-                                        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                            <div><span style="color:#10b981; font-weight:700;">2차 목표가</span></div>
-                                            <div style="color:#10b981; font-weight:800;" id="rTarget2"></div>
-                                        </div>
-                                        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; font-size:0.86rem;">
-                                            <div><span style="color:#38bdf8; font-weight:700;">리스크 방어선</span></div>
-                                            <div style="color:#38bdf8; font-weight:800;" id="rStop"></div>
-                                        </div>
-                                    </div>
-
-                                    <div class="guide-box">
-                                        <div class="guide-title">gaemiGTP 시그널 가이드</div>
-                                        <div id="rGuideText" style="margin-top:4px; color:var(--text-sub); word-break:keep-all;"></div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <!-- 10. 텔레그램 알림 받기 버튼 -->
+                        <!-- 12. 텔레그램 알림 받기 버튼 (832px) -->
+                        <div id="rowTelegram" style="width:100%;">
                             <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
                                 <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
                                 <span id="tgAlertBtnText">gaemiGTP 시그널 텔레그램 실시간 알림 받기</span>
                             </a>
-
-                        </div>
-
-                        <!-- 우측 사이드바 열 (348px 고정) -->
-                        <div class="right-sidebar-column">
-                            
-                            <!-- 1. 증시는 지금 (348px) -->
-                            <div class="card" style="padding:16px 14px;">
-                                <div class="board-header">
-                                    <span class="board-header-title">증시는 지금</span>
-                                    <span class="board-header-sub">실시간 연동</span>
-                                </div>
-                                <div class="board-2col-grid" id="worldBoardGrid"></div>
-                            </div>
-
-                            <!-- 2. 캘린더 (348px) -->
-                            <div class="card" style="padding:18px 14px;">
-                                <div class="cal-top-title-area">
-                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">캘린더</span>
-                                </div>
-
-                                <div class="cal-top-nav">
-                                    <div class="cal-date-ctrl">
-                                        <button class="cal-arrow-btn" onclick="shiftCalendarDate(-1)">&#10094;</button>
-                                        <span class="cal-current-date" id="calDisplayDate">--</span>
-                                        <button class="cal-arrow-btn" onclick="shiftCalendarDate(1)">&#10095;</button>
-                                    </div>
-                                    <button class="cal-today-btn" onclick="resetCalendarDate()">오늘</button>
-                                </div>
-
-                                <div class="cal-filter-bar">
-                                    <button class="cal-filter-pill active" id="filterAll" onclick="setCalendarFilter('all')">전체</button>
-                                    <button class="cal-filter-pill" id="filterStar3" onclick="setCalendarFilter('star3')"><span class="star-gold">★★★</span></button>
-                                    <button class="cal-filter-pill" id="filterStar2" onclick="setCalendarFilter('star2')"><span class="star-gold">★★☆</span></button>
-                                    <button class="cal-filter-pill" id="filterEarn" onclick="setCalendarFilter('earn')">실적</button>
-                                    <button class="cal-filter-pill" id="filterEco" onclick="setCalendarFilter('eco')">경제</button>
-                                </div>
-
-                                <div class="cal-day-header" id="calDayHeader">--</div>
-
-                                <div class="cal-event-list-wrap" id="calEventList"></div>
-                            </div>
-
                         </div>
 
                     </div>
@@ -2049,34 +2096,37 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
 
         <div id="bottom-bar">
-            <div class="search-container">
-                <div class="search-box">
-                    <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
-                    
-                    <div class="model-selector-wrap">
-                        <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
-                            <span class="model-pill-name" id="bottomCurrentModel">gaemi</span>
-                            <span class="model-pill-arrow">▲</span>
+            <!-- 하단 바 내부 검색창을 좌측 832px 열과 정확히 수직 정렬 -->
+            <div class="bottom-bar-grid-wrapper">
+                <div class="search-container">
+                    <div class="search-box">
+                        <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                        
+                        <div class="model-selector-wrap">
+                            <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
+                                <span class="model-pill-name" id="bottomCurrentModel">gaemi</span>
+                                <span class="model-pill-arrow">▲</span>
+                            </div>
+                            <div class="model-dropdown-menu" id="bottomDropdown">
+                                <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                                    <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                                    <div class="item-sub">도움을 받으세요</div>
+                                </div>
+                                <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                                    <div class="item-title">info <span class="item-check">✓</span></div>
+                                    <div class="item-sub">정보를 확인하세요</div>
+                                </div>
+                                <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                                    <div class="item-title">pro <span class="item-check">✓</span></div>
+                                    <div class="item-sub">실력을 키우세요</div>
+                                </div>
+                            </div>
                         </div>
-                        <div class="model-dropdown-menu" id="bottomDropdown">
-                            <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
-                                <div class="item-title">gaemi <span class="item-check">✓</span></div>
-                                <div class="item-sub">도움을 받으세요</div>
-                            </div>
-                            <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
-                                <div class="item-title">info <span class="item-check">✓</span></div>
-                                <div class="item-sub">정보를 확인하세요</div>
-                            </div>
-                            <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
-                                <div class="item-title">pro <span class="item-check">✓</span></div>
-                                <div class="item-sub">실력을 키우세요</div>
-                            </div>
-                        </div>
-                    </div>
 
-                    <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
-                        <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
-                    </button>
+                        <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
+                            <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2202,9 +2252,9 @@ HTML_PAGE = """<!DOCTYPE html>
             document.getElementById('result-card-wrap').style.display = 'none';
             document.getElementById('loading').style.display = 'none';
             
-            const uCard = document.getElementById('unifiedCard');
+            const uCard = document.getElementById('rowConsensus');
             if (uCard) uCard.style.display = 'none';
-            const dCard = document.getElementById('dartCard');
+            const dCard = document.getElementById('rowDart');
             if (dCard) dCard.style.display = 'none';
             
             document.getElementById('centerInput').value = '';
@@ -2675,7 +2725,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
 
                 const c = data.consensus;
-                const uCard = document.getElementById('unifiedCard');
+                const uCard = document.getElementById('rowConsensus');
                 if (c && uCard) {
                     setTxt('uTitle', c.title);
                     setTxt('uGaugeVal', c.gauge_val);
@@ -2727,7 +2777,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     uCard.style.display = 'none';
                 }
 
-                const dCard = document.getElementById('dartCard');
+                const dCard = document.getElementById('rowDart');
                 const dList = document.getElementById('dartList');
                 if (dCard && dList) {
                     if (data.dart_disclosures && data.dart_disclosures.length > 0) {

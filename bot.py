@@ -637,6 +637,8 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "slider_left": f"{int(raw_price):,}{unit_str}" if raw_price > 100 else f"{raw_price:,.2f}{unit_str}",
                 "slider_mid": f"평균 {int(target_p):,}{unit_str}" if raw_price > 100 else f"평균 {target_p:,.2f}{unit_str}",
                 "slider_right": f"{int(high_p):,}{unit_str}" if raw_price > 100 else f"{high_p:,.2f}{unit_str}",
+                "slider_bottom_left": f"최저 {int(low_p):,}{unit_str}" if raw_price > 100 else f"최저 {low_p:,.2f}{unit_str}",
+                "slider_bottom_right": f"최고 {int(high_p):,}{unit_str}" if raw_price > 100 else f"최고 {high_p:,.2f}{unit_str}",
                 "fill_pct": fill_pct,
                 "list_title": "최근 증권사 리포트 평가",
                 "source_tag": "출처: 한경컨센서스 / 네이버",
@@ -1301,8 +1303,8 @@ def telegram_bot_worker():
                                     f"<b>gaemiGTP 시그널 밴드</b>\n" \
                                     f"• 1차 진입가: {data['quant']['entry1']}\n" \
                                     f"• 2차 분할가: {data['quant']['entry2']}\n" \
-                                    f"• 목표 수익가: {data['quant']['target2']}\n" \
-                                    f"• 방어 손절선: {data['quant']['stop_p']}\n" \
+                                    f"• 목표 수익가: {data['quant']['target2']} (+8.5%)\n" \
+                                    f"• 방어 손절선: {data['quant']['stop_p']} (-5.5%)\n" \
                                     f"━━━━━━━━━━━━━━━━━━━━\n" \
                                     f"<i>{data['quant']['guide_text']}</i>\n\n" \
                                     f"웹에서 상세 차트 보기: https://www.gaemigtp.com"
@@ -1316,7 +1318,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI
+# 7. 웹 프론트엔드 UI (중앙 정렬, 832px 통일, 모델 선택기 복원)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1414,6 +1416,22 @@ HTML_PAGE = """<!DOCTYPE html>
         .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
 
+        /* 모델 선택기 (gaemi / info / pro) 스타일 */
+        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+        .model-pill-btn:hover { background: var(--btn-hover); }
+        .model-pill-name { font-size: 0.82rem; font-weight: 600; color: var(--text-main); }
+        .model-pill-arrow { font-size: 0.6rem; color: var(--text-muted); }
+
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); z-index: 100; }
+        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; }
+        .model-dropdown-item:hover { background: var(--btn-hover); }
+        .model-dropdown-item.active { background: var(--btn-hover); }
+        .item-title { font-size: 0.88rem; font-weight: 600; color: var(--text-title); display: flex; justify-content: space-between; }
+        .item-sub { font-size: 0.73rem; color: var(--text-muted); margin-top: 2px; }
+        .item-check { color: #38bdf8; font-weight: bold; display: none; }
+        .model-dropdown-item.active .item-check { display: inline; }
+
         .send-btn { width: 38px; height: 38px; border-radius: 50%; background: var(--border-line); border: none; color: var(--text-title); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
         .send-btn:hover { background: var(--border-focus); }
 
@@ -1424,13 +1442,28 @@ HTML_PAGE = """<!DOCTYPE html>
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
         
-        .card { background: var(--bg-card); border-radius: 16px; padding: 18px 16px; margin-bottom: 14px; border: 1px solid var(--border-line); box-shadow: 0 2px 10px rgba(0,0,0,0.03); width: 100%; }
+        /* 832px 중앙 정렬 카드 공통 클래스 */
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 18px 16px;
+            margin-bottom: 14px;
+            border: 1px solid var(--border-line);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+            width: 100%;
+            max-width: 832px;
+            margin-left: auto;
+            margin-right: auto;
+        }
         
+        /* 1단: 메인 차트(832px) + 증시는 지금(348px) */
         .chart-dual-grid {
             display: grid;
-            grid-template-columns: 1fr 348px;
+            grid-template-columns: 832px 348px;
             gap: 16px;
-            margin-bottom: 14px;
+            margin: 0 auto 14px;
+            max-width: 1196px;
+            justify-content: center;
             align-items: stretch;
         }
 
@@ -1463,7 +1496,7 @@ HTML_PAGE = """<!DOCTYPE html>
             display: flex;
             flex-direction: column;
             justify-content: space-between;
-            width: 100%;
+            width: 348px;
         }
 
         .board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-line); }
@@ -1491,23 +1524,35 @@ HTML_PAGE = """<!DOCTYPE html>
         .mini-price { font-size: 0.88rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
         .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
 
-        /* [가로 폭 348px 및 세로 높이 완벽 일체화 그리드] */
+        /* 2단: 퀀트 분석(832px) + 캘린더(348px) 완벽 대칭 */
         .quant-calendar-dual-grid {
             display: grid;
-            grid-template-columns: 1fr 348px;
+            grid-template-columns: 832px 348px;
             gap: 16px;
-            margin-bottom: 14px;
+            margin: 0 auto 14px;
+            max-width: 1196px;
+            justify-content: center;
             align-items: stretch;
         }
 
-        .quant-col-card, .calendar-col-card {
+        .quant-col-card {
             background: var(--bg-card);
             border-radius: 16px;
             padding: 18px 16px;
             border: 1px solid var(--border-line);
             display: flex;
             flex-direction: column;
-            height: 100%;
+            width: 100%;
+        }
+
+        .calendar-col-card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 18px 14px;
+            border: 1px solid var(--border-line);
+            display: flex;
+            flex-direction: column;
+            width: 348px;
         }
 
         /* 캘린더 상단 타이틀 및 스크린샷 룩앤필 */
@@ -1724,6 +1769,10 @@ HTML_PAGE = """<!DOCTYPE html>
             margin-bottom: 16px !important;
             box-shadow: 0 6px 24px var(--signal-glow) !important;
             transition: all 0.25s ease;
+            width: 100%;
+            max-width: 832px;
+            margin-left: auto;
+            margin-right: auto;
         }
 
         .signal-card-header { display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; user-select: none; padding: 6px 0; }
@@ -1732,6 +1781,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
         .signal-premium-btn {
             width: 100%;
+            max-width: 832px;
+            margin-left: auto;
+            margin-right: auto;
             background: var(--bg-card);
             border: 1.8px solid #10b981;
             border-radius: 16px;
@@ -1779,8 +1831,15 @@ HTML_PAGE = """<!DOCTYPE html>
         .val-up { color: #ef4444; }
         .val-down { color: #38bdf8; }
 
-        @media (max-width: 1100px) {
-            .chart-dual-grid, .quant-calendar-dual-grid { grid-template-columns: 1fr; }
+        @media (max-width: 1200px) {
+            .chart-dual-grid, .quant-calendar-dual-grid {
+                grid-template-columns: 1fr;
+                max-width: 832px;
+            }
+            .global-board-card, .calendar-col-card {
+                width: 100%;
+                max-width: 832px;
+            }
         }
     </style>
 </head>
@@ -1828,6 +1887,28 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="search-container">
                 <div class="search-box">
                     <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                    
+                    <div class="model-selector-wrap">
+                        <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
+                            <span class="model-pill-name" id="centerCurrentModel">gaemi</span>
+                            <span class="model-pill-arrow">▲</span>
+                        </div>
+                        <div class="model-dropdown-menu" id="centerDropdown">
+                            <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                                <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                                <div class="item-sub">도움을 받으세요</div>
+                            </div>
+                            <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                                <div class="item-title">info <span class="item-check">✓</span></div>
+                                <div class="item-sub">정보를 확인하세요</div>
+                            </div>
+                            <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                                <div class="item-title">pro <span class="item-check">✓</span></div>
+                                <div class="item-sub">실력을 키우세요</div>
+                            </div>
+                        </div>
+                    </div>
+
                     <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
                         <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                     </button>
@@ -1873,10 +1954,10 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- [핵심 2열 그리드] 좌측: 퀀트 분석 vs 우측: 캘린더 (348px 폭 & 높이 일체화) -->
+                    <!-- 2. 퀀트 분석(832px) + 캘린더(348px) 완벽 대칭 그리드 -->
                     <div class="quant-calendar-dual-grid">
                         
-                        <!-- 좌측: 퀀트 분석 카드 -->
+                        <!-- 좌측: 퀀트 분석 카드 (832px) -->
                         <div class="quant-col-card">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
@@ -1937,7 +2018,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 우측: 캘린더 카드 (가로 348px & 세로 높이 완벽 일치) -->
+                        <!-- 우측: 캘린더 카드 (348px) -->
                         <div class="calendar-col-card">
                             <div class="cal-top-title-area">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">캘린더</span>
@@ -1967,13 +2048,13 @@ HTML_PAGE = """<!DOCTYPE html>
 
                     </div>
 
-                    <!-- 3. 종목 뉴스 -->
+                    <!-- 3. 종목 뉴스 (832px 중앙 정렬) -->
                     <div class="card">
                         <div class="board-header-title" style="margin-bottom:12px;">종목 뉴스</div>
                         <div id="stockNewsList"></div>
                     </div>
 
-                    <!-- 4. 3대 시장 통합 컨센서스 카드 -->
+                    <!-- 4. 3대 시장 통합 컨센서스 카드 (832px 중앙 정렬) -->
                     <div class="card" id="unifiedCard" style="display:none;">
                         <div style="margin-bottom:16px;">
                             <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
@@ -2025,7 +2106,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 5. 개미 투표 카드 -->
+                    <!-- 5. 개미 투표 카드 (832px 중앙 정렬) -->
                     <div class="card">
                         <div class="board-header">
                             <span class="board-header-title">개미 투표</span>
@@ -2047,7 +2128,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 6. 개미 토론 카드 -->
+                    <!-- 6. 개미 토론 카드 (832px 중앙 정렬) -->
                     <div class="card">
                         <div class="board-header">
                             <span class="board-header-title">개미 토론</span>
@@ -2060,7 +2141,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 7. DART 전자공시 카드 -->
+                    <!-- 7. DART 전자공시 카드 (832px 중앙 정렬) -->
                     <div class="card" id="dartCard" style="display:none;">
                         <div class="board-header">
                             <span class="board-header-title">DART 전자공시</span>
@@ -2069,13 +2150,13 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div id="dartList"></div>
                     </div>
 
-                    <!-- 8. 해외 뉴스 -->
+                    <!-- 8. 해외 뉴스 (832px 중앙 정렬) -->
                     <div class="card">
                         <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
                         <div id="globalNewsList"></div>
                     </div>
 
-                    <!-- 9. gaemiGTP 시그널 박스 -->
+                    <!-- 9. gaemiGTP 시그널 박스 (832px 중앙 정렬) -->
                     <div class="signal-premium-card">
                         <div class="signal-card-header" onclick="toggleSignal()">
                             <span class="signal-card-title">gaemiGTP 시그널</span>
@@ -2143,7 +2224,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 10. 텔레그램 알림 받기 버튼 -->
+                    <!-- 10. 텔레그램 알림 받기 버튼 (832px 중앙 정렬) -->
                     <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
                         <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
                         <span id="tgAlertBtnText">gaemiGTP 시그널 텔레그램 실시간 알림 받기</span>
@@ -2157,6 +2238,28 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="search-container">
                 <div class="search-box">
                     <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                    
+                    <div class="model-selector-wrap">
+                        <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
+                            <span class="model-pill-name" id="bottomCurrentModel">gaemi</span>
+                            <span class="model-pill-arrow">▲</span>
+                        </div>
+                        <div class="model-dropdown-menu" id="bottomDropdown">
+                            <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                                <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                                <div class="item-sub">도움을 받으세요</div>
+                            </div>
+                            <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                                <div class="item-title">info <span class="item-check">✓</span></div>
+                                <div class="item-sub">정보를 확인하세요</div>
+                            </div>
+                            <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                                <div class="item-title">pro <span class="item-check">✓</span></div>
+                                <div class="item-sub">실력을 키우세요</div>
+                            </div>
+                        </div>
+                    </div>
+
                     <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
                         <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                     </button>
@@ -2167,6 +2270,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
     <script>
         let chart = null;
+        let selectedMode = 'gaemi';
         let currentSymbol = '';
         let globalMarketCalendar = [];
         let currentCalOffset = 0;
@@ -2232,6 +2336,51 @@ HTML_PAGE = """<!DOCTYPE html>
             if (side) side.classList.toggle('open');
         }
 
+        function toggleModelDropdown(target) {
+            const centerD = document.getElementById('centerDropdown');
+            const bottomD = document.getElementById('bottomDropdown');
+            const targetD = target === 'center' ? centerD : bottomD;
+            const otherD = target === 'center' ? bottomD : centerD;
+            if (otherD) otherD.style.display = 'none';
+            if (targetD) targetD.style.display = targetD.style.display === 'block' ? 'none' : 'block';
+        }
+
+        function selectModel(modeKey, modeName) {
+            selectedMode = modeKey;
+            setTxt('centerCurrentModel', modeName);
+            setTxt('bottomCurrentModel', modeName);
+
+            ['centerDropdown', 'bottomDropdown'].forEach(id => {
+                const menu = document.getElementById(id);
+                if (menu) {
+                    const items = menu.querySelectorAll('.model-dropdown-item');
+                    items.forEach(it => {
+                        if (it.innerText.includes(modeName)) {
+                            it.classList.add('active');
+                        } else {
+                            it.classList.remove('active');
+                        }
+                    });
+                    menu.style.display = 'none';
+                }
+            });
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.model-selector-wrap')) {
+                const cd = document.getElementById('centerDropdown');
+                const bd = document.getElementById('bottomDropdown');
+                if (cd) cd.style.display = 'none';
+                if (bd) bd.style.display = 'none';
+            }
+            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
+                const side = document.getElementById('sidebar-wrapper');
+                if (side && side.classList.contains('open')) {
+                    side.classList.remove('open');
+                }
+            }
+        });
+
         function resetToHome() {
             document.getElementById('main-view').style.display = 'flex';
             document.getElementById('result-scroll-view').style.display = 'none';
@@ -2288,6 +2437,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </svg>`;
         }
 
+        // [증시 일정표 렌더링 & 인터랙션 로직]
         function getTargetDateStr(offset) {
             const d = new Date();
             d.setDate(d.getDate() + offset);

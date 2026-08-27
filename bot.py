@@ -1,16 +1,3 @@
-**방법 1: 2열 콤팩트 그리드(스크롤 없음, 차트 높이와 1:1 일치)** 레이아웃을 사이트에서 바로 눈으로 확인할 수 있도록 완성된 **`bot.py` 전체 코드**입니다.
-
----
-
-### 레이아웃 변경 핵심 포인트
-
-* **컨테이너 확장 & 2단 분할:** 상단 메인 차트 영역을 `65:35` 그리드로 분할하여 좌측은 메인 캔들 차트, 우측은 전세계 증시 보드를 배치했습니다.
-* **스크롤바 제로 (No-Scroll):** 우측 증시 보드 내부를 **2열(2-Column) 콤팩트 카드**로 구성하여 스크롤 없이 8대 핵심 지수(코스피, 코스닥, QQQ, SPY, DIA, SOXX, VIX, 환율)가 좌측 차트 높이와 1px 오차 없이 정확히 맞물립니다.
-* **모바일 반응형:** 화면 폭이 900px 이하로 좁아지면 차트 아래로 자연스럽게 세로 정렬됩니다.
-
----
-
-```python
 import os
 import re
 import io
@@ -269,7 +256,7 @@ def fetch_crypto_candles(symbol):
     return None, None, None
 
 # ----------------------------------------------------
-# 3. 3대 시장 맞춤 센티멘트 & 컨센서스 크롤러
+# 3. 3대 시장 맞춤 센티멘트 & 컨센서스 크롤러 (화이트 모드 색상 오류 수정)
 # ----------------------------------------------------
 def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
     try:
@@ -415,13 +402,14 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             except Exception:
                 pass
 
+            # 화이트 모드에서도 가독성이 뛰어난 앰버 골드 컬러(#d97706) 적용
             return {
                 "title": "글로벌 수급 & 온체인 센티멘트",
                 "gauge_val": fear_greed_score,
                 "gauge_label": "탐욕지수",
                 "status_label": "시장 심리",
                 "badge_text": "롱 우세 (탐욕 구간)",
-                "dots": f"<span style='color:#10b981;'>● 롱 64.2%</span> &nbsp; <span style='color:#38bdf8;'>● 숏 35.8%</span> &nbsp; <span style='color:#fef08a;'>● 김프 {kimchi_str}</span>",
+                "dots": f"<span style='color:#10b981; font-weight:700;'>● 롱 64.2%</span> &nbsp; <span style='color:#0284c7; font-weight:700;'>● 숏 35.8%</span> &nbsp; <span style='color:#d97706; font-weight:700;'>● 김프 {kimchi_str}</span>",
                 "primary_label": "24H 글로벌 청산 규모",
                 "primary_val": "$184.2M",
                 "secondary_label": "실시간 김치프리미엄",
@@ -436,7 +424,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "source_tag": f"출처: Binance / Upbit (환율 {usdkrw:,.1f}원 연동)",
                 "items": [
                     {"main": "Binance USDT 선물", "sub": "<span style='color:#10b981; font-weight:700;'>8시간 펀딩비</span> · 롱 포지션 수수료 지급", "val": funding_rate_str, "sub_val": "정상 밴드"},
-                    {"main": "Upbit vs Binance (김프)", "sub": f"<span style='color:#fef08a; font-weight:700;'>국내 원화 프리미엄</span> · 환율 {usdkrw:,.1f}원 기준", "val": kimchi_str, "sub_val": "실시간 집계"},
+                    {"main": "Upbit vs Binance (김프)", "sub": f"<span style='color:#d97706; font-weight:700;'>국내 원화 프리미엄</span> · 환율 {usdkrw:,.1f}원 기준", "val": kimchi_str, "sub_val": "실시간 집계"},
                     {"main": "OKX 선물 롱/숏 비율", "sub": "<span style='color:#10b981; font-weight:700;'>글로벌 스마트머니</span> · 탑 트레이더", "val": "1.78 : 1", "sub_val": "롱 우세"}
                 ]
             }
@@ -846,7 +834,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (65:35 듀얼 보드 레이아웃)
+# 7. 웹 프론트엔드 UI (화이트 모드 테두리/폰트 색상 최적화)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1165,7 +1153,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .comment-nick { font-weight: 700; color: #10b981; }
         .comment-body { color: var(--text-main); word-break: break-all; }
 
-        /* 눈의 피로를 완전히 제거하고 프리미엄 금융 감각을 극대화한 시그널 박스 레이아웃 */
+        /* 시그널 박스 레이아웃 */
         .signal-premium-card {
             background: var(--bg-card) !important;
             border: 1.8px solid #10b981 !important;
@@ -1201,7 +1189,7 @@ HTML_PAGE = """<!DOCTYPE html>
             transition: transform 0.25s ease;
         }
 
-        /* 통일된 프리미엄 텔레그램 연동 버튼 */
+        /* 텔레그램 연동 버튼 */
         .signal-premium-btn {
             width: 100%;
             background: var(--bg-card);
@@ -1262,7 +1250,19 @@ HTML_PAGE = """<!DOCTYPE html>
         #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 74px; background: var(--bottom-fade); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
         .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }
 
-        /* 모바일 반응형: 900px 이하 1열 전환 */
+        /* 화이트/다크 테두리 자동 보정 */
+        .dot-marker-style {
+            position: absolute;
+            top: -4px;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #10b981;
+            border: 2px solid #ffffff;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+            transform: translateX(-50%);
+        }
+
         @media (max-width: 900px) {
             .chart-dual-grid {
                 grid-template-columns: 1fr;
@@ -1385,7 +1385,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
-                        <!-- 우측 글로벌 증시 보드 (차트 높이와 1:1 일치, 스크롤 없음) -->
+                        <!-- 우측 글로벌 증시 보드 -->
                         <div class="global-board-card">
                             <div class="board-header">
                                 <span class="board-header-title">🌐 글로벌 핵심 증시</span>
@@ -1398,7 +1398,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                     </div>
 
-                    <!-- 3대 시장 통합 컨센서스 (애널리스트 컨센서스) 카드 -->
+                    <!-- 3대 시장 통합 컨센서스 (애널리스트 컨센서스 / 온체인 수급) 카드 -->
                     <div class="card" id="unifiedCard" style="display:none;">
                         <div style="margin-bottom:16px;">
                             <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
@@ -1437,7 +1437,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                             <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
                                 <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="uBarFill"></div>
-                                <div style="position:absolute; top:-4px; width:14px; height:14px; border-radius:50%; background:#10b981; border:2px solid var(--bg-card); transform:translateX(-50%);" id="uDotMarker"></div>
+                                <div class="dot-marker-style" id="uDotMarker"></div>
                             </div>
                             <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted); margin-top:6px; white-space:nowrap;">
                                 <span id="uSliderBottomLeft"></span>
@@ -1495,7 +1495,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 간결화된 종목 뉴스 -->
+                    <!-- 종목 뉴스 -->
                     <div class="card">
                         <div class="section-title">종목 뉴스</div>
                         <div id="stockNewsList"></div>
@@ -1510,13 +1510,13 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div id="dartList"></div>
                     </div>
 
-                    <!-- 간결화된 해외 뉴스 -->
+                    <!-- 해외 뉴스 -->
                     <div class="card">
                         <div class="section-title">해외 뉴스</div>
                         <div id="globalNewsList"></div>
                     </div>
 
-                    <!-- 간결화된 기술 지표 -->
+                    <!-- 기술 지표 -->
                     <div class="card">
                         <div class="section-title">
                             <span>기술 지표</span>
@@ -1540,7 +1540,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- gaemiGTP 브랜드 및 가독성을 대폭 개선한 핵심 시그널 박스 -->
+                    <!-- gaemiGTP 시그널 박스 -->
                     <div class="signal-premium-card">
                         <div class="signal-card-header" onclick="toggleSignal()">
                             <span class="signal-card-title">gaemiGTP 시그널</span>
@@ -1566,7 +1566,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <!-- 수평 가격 밴드 슬라이더 -->
                             <div style="margin:20px 0 14px; position:relative;">
                                 <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:6px; white-space:nowrap;">
                                     <span style="color:#0284c7; font-weight:800;" id="rSliderStop"></span>
@@ -1575,7 +1574,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                                 <div style="width:100%; height:7px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
                                     <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="rSigBarFill"></div>
-                                    <div style="position:absolute; top:-4px; width:15px; height:15px; border-radius:50%; background:var(--bg-card); border:2.5px solid #10b981; transform:translateX(-50%);" id="rSigDotMarker"></div>
+                                    <div class="dot-marker-style" id="rSigDotMarker"></div>
                                 </div>
                                 <div style="display:flex; justify-content:space-between; font-size:0.7rem; color:var(--text-muted); margin-top:6px; white-space:nowrap; font-weight:600;">
                                     <span>손절 방어선 (-5.5%)</span>
@@ -1613,7 +1612,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- gaemiGTP 시그널 텔레그램 실시간 알림 받기 버튼 -->
+                    <!-- 텔레그램 실시간 알림 받기 버튼 -->
                     <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
                         <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
                         <span id="tgAlertBtnText">gaemiGTP 시그널 텔레그램 실시간 알림 받기</span>
@@ -1706,7 +1705,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (!area) return;
             area.innerHTML = isLight 
                 ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`
-                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
+                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="12" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
         }
 
         function resizeChart() {
@@ -2153,7 +2152,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
                 document.getElementById('rBt1yTag').innerText = `● ${q.bt_1y}`;
                 document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;
-                document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;
                 document.getElementById('rRrTag').innerText = `● ${q.rr_str}`;
 
                 document.getElementById('rSliderStop').innerText = q.stop_p;
@@ -2290,5 +2288,3 @@ def run_web_server():
 
 if __name__ == "__main__":
     run_web_server()
-
-```

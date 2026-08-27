@@ -102,6 +102,27 @@ WORLD_BOARD_CONFIG = [
 CACHED_WORLD_BOARD = []
 ANALYSIS_CACHE = {}
 
+def clean_for_json(obj):
+    if isinstance(obj, dict):
+        return {str(k): clean_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [clean_for_json(v) for v in obj]
+    elif isinstance(obj, tuple):
+        return [clean_for_json(v) for v in obj]
+    elif isinstance(obj, (np.floating, float)):
+        if np.isnan(obj) or np.isinf(obj):
+            return 0.0
+        return float(obj)
+    elif isinstance(obj, (np.integer, int)):
+        return int(obj)
+    elif isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    elif isinstance(obj, (pd.Timestamp, datetime)):
+        return obj.strftime("%Y-%m-%d")
+    elif isinstance(obj, np.ndarray):
+        return clean_for_json(obj.tolist())
+    return obj
+
 def fetch_single_world_item(item):
     name = item["name"]
     sym = item["sym"]
@@ -119,7 +140,7 @@ def fetch_single_world_item(item):
             change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
             
             raw_closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-            sparkline = [round(float(c), 2) for c in raw_closes if c is not None and not np.isnan(c)][-7:]
+            sparkline = [round(float(c), 2) for c in raw_closes if c is not None and not np.isnan(float(c))][-7:]
             
             if "KRW" in sym:
                 price_str = f"{curr_p:,.1f}원"
@@ -133,7 +154,7 @@ def fetch_single_world_item(item):
                 "tag": tag,
                 "price": price_str,
                 "rate": f"{change_rate:+.2f}%",
-                "up": change_rate >= 0,
+                "up": bool(change_rate >= 0),
                 "sparkline": sparkline
             }
     except Exception:
@@ -251,8 +272,8 @@ def fetch_domestic_candles(code, anchor_price=None):
     try:
         url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=1200&requestType=0"
         res = HTTP_SESSION.get(url, timeout=2.2)
-        if res.status_code == 200:
-            root = ET.fromstring(res.text)
+        if res.status_code == 200 and '<item data=' in res.text:
+            root = ET.fromstring(res.content)
             records = []
             for it in root.findall(".//item"):
                 d_str = it.get("data", "")
@@ -266,7 +287,7 @@ def fetch_domestic_candles(code, anchor_price=None):
                         "Close": float(p[4]),
                         "Volume": float(p[5])
                     })
-            if len(records) >= 20:
+            if len(records) >= 15:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 if anchor_price and anchor_price > 0:
                     last_close = float(df['Close'].iloc[-1])
@@ -277,6 +298,25 @@ def fetch_domestic_candles(code, anchor_price=None):
                         df['Low'] *= ratio
                         df['Close'] *= ratio
                 return df
+    except Exception:
+        pass
+
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
+        res = HTTP_SESSION.get(url, timeout=2.0).json()
+        if isinstance(res, list) and len(res) > 10:
+            records = []
+            for it in res:
+                records.append({
+                    "Date": pd.to_datetime(it['localTrdDd']),
+                    "Open": float(str(it['openPrice']).replace(',', '')),
+                    "High": float(str(it['highPrice']).replace(',', '')),
+                    "Low": float(str(it['lowPrice']).replace(',', '')),
+                    "Close": float(str(it['closePrice']).replace(',', '')),
+                    "Volume": float(str(it['accumulatedTradingVolume']).replace(',', ''))
+                })
+            if len(records) >= 15:
+                return pd.DataFrame(records).set_index("Date").sort_index()
     except Exception:
         pass
 
@@ -296,7 +336,7 @@ def fetch_domestic_candles(code, anchor_price=None):
                     "Close": float(quote['close'][i]),
                     "Volume": float(quote['volume'][i] or 0.0)
                 } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
-                if len(records) >= 20:
+                if len(records) >= 15:
                     return pd.DataFrame(records).set_index("Date").sort_index()
         except Exception:
             pass
@@ -348,20 +388,20 @@ def fetch_crypto_candles(symbol):
     return None, None, None
 
 # ----------------------------------------------------
-# 4. 100% 실시간 퀀트 백테스팅 & 동적 시그널 연산
+# 4. 실시간 퀀트 백테스팅 & 동적 시그널 연산
 # ----------------------------------------------------
 def run_real_vectorized_backtest(df):
-    if df is None or len(df) < 50:
+    if df is None or len(df) < 30:
         return 72.0, 78.0, 2.4
     try:
-        closes = df['Close'].values
-        highs = df['High'].values
-        lows = df['Low'].values
+        closes = df['Close'].astype(float).values
+        highs = df['High'].astype(float).values
+        lows = df['Low'].astype(float).values
         n = len(closes)
         
         ma20 = pd.Series(closes).rolling(20).mean().values
         signals = []
-        for i in range(21, n - 15):
+        for i in range(21, n - 10):
             if closes[i-1] <= ma20[i-1] and closes[i] > ma20[i]:
                 signals.append(i)
         
@@ -396,17 +436,17 @@ def run_real_vectorized_backtest(df):
 
         cutoff_1y = n - 250
         res_1y = [r[1] for r in results if r[0] >= cutoff_1y]
-        win_1y = (sum(res_1y) / len(res_1y) * 100) if res_1y else (sum([r[1] for r in results]) / len(results) * 100)
+        win_1y = (sum(res_1y) / len(res_1y) * 100.0) if res_1y else (sum([r[1] for r in results]) / len(results) * 100.0)
 
         cutoff_2y = n - 500
         res_2y = [r[1] for r in results if r[0] >= cutoff_2y]
-        win_2y = (sum(res_2y) / len(res_2y) * 100) if res_2y else win_1y
+        win_2y = (sum(res_2y) / len(res_2y) * 100.0) if res_2y else win_1y
 
-        avg_w = np.mean(pnl_wins) if pnl_wins else 0.05
-        avg_l = np.mean(pnl_losses) if pnl_losses else 0.03
-        rr = round(avg_w / max(0.01, avg_l), 1)
+        avg_w = float(np.mean(pnl_wins)) if pnl_wins else 0.05
+        avg_l = float(np.mean(pnl_losses)) if pnl_losses else 0.03
+        rr = round(float(avg_w / max(0.01, avg_l)), 1)
 
-        return round(min(98.0, max(42.0, win_1y)), 1), round(min(98.0, max(42.0, win_2y)), 1), max(1.5, rr)
+        return round(float(min(98.0, max(42.0, win_1y))), 1), round(float(min(98.0, max(42.0, win_2y))), 1), float(max(1.5, rr))
     except Exception:
         return 72.0, 78.0, 2.4
 
@@ -587,7 +627,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         trend = "박스권 혼조세"
         guide_text = f"박스권 상하단 밴드 내 매물 공방 국면이므로 볼린저 밴드 하단 지지 확인 시 진입하고, 1차 목표가 도달 시 비중 축소 권장"
 
-    # 동적 ATR 기반 시그널 밴드
     entry1_val = raw_price - (0.5 * atr_raw)
     entry2_val = raw_price - (1.2 * atr_raw)
     target1_val = raw_price + (1.5 * atr_raw)
@@ -602,7 +641,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
 
     sig_fill_pct = min(92, max(8, int(((entry1_val - stop_val) / max(1, target2_val - stop_val)) * 100)))
 
-    # 실제 5년 캔들 벡터 백테스팅 결과 도출
     win_1y, win_2y, rr_actual = run_real_vectorized_backtest(df)
 
     return {
@@ -634,7 +672,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     }
 
 # ----------------------------------------------------
-# 5. 전체 통합 파이프라인 (인메모리 캐시 장착)
+# 5. 전체 통합 파이프라인
 # ----------------------------------------------------
 def run_full_pipeline(query):
     global ANALYSIS_CACHE, CACHED_WORLD_BOARD
@@ -737,18 +775,23 @@ def run_full_pipeline(query):
 
     for date_idx, row in df.tail(65).iterrows():
         t_str = date_idx.strftime("%Y-%m-%d")
-        candles.append({
-            "time": t_str,
-            "open": float(row['Open']), "high": float(row['High']),
-            "low": float(row['Low']), "close": float(row['Close'])
-        })
-        if not np.isnan(row['MA20']):
+        o = float(row['Open'])
+        h = float(row['High'])
+        l = float(row['Low'])
+        c = float(row['Close'])
+        if not (np.isnan(o) or np.isnan(h) or np.isnan(l) or np.isnan(c)):
+            candles.append({
+                "time": t_str,
+                "open": o, "high": h,
+                "low": l, "close": c
+            })
+        if 'MA20' in row and not np.isnan(row['MA20']):
             ma20_line.append({"time": t_str, "value": float(row['MA20'])})
-        if not np.isnan(row['MA60']):
+        if 'MA60' in row and not np.isnan(row['MA60']):
             ma60_line.append({"time": t_str, "value": float(row['MA60'])})
-        if not np.isnan(row['BB_UP']):
+        if 'BB_UP' in row and not np.isnan(row['BB_UP']):
             bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
-        if not np.isnan(row['BB_DN']):
+        if 'BB_DN' in row and not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
 
     result_data = {
@@ -852,7 +895,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (안전 DOM 함수 완비)
+# 7. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -2147,9 +2190,18 @@ HTML_PAGE = """<!DOCTYPE html>
             try {
                 const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
                 const response = await fetch(url);
-                const data = await response.json();
+                
+                let data;
+                const contentType = response.headers.get("content-type") || "";
+                if (contentType.includes("application/json")) {
+                    data = await response.json();
+                } else {
+                    const text = await response.text();
+                    throw new Error("서버 상태 오류 (" + response.status + ")");
+                }
+                
                 if (!response.ok || data.error) {
-                    alert(data.error || '종목을 찾을 수 없거나 분석 중 오류가 발생했습니다.');
+                    alert(data.error || '종목을 찾을 수 없습니다.');
                     document.getElementById('loading').style.display = 'none';
                     return;
                 }
@@ -2456,7 +2508,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
-                console.error("Analysis Render Error:", err);
+                console.error("Analysis Error:", err);
                 alert('데이터를 처리하는 중 오류가 발생했습니다: ' + err.message);
                 document.getElementById('loading').style.display = 'none';
             }
@@ -2484,7 +2536,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     vertLine: { visible: false },
                     horzLine: { visible: false }
                 },
-                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c', timeVisible: true },
+                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
                 rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
             });
 
@@ -2539,27 +2591,45 @@ class WebHandler(BaseHTTPRequestHandler):
         params = urllib.parse.parse_qs(parsed.query)
 
         if parsed.path == "/api/analyze":
-            q = params.get('q', [''])[0].strip()
-            data = run_full_pipeline(q) if q else None
-            if not data:
-                self.send_response(404)
+            try:
+                q = params.get('q', [''])[0].strip()
+                data = run_full_pipeline(q) if q else None
+                if not data:
+                    err_json = json.dumps({"error": "종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8')
+                    self.send_response(404)
+                    self.send_header('Content-Type', 'application/json; charset=utf-8')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.send_header('Content-Length', str(len(err_json)))
+                    self.end_headers()
+                    self.wfile.write(err_json)
+                    return
+
+                clean_data = clean_for_json(data)
+                json_bytes = json.dumps(clean_data, ensure_ascii=False).encode('utf-8')
+
+                self.send_response(200)
                 self.send_header('Content-Type', 'application/json; charset=utf-8')
                 self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Content-Length', str(len(json_bytes)))
                 self.end_headers()
-                self.wfile.write(json.dumps({"error": "종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
+                self.wfile.write(json_bytes)
+                return
+            except Exception as e:
+                err_msg = json.dumps({"error": f"서버 처리 오류: {str(e)}"}, ensure_ascii=False).encode('utf-8')
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Content-Length', str(len(err_msg)))
+                self.end_headers()
+                self.wfile.write(err_msg)
                 return
 
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
-            return
-
+        html_bytes = HTML_PAGE.encode('utf-8')
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(html_bytes)))
         self.end_headers()
-        self.wfile.write(HTML_PAGE.encode('utf-8'))
+        self.wfile.write(html_bytes)
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))

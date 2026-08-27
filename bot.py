@@ -1690,15 +1690,16 @@ HTML_PAGE = """<!DOCTYPE html>
         // ----------------------------------------------------
         // Supabase 실시간 투표 및 토론방 엔진
         // ----------------------------------------------------
-        async function loadCommunityData(symbol) {
+        async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;
+            const targetName = displayName || symbol;
             
-            // 텔레그램 딥링크 버튼 업데이트 (요청된 풀네임 정확히 바인딩)
+            // 텔레그램 딥링크 버튼 업데이트 (종목명으로 표시)
             const tgLink = document.getElementById('tgAlertLink');
             const tgBtnText = document.getElementById('tgAlertBtnText');
             if (tgLink && tgBtnText) {
                 tgLink.href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(symbol);
-                tgBtnText.innerText = '[' + symbol + '] gaemiGTP 시그널 텔레그램 실시간 알림 받기';
+                tgBtnText.innerText = '[' + targetName + '] gaemiGTP 시그널 텔레그램 실시간 알림 받기';
             }
 
             const voteKey = 'vote_' + symbol;
@@ -1909,7 +1910,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rPrice').innerText = displayPrice;
                 document.getElementById('rMeta').innerHTML = `시장: ${data.market} · 출처: ${isKrw ? 'Naver 증권' : 'Yahoo/Binance'} · 시각: ${displayTime}`;
 
-                loadCommunityData(data.symbol);
+                loadCommunityData(data.symbol, displayName);
 
                 const c = data.consensus;
                 const uCard = document.getElementById('unifiedCard');

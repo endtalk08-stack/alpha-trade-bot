@@ -375,7 +375,13 @@ def fetch_real_market_calendar_live():
                 else:
                     stars, star_str = 1, "★☆☆"
                     
-                actual = str(it.get("actual", "")).strip() or "발표대기"
+                actual_raw = str(it.get("actual", "")).strip()
+                if actual_raw:
+                    actual = actual_raw
+                elif utc_dt <= datetime.now(timezone.utc):
+                    actual = "발표완료"
+                else:
+                    actual = "발표대기"
                 forecast = str(it.get("forecast", "")).strip() or "-"
                 previous = str(it.get("previous", "")).strip() or "-"
                 

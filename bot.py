@@ -375,13 +375,7 @@ def fetch_real_market_calendar_live():
                 else:
                     stars, star_str = 1, "★☆☆"
                     
-                actual_raw = str(it.get("actual", "")).strip()
-                if actual_raw:
-                    actual = actual_raw
-                elif utc_dt <= datetime.now(timezone.utc):
-                    actual = "발표완료"
-                else:
-                    actual = "발표대기"
+                actual = str(it.get("actual", "")).strip() or "발표대기"
                 forecast = str(it.get("forecast", "")).strip() or "-"
                 previous = str(it.get("previous", "")).strip() or "-"
                 
@@ -1651,129 +1645,25 @@ HTML_PAGE = """<!DOCTYPE html>
             justify-content: flex-start;
         }
 
-        /* 캘린더 카드 고도화: 기존 색상/구조를 유지하면서 여백과 위계를 정리 */
         .cal-card-item {
-            position: relative;
             background: var(--bg-cal-card);
             border: 1px solid var(--border-line);
             border-radius: 10px;
-            padding: 9px 10px;
+            padding: 8px 10px;
             display: flex;
             align-items: flex-start;
             gap: 10px;
-            transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+            transition: all 0.2s;
             cursor: pointer;
-            min-height: 72px;
-            overflow: hidden;
+            min-height: 68px;
         }
-        .cal-card-item::before {
-            content: "";
-            position: absolute;
-            left: 0;
-            top: 10px;
-            bottom: 10px;
-            width: 2px;
-            border-radius: 2px;
-            background: #10b981;
-            opacity: 0.75;
-        }
-        .cal-card-item:hover {
-            border-color: var(--border-focus);
-            background: var(--btn-hover);
-            transform: translateY(-1px);
-        }
-        .cal-time-col {
-            width: 46px;
-            flex-shrink: 0;
-            padding-top: 1px;
-            font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
-            font-size: 0.72rem;
-            font-weight: 800;
-            line-height: 1.15;
-            color: var(--text-sub);
-            font-variant-numeric: tabular-nums;
-            letter-spacing: -0.02em;
-        }
+        .cal-card-item:hover { border-color: var(--border-focus); background: var(--btn-hover); }
+        .cal-time-col { font-size: 0.74rem; font-weight: 800; color: var(--text-muted); width: 44px; flex-shrink: 0; padding-top: 1px; }
         .cal-detail-col { flex: 1; min-width: 0; }
-        .cal-event-title {
-            font-size: 0.8rem;
-            font-weight: 750;
-            color: var(--text-title);
-            line-height: 1.3;
-            word-break: keep-all;
-            margin-bottom: 3px;
-            letter-spacing: -0.015em;
-        }
-        .cal-event-meta {
-            display: flex;
-            align-items: baseline;
-            flex-wrap: wrap;
-            gap: 2px;
-            font-size: 0.66rem;
-            color: var(--text-muted);
-            line-height: 1.25;
-        }
-        .cal-actual-val {
-            color: #38bdf8;
-            font-weight: 750;
-            margin-right: 1px;
-        }
-
-        /* 중요도 막대: 우리 기존 청록 계열로 절제 */
-        .cal-importance-wrap {
-            margin-top: 7px;
-            width: 100%;
-        }
-        .cal-importance-bar {
-            position: relative;
-            width: 100%;
-            height: 5px;
-            border-radius: 5px;
-            background: #2a2f32;
-            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.035);
-        }
-        .cal-importance-bar::before {
-            content: "";
-            position: absolute;
-            inset: 0;
-            width: var(--importance-width, 50%);
-            border-radius: inherit;
-            background: linear-gradient(90deg, #38bdf8 0%, #10b981 100%);
-            opacity: 0.9;
-        }
-        .cal-importance-marker {
-            position: absolute;
-            top: 50%;
-            left: var(--importance-width, 50%);
-            width: 9px;
-            height: 9px;
-            transform: translate(-50%, -50%);
-            border-radius: 50%;
-            background: #ffffff;
-            border: 2px solid #10b981;
-            box-shadow: 0 0 0 2px rgba(16,185,129,0.10);
-        }
-        .cal-importance-labels {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-top: 4px;
-            font-size: 0.55rem;
-            line-height: 1;
-            color: var(--text-muted);
-            font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
-        }
-        .cal-importance-labels .center {
-            color: #10b981;
-            font-weight: 800;
-        }
-        .cal-importance-score {
-            margin-left: 3px;
-            color: #10b981;
-            font-weight: 800;
-            font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
-            font-variant-numeric: tabular-nums;
-        }
+        .cal-stars-row { font-size: 0.6rem; letter-spacing: 1px; color: var(--star-gold); margin-bottom: 1px; }
+        .cal-event-title { font-size: 0.8rem; font-weight: 700; color: var(--text-title); line-height: 1.3; word-break: keep-all; margin-bottom: 2px; }
+        .cal-event-meta { font-size: 0.68rem; color: var(--text-muted); line-height: 1.25; }
+        .cal-actual-val { color: #38bdf8; font-weight: 700; margin-right: 3px; }
 
         /* 하단 페이지네이션 바 */
         .cal-pagination-bar {
@@ -2153,7 +2043,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <button class="cal-filter-pill active" id="filterAll" onclick="setCalendarFilter('all')">전체</button>
                                     <button class="cal-filter-pill" id="filterStar3" onclick="setCalendarFilter('star3')"><span class="star-gold">★★★</span></button>
                                     <button class="cal-filter-pill" id="filterStar2" onclick="setCalendarFilter('star2')"><span class="star-gold">★★☆</span></button>
-                                    <button class="cal-filter-pill" id="filterStar1" onclick="setCalendarFilter('star1')"><span class="star-gold">★☆☆</span></button>
                                     <button class="cal-filter-pill" id="filterEarn" onclick="setCalendarFilter('earn')">실적</button>
                                     <button class="cal-filter-pill" id="filterEco" onclick="setCalendarFilter('eco')">경제</button>
                                 </div>
@@ -2598,7 +2487,6 @@ HTML_PAGE = """<!DOCTYPE html>
             if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
             if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
             if (filterKey === 'star2') document.getElementById('filterStar2').classList.add('active');
-            if (filterKey === 'star1') document.getElementById('filterStar1').classList.add('active');
             if (filterKey === 'earn') document.getElementById('filterEarn').classList.add('active');
             if (filterKey === 'eco') document.getElementById('filterEco').classList.add('active');
             renderMarketCalendarView();
@@ -2642,8 +2530,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
 
                 if (currentCalFilter === 'star3') filtered = filtered.filter(ev => ev.stars === 3);
-                if (currentCalFilter === 'star2') filtered = filtered.filter(ev => ev.stars === 2);
-                if (currentCalFilter === 'star1') filtered = filtered.filter(ev => ev.stars === 1);
+                if (currentCalFilter === 'star2') filtered = filtered.filter(ev => ev.stars >= 2);
                 if (currentCalFilter === 'eco') filtered = filtered.filter(ev => ev.type === 'eco');
             }
 
@@ -2670,96 +2557,25 @@ HTML_PAGE = """<!DOCTYPE html>
             const pageItems = filtered.slice(startIdx, startIdx + calItemsPerPage);
 
             pageItems.forEach(ev => {
-
-
                 const isEarn = ev.type === 'earn';
-
-
                 const clickAttr = isEarn && ev.ticker ? `onclick="doSearch('${ev.ticker}')"` : '';
-
-
                 const timePrefix = (currentCalFilter === 'earn' && ev.date_str) ? `${ev.date_str} ` : '';
-
-
-
-                // 기존 별표 등급은 데이터 기준으로만 사용하고 카드에서는 막대로 표시합니다.
-
-
-                const importanceScore = ev.stars === 3 ? 90 : (ev.stars === 2 ? 65 : 35);
-
-
-                const importanceWidth = Math.max(0, Math.min(100, importanceScore));
-
-
-
+                
                 container.innerHTML += `
-
-
                     <div class="cal-card-item" ${clickAttr}>
-
-
                         <div class="cal-time-col">${timePrefix}${ev.time}</div>
-
-
                         <div class="cal-detail-col">
-
-
+                            <div class="cal-stars-row">${ev.star_str}</div>
                             <div class="cal-event-title">${ev.name}</div>
-
-
                             <div class="cal-event-meta">
-
-
                                 <span class="cal-actual-val">${ev.val}</span>
-
-
                                 (${ev.exp} &nbsp; ${ev.prev})
-
-
                             </div>
-
-
-                            <div class="cal-importance-wrap" title="시장 중요도 ${importanceScore}">
-
-
-                                <div class="cal-importance-bar" style="--importance-width:${importanceWidth}%;">
-                                    <div class="cal-importance-marker"></div>
-
-
-                                </div>
-
-
-                                <div class="cal-importance-labels">
-
-
-                                    <span>낮음</span>
-
-
-                                    <span class="center">중요도 <span class="cal-importance-score">${importanceScore}</span></span>
-
-
-                                    <span>높음</span>
-
-
-                                </div>
-
-
-                            </div>
-
-
                         </div>
-
-
                     </div>
-
-
                 `;
-
-
             });
-
-
-            }
+        }
 
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;

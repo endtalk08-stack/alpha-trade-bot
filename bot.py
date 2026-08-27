@@ -209,8 +209,15 @@ MAJOR_US_TECH_TICKERS = [
     ("META", "메타"), ("AMD", "AMD"), ("PLTR", "팔란티어"), ("AVGO", "브로드컴")
 ]
 
+# [수정] 이중 API 백업 로직이 추가된 실적 발표 파서
 def fetch_single_ticker_real_earnings(ticker_info):
     sym, ko_name = ticker_info
+    
+    target_dt = None
+    eps_avg = "-"
+    rev_avg = "-"
+    
+    # 1차 시도: v10 (종종 당일에 데이터가 사라지거나 401 차단됨)
     try:
         url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=calendarEvents"
         res = HTTP_SESSION.get(url, timeout=2.0).json()
@@ -220,35 +227,58 @@ def fetch_single_ticker_real_earnings(ticker_info):
         if e_dates:
             raw_ts = e_dates[0].get("raw") if isinstance(e_dates[0], dict) else e_dates[0]
             if raw_ts:
-                kst_dt = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc).astimezone(timezone(timedelta(hours=9)))
-                days_map = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
-                d_key = kst_dt.strftime("%Y.%m.%d")
-                d_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[kst_dt.weekday()]}"
-                
-                eps_avg = earn.get("earningsAverage", {}).get("fmt", "-")
-                rev_avg = earn.get("revenueAverage", {}).get("fmt", "-")
-                
-                return {
-                    "date_key": d_key,
-                    "date_header": d_header,
-                    "time": "장마감후",
-                    "stars": 3,
-                    "star_str": "★★★",
-                    "type": "earn",
-                    "name": f"{ko_name} ({sym}) 실적 발표",
-                    "ticker": sym,
-                    "val": "발표예정",
-                    "exp": f"EPS ${eps_avg}" if eps_avg != "-" else "예상치 집계중",
-                    "prev": f"매출 ${rev_avg}" if rev_avg != "-" else "-"
-                }
+                target_dt = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                ea = earn.get("earningsAverage", {}).get("fmt")
+                ra = earn.get("revenueAverage", {}).get("fmt")
+                if ea: eps_avg = f"EPS ${ea}"
+                if ra: rev_avg = f"매출 ${ra}"
     except Exception:
         pass
+
+    # 2차 시도: v8 차트 이벤트 API (차단이 거의 없고 과거 데이터도 남음)
+    try:
+        url_v8 = f"https://query2.finance.yahoo.com/v8/finance/chart/{sym}?range=3mo&interval=1d&events=earnings"
+        res_v8 = HTTP_SESSION.get(url_v8, timeout=2.0).json()
+        events = res_v8.get("chart", {}).get("result", [{}])[0].get("events", {}).get("earnings", {})
+        
+        valid_dates = [v["date"] for k, v in events.items() if "date" in v]
+        if valid_dates:
+            now_ts = time.time()
+            # 현재 시점과 가장 가까운 발표일 탐색
+            closest_ts = min(valid_dates, key=lambda x: abs(x - now_ts))
+            
+            # v10에서 못 가져왔거나, 가져온 날짜가 완전히 엉뚱한(3개월 차이) 경우 강제 보정
+            if not target_dt or abs(target_dt.timestamp() - closest_ts) > 86400 * 30:
+                target_dt = datetime.fromtimestamp(int(closest_ts), tz=timezone.utc)
+                if eps_avg == "-": eps_avg = "예상치 집계중"
+    except Exception:
+        pass
+
+    if target_dt:
+        kst_dt = target_dt.astimezone(timezone(timedelta(hours=9)))
+        days_map = ["일", "월", "화", "수", "목", "금", "토"]
+        date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
+        
+        return {
+            "ts": target_dt.timestamp(),
+            "date_str": date_formatted,
+            "time": kst_dt.strftime("%H:%M"),
+            "stars": 3,
+            "star_str": "★★★",
+            "type": "earn",
+            "name": f"{ko_name} ({sym}) 실적",
+            "ticker": sym,
+            "val": "발표완료" if target_dt.timestamp() < time.time() else "발표예정",
+            "exp": eps_avg,
+            "prev": rev_avg
+        }
     return None
 
 def fetch_real_market_calendar_live():
     combined_events = []
-    days_map = ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"]
+    days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
+    # 글로벌 경제 지표
     try:
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         res = HTTP_SESSION.get(url, timeout=2.5).json()
@@ -260,9 +290,7 @@ def fetch_real_market_calendar_live():
                 
                 utc_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                 kst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
-                
-                d_key = kst_dt.strftime("%Y.%m.%d")
-                d_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[kst_dt.weekday()]}"
+                date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
                 time_str = kst_dt.strftime("%H:%M")
                 
                 country = it.get("country", "")
@@ -284,8 +312,8 @@ def fetch_real_market_calendar_live():
                 previous = str(it.get("previous", "")).strip() or "-"
                 
                 combined_events.append({
-                    "date_key": d_key,
-                    "date_header": d_header,
+                    "ts": utc_dt.timestamp(),
+                    "date_str": date_formatted,
                     "time": time_str,
                     "stars": stars,
                     "star_str": star_str,
@@ -299,6 +327,7 @@ def fetch_real_market_calendar_live():
     except Exception:
         pass
 
+    # 미국 테크기업 실적
     try:
         with ThreadPoolExecutor(max_workers=5) as ex:
             earnings_results = list(ex.map(fetch_single_ticker_real_earnings, MAJOR_US_TECH_TICKERS))
@@ -308,7 +337,8 @@ def fetch_real_market_calendar_live():
     except Exception:
         pass
 
-    combined_events.sort(key=lambda x: (x["date_key"], x["time"]))
+    # 시간순 정렬 (ts 기준)
+    combined_events.sort(key=lambda x: x["ts"])
     return combined_events
 
 def background_worker():
@@ -1316,7 +1346,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (페이지네이션 & 스크롤바 없는 1:1 대칭)
+# 7. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1414,7 +1444,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
 
-        /* 모델 선택기 (gaemi / info / pro) */
+        /* 모델 선택기 */
         .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
         .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
         .model-pill-btn:hover { background: var(--btn-hover); }
@@ -1535,7 +1565,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
         .cal-day-header { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); margin: 2px 0 6px; }
         
-        /* [중요] 스크롤바 원천 제거 및 4개 카드 고정 프레임 */
         .cal-event-list-wrap {
             flex: 1;
             display: flex;
@@ -1558,7 +1587,7 @@ HTML_PAGE = """<!DOCTYPE html>
             min-height: 68px;
         }
         .cal-card-item:hover { border-color: var(--border-focus); background: var(--btn-hover); }
-        .cal-time-col { font-size: 0.74rem; font-weight: 800; color: var(--text-muted); width: 38px; flex-shrink: 0; padding-top: 1px; }
+        .cal-time-col { font-size: 0.74rem; font-weight: 800; color: var(--text-muted); width: 44px; flex-shrink: 0; padding-top: 1px; }
         .cal-detail-col { flex: 1; min-width: 0; }
         .cal-stars-row { font-size: 0.6rem; letter-spacing: 1px; color: var(--star-gold); margin-bottom: 1px; }
         .cal-event-title { font-size: 0.8rem; font-weight: 700; color: var(--text-title); line-height: 1.3; word-break: keep-all; margin-bottom: 2px; }
@@ -1967,7 +1996,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div id="stockNewsList" style="flex:1;"></div>
                         </div>
 
-                        <!-- 3행 우측: 해외 뉴스 (348px, 캘린더 바로 하단 & 종목 뉴스와 높이 100% 일치) -->
+                        <!-- 3행 우측: 해외 뉴스 (348px, 종목 뉴스와 높이 100% 일치) -->
                         <div class="card" id="rowGlobalNews">
                             <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
                             <div id="globalNewsList" style="flex:1;"></div>
@@ -1995,11 +2024,11 @@ HTML_PAGE = """<!DOCTYPE html>
 
                             <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
                                 <div>
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">평균 목표가</div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uPrimaryLabel"></div>
                                     <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
                                 </div>
                                 <div style="text-align:right;">
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재가</div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uSecondaryLabel"></div>
                                     <div style="font-size:1.15rem; font-weight:700; color:var(--text-title);" id="uSecondaryVal"></div>
                                 </div>
                             </div>
@@ -2151,6 +2180,7 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
 
         <div id="bottom-bar">
+            <!-- 하단 바 내부 검색창을 좌측 832px 열과 수직 1:1 완벽 정렬 -->
             <div class="bottom-bar-grid-wrapper">
                 <div class="search-container">
                     <div class="search-box">

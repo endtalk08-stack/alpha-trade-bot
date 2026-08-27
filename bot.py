@@ -33,7 +33,6 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "gaemigtp_bot").strip()
 DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
 
-# 글로벌 지수 및 원자재 전용 매핑 (코스피/코스닥/원유/금 클릭 지원)
 GLOBAL_INDEX_MAP = {
     "코스피": "^KS11", "KOSPI": "^KS11",
     "코스닥": "^KQ11", "KOSDAQ": "^KQ11",
@@ -84,7 +83,6 @@ DOMESTIC_FAST_MAP = {
     "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
 }
 
-# 10대 핵심 지표 (2열 5행 매트릭스)
 WORLD_BOARD_CONFIG = [
     {"name": "코스피", "sym": "^KS11", "tag": "국내"},
     {"name": "코스닥", "sym": "^KQ11", "tag": "국내"},
@@ -476,7 +474,6 @@ def fetch_rss_news(query_keyword, limit=5):
         pass
     return headlines
 
-# 10대 지표 스파크라인 포함 병렬 크롤러
 def fetch_single_world_item(item):
     name = item["name"]
     sym = item["sym"]
@@ -682,7 +679,6 @@ def run_full_pipeline(query):
     market_name = "국내주식"
     is_krw = True
 
-    # 1. 글로벌 지수 및 원자재 처리 (코스피, 코스닥, 유가, 금 등 클릭 시)
     if clean_q in GLOBAL_INDEX_MAP:
         symbol = GLOBAL_INDEX_MAP[clean_q]
         formal_name = query.strip()
@@ -706,7 +702,6 @@ def run_full_pipeline(query):
             price_str = f"${curr_p:,.2f}" if curr_p else "-"
         raw_price = curr_p
 
-    # 2. 암호화폐 처리
     elif clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
         symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
         formal_name = clean_q
@@ -714,7 +709,6 @@ def run_full_pipeline(query):
         market_name = "암호화폐"
         is_krw = False
 
-    # 3. 미국 주식 처리
     elif clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.strip()
@@ -728,7 +722,6 @@ def run_full_pipeline(query):
         market_name = "미국주식"
         is_krw = False
 
-    # 4. 국내 개별 주식 종목 처리
     else:
         code, name = find_stock_code(query)
         if not code:
@@ -885,7 +878,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (프레임리스 '증시는 지금' 적용)
+# 7. 웹 프론트엔드 UI (순서: 차트 -> 기술지표 -> 종목뉴스)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1119,7 +1112,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
-        /* 우측 글로벌 증시 보드: 바탕색과 테두리 삭제 (프레임리스 플로팅 스타일) */
+        /* 우측 글로벌 증시 보드: 프레임리스 플로팅 */
         .global-board-card {
             background: transparent;
             border: none;
@@ -1140,7 +1133,7 @@ HTML_PAGE = """<!DOCTYPE html>
             padding-bottom: 6px;
             border-bottom: 1px solid var(--border-line);
         }
-        .board-header-title { font-size: 0.95rem; font-weight: 800; color: var(--text-title); }
+        .board-header-title { font-size: 0.92rem; font-weight: 800; color: var(--text-title); }
         .board-header-sub { font-size: 0.7rem; color: var(--text-muted); }
 
         .board-2col-grid {
@@ -1332,7 +1325,6 @@ HTML_PAGE = """<!DOCTYPE html>
             transform: translateX(-50%);
         }
 
-        /* 1200px 이하 화면에서는 832px 단일 칼럼으로 반응형 축소 */
         @media (max-width: 1200px) {
             .chart-dual-grid {
                 grid-template-columns: 1fr;
@@ -1436,7 +1428,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="loading" id="loading">세계 증시, 전자공시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
                 <div id="result-card-wrap" style="display:none;">
                     
-                    <!-- 832px 정중앙 고정 메인 차트 + 우측 10대 지표 보드 -->
+                    <!-- 1. 메인 차트 + 우측 '증시는 지금' -->
                     <div class="chart-dual-grid">
                         
                         <!-- 좌측 메인 차트 카드 -->
@@ -1468,7 +1460,37 @@ HTML_PAGE = """<!DOCTYPE html>
 
                     </div>
 
-                    <!-- 3대 시장 통합 컨센서스 카드 -->
+                    <!-- 2. 차트 바로 아래: 기술 지표 (요청에 따라 위치 이동) -->
+                    <div class="card">
+                        <div class="section-title">
+                            <span>기술 지표</span>
+                            <span id="rTrend" style="font-size:0.82rem; color:#0284c7;"></span>
+                        </div>
+                        <div class="quant-grid">
+                            <div class="quant-item"><div class="q-label">5일선</div><div class="q-val" id="rMa5"></div></div>
+                            <div class="quant-item"><div class="q-label">20일선</div><div class="q-val" id="rMa20"></div></div>
+                            <div class="quant-item"><div class="q-label">60일선</div><div class="q-val" id="rMa60"></div></div>
+                            <div class="quant-item"><div class="q-label">120일선</div><div class="q-val" id="rMa120"></div></div>
+                            <div class="quant-item"><div class="q-label">600일선</div><div class="q-val" id="rMa600"></div></div>
+                            <div class="quant-item"><div class="q-label">1200일선</div><div class="q-val" id="rMa1200"></div></div>
+                            <div class="quant-item"><div class="q-label">볼린저 밴드 (60, 2) 상/하</div><div class="q-val" id="rBb"></div></div>
+                            <div class="quant-item"><div class="q-label">MACD (12,26,9)</div><div class="q-val" id="rMacd"></div></div>
+                            <div class="quant-item"><div class="q-label">52주 고/저 대비 위치</div><div class="q-val" id="rPos52w"></div></div>
+                            <div class="quant-item"><div class="q-label">이격도 (20일 / 60일)</div><div class="q-val" id="rDisp"></div></div>
+                            <div class="quant-item"><div class="q-label">RSI (14)</div><div class="q-val" id="rRsi"></div></div>
+                            <div class="quant-item"><div class="q-label">ATR (14) 변동폭 / 비율</div><div class="q-val" id="rAtr"></div></div>
+                            <div class="quant-item"><div class="q-label">거래량 / 5일평균 대비</div><div class="q-val" id="rVolRatio"></div></div>
+                            <div class="quant-item"><div class="q-label">20일 평균 거래대금</div><div class="q-val" id="rTval20d"></div></div>
+                        </div>
+                    </div>
+
+                    <!-- 3. 기술 지표 바로 아래: 종목 뉴스 (요청에 따라 위치 이동) -->
+                    <div class="card">
+                        <div class="section-title">종목 뉴스</div>
+                        <div id="stockNewsList"></div>
+                    </div>
+
+                    <!-- 4. 3대 시장 통합 컨센서스 카드 -->
                     <div class="card" id="unifiedCard" style="display:none;">
                         <div style="margin-bottom:16px;">
                             <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
@@ -1524,7 +1546,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 개미 투표 카드 -->
+                    <!-- 5. 개미 투표 카드 -->
                     <div class="card">
                         <div class="section-title">
                             <span>개미 투표</span>
@@ -1550,7 +1572,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 개미 토론 카드 -->
+                    <!-- 6. 개미 토론 카드 -->
                     <div class="card">
                         <div class="section-title">
                             <span>개미 토론</span>
@@ -1565,13 +1587,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 종목 뉴스 -->
-                    <div class="card">
-                        <div class="section-title">종목 뉴스</div>
-                        <div id="stockNewsList"></div>
-                    </div>
-
-                    <!-- DART 전자공시 카드 -->
+                    <!-- 7. DART 전자공시 카드 -->
                     <div class="card" id="dartCard" style="display:none;">
                         <div class="section-title">
                             <span>DART 전자공시</span>
@@ -1580,37 +1596,13 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div id="dartList"></div>
                     </div>
 
-                    <!-- 해외 뉴스 -->
+                    <!-- 8. 해외 뉴스 -->
                     <div class="card">
                         <div class="section-title">해외 뉴스</div>
                         <div id="globalNewsList"></div>
                     </div>
 
-                    <!-- 기술 지표 -->
-                    <div class="card">
-                        <div class="section-title">
-                            <span>기술 지표</span>
-                            <span id="rTrend" style="font-size:0.82rem; color:#0284c7;"></span>
-                        </div>
-                        <div class="quant-grid">
-                            <div class="quant-item"><div class="q-label">5일선</div><div class="q-val" id="rMa5"></div></div>
-                            <div class="quant-item"><div class="q-label">20일선</div><div class="q-val" id="rMa20"></div></div>
-                            <div class="quant-item"><div class="q-label">60일선</div><div class="q-val" id="rMa60"></div></div>
-                            <div class="quant-item"><div class="q-label">120일선</div><div class="q-val" id="rMa120"></div></div>
-                            <div class="quant-item"><div class="q-label">600일선</div><div class="q-val" id="rMa600"></div></div>
-                            <div class="quant-item"><div class="q-label">1200일선</div><div class="q-val" id="rMa1200"></div></div>
-                            <div class="quant-item"><div class="q-label">볼린저 밴드 (60, 2) 상/하</div><div class="q-val" id="rBb"></div></div>
-                            <div class="quant-item"><div class="q-label">MACD (12,26,9)</div><div class="q-val" id="rMacd"></div></div>
-                            <div class="quant-item"><div class="q-label">52주 고/저 대비 위치</div><div class="q-val" id="rPos52w"></div></div>
-                            <div class="quant-item"><div class="q-label">이격도 (20일 / 60일)</div><div class="q-val" id="rDisp"></div></div>
-                            <div class="quant-item"><div class="q-label">RSI (14)</div><div class="q-val" id="rRsi"></div></div>
-                            <div class="quant-item"><div class="q-label">ATR (14) 변동폭 / 비율</div><div class="q-val" id="rAtr"></div></div>
-                            <div class="quant-item"><div class="q-label">거래량 / 5일평균 대비</div><div class="q-val" id="rVolRatio"></div></div>
-                            <div class="quant-item"><div class="q-label">20일 평균 거래대금</div><div class="q-val" id="rTval20d"></div></div>
-                        </div>
-                    </div>
-
-                    <!-- gaemiGTP 시그널 박스 -->
+                    <!-- 9. gaemiGTP 시그널 박스 -->
                     <div class="signal-premium-card">
                         <div class="signal-card-header" onclick="toggleSignal()">
                             <span class="signal-card-title">gaemiGTP 시그널</span>
@@ -1682,7 +1674,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 텔레그램 실시간 알림 받기 버튼 -->
+                    <!-- 10. 텔레그램 실시간 알림 받기 버튼 -->
                     <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
                         <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
                         <span id="tgAlertBtnText">gaemiGTP 시그널 텔레그램 실시간 알림 받기</span>
@@ -2107,7 +2099,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 loadCommunityData(data.symbol, displayName);
 
-                // 우측 글로벌 증시 & 매크로 10대 지표 2열 5행 렌더링
+                // 우측 '증시는 지금' 10대 지표 2열 5행 렌더링
                 const wBoardGrid = document.getElementById('worldBoardGrid');
                 wBoardGrid.innerHTML = '';
                 if (data.world_board) {
@@ -2132,6 +2124,41 @@ HTML_PAGE = """<!DOCTYPE html>
                     });
                 }
 
+                // 2. 기술 지표 데이터 바인딩
+                const q = data.quant;
+                document.getElementById('rTrend').innerText = q.trend;
+                document.getElementById('rMa5').innerText = q.ma5;
+                document.getElementById('rMa20').innerText = q.ma20;
+                document.getElementById('rMa60').innerText = q.ma60;
+                document.getElementById('rMa120').innerText = q.ma120;
+                document.getElementById('rMa600').innerText = q.ma600;
+                document.getElementById('rMa1200').innerText = q.ma1200;
+                document.getElementById('rBb').innerText = q.bollinger;
+                document.getElementById('rMacd').innerText = q.macd;
+                document.getElementById('rPos52w').innerText = q.pos52w || q.pos_52w;
+                document.getElementById('rDisp').innerText = q.disp;
+                document.getElementById('rRsi').innerText = q.rsi;
+                document.getElementById('rAtr').innerText = `${q.atr} (${q.atr_ratio})`;
+                document.getElementById('rVolRatio').innerText = q.vol_ratio;
+                document.getElementById('rTval20d').innerText = q.tval_20d;
+
+                // 3. 종목 뉴스 데이터 바인딩
+                const sNews = document.getElementById('stockNewsList');
+                sNews.innerHTML = '';
+                if (data.stock_news && data.stock_news.length > 0) {
+                    data.stock_news.forEach(n => {
+                        sNews.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `;
+                    });
+                } else {
+                    sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
+                }
+
+                // 4. 컨센서스 데이터 바인딩
                 const c = data.consensus;
                 const uCard = document.getElementById('unifiedCard');
                 if (c) {
@@ -2183,21 +2210,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     uCard.style.display = 'none';
                 }
 
-                const sNews = document.getElementById('stockNewsList');
-                sNews.innerHTML = '';
-                if (data.stock_news && data.stock_news.length > 0) {
-                    data.stock_news.forEach(n => {
-                        sNews.innerHTML += `
-                            <a href="${n.link}" target="_blank" class="news-item">
-                                <div class="news-title">${n.title}</div>
-                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                            </a>
-                        `;
-                    });
-                } else {
-                    sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
-                }
-
+                // DART 공시
                 const dCard = document.getElementById('dartCard');
                 const dList = document.getElementById('dartList');
                 if (data.dart_disclosures && data.dart_disclosures.length > 0) {
@@ -2216,6 +2229,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     dCard.style.display = 'none';
                 }
 
+                // 해외 뉴스
                 const gNews = document.getElementById('globalNewsList');
                 gNews.innerHTML = '';
                 if (data.global_news && data.global_news.length > 0) {
@@ -2231,23 +2245,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
                 }
 
-                const q = data.quant;
-                document.getElementById('rTrend').innerText = q.trend;
-                document.getElementById('rMa5').innerText = q.ma5;
-                document.getElementById('rMa20').innerText = q.ma20;
-                document.getElementById('rMa60').innerText = q.ma60;
-                document.getElementById('rMa120').innerText = q.ma120;
-                document.getElementById('rMa600').innerText = q.ma600;
-                document.getElementById('rMa1200').innerText = q.ma1200;
-                document.getElementById('rBb').innerText = q.bollinger;
-                document.getElementById('rMacd').innerText = q.macd;
-                document.getElementById('rPos52w').innerText = q.pos_52w;
-                document.getElementById('rDisp').innerText = q.disp;
-                document.getElementById('rRsi').innerText = q.rsi;
-                document.getElementById('rAtr').innerText = `${q.atr} (${q.atr_ratio})`;
-                document.getElementById('rVolRatio').innerText = q.vol_ratio;
-                document.getElementById('rTval20d').innerText = q.tval_20d;
-
+                // 시그널 바인딩
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
                 document.getElementById('rBt1yTag').innerText = q.bt_1y;
                 document.getElementById('rBt2yTag').innerText = q.bt_2y;
@@ -2303,7 +2301,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     vertLine: { visible: false },
                     horzLine: { visible: false }
                 },
-                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c', timeVisible: true },
+                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
                 rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
             });
 

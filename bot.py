@@ -10,7 +10,7 @@ import html
 import threading
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import requests
 import pandas as pd
@@ -97,7 +97,7 @@ WORLD_BOARD_CONFIG = [
 ]
 
 # ----------------------------------------------------
-# 2. 데이터 크롤링 모듈 (DART 전자공시 포함)
+# 2. 데이터 크롤링 모듈
 # ----------------------------------------------------
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
     if not is_krw or not stock_code or not stock_code.isdigit():
@@ -145,7 +145,7 @@ def get_realtime_usdkrw():
         res = HTTP_SESSION.get(url, timeout=1.5).json()
         meta = res.get("chart", {}).get("result", [{}])[0].get("meta", {})
         rate = meta.get("regularMarketPrice", 0.0)
-        if rate > 500:
+        if rate and float(rate) > 500:
             return float(rate)
     except Exception:
         pass
@@ -491,7 +491,7 @@ def fetch_single_world_item(item):
             change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
             
             raw_closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-            sparkline = [round(float(c), 2) for c in raw_closes if c is not None][-7:]
+            sparkline = [round(float(c), 2) for c in raw_closes if c is not None and not np.isnan(c)][-7:]
             
             if "KRW" in sym:
                 price_str = f"{curr_p:,.1f}원"
@@ -532,7 +532,7 @@ def get_trading_val_rank(symbol, is_krw=True):
     return ""
 
 # ----------------------------------------------------
-# 4. 과학적 퀀트 분석 엔진 (Z-Score, 연환산 변동성, 규제 리스크 제거)
+# 4. 과학적 퀀트 분석 엔진
 # ----------------------------------------------------
 def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if df is None or len(df) < 10:
@@ -557,7 +557,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     ma600 = round_fn(ma600_val) if ma600_val else "-"
     ma1200 = round_fn(ma1200_val) if ma1200_val else "-"
 
-    # 이동평균선 지지 / 이탈 동적 상태 판정
     ma5_state = "5일선 상회 (단기 지지)" if raw_price >= ma5_val else "5일선 하회 (단기 저항)"
     ma5_color = "positive" if raw_price >= ma5_val else "negative"
 
@@ -570,7 +569,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     ma120_state = "120일 경기선 상회" if ma120_val and raw_price >= ma120_val else "120일선 저항"
     ma120_color = "positive" if ma120_val and raw_price >= ma120_val else "negative"
 
-    # 통계적 Z-Score (20일 기준 표준화 점수)
+    # 통계적 Z-Score
     std20_val = float(closes.tail(20).std()) if n_bars >= 20 else 1.0
     z_score = ((raw_price - ma20_val) / std20_val) if std20_val > 0 else 0.0
     if z_score >= 2.0:
@@ -583,13 +582,14 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         z_state = f"{z_score:+.2f} σ (정규 분포 밴드 내)"
         z_color = "neutral"
 
-    # 20일 연환산 변동성 (Annualized Volatility)
+    # 20일 연환산 변동성
     pct_changes = closes.pct_change().dropna().tail(20)
     ann_vol = float(pct_changes.std() * np.sqrt(250) * 100) if len(pct_changes) > 5 else 20.0
+    if np.isnan(ann_vol): ann_vol = 20.0
     vol_risk_state = "고변동성 (모멘텀)" if ann_vol >= 40 else ("적정 변동성" if ann_vol >= 18 else "저변동성 (안정)")
     vol_risk_color = "warning" if ann_vol >= 40 else ("positive" if ann_vol >= 18 else "neutral")
 
-    # 볼린저 밴드 (60, 2)
+    # 볼린저 밴드
     bb_period = min(60, n_bars)
     bb_mid = float(closes.tail(bb_period).mean())
     bb_std = float(closes.tail(bb_period).std())
@@ -627,7 +627,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         macd_state = "데이터 집계 중"
         macd_color = "neutral"
 
-    # 52주 고저 위치
     df_1y = df.tail(250)
     high_52w = float(df_1y['High'].max())
     low_52w = float(df_1y['Low'].min())
@@ -640,14 +639,12 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         pos_52w = 50.0
         slider_fill_pct = 50
 
-    # 이격도
     disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
     disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
     disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"
     disp_state = "적정 이격 유지" if 98.0 <= disp20 <= 104.0 else ("단기 과열 경계" if disp20 > 104.0 else "단기 과매도 구간")
     disp_color = "positive" if 98.0 <= disp20 <= 104.0 else ("warning" if disp20 > 104.0 else "neutral")
 
-    # RSI (14)
     delta = closes.diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
@@ -697,7 +694,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     else:
         tval_20d_str = "-"
 
-    # 100점 만점 퀀트 모멘텀 점수 및 법적 안전 라벨 산출
     bullish_count = 0
     if raw_price >= ma5_val: bullish_count += 1
     if raw_price >= ma20_val: bullish_count += 1
@@ -970,7 +966,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (과학적 퀀트 분석 레이아웃)
+# 7. 웹 프론트엔드 UI (DOM ID 완전 검증 완료)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1165,13 +1161,11 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-btn { background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }
         .tag-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
-        /* 결과 영역 컨테이너: 832px 정중앙 완벽 고정 */
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
         
         .card { background: var(--bg-card); border-radius: 16px; padding: 18px 16px; margin-bottom: 14px; border: 1px solid var(--border-line); box-shadow: 0 2px 10px rgba(0,0,0,0.03); max-width: 832px; margin-left: auto; margin-right: auto; }
         
-        /* 메인 차트 + 우측 보드 듀얼 레이아웃 (정중앙 832px 유지) */
         .chart-dual-grid {
             display: grid;
             grid-template-columns: 832px 348px;
@@ -1204,7 +1198,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
-        /* 우측 글로벌 증시 보드: 일체형 카드 스타일 */
         .global-board-card {
             background: var(--bg-card);
             border: 1px solid var(--border-line);
@@ -1279,7 +1272,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .val-up { color: #ef4444; }
         .val-down { color: #38bdf8; }
 
-        /* 세련된 퀀트 분석 지표 리스트 */
         .quant-row-item {
             display: flex;
             justify-content: space-between;
@@ -1334,14 +1326,12 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-warning { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.3); }
         .tag-neutral { background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }
 
-        /* 개미 투표 스타일 */
         .vote-btn-wrap { display: flex; gap: 10px; margin-top: 10px; }
         .vote-btn { flex: 1; padding: 10px; border-radius: 12px; border: 1px solid var(--border-line); background: var(--bg-subcard); color: var(--text-title); font-size: 0.88rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; }
         .vote-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); }
         .vote-btn.active-long { background: rgba(16, 185, 129, 0.15); border-color: #10b981; color: #10b981; }
         .vote-btn.active-short { background: rgba(56, 189, 248, 0.15); border-color: #38bdf8; color: #38bdf8; }
 
-        /* 개미 토론 스타일 */
         .comment-input-box { display: flex; gap: 8px; margin-top: 12px; }
         .comment-input-box input { flex: 1; min-width: 0; background: var(--bg-subcard); border: 1px solid var(--border-line); border-radius: 20px; padding: 9px 14px; color: var(--text-title); font-size: 0.82rem; outline: none; }
         .comment-input-box button { background: #10b981; border: none; color: #ffffff; font-size: 0.8rem; font-weight: 700; padding: 0 16px; border-radius: 20px; cursor: pointer; flex-shrink: 0; }
@@ -1351,7 +1341,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .comment-nick { font-weight: 700; color: #10b981; }
         .comment-body { color: var(--text-main); word-break: break-all; }
 
-        /* 시그널 박스 레이아웃 */
         .signal-premium-card {
             background: var(--bg-card) !important;
             border: 1.8px solid #10b981 !important;
@@ -1390,7 +1379,6 @@ HTML_PAGE = """<!DOCTYPE html>
             transition: transform 0.25s ease;
         }
 
-        /* 텔레그램 연동 버튼 */
         .signal-premium-btn {
             width: 100%;
             max-width: 832px;
@@ -1479,7 +1467,6 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
-    <!-- Gemini 사이드바 -->
     <div id="sidebar-wrapper">
         <div class="side-top-action">
             <span style="font-weight:700; font-size:1.15rem; color:var(--text-title); cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
@@ -1507,7 +1494,6 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- 메인 컨텐츠 영역 -->
     <div id="content-wrapper">
         <header>
             <div class="header-left">
@@ -1586,7 +1572,6 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
-                        <!-- 우측 10대 지표 보드 -->
                         <div class="global-board-card">
                             <div class="board-header">
                                 <span class="board-header-title">증시는 지금</span>
@@ -1603,7 +1588,6 @@ HTML_PAGE = """<!DOCTYPE html>
                             <span id="qTrendBadge" style="font-size:0.75rem; color:#0284c7; font-weight:700;"></span>
                         </div>
 
-                        <!-- 상단 요약 게이지 & 안전한 모멘텀 상태 뱃지 -->
                         <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid var(--border-line);">
                             <div class="gauge-inner-box">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="qScoreVal"></span>
@@ -1618,7 +1602,6 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 2개 과학적 핵심 통계 지표 -->
                         <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
                             <div>
                                 <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">통계적 Z-Score (20D 표준편차)</div>
@@ -1630,7 +1613,6 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 52주 가격 위치 슬라이더 바 -->
                         <div style="margin:20px 0 14px; position:relative;">
                             <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
                                 <span style="color:var(--text-muted);" id="qLow52w"></span>
@@ -1642,12 +1624,11 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div class="dot-marker-style" id="qDotMarker"></div>
                             </div>
                             <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted); margin-top:6px; white-space:nowrap;">
-                                <span>52주 최저가</span>
-                                <span>52주 최고가</span>
+                                <span>52주 최저</span>
+                                <span>52주 최고</span>
                             </div>
                         </div>
 
-                        <!-- 세부 지표 & 과학적 통계 라벨 리스트 -->
                         <div style="margin-top:16px; border-top:1px solid var(--border-line); padding-top:12px;">
                             <div style="font-size:0.82rem; font-weight:700; color:var(--text-sub); margin-bottom:8px; display:flex; justify-content:space-between;">
                                 <span>계량 기술 지표 세부 판정</span>
@@ -1940,7 +1921,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (!area) return;
             area.innerHTML = isLight 
                 ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`
-                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="12" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
+                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
         }
 
         function resizeChart() {
@@ -2272,7 +2253,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 loadCommunityData(data.symbol, displayName);
 
-                // 우측 '증시는 지금' 10대 지표 2열 5행 렌더링
+                // 1. 우측 '증시는 지금' 10대 지표 렌더링
                 const wBoardGrid = document.getElementById('worldBoardGrid');
                 wBoardGrid.innerHTML = '';
                 if (data.world_board) {
@@ -2297,7 +2278,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     });
                 }
 
-                // 2. 퀀트 분석 데이터 바인딩
+                // 2. 퀀트 분석 데이터 DOM 안전 바인딩
                 const q = data.quant;
                 document.getElementById('qTrendBadge').innerText = q.trend;
                 document.getElementById('qScoreVal').innerText = q.quant_score;
@@ -2484,7 +2465,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     uCard.style.display = 'none';
                 }
 
-                // DART 공시
+                // 5. DART 공시
                 const dCard = document.getElementById('dartCard');
                 const dList = document.getElementById('dartList');
                 if (data.dart_disclosures && data.dart_disclosures.length > 0) {
@@ -2503,7 +2484,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     dCard.style.display = 'none';
                 }
 
-                // 해외 뉴스
+                // 6. 해외 뉴스
                 const gNews = document.getElementById('globalNewsList');
                 gNews.innerHTML = '';
                 if (data.global_news && data.global_news.length > 0) {
@@ -2519,7 +2500,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
                 }
 
-                // gaemiGTP 시그널 바인딩
+                // 7. gaemiGTP 시그널 밴드
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
                 document.getElementById('rBt1yTag').innerText = q.bt_1y;
                 document.getElementById('rBt2yTag').innerText = q.bt_2y;
@@ -2549,6 +2530,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
+                console.error("Analysis Render Error:", err);
                 alert('서버와 통신할 수 없습니다.');
                 document.getElementById('loading').style.display = 'none';
             }
@@ -2654,7 +2636,7 @@ class WebHandler(BaseHTTPRequestHandler):
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), WebHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), WebHandler)
     server.serve_forever()
 
 if __name__ == "__main__":

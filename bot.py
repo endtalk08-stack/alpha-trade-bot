@@ -1301,8 +1301,8 @@ def telegram_bot_worker():
                                     f"<b>gaemiGTP 시그널 밴드</b>\n" \
                                     f"• 1차 진입가: {data['quant']['entry1']}\n" \
                                     f"• 2차 분할가: {data['quant']['entry2']}\n" \
-                                    f"• 목표 수익가: {data['quant']['target2']}\n" \
-                                    f"• 방어 손절선: {data['quant']['stop_p']}\n" \
+                                    f"• 목표 수익가: {data['quant']['target2']} (+8.5%)\n" \
+                                    f"• 방어 손절선: {data['quant']['stop_p']} (-5.5%)\n" \
                                     f"━━━━━━━━━━━━━━━━━━━━\n" \
                                     f"<i>{data['quant']['guide_text']}</i>\n\n" \
                                     f"웹에서 상세 차트 보기: https://www.gaemigtp.com"
@@ -1316,7 +1316,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI
+# 7. 웹 프론트엔드 UI (좌측 832px 단일 정렬 + 우측 348px 분리)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1414,7 +1414,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
 
-        /* 모델 선택기 */
         .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
         .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
         .model-pill-btn:hover { background: var(--btn-hover); }
@@ -1440,7 +1439,7 @@ HTML_PAGE = """<!DOCTYPE html>
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
 
-        /* [핵심 그리드] 좌측 832px 독립 열 vs 우측 348px 사이드바 열 */
+        /* [핵심 레이아웃] 좌측 832px 전담 열 vs 우측 348px 사이드바 열 */
         .main-dashboard-grid {
             display: grid;
             grid-template-columns: 832px 348px;
@@ -2513,13 +2512,13 @@ HTML_PAGE = """<!DOCTYPE html>
                     }
                 }
 
-                // 2. 우측 캘린더 데이터 저장 및 렌더링
+                // 2. 캘린더 데이터 저장 및 렌더링
                 if (data.market_calendar) {
                     globalMarketCalendar = data.market_calendar;
                     renderMarketCalendarView();
                 }
 
-                // 3. 좌측 퀀트 분석 데이터 렌더링
+                // 3. 퀀트 분석 데이터 렌더링
                 const q = data.quant;
                 if (q) {
                     setTxt('qScoreVal', q.quant_score);

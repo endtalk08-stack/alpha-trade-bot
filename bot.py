@@ -211,96 +211,154 @@ MAJOR_US_TECH_TICKERS = [
 
 # [수정] 이중 API 백업 로직이 추가된 실적 발표 파서
 def fetch_single_ticker_real_earnings(ticker_info):
+    """
+    미국 주요 기업의 '다음 실적 발표일'을 가져옵니다.
+    - 과거 실적은 절대 선택하지 않음
+    - Yahoo v10 calendarEvents -> v8 earnings events 순서로 백업
+    - KST 기준 date_key/date_header를 함께 생성
+    - API 응답 구조가 달라도 전체 서버가 중단되지 않음
+    """
     sym, ko_name = ticker_info
+    now_utc = datetime.now(timezone.utc)
+    now_ts = now_utc.timestamp()
+
     target_dt = None
     eps_avg = "-"
     rev_avg = "-"
 
-    # 1차: Yahoo quoteSummary calendarEvents
+    # 1차: Yahoo quoteSummary / calendarEvents
     try:
         url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=calendarEvents"
-        res = HTTP_SESSION.get(url, timeout=3.0).json()
-        result = res.get("quoteSummary", {}).get("result") or []
-        cal = result[0].get("calendarEvents", {}) if result else {}
-        earn = cal.get("earnings", {}) or {}
-        e_dates = earn.get("earningsDate", []) or []
+        res = HTTP_SESSION.get(
+            url,
+            timeout=4.0,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if res.ok:
+            data = res.json()
+            result = data.get("quoteSummary", {}).get("result") or []
+            if result:
+                cal = result[0].get("calendarEvents") or {}
+                earn = cal.get("earnings") or {}
+                e_dates = earn.get("earningsDate") or []
 
-        candidates = []
-        today_kst = datetime.now(timezone(timedelta(hours=9))).date()
-        for item in e_dates:
-            raw_ts = item.get("raw") if isinstance(item, dict) else item
-            try:
-                dt = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
-                if dt.astimezone(timezone(timedelta(hours=9))).date() >= today_kst:
-                    candidates.append(dt)
-            except (TypeError, ValueError, OverflowError):
-                continue
-        if candidates:
-            target_dt = min(candidates, key=lambda d: d.timestamp())
+                candidates = []
+                for item in e_dates:
+                    raw_ts = item.get("raw") if isinstance(item, dict) else item
+                    try:
+                        ts = float(raw_ts)
+                        # 오늘 이후(약간의 서버 시차 허용)만 후보로 사용
+                        if ts >= now_ts - 3600:
+                            candidates.append(ts)
+                    except (TypeError, ValueError):
+                        continue
 
-        ea = earn.get("earningsAverage", {}) or {}
-        ra = earn.get("revenueAverage", {}) or {}
-        if isinstance(ea, dict) and ea.get("fmt"):
-            eps_avg = f"EPS ${ea['fmt']}"
-        if isinstance(ra, dict) and ra.get("fmt"):
-            rev_avg = f"매출 ${ra['fmt']}"
+                if candidates:
+                    target_dt = datetime.fromtimestamp(min(candidates), tz=timezone.utc)
+
+                ea = (earn.get("earningsAverage") or {}).get("fmt")
+                ra = (earn.get("revenueAverage") or {}).get("fmt")
+                if ea:
+                    eps_avg = f"EPS ${ea}"
+                if ra:
+                    rev_avg = f"매출 ${ra}"
     except Exception as exc:
-        print(f"[EARNINGS][v10] {sym}: {type(exc).__name__}: {exc}")
+        print(f"[EARNINGS][{sym}] Yahoo v10 실패: {type(exc).__name__}: {exc}")
 
-    # 2차: Yahoo chart earnings 이벤트
-    # 과거 3개월 데이터가 섞이므로 오늘 이후 일정만 후보로 사용
+    # 2차: Yahoo chart events
+    # 기존 코드는 '현재와 가장 가까운 날짜'를 선택해 과거 실적을 고를 수 있었음.
+    # 여기서는 반드시 현재 이후 날짜만 선택.
     try:
-        url_v8 = f"https://query2.finance.yahoo.com/v8/finance/chart/{sym}?range=3mo&interval=1d&events=earnings"
-        res_v8 = HTTP_SESSION.get(url_v8, timeout=3.0).json()
-        result = res_v8.get("chart", {}).get("result") or []
-        events = result[0].get("events", {}).get("earnings", {}) if result else {}
-        candidates = []
-        today_kst = datetime.now(timezone(timedelta(hours=9))).date()
-        if isinstance(events, dict):
-            for item in events.values():
-                if not isinstance(item, dict) or "date" not in item:
-                    continue
-                try:
-                    dt = datetime.fromtimestamp(int(item["date"]), tz=timezone.utc)
-                    if dt.astimezone(timezone(timedelta(hours=9))).date() >= today_kst:
-                        candidates.append(dt)
-                except (TypeError, ValueError, OverflowError):
-                    continue
-        if candidates:
-            fallback_dt = min(candidates, key=lambda d: d.timestamp())
-            if target_dt is None or abs(target_dt.timestamp() - fallback_dt.timestamp()) > 86400 * 30:
-                target_dt = fallback_dt
-                if eps_avg == "-":
-                    eps_avg = "예상치 집계중"
-    except Exception as exc:
-        print(f"[EARNINGS][v8] {sym}: {type(exc).__name__}: {exc}")
+        url_v8 = (
+            f"https://query2.finance.yahoo.com/v8/finance/chart/{sym}"
+            f"?range=1y&interval=1d&events=earnings"
+        )
+        res_v8 = HTTP_SESSION.get(
+            url_v8,
+            timeout=4.0,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        if res_v8.ok:
+            data_v8 = res_v8.json()
+            chart_results = data_v8.get("chart", {}).get("result") or []
+            if chart_results:
+                events = (chart_results[0].get("events") or {}).get("earnings") or {}
 
-    if not target_dt:
+                future_dates = []
+                for item in events.values():
+                    raw_date = item.get("date") if isinstance(item, dict) else None
+                    try:
+                        ts = float(raw_date)
+                        if ts >= now_ts - 3600:
+                            future_dates.append(ts)
+                    except (TypeError, ValueError):
+                        continue
+
+                if future_dates:
+                    v8_ts = min(future_dates)
+
+                    # v10이 없거나 서로 크게 다르면 v8의 미래 날짜를 사용
+                    if target_dt is None or abs(target_dt.timestamp() - v8_ts) > 86400 * 7:
+                        target_dt = datetime.fromtimestamp(v8_ts, tz=timezone.utc)
+
+                    # v10 예상치가 없을 때 v8의 기본 예상치 필드도 확인
+                    if eps_avg == "-" and target_dt is not None:
+                        selected = next(
+                            (v for v in events.values()
+                             if isinstance(v, dict) and float(v.get("date", -1)) == v8_ts),
+                            None
+                        )
+                        if selected:
+                            eps_est = selected.get("epsestimate")
+                            rev_est = selected.get("revenueestimate")
+                            if eps_est not in (None, ""):
+                                eps_avg = f"EPS ${eps_est}"
+                            if rev_est not in (None, ""):
+                                rev_avg = f"매출 ${rev_est}"
+    except Exception as exc:
+        print(f"[EARNINGS][{sym}] Yahoo v8 실패: {type(exc).__name__}: {exc}")
+
+    if target_dt is None:
+        print(f"[EARNINGS][{sym}] 미래 실적 발표일을 찾지 못했습니다.")
+        return None
+
+    # 최종 안전장치: 과거 날짜가 들어오면 절대 표시하지 않음
+    if target_dt.timestamp() < now_ts - 3600:
+        print(f"[EARNINGS][{sym}] 과거 날짜 제거: {target_dt.isoformat()}")
         return None
 
     kst = timezone(timedelta(hours=9))
     kst_dt = target_dt.astimezone(kst)
-    days_map = ["일", "월", "화", "수", "목", "금", "토"]
-    weekday = days_map[int(kst_dt.strftime('%w'))]
+    days_map = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"]
+
     date_key = kst_dt.strftime("%Y.%m.%d")
-    date_str = f"{kst_dt.month}.{kst_dt.day} ({weekday})"
-    date_header = f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일"
+    date_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[kst_dt.weekday()]}"
+    date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[kst_dt.weekday()][0]})"
+
+    # Yahoo가 정확한 발표 시간을 주지 않는 경우가 많으므로
+    # 날짜만 확실하게 보여주고 시간은 '시간 미정'으로 표시.
+    time_str = kst_dt.strftime("%H:%M")
+    if time_str in ("00:00", "09:00"):
+        time_str = "시간 미정"
+
+    print(f"[EARNINGS][{sym}] 성공: {date_key} {time_str}")
 
     return {
         "ts": target_dt.timestamp(),
         "date_key": date_key,
-        "date_str": date_str,
         "date_header": date_header,
-        "time": kst_dt.strftime("%H:%M"),
+        "date_str": date_formatted,
+        "time": time_str,
         "stars": 3,
         "star_str": "★★★",
         "type": "earn",
         "name": f"{ko_name} ({sym}) 실적",
         "ticker": sym,
-        "val": "발표완료" if target_dt.timestamp() <= time.time() else "발표예정",
+        "val": "발표예정",
         "exp": eps_avg,
         "prev": rev_avg
     }
+
 
 def fetch_real_market_calendar_live():
     combined_events = []
@@ -385,6 +443,7 @@ def background_worker():
             cal_live = fetch_real_market_calendar_live()
             if cal_live:
                 CACHED_MARKET_CALENDAR = cal_live
+                print(f"[CALENDAR] 총 {len(cal_live)}건 / 실적 {sum(1 for x in cal_live if x.get('type') == 'earn')}건 / 경제 {sum(1 for x in cal_live if x.get('type') == 'eco')}건")
         except Exception:
             pass
         time.sleep(30)

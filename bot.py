@@ -1316,7 +1316,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (Row 단위 대칭 및 모바일 Order 완벽 제어)
+# 7. 웹 프론트엔드 UI (해외 뉴스 캘린더 하단 배치 완료)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1414,7 +1414,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
 
-        /* 모델 선택기 (gaemi / info / pro) */
+        /* 모델 선택기 */
         .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
         .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
         .model-pill-btn:hover { background: var(--btn-hover); }
@@ -1440,7 +1440,7 @@ HTML_PAGE = """<!DOCTYPE html>
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
 
-        /* [핵심 마스터 그리드] PC: 완벽한 832px + 348px 2열 구조 */
+        /* [핵심 마스터 그리드] PC: 832px(좌) + 348px(우) 완벽 대칭 구조 */
         .dashboard-master-grid {
             display: grid;
             grid-template-columns: 832px 348px;
@@ -1451,22 +1451,25 @@ HTML_PAGE = """<!DOCTYPE html>
             align-items: stretch;
         }
 
-        /* 1:1 세로 높이 동기화 행 */
+        /* 1행: 차트(좌) & 증시(우) - 높이 100% 동기화 */
         #rowChart { grid-column: 1; grid-row: 1; height: 100%; }
         #rowWorld { grid-column: 2; grid-row: 1; height: 100%; }
 
+        /* 2행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
         #rowQuant { grid-column: 1; grid-row: 2; height: 100%; }
         #rowCalendar { grid-column: 2; grid-row: 2; height: 100%; }
 
+        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 동기화 */
+        #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
+        #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
+
         /* 좌측 832px 단독 배치 행들 */
-        #rowNews { grid-column: 1; grid-row: 3; }
         #rowConsensus { grid-column: 1; grid-row: 4; }
         #rowVote { grid-column: 1; grid-row: 5; }
         #rowComment { grid-column: 1; grid-row: 6; }
         #rowDart { grid-column: 1; grid-row: 7; }
-        #rowGlobalNews { grid-column: 1; grid-row: 8; }
-        #rowSignal { grid-column: 1; grid-row: 9; }
-        #rowTelegram { grid-column: 1; grid-row: 10; }
+        #rowSignal { grid-column: 1; grid-row: 8; }
+        #rowTelegram { grid-column: 1; grid-row: 9; }
 
         .card {
             background: var(--bg-card);
@@ -1639,7 +1642,7 @@ HTML_PAGE = """<!DOCTYPE html>
             z-index: 50;
         }
         
-        /* 하단 검색창을 좌측 832px 열과 수직 1:1 정렬 */
+        /* 하단 검색창을 좌측 832px 열과 수직 1:1 완벽 정렬 */
         .bottom-bar-grid-wrapper {
             width: 100%;
             max-width: 1196px;
@@ -1667,7 +1670,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .val-up { color: #ef4444; }
         .val-down { color: #38bdf8; }
 
-        /* [모바일 완벽 대응] 1200px 이하에서는 요청하신 순서대로 1열 정렬 */
+        /* [모바일 1열 순차 정렬] 1200px 이하에서는 좌측 9종 먼저 ➔ 우측 3종(증시/캘린더/해외뉴스)이 맨 아래에 배치 */
         @media (max-width: 1200px) {
             .dashboard-master-grid {
                 display: flex;
@@ -1681,7 +1684,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 max-width: 832px;
             }
             
-            /* 모바일 순서 지정: 좌측 위젯 10종 먼저 ➔ 우측 위젯 2종 맨 아래로 */
             #rowChart { order: 1; }
             #rowQuant { order: 2; }
             #rowNews { order: 3; }
@@ -1689,11 +1691,11 @@ HTML_PAGE = """<!DOCTYPE html>
             #rowVote { order: 5; }
             #rowComment { order: 6; }
             #rowDart { order: 7; }
-            #rowGlobalNews { order: 8; }
-            #rowSignal { order: 9; }
-            #rowTelegram { order: 10; }
-            #rowWorld { order: 11; width: 100%; max-width: 832px; }
-            #rowCalendar { order: 12; width: 100%; max-width: 832px; }
+            #rowSignal { order: 8; }
+            #rowTelegram { order: 9; }
+            #rowWorld { order: 10; width: 100%; max-width: 832px; }
+            #rowCalendar { order: 11; width: 100%; max-width: 832px; }
+            #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
 
             .bottom-bar-grid-wrapper {
                 display: flex;
@@ -1788,10 +1790,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="loading" id="loading">세계 증시, 전자공시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
                 <div id="result-card-wrap" style="display:none;">
                     
-                    <!-- [마스터 그리드] PC: 완벽한 832px + 348px 2열 / 모바일: 순차 1열 -->
+                    <!-- [마스터 그리드] PC: 832px + 348px 2열 / 모바일: 순차 1열 -->
                     <div class="dashboard-master-grid">
                         
-                        <!-- 1. 메인 차트 (832px) -->
+                        <!-- 1행 좌측: 메인 차트 (832px) -->
                         <div class="card" id="rowChart">
                             <div>
                                 <div class="price-title" id="rTitle"></div>
@@ -1807,7 +1809,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
-                        <!-- 2. 우측 1행: 증시는 지금 (348px, 차트와 높이 100% 일치) -->
+                        <!-- 1행 우측: 증시는 지금 (348px, 차트와 높이 100% 일치) -->
                         <div class="card" id="rowWorld">
                             <div class="board-header">
                                 <span class="board-header-title">증시는 지금</span>
@@ -1816,7 +1818,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
 
-                        <!-- 3. 좌측 2행: 퀀트 분석 (832px) -->
+                        <!-- 2행 좌측: 퀀트 분석 (832px) -->
                         <div class="card" id="rowQuant">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
@@ -1877,7 +1879,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 4. 우측 2행: 캘린더 (348px, 퀀트 분석 카드와 높이 100% 일치) -->
+                        <!-- 2행 우측: 캘린더 (348px, 퀀트 분석 카드와 높이 100% 일치) -->
                         <div class="card" id="rowCalendar">
                             <div class="cal-top-title-area">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">캘린더</span>
@@ -1905,13 +1907,19 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="cal-event-list-wrap" id="calEventList"></div>
                         </div>
 
-                        <!-- 5. 종목 뉴스 (832px) -->
+                        <!-- 3행 좌측: 종목 뉴스 (832px) -->
                         <div class="card" id="rowNews">
                             <div class="board-header-title" style="margin-bottom:12px;">종목 뉴스</div>
-                            <div id="stockNewsList"></div>
+                            <div id="stockNewsList" style="flex:1;"></div>
                         </div>
 
-                        <!-- 6. 애널리스트 컨센서스 (832px) -->
+                        <!-- 3행 우측: 해외 뉴스 (348px, 캘린더 바로 하단 & 종목 뉴스와 높이 100% 일치) -->
+                        <div class="card" id="rowGlobalNews">
+                            <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
+                            <div id="globalNewsList" style="flex:1;"></div>
+                        </div>
+
+                        <!-- 4행: 애널리스트 컨센서스 (832px) -->
                         <div class="card" id="rowConsensus" style="display:none;">
                             <div style="margin-bottom:16px;">
                                 <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
@@ -1963,7 +1971,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 7. 개미 투표 (832px) -->
+                        <!-- 5행: 개미 투표 (832px) -->
                         <div class="card" id="rowVote">
                             <div class="board-header">
                                 <span class="board-header-title">개미 투표</span>
@@ -1985,7 +1993,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 8. 개미 토론 (832px) -->
+                        <!-- 6행: 개미 토론 (832px) -->
                         <div class="card" id="rowComment">
                             <div class="board-header">
                                 <span class="board-header-title">개미 토론</span>
@@ -1998,7 +2006,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 9. DART 전자공시 (832px) -->
+                        <!-- 7행: DART 전자공시 (832px) -->
                         <div class="card" id="rowDart" style="display:none;">
                             <div class="board-header">
                                 <span class="board-header-title">DART 전자공시</span>
@@ -2007,13 +2015,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div id="dartList"></div>
                         </div>
 
-                        <!-- 10. 해외 뉴스 (832px) -->
-                        <div class="card" id="rowGlobalNews">
-                            <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
-                            <div id="globalNewsList"></div>
-                        </div>
-
-                        <!-- 11. gaemiGTP 시그널 박스 (832px) -->
+                        <!-- 8행: gaemiGTP 시그널 박스 (832px) -->
                         <div class="signal-premium-card" id="rowSignal">
                             <div class="signal-card-header" onclick="toggleSignal()">
                                 <span class="signal-card-title">gaemiGTP 시그널</span>
@@ -2081,7 +2083,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 12. 텔레그램 알림 받기 버튼 (832px) -->
+                        <!-- 9행: 텔레그램 알림 받기 버튼 (832px) -->
                         <div id="rowTelegram" style="width:100%;">
                             <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
                                 <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
@@ -2096,7 +2098,7 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
 
         <div id="bottom-bar">
-            <!-- 하단 바 내부 검색창을 좌측 832px 열과 정확히 수직 정렬 -->
+            <!-- 하단 바 내부 검색창을 좌측 832px 열과 수직 1:1 완벽 정렬 -->
             <div class="bottom-bar-grid-wrapper">
                 <div class="search-container">
                     <div class="search-box">
@@ -2706,7 +2708,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     setTxt('rGuideText', q.guide_text);
                 }
 
-                // 4. 뉴스 & 컨센서스 & 공시
+                // 4. 종목 뉴스 & 해외 뉴스 렌더링
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {
                     sNews.innerHTML = '';
@@ -2724,6 +2726,24 @@ HTML_PAGE = """<!DOCTYPE html>
                     }
                 }
 
+                const gNews = document.getElementById('globalNewsList');
+                if (gNews) {
+                    gNews.innerHTML = '';
+                    if (data.global_news && data.global_news.length > 0) {
+                        data.global_news.forEach(n => {
+                            gNews.innerHTML += `
+                                <a href="${n.link}" target="_blank" class="news-item">
+                                    <div class="news-title">${n.title}</div>
+                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                                </a>
+                            `;
+                        });
+                    } else {
+                        gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
+                    }
+                }
+
+                // 5. 컨센서스 & 공시
                 const c = data.consensus;
                 const uCard = document.getElementById('rowConsensus');
                 if (c && uCard) {
@@ -2794,23 +2814,6 @@ HTML_PAGE = """<!DOCTYPE html>
                         dCard.style.display = 'block';
                     } else {
                         dCard.style.display = 'none';
-                    }
-                }
-
-                const gNews = document.getElementById('globalNewsList');
-                if (gNews) {
-                    gNews.innerHTML = '';
-                    if (data.global_news && data.global_news.length > 0) {
-                        data.global_news.forEach(n => {
-                            gNews.innerHTML += `
-                                <a href="${n.link}" target="_blank" class="news-item">
-                                    <div class="news-title">${n.title}</div>
-                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                                </a>
-                            `;
-                        });
-                    } else {
-                        gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
                     }
                 }
 

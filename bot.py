@@ -213,27 +213,27 @@ MAJOR_US_TECH_TICKERS = [
 ]
 
 MAJOR_KR_EARNINGS = {
-    "005930": "삼성전자", "005930.KS": "삼성전자",
-    "000660": "SK하이닉스", "000660.KS": "SK하이닉스",
-    "005380": "현대차", "005380.KS": "현대차",
-    "000270": "기아", "000270.KS": "기아",
-    "005490": "POSCO홀딩스", "005490.KS": "POSCO홀딩스",
-    "012450": "한화에어로스페이스", "012450.KS": "한화에어로스페이스",
-    "042660": "한화오션", "042660.KS": "한화오션",
-    "034020": "두산에너빌리티", "034020.KS": "두산에너빌리티",
-    "012330": "현대모비스", "012330.KS": "현대모비스",
-    "009150": "삼성전기", "009150.KS": "삼성전기",
-    "373220": "LG에너지솔루션", "373220.KS": "LG에너지솔루션",
-    "035420": "NAVER", "035420.KS": "NAVER",
-    "035720": "카카오", "035720.KS": "카카오",
-    "068270": "셀트리온", "068270.KS": "셀트리온",
-    "042700": "한미반도체", "042700.KS": "한미반도체"
+    "005930": "삼성전자",
+    "000660": "SK하이닉스",
+    "005380": "현대차",
+    "000270": "기아",
+    "005490": "POSCO홀딩스",
+    "012450": "한화에어로스페이스",
+    "042660": "한화오션",
+    "034020": "두산에너빌리티",
+    "012330": "현대모비스",
+    "009150": "삼성전기",
+    "373220": "LG에너지솔루션",
+    "035420": "NAVER",
+    "035720": "카카오",
+    "068270": "셀트리온",
+    "042700": "한미반도체"
 }
 
 # ----------------------------------------------------
-# 3. 3단계 하이브리드 실적 일정 수집기 (한국/미국 완벽 대응)
+# 3. 단일 KST 기준 실적 일정 수집기 (중복/오표기 원천 차단)
 # ----------------------------------------------------
-def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc"):
+def build_single_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc"):
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
     kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
     
@@ -246,9 +246,7 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
     val_str = "발표완료" if dt_utc <= datetime.now(timezone.utc) else "발표예정"
     hour_label = "(美장마감후)" if hour == "amc" else ("(美장시작전)" if hour == "bmo" else "")
 
-    res = []
-    # 1. 한국 시간 기준 등록
-    res.append({
+    return {
         "ts": dt_utc.timestamp(),
         "date_key": date_key,
         "date_str": date_str,
@@ -262,29 +260,7 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         "val": val_str,
         "exp": eps_str,
         "prev": rev_str
-    })
-    
-    # 2. 미국 장 마감(한국 익일 새벽)의 경우 당일 밤에도 노출되도록 이중 등록
-    if kst_dt.hour < 9:
-        prev_kst = kst_dt - timedelta(days=1)
-        prev_key = prev_kst.strftime("%Y.%m.%d")
-        prev_wk = days_map[int(prev_kst.strftime('%w'))]
-        res.append({
-            "ts": dt_utc.timestamp() - 1,
-            "date_key": prev_key,
-            "date_str": f"{prev_kst.month}.{prev_kst.day} ({prev_wk})",
-            "date_header": f"{prev_kst.month}월 {prev_kst.day}일 {prev_wk}요일",
-            "time": f"새벽 {time_str}",
-            "stars": 3,
-            "star_str": "★★★",
-            "type": "earn",
-            "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
-            "ticker": sym,
-            "val": val_str,
-            "exp": eps_str,
-            "prev": rev_str
-        })
-    return res
+    }
 
 def fetch_all_real_earnings():
     events = []
@@ -295,7 +271,7 @@ def fetch_all_real_earnings():
     captured_syms = set()
     now_kst = datetime.now(timezone(timedelta(hours=9)))
 
-    # Tier 1: Finnhub API 연동
+    # 1. Finnhub API 연동
     if FINNHUB_API_KEY:
         try:
             from_d = (now_kst - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -304,8 +280,8 @@ def fetch_all_real_earnings():
             res = HTTP_SESSION.get(url, timeout=3.0).json()
             items = res.get("earningsCalendar", [])
             for it in items:
-                sym = str(it.get("symbol", "")).upper()
-                if sym in sym_to_ko:
+                sym_raw = str(it.get("symbol", "")).upper().split('.')[0]
+                if sym_raw in sym_to_ko and sym_raw not in captured_syms:
                     raw_date = str(it.get("date", ""))
                     hour = str(it.get("hour", "amc")).lower()
                     eps_est = it.get("epsEstimate")
@@ -316,12 +292,12 @@ def fetch_all_real_earnings():
                     us_dt = datetime.strptime(raw_date, "%Y-%m-%d")
                     dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21 if hour == "amc" else 12)
                     
-                    events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc, eps_str, rev_str, hour))
-                    captured_syms.add(sym)
+                    events.append(build_single_earnings_event(sym_raw, sym_to_ko[sym_raw], dt_utc, eps_str, rev_str, hour))
+                    captured_syms.add(sym_raw)
         except Exception:
             pass
 
-    # Tier 2: Yahoo Finance API 배치 백업
+    # 2. Yahoo Finance API 배치 백업
     missing = [s for s in [item[0] for item in MAJOR_US_TECH_TICKERS] if s not in captured_syms]
     if missing:
         try:
@@ -329,40 +305,16 @@ def fetch_all_real_earnings():
             res = HTTP_SESSION.get(url, timeout=2.5).json()
             items = res.get("quoteResponse", {}).get("result", [])
             for it in items:
-                sym = it.get("symbol", "").upper()
+                sym = it.get("symbol", "").upper().split('.')[0]
                 raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
-                if sym in sym_to_ko and raw_ts:
+                if sym in sym_to_ko and raw_ts and sym not in captured_syms:
                     dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
                     eps_f = it.get("epsForward")
                     eps_str = f"예상 EPS ${eps_f:.2f}" if eps_f is not None else "예상치 집계중"
-                    events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc, eps_str, "-", "amc"))
+                    events.append(build_single_earnings_event(sym, sym_to_ko[sym], dt_utc, eps_str, "-", "amc"))
                     captured_syms.add(sym)
         except Exception:
             pass
-
-    # Tier 3: 미국 + 국내 대형주 확정 실적 마스터 DB (무조건 100% 노출 보장)
-    today_dt = now_kst.date()
-    master_schedule = [
-        ("NVDA", "엔비디아", today_dt.strftime("%Y-%m-%d"), "amc", "예상 EPS $0.65", "예상 매출 $28.7B"),
-        ("005930", "삼성전자", (today_dt + timedelta(days=1)).strftime("%Y-%m-%d"), "bmo", "영업이익 10.4조", "매출 74.0조"),
-        ("TSLA", "테슬라", (today_dt + timedelta(days=2)).strftime("%Y-%m-%d"), "amc", "예상 EPS $0.58", "예상 매출 $25.1B"),
-        ("000660", "SK하이닉스", (today_dt + timedelta(days=3)).strftime("%Y-%m-%d"), "bmo", "영업이익 5.2조", "매출 16.4조"),
-        ("AAPL", "애플", (today_dt + timedelta(days=4)).strftime("%Y-%m-%d"), "amc", "예상 EPS $1.40", "예상 매출 $89.5B"),
-        ("MSFT", "마이크로소프트", (today_dt + timedelta(days=5)).strftime("%Y-%m-%d"), "amc", "예상 EPS $2.95", "예상 매출 $64.7B"),
-        ("005380", "현대차", (today_dt + timedelta(days=6)).strftime("%Y-%m-%d"), "bmo", "영업이익 3.8조", "매출 42.1조"),
-        ("AMZN", "아마존", (today_dt + timedelta(days=6)).strftime("%Y-%m-%d"), "amc", "예상 EPS $1.03", "예상 매출 $148.6B"),
-        ("PLTR", "팔란티어", (today_dt + timedelta(days=7)).strftime("%Y-%m-%d"), "amc", "예상 EPS $0.09", "예상 매출 $678M"),
-        ("AMD", "AMD", (today_dt + timedelta(days=8)).strftime("%Y-%m-%d"), "amc", "예상 EPS $0.68", "예상 매출 $5.8B")
-    ]
-
-    for sym, ko, d_str, hr, eps, rev in master_schedule:
-        if sym not in captured_syms:
-            us_dt = datetime.strptime(d_str, "%Y-%m-%d")
-            if sym.isdigit():
-                dt_utc = us_dt.replace(tzinfo=timezone(timedelta(hours=9)))
-            else:
-                dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21 if hr == "amc" else 12)
-            events.extend(build_earnings_event(sym, ko, dt_utc, eps, rev, hr))
 
     return events
 
@@ -370,7 +322,7 @@ def fetch_real_market_calendar_live():
     combined_events = []
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
-    # 1. 글로벌 경제 지표 API 연동
+    # 1. 글로벌 경제 지표 API
     try:
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         res = HTTP_SESSION.get(url, timeout=3.5).json()
@@ -430,6 +382,7 @@ def fetch_real_market_calendar_live():
     except Exception as exc:
         print("[CALENDAR][EARN] 실적 데이터 파싱 에러:", exc)
 
+    # 시간순 정렬 (ts 기준)
     combined_events.sort(key=lambda x: x["ts"])
     return combined_events
 
@@ -437,11 +390,13 @@ def background_worker():
     global CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
     while True:
         try:
+            # 증시 시세 갱신 (30초 주기)
             with ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
             if results and any(r["price"] != "-" for r in results):
                 CACHED_WORLD_BOARD = results
             
+            # 경제지표/실적 캘린더 갱신 (Rate Limit 방지를 위해 5분 주기 적용)
             now_t = time.time()
             if now_t - LAST_CALENDAR_FETCH_TIME > 300 or not CACHED_MARKET_CALENDAR:
                 cal_live = fetch_real_market_calendar_live()
@@ -1643,7 +1598,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .mini-price { font-size: 0.88rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
         .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
 
-        /* 캘린더 위젯 스타일 (전문 핀테크 디자인 고도화) */
+        /* 캘린더 위젯 스타일 */
         .cal-top-title-area { margin-bottom: 8px; }
         .cal-top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
         .cal-date-ctrl { display: flex; align-items: center; gap: 8px; }
@@ -1669,7 +1624,7 @@ HTML_PAGE = """<!DOCTYPE html>
             justify-content: flex-start;
         }
 
-        /* 고도화된 캘린더 카드 아이템 */
+        /* 캘린더 카드 */
         .cal-card-item {
             background: var(--bg-cal-card);
             border: 1px solid var(--border-line);
@@ -2177,11 +2132,11 @@ HTML_PAGE = """<!DOCTYPE html>
 
                             <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
                                 <div>
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uPrimaryLabel"></div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">평균 목표가</div>
                                     <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
                                 </div>
                                 <div style="text-align:right;">
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uSecondaryLabel"></div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재가</div>
                                     <div style="font-size:1.15rem; font-weight:700; color:var(--text-title);" id="uSecondaryVal"></div>
                                 </div>
                             </div>
@@ -2653,12 +2608,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 const clickAttr = isEarn && ev.ticker ? `onclick="doSearch('${ev.ticker}')"` : '';
                 const timePrefix = (currentCalFilter === 'earn' && ev.date_str) ? `${ev.date_str} ` : '';
                 
-                // 1. 상태 뱃지 판별
                 const isCompleted = ev.val && !ev.val.includes('대기') && !ev.val.includes('예정');
                 const badgeClass = isCompleted ? 'cal-badge-completed' : 'cal-badge-upcoming';
                 const statusBadgeHtml = `<span class="cal-status-badge ${badgeClass}">${ev.val}</span>`;
 
-                // 2. 중요도 뱃지 판별
                 let impactBadgeHtml = '';
                 if (ev.stars === 3) {
                     impactBadgeHtml = `<span class="cal-impact-badge impact-3">★★★ HIGH</span>`;
@@ -2668,7 +2621,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     impactBadgeHtml = `<span class="cal-impact-badge impact-1">★☆☆ LOW</span>`;
                 }
 
-                // 3. 지표 수치 정돈
                 const metricsText = (ev.exp !== '-' || ev.prev !== '-')
                     ? `<span class="cal-metrics-text">${ev.exp} · ${ev.prev}</span>`
                     : '';

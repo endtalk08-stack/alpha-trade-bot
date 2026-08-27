@@ -83,6 +83,7 @@ DOMESTIC_FAST_MAP = {
     "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
 }
 
+# 10대 핵심 지표 (2열 5행 매트릭스)
 WORLD_BOARD_CONFIG = [
     {"name": "코스피", "sym": "^KS11", "tag": "국내"},
     {"name": "코스닥", "sym": "^KQ11", "tag": "국내"},
@@ -422,7 +423,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "gauge_label": "탐욕지수",
                 "status_label": "시장 심리",
                 "badge_text": "롱 우세 (탐욕 구간)",
-                "dots": f"<span style='color:#10b981; font-weight:700;'>롱 64.2%</span> &nbsp; <span style='color:#0284c7; font-weight:700;'>숏 35.8%</span> &nbsp; <span style='color:#d97706; font-weight:700;'>김프 {kimchi_str}</span>",
+                "dots": f"<span style='color:#10b981; font-weight:700;'>롱 64.2%</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>숏 35.8%</span> &nbsp; <span style='color:#d97706; font-weight:700;'>김프 {kimchi_str}</span>",
                 "primary_label": "24H 글로벌 청산 규모",
                 "primary_val": "$184.2M",
                 "secondary_label": "실시간 김치프리미엄",
@@ -557,20 +558,18 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     ma600 = round_fn(ma600_val) if ma600_val else "-"
     ma1200 = round_fn(ma1200_val) if ma1200_val else "-"
 
-    # 이동평균선 지지 / 이탈 동적 상태 판정
-    ma5_state = "5일선 상회 (단기 지지)" if raw_price >= ma5_val else "5일선 하회 (단기 저항)"
+    ma5_state = "5일선 지지 (단기 상승세)" if raw_price >= ma5_val else "5일선 이탈 (단기 조정)"
     ma5_color = "positive" if raw_price >= ma5_val else "negative"
 
     ma20_state = "20일선 지지 (추세 유지)" if raw_price >= ma20_val else "20일선 이탈 (조정 국면)"
     ma20_color = "positive" if raw_price >= ma20_val else "negative"
 
-    ma60_state = "60일선 수급선 지지" if ma60_val and raw_price >= ma60_val else "60일선 하회 (매물 저항)"
+    ma60_state = "60일 수급선 지지" if ma60_val and raw_price >= ma60_val else "60일선 하회"
     ma60_color = "positive" if ma60_val and raw_price >= ma60_val else "warning"
 
-    ma120_state = "120일선 경기선 상회" if ma120_val and raw_price >= ma120_val else "120일선 저항"
+    ma120_state = "120일 경기선 상회" if ma120_val and raw_price >= ma120_val else "120일선 저항"
     ma120_color = "positive" if ma120_val and raw_price >= ma120_val else "negative"
 
-    # 볼린저 밴드 (60, 2)
     bb_period = min(60, n_bars)
     bb_mid = float(closes.tail(bb_period).mean())
     bb_std = float(closes.tail(bb_period).std())
@@ -582,13 +581,12 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         bb_state = "상단 밴드 돌파 (강한 상승세)"
         bb_color = "positive"
     elif raw_price <= bb_lower:
-        bb_state = "하단 밴드 지지 (과매도 반등구간)"
+        bb_state = "하단 밴드 지지 (반등 타진)"
         bb_color = "warning"
     else:
         bb_state = "밴드 내 안정적 등락"
         bb_color = "neutral"
 
-    # MACD
     if n_bars >= 35:
         ema12 = closes.ewm(span=12, adjust=False).mean()
         ema26 = closes.ewm(span=26, adjust=False).mean()
@@ -608,7 +606,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         macd_state = "데이터 집계 중"
         macd_color = "neutral"
 
-    # 52주 고저 위치
     df_1y = df.tail(250)
     high_52w = float(df_1y['High'].max())
     low_52w = float(df_1y['Low'].min())
@@ -621,14 +618,12 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         pos_52w = 50.0
         slider_fill_pct = 50
 
-    # 이격도
     disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
     disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
     disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"
     disp_state = "적정 이격 유지" if 98.0 <= disp20 <= 104.0 else ("단기 과열 주의" if disp20 > 104.0 else "단기 과매도 구간")
     disp_color = "positive" if 98.0 <= disp20 <= 104.0 else ("warning" if disp20 > 104.0 else "neutral")
 
-    # RSI (14)
     delta = closes.diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
@@ -646,7 +641,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         rsi_state = "중립 (안정적 심리)"
         rsi_color = "neutral"
 
-    # ATR & 거래량
     high_low = df['High'] - df['Low']
     atr_raw = float(high_low.tail(14).mean())
     atr_val = round_fn(atr_raw)
@@ -679,7 +673,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     else:
         tval_20d_str = "-"
 
-    # 100점 만점 퀀트 기술 점수 산출
     bullish_count = 0
     if raw_price >= ma5_val: bullish_count += 1
     if raw_price >= ma20_val: bullish_count += 1
@@ -720,7 +713,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     return {
         "quant_score": str(quant_score),
         "score_badge": score_badge,
-        "score_dots": f"<span style='color:#10b981; font-weight:700;'>상승 시그널 {bullish_count}</span> &nbsp; <span style='color:#0284c7; font-weight:700;'>중립 {6 - bullish_count}</span>",
+        "score_dots": f"<span style='color:#10b981; font-weight:700;'>상승 시그널 {bullish_count}</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>중립 {6 - bullish_count}</span>",
         "trend": trend,
         "ma5": ma5, "ma5_state": ma5_state, "ma5_color": ma5_color,
         "ma20": ma20, "ma20_state": ma20_state, "ma20_color": ma20_color,
@@ -950,7 +943,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (세련된 기술 지표 & 퀀트 분석 카드)
+# 7. 웹 프론트엔드 UI (조화로운 핀테크 카드 디자인)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1184,13 +1177,13 @@ HTML_PAGE = """<!DOCTYPE html>
         .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
-        /* 우측 글로벌 증시 보드: 프레임리스 플로팅 */
+        /* 우측 글로벌 증시 보드: 메인 차트와 통일된 고급 카드 스타일 */
         .global-board-card {
-            background: transparent;
-            border: none;
-            box-shadow: none;
-            border-radius: 0;
-            padding: 2px 0 0 0;
+            background: var(--bg-card);
+            border: 1px solid var(--border-line);
+            border-radius: 16px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+            padding: 16px 14px;
             display: flex;
             flex-direction: column;
             justify-content: space-between;
@@ -1223,17 +1216,26 @@ HTML_PAGE = """<!DOCTYPE html>
             display: flex;
             flex-direction: column;
             justify-content: space-between;
-            transition: border-color 0.15s, background 0.15s;
+            transition: all 0.2s ease;
             cursor: pointer;
             min-height: 58px;
         }
         .mini-index-card:hover {
             border-color: var(--border-focus);
             background: var(--btn-hover);
+            transform: translateY(-1px);
         }
         .mini-top { display: flex; justify-content: space-between; align-items: center; }
         .mini-name { font-size: 0.76rem; font-weight: 800; color: var(--text-title); }
-        .mini-tag { font-size: 0.6rem; color: var(--text-muted); background: var(--btn-hover); padding: 1px 3px; border-radius: 4px; }
+        .mini-tag { 
+            font-size: 0.6rem; 
+            font-weight: 700;
+            color: var(--text-muted); 
+            background: var(--btn-hover); 
+            border: 1px solid var(--border-line);
+            padding: 1px 4px; 
+            border-radius: 5px; 
+        }
         
         .mini-mid-row {
             display: flex;
@@ -1247,8 +1249,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
         .section-title { font-size: 1rem; font-weight: 700; color: var(--text-title); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         
+        /* 캔들스틱과 100% 일치된 상승/하락 컬러 (상승 빨강 / 하락 스카이블루) */
         .val-up { color: #ef4444; }
-        .val-down { color: #0284c7; }
+        .val-down { color: #38bdf8; }
 
         /* 세련된 퀀트 지표 리스트 스타일 */
         .quant-row-item {
@@ -1557,6 +1560,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
+                        <!-- 우측 10대 지표 보드 (동일 카드 프레임 적용) -->
                         <div class="global-board-card">
                             <div class="board-header">
                                 <span class="board-header-title">증시는 지금</span>
@@ -1573,7 +1577,6 @@ HTML_PAGE = """<!DOCTYPE html>
                             <span id="qTrendBadge" style="font-size:0.75rem; color:#0284c7; font-weight:700;"></span>
                         </div>
 
-                        <!-- 상단 요약 게이지 & 상태 뱃지 -->
                         <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid var(--border-line);">
                             <div class="gauge-inner-box">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="qScoreVal"></span>
@@ -1588,7 +1591,6 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 2개 주요 하이라이트 지표 -->
                         <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
                             <div>
                                 <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">20일 이격도</div>
@@ -1600,7 +1602,6 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 52주 고저 위치 슬라이더 바 -->
                         <div style="margin:20px 0 14px; position:relative;">
                             <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
                                 <span style="color:var(--text-muted);" id="qLow52w"></span>
@@ -1617,7 +1618,6 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 세부 지표 & 상태 라벨 리스트 -->
                         <div style="margin-top:16px; border-top:1px solid var(--border-line); padding-top:12px;">
                             <div style="font-size:0.82rem; font-weight:700; color:var(--text-sub); margin-bottom:8px; display:flex; justify-content:space-between;">
                                 <span>핵심 기술 지표 판정</span>
@@ -1766,14 +1766,14 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <div style="font-size:0.78rem; color:var(--text-muted); margin-top:5px; word-break:keep-all;">
                                         <span style="color:#10b981; font-weight:800;" id="rBt1yTag"></span> &nbsp; 
                                         <span style="color:#10b981; font-weight:800;" id="rBt2yTag"></span> &nbsp; 
-                                        <span style="color:#0284c7; font-weight:800;" id="rRrTag"></span>
+                                        <span style="color:#38bdf8; font-weight:800;" id="rRrTag"></span>
                                     </div>
                                 </div>
                             </div>
 
                             <div style="margin:20px 0 14px; position:relative;">
                                 <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:6px; white-space:nowrap;">
-                                    <span style="color:#0284c7; font-weight:800;" id="rSliderStop"></span>
+                                    <span style="color:#38bdf8; font-weight:800;" id="rSliderStop"></span>
                                     <span style="color:var(--text-title); font-weight:800;" id="rSliderEntry"></span>
                                     <span style="color:#10b981; font-weight:800;" id="rSliderTarget"></span>
                                 </div>
@@ -1805,8 +1805,8 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <div style="color:#10b981; font-weight:800; white-space:nowrap;" id="rTarget2"></div>
                                 </div>
                                 <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; font-size:0.86rem;">
-                                    <div><span style="color:#0284c7; font-weight:700;">리스크 방어 손절가 (-5.5%)</span></div>
-                                    <div style="color:#0284c7; font-weight:800; white-space:nowrap;" id="rStop"></div>
+                                    <div><span style="color:#38bdf8; font-weight:700;">리스크 방어 손절가 (-5.5%)</span></div>
+                                    <div style="color:#38bdf8; font-weight:800; white-space:nowrap;" id="rStop"></div>
                                 </div>
                             </div>
 
@@ -2014,7 +2014,7 @@ HTML_PAGE = """<!DOCTYPE html>
             });
             
             const pathD = 'M ' + coords.join(' L ');
-            const strokeColor = isUp ? '#ef4444' : '#0284c7';
+            const strokeColor = isUp ? '#ef4444' : '#38bdf8';
             
             return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="mini-spark">
                 <path d="${pathD}" fill="none" stroke="${strokeColor}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>

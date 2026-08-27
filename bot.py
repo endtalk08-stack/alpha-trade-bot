@@ -2723,7 +2723,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
                                 <div class="cal-importance-bar" style="--importance-width:${importanceWidth}%;">
-                                    <div class="cal-importance-marker"></div>div>
+                                    <div class="cal-importance-marker"></div>
 
 
                                 </div>

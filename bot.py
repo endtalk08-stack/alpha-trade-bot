@@ -73,15 +73,18 @@ DOMESTIC_FAST_MAP = {
     "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
 }
 
+# 10대 핵심 지표 (2열 5행 매트릭스)
 WORLD_BOARD_CONFIG = [
     {"name": "코스피", "sym": "^KS11", "tag": "국내"},
     {"name": "코스닥", "sym": "^KQ11", "tag": "국내"},
     {"name": "QQQ", "sym": "QQQ", "tag": "나스닥100"},
     {"name": "SPY", "sym": "SPY", "tag": "S&P500"},
-    {"name": "DIA", "sym": "DIA", "tag": "다우존스"},
     {"name": "SOXX", "sym": "SOXX", "tag": "반도체"},
+    {"name": "DIA", "sym": "DIA", "tag": "다우존스"},
     {"name": "VIX", "sym": "^VIX", "tag": "변동성"},
-    {"name": "USD/KRW", "sym": "KRW=X", "tag": "환율"}
+    {"name": "USD/KRW", "sym": "KRW=X", "tag": "환율"},
+    {"name": "WTI 유가", "sym": "CL=F", "tag": "원유"},
+    {"name": "금", "sym": "GC=F", "tag": "안전자산"}
 ]
 
 # ----------------------------------------------------
@@ -256,7 +259,7 @@ def fetch_crypto_candles(symbol):
     return None, None, None
 
 # ----------------------------------------------------
-# 3. 3대 시장 맞춤 센티멘트 & 컨센서스 크롤러 (화이트 모드 색상 오류 수정)
+# 3. 3대 시장 맞춤 센티멘트 & 컨센서스 크롤러
 # ----------------------------------------------------
 def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
     try:
@@ -316,7 +319,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "gauge_label": "기관의견",
                 "status_label": "전체 의견",
                 "badge_text": "적극 매수 (BUY)",
-                "dots": f"<span style='color:#10b981;'>● 매수 {len(recent_reports)*4}</span> &nbsp; <span style='color:#f97316;'>● 보유 2</span> &nbsp; <span style='color:#ef4444;'>● 매도 0</span>",
+                "dots": f"<span style='color:#10b981;'>매수 {len(recent_reports)*4}</span> &nbsp; <span style='color:#f97316;'>보유 2</span> &nbsp; <span style='color:#ef4444;'>매도 0</span>",
                 "primary_label": "평균 목표주가",
                 "primary_val": f"{int(target_p):,} 원",
                 "secondary_label": "현재가",
@@ -350,7 +353,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "gauge_label": "기관의견",
                 "status_label": "전체 의견",
                 "badge_text": "강력 매수 (Strong Buy)",
-                "dots": "<span style='color:#10b981;'>● Buy 28</span> &nbsp; <span style='color:#f97316;'>● Hold 3</span> &nbsp; <span style='color:#ef4444;'>● Sell 1</span>",
+                "dots": "<span style='color:#10b981;'>Buy 28</span> &nbsp; <span style='color:#f97316;'>Hold 3</span> &nbsp; <span style='color:#ef4444;'>Sell 1</span>",
                 "primary_label": "평균 목표주가",
                 "primary_val": f"${target_p:,.2f}",
                 "secondary_label": "현재가",
@@ -402,14 +405,13 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             except Exception:
                 pass
 
-            # 화이트 모드에서도 가독성이 뛰어난 앰버 골드 컬러(#d97706) 적용
             return {
                 "title": "글로벌 수급 & 온체인 센티멘트",
                 "gauge_val": fear_greed_score,
                 "gauge_label": "탐욕지수",
                 "status_label": "시장 심리",
                 "badge_text": "롱 우세 (탐욕 구간)",
-                "dots": f"<span style='color:#10b981; font-weight:700;'>● 롱 64.2%</span> &nbsp; <span style='color:#0284c7; font-weight:700;'>● 숏 35.8%</span> &nbsp; <span style='color:#d97706; font-weight:700;'>● 김프 {kimchi_str}</span>",
+                "dots": f"<span style='color:#10b981; font-weight:700;'>롱 64.2%</span> &nbsp; <span style='color:#0284c7; font-weight:700;'>숏 35.8%</span> &nbsp; <span style='color:#d97706; font-weight:700;'>김프 {kimchi_str}</span>",
                 "primary_label": "24H 글로벌 청산 규모",
                 "primary_val": "$184.2M",
                 "secondary_label": "실시간 김치프리미엄",
@@ -461,12 +463,14 @@ def fetch_rss_news(query_keyword, limit=5):
         pass
     return headlines
 
+# 10대 지표 스파크라인 포함 병렬 크롤러
 def fetch_single_world_item(item):
     name = item["name"]
     sym = item["sym"]
     tag = item["tag"]
+    sparkline = []
     try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=2d&interval=1d"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=7d&interval=1d"
         res = HTTP_SESSION.get(url, timeout=1.8).json()
         result = res.get("chart", {}).get("result", [])
         if result:
@@ -474,6 +478,9 @@ def fetch_single_world_item(item):
             curr_p = meta.get("regularMarketPrice", 0.0)
             prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
             change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+            
+            raw_closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+            sparkline = [round(float(c), 2) for c in raw_closes if c is not None][-7:]
             
             if "KRW" in sym:
                 price_str = f"{curr_p:,.1f}원"
@@ -487,14 +494,15 @@ def fetch_single_world_item(item):
                 "tag": tag,
                 "price": price_str,
                 "rate": f"{change_rate:+.2f}%",
-                "up": change_rate >= 0
+                "up": change_rate >= 0,
+                "sparkline": sparkline
             }
     except Exception:
         pass
-    return {"name": name, "tag": tag, "price": "-", "rate": "-", "up": True}
+    return {"name": name, "tag": tag, "price": "-", "rate": "-", "up": True, "sparkline": []}
 
 def fetch_all_world_board_parallel():
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
     return results
 
@@ -794,39 +802,39 @@ def telegram_bot_worker():
                             target_q = parts[1].strip()
                             data = run_full_pipeline(target_q)
                             if data:
-                                reply = f"🔔 <b>{data['name']}({data['symbol']})</b> 알림 등록 완료!\n\n" \
+                                reply = f"<b>{data['name']}({data['symbol']})</b> 알림 등록 완료\n\n" \
                                         f"현재가: <b>{data['price']}</b>\n" \
                                         f"gaemiGTP 시그널: <b>{data['quant']['win_rate_num']} 승률</b>\n" \
                                         f"1차 진입가: {data['quant']['entry1']}\n" \
                                         f"목표 수익가: {data['quant']['target2']}\n" \
                                         f"손절 방어선: {data['quant']['stop_p']}\n\n" \
-                                        f"💡 목표가 및 주요 시그널 발생 시 텔레그램으로 즉시 알려드립니다."
+                                        f"목표가 및 주요 시그널 발생 시 실시간으로 안내합니다."
                                 send_telegram_msg(chat_id, reply)
                             else:
-                                send_telegram_msg(chat_id, f"gaemiGTP 알림봇에 오신 것을 환영합니다!\n원하시는 종목명을 <code>/삼성전자</code> 또는 <code>/BTC</code> 형태로 입력하시면 실시간 시그널을 즉시 조회해 드립니다.")
+                                send_telegram_msg(chat_id, f"gaemiGTP 알림봇입니다. 원하시는 종목명을 <code>/삼성전자</code> 또는 <code>/BTC</code> 형태로 입력하시면 실시간 시그널을 즉시 조회합니다.")
                         else:
-                            send_telegram_msg(chat_id, f"gaemiGTP 텔레그램 시그널 알림봇입니다!\n\n원하시는 종목명을 <code>/SK하이닉스</code>, <code>/NVDA</code>, <code>/BTC</code> 처럼 입력하시면 실시간 시그널과 가격을 즉시 알려드립니다.")
+                            send_telegram_msg(chat_id, f"gaemiGTP 텔레그램 시그널 알림봇입니다.\n\n종목명을 <code>/SK하이닉스</code>, <code>/NVDA</code>, <code>/BTC</code> 처럼 입력해 주세요.")
                     else:
                         query_clean = text.lstrip("/")
                         data = run_full_pipeline(query_clean)
                         if data:
-                            reply = f"📊 <b>gaemiGTP 실시간 분석: {data['name']}</b> ({data['symbol']})\n" \
+                            reply = f"<b>gaemiGTP 실시간 분석: {data['name']}</b> ({data['symbol']})\n" \
                                     f"━━━━━━━━━━━━━━━━━━━━\n" \
                                     f"현재가: <b>{data['price']}</b>\n" \
                                     f"추세 국면: {data['quant']['trend']}\n" \
                                     f"백테스팅 승률: <b>{data['quant']['win_rate_num']}</b> ({data['quant']['rr_str']})\n" \
                                     f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"🎯 <b>gaemiGTP 시그널 밴드</b>\n" \
+                                    f"<b>gaemiGTP 시그널 밴드</b>\n" \
                                     f"• 1차 진입가: {data['quant']['entry1']}\n" \
                                     f"• 2차 분할가: {data['quant']['entry2']}\n" \
                                     f"• 목표 수익가: {data['quant']['target2']} (+8.5%)\n" \
                                     f"• 방어 손절선: {data['quant']['stop_p']} (-5.5%)\n" \
                                     f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"💡 <i>{data['quant']['guide_text']}</i>\n\n" \
-                                    f"👉 웹에서 상세 차트 보기: https://www.gaemigtp.com"
+                                    f"<i>{data['quant']['guide_text']}</i>\n\n" \
+                                    f"웹에서 상세 차트 보기: https://www.gaemigtp.com"
                             send_telegram_msg(chat_id, reply)
                         else:
-                            send_telegram_msg(chat_id, f"❌ '{query_clean}' 종목을 찾을 수 없습니다. 정확한 종목명(예: 삼성전자, 테슬라, BTC)을 입력해 주세요.")
+                            send_telegram_msg(chat_id, f"'{query_clean}' 종목을 찾을 수 없습니다. 정확한 종목명을 입력해 주세요.")
         except Exception:
             time.sleep(2)
 
@@ -834,7 +842,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (화이트 모드 테두리/폰트 색상 최적화)
+# 7. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1029,18 +1037,20 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-btn { background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }
         .tag-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
-        /* 결과 영역 컨테이너: 1180px 확장 */
-        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 16px 100px; }
-        .result-inner { max-width: 1180px; margin: 0 auto; }
+        /* 결과 영역 컨테이너: 832px 정중앙 완벽 고정 + 대화면에서 윙 패널 수용 */
+        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
+        .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
         
-        .card { background: var(--bg-card); border-radius: 16px; padding: 18px 16px; margin-bottom: 14px; border: 1px solid var(--border-line); box-shadow: 0 2px 10px rgba(0,0,0,0.03); }
+        .card { background: var(--bg-card); border-radius: 16px; padding: 18px 16px; margin-bottom: 14px; border: 1px solid var(--border-line); box-shadow: 0 2px 10px rgba(0,0,0,0.03); max-width: 832px; margin-left: auto; margin-right: auto; }
         
-        /* 65 : 35 듀얼 대시보드 그리드 */
+        /* 메인 차트 + 우측 보드 듀얼 레이아웃 (정중앙 832px 유지) */
         .chart-dual-grid {
             display: grid;
-            grid-template-columns: 65fr 35fr;
-            gap: 14px;
-            margin-bottom: 14px;
+            grid-template-columns: 832px 348px;
+            gap: 16px;
+            margin: 0 auto 14px;
+            max-width: 1196px;
+            justify-content: center;
             align-items: stretch;
         }
 
@@ -1053,6 +1063,7 @@ HTML_PAGE = """<!DOCTYPE html>
             display: flex;
             flex-direction: column;
             justify-content: space-between;
+            width: 100%;
         }
 
         .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
@@ -1065,7 +1076,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
-        /* 우측 글로벌 증시 보드: 2열 콤팩트 (스크롤 없음) */
+        /* 우측 글로벌 증시 보드: 2열 5행 매트릭스 (차트 높이와 1:1 일치, 스크롤 없음) */
         .global-board-card {
             background: var(--bg-card);
             border-radius: 16px;
@@ -1075,23 +1086,24 @@ HTML_PAGE = """<!DOCTYPE html>
             display: flex;
             flex-direction: column;
             justify-content: space-between;
+            width: 100%;
         }
 
         .board-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 10px;
-            padding-bottom: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
             border-bottom: 1px solid var(--border-line);
         }
-        .board-header-title { font-size: 0.95rem; font-weight: 800; color: var(--text-title); display: flex; align-items: center; gap: 6px; }
-        .board-header-sub { font-size: 0.72rem; color: var(--text-muted); }
+        .board-header-title { font-size: 0.92rem; font-weight: 800; color: var(--text-title); }
+        .board-header-sub { font-size: 0.7rem; color: var(--text-muted); }
 
         .board-2col-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 8px;
+            gap: 6px;
             flex: 1;
         }
 
@@ -1099,22 +1111,31 @@ HTML_PAGE = """<!DOCTYPE html>
             background: var(--bg-subcard);
             border: 1px solid var(--border-line);
             border-radius: 10px;
-            padding: 9px 10px;
+            padding: 7px 8px;
             display: flex;
             flex-direction: column;
             justify-content: space-between;
             transition: border-color 0.15s, background 0.15s;
             cursor: pointer;
+            min-height: 58px;
         }
         .mini-index-card:hover {
             border-color: var(--border-focus);
             background: var(--btn-hover);
         }
-        .mini-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
-        .mini-name { font-size: 0.78rem; font-weight: 800; color: var(--text-title); }
-        .mini-tag { font-size: 0.62rem; color: var(--text-muted); background: var(--btn-hover); padding: 1px 4px; border-radius: 4px; }
-        .mini-price { font-size: 0.95rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
-        .mini-rate { font-size: 0.75rem; font-weight: 700; margin-top: 1px; }
+        .mini-top { display: flex; justify-content: space-between; align-items: center; }
+        .mini-name { font-size: 0.76rem; font-weight: 800; color: var(--text-title); }
+        .mini-tag { font-size: 0.6rem; color: var(--text-muted); background: var(--btn-hover); padding: 1px 3px; border-radius: 4px; }
+        
+        .mini-mid-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-top: 3px;
+        }
+        .mini-price { font-size: 0.88rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
+        .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
+        .mini-spark { flex-shrink: 0; }
 
         .section-title { font-size: 1rem; font-weight: 700; color: var(--text-title); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         
@@ -1162,6 +1183,9 @@ HTML_PAGE = """<!DOCTYPE html>
             margin-bottom: 16px !important;
             box-shadow: 0 6px 24px var(--signal-glow) !important;
             transition: all 0.25s ease;
+            max-width: 832px;
+            margin-left: auto;
+            margin-right: auto;
         }
 
         .signal-card-header {
@@ -1192,6 +1216,9 @@ HTML_PAGE = """<!DOCTYPE html>
         /* 텔레그램 연동 버튼 */
         .signal-premium-btn {
             width: 100%;
+            max-width: 832px;
+            margin-left: auto;
+            margin-right: auto;
             background: var(--bg-card);
             border: 1.8px solid #10b981;
             border-radius: 16px;
@@ -1250,7 +1277,6 @@ HTML_PAGE = """<!DOCTYPE html>
         #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 74px; background: var(--bottom-fade); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
         .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }
 
-        /* 화이트/다크 테두리 자동 보정 */
         .dot-marker-style {
             position: absolute;
             top: -4px;
@@ -1263,9 +1289,11 @@ HTML_PAGE = """<!DOCTYPE html>
             transform: translateX(-50%);
         }
 
-        @media (max-width: 900px) {
+        /* 1200px 이하 화면에서는 832px 단일 칼럼으로 반응형 축소 */
+        @media (max-width: 1200px) {
             .chart-dual-grid {
                 grid-template-columns: 1fr;
+                max-width: 832px;
             }
             .global-board-card {
                 margin-top: 4px;
@@ -1313,7 +1341,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="logo-top" id="headerLogo" onclick="resetToHome()">gaemiGTP</div>
             </div>
 
-            <!-- 원클릭 테마 전환 버튼 (해/달) -->
             <button class="gemini-menu-icon" id="themeToggleBtn" onclick="toggleTheme()" title="화면 테마 변경">
                 <span id="themeIconArea"></span>
             </button>
@@ -1366,7 +1393,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="loading" id="loading">세계 증시, 전자공시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
                 <div id="result-card-wrap" style="display:none;">
                     
-                    <!-- 65:35 듀얼 보드 (좌: 메인 차트 / 우: 2열 콤팩트 글로벌 증시 보드) -->
+                    <!-- 832px 정중앙 고정 메인 차트 + 우측 10대 지표 보드 -->
                     <div class="chart-dual-grid">
                         
                         <!-- 좌측 메인 차트 카드 -->
@@ -1385,20 +1412,20 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
-                        <!-- 우측 글로벌 증시 보드 -->
+                        <!-- 우측 글로벌 증시 & 매크로 10대 지표 보드 (스크롤 0%, 차트 높이와 1:1 일치) -->
                         <div class="global-board-card">
                             <div class="board-header">
-                                <span class="board-header-title">🌐 글로벌 핵심 증시</span>
+                                <span class="board-header-title">글로벌 핵심 증시 & 매크로</span>
                                 <span class="board-header-sub">실시간 연동</span>
                             </div>
                             <div class="board-2col-grid" id="worldBoardGrid">
-                                <!-- 8대 핵심 지수 2열 렌더링 영역 -->
+                                <!-- 10대 지표 2열 5행 렌더링 영역 -->
                             </div>
                         </div>
 
                     </div>
 
-                    <!-- 3대 시장 통합 컨센서스 (애널리스트 컨센서스 / 온체인 수급) 카드 -->
+                    <!-- 3대 시장 통합 컨센서스 카드 -->
                     <div class="card" id="unifiedCard" style="display:none;">
                         <div style="margin-bottom:16px;">
                             <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
@@ -1475,8 +1502,8 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
                         <div class="vote-btn-wrap">
-                            <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">🚀 상승할 것 같아요</button>
-                            <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">📉 하락할 것 같아요</button>
+                            <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">상승 전망</button>
+                            <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">하락 전망</button>
                         </div>
                     </div>
 
@@ -1705,7 +1732,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (!area) return;
             area.innerHTML = isLight 
                 ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`
-                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="12" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
+                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
         }
 
         function resizeChart() {
@@ -1791,6 +1818,30 @@ HTML_PAGE = """<!DOCTYPE html>
                 body.style.display = 'block';
                 arrow.style.transform = 'rotate(180deg)';
             }
+        }
+
+        // 인라인 SVG 스파크라인 렌더러
+        function renderSparklineSVG(points, isUp) {
+            if (!points || points.length < 2) return '';
+            const min = Math.min(...points);
+            const max = Math.max(...points);
+            const range = (max - min) === 0 ? 1 : (max - min);
+            const width = 44;
+            const height = 16;
+            const padY = 2;
+            
+            const coords = points.map((p, i) => {
+                const x = (i / (points.length - 1)) * width;
+                const y = height - padY - ((p - min) / range) * (height - padY * 2);
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+            });
+            
+            const pathD = 'M ' + coords.join(' L ');
+            const strokeColor = isUp ? '#ef4444' : '#0284c7';
+            
+            return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="mini-spark">
+                <path d="${pathD}" fill="none" stroke="${strokeColor}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>`;
         }
 
         async function loadCommunityData(symbol, displayName) {
@@ -2014,20 +2065,26 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 loadCommunityData(data.symbol, displayName);
 
-                // 우측 글로벌 증시 보드 (8대 핵심 지수 2열 렌더링)
+                // 우측 글로벌 증시 & 매크로 10대 지표 2열 5행 렌더링
                 const wBoardGrid = document.getElementById('worldBoardGrid');
                 wBoardGrid.innerHTML = '';
                 if (data.world_board) {
                     data.world_board.forEach(w => {
                         const cls = w.up ? 'val-up' : 'val-down';
+                        const sparkSvg = renderSparklineSVG(w.sparkline, w.up);
                         wBoardGrid.innerHTML += `
                             <div class="mini-index-card" onclick="doSearch('${w.name === 'USD/KRW' ? '환율' : w.name}')">
                                 <div class="mini-top">
                                     <span class="mini-name">${w.name}</span>
                                     <span class="mini-tag">${w.tag}</span>
                                 </div>
-                                <div class="mini-price">${w.price}</div>
-                                <div class="mini-rate ${cls}">${w.rate}</div>
+                                <div class="mini-mid-row">
+                                    <div>
+                                        <div class="mini-price">${w.price}</div>
+                                        <div class="mini-rate ${cls}">${w.rate}</div>
+                                    </div>
+                                    ${sparkSvg}
+                                </div>
                             </div>
                         `;
                     });
@@ -2150,9 +2207,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rTval20d').innerText = q.tval_20d;
 
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
-                document.getElementById('rBt1yTag').innerText = `● ${q.bt_1y}`;
-                document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;
-                document.getElementById('rRrTag').innerText = `● ${q.rr_str}`;
+                document.getElementById('rBt1yTag').innerText = q.bt_1y;
+                document.getElementById('rBt2yTag').innerText = q.bt_2y;
+                document.getElementById('rRrTag').innerText = q.rr_str;
 
                 document.getElementById('rSliderStop').innerText = q.stop_p;
                 document.getElementById('rSliderEntry').innerText = `진입 ${q.entry1}`;
@@ -2190,7 +2247,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const isLight = document.body.classList.contains('light-theme');
 
             chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 600,
+                width: container.clientWidth || 700,
                 height: 300,
                 layout: { 
                     background: { color: isLight ? '#ffffff' : '#1e1f20' }, 

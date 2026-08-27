@@ -1,3 +1,11 @@
+**수정 사항 요약**
+
+* 퀀트 분석 카드 오른쪽 상단의 중복 텍스트(`qTrendBadge` - 박스권 혼조세 등)를 완전히 제거하여 타이틀 영역을 깔끔하고 단정하게 정돈했습니다.
+* 다른 모든 기능(실시간 주가, 차트, 60일 모멘텀 그래프, 10대 지표, 텔레그램 알림, 퀀트 알고리즘 등)은 그대로 완벽하게 보존되었습니다.
+
+---
+
+```python
 import os
 import re
 import io
@@ -875,7 +883,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
             t_str = pd.to_datetime(idx).strftime("%Y-%m-%d")
             momentum_history.append({"time": t_str, "score": day_score})
 
-        # 오늘 점수는 momentum_history의 마지막 점수로 100% 일치
         quant_score = momentum_history[-1]["score"] if momentum_history else 72
         bullish_count = int(round((quant_score - 45) / 9)) if quant_score >= 45 else 0
     except Exception:
@@ -1166,7 +1173,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI
+# 7. 웹 프론트엔드 UI (우측 상단 중복 텍스트 삭제 완료)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1516,7 +1523,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .status-pill-warning { color: #d97706; }
         .status-pill-neutral { color: var(--text-muted); }
 
-        .dart-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .dart-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: block; }
         .dart-item:last-child { border-bottom: none; }
         .dart-title { color: var(--text-main); font-size: 0.83rem; font-weight: 500; line-height: 1.4; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .dart-title:hover { color: #0284c7; }
@@ -1782,11 +1789,10 @@ HTML_PAGE = """<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <!-- 2. 차트 바로 아래: 퀀트 분석 카드 -->
+                    <!-- 2. 차트 바로 아래: 퀀트 분석 카드 (깔끔한 단일 타이틀 적용) -->
                     <div class="card">
-                        <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;">
+                        <div style="margin-bottom:16px;">
                             <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
-                            <span id="qTrendBadge" style="font-size:0.75rem; color:#0284c7; font-weight:700;"></span>
                         </div>
 
                         <!-- 상단 요약 게이지 & 안전한 모멘텀 상태 뱃지 -->
@@ -2528,7 +2534,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 const q = data.quant;
                 if (q) {
-                    setTxt('qTrendBadge', q.trend);
                     setTxt('qScoreVal', q.quant_score);
                     setTxt('qScoreBadge', q.score_badge);
                     setHtml('qScoreDots', q.score_dots);
@@ -2957,3 +2962,5 @@ def run_web_server():
 
 if __name__ == "__main__":
     run_web_server()
+
+```

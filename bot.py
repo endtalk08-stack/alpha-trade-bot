@@ -532,7 +532,7 @@ def get_trading_val_rank(symbol, is_krw=True):
     return ""
 
 # ----------------------------------------------------
-# 4. 14대 퀀트 기술지표 및 시그널 가이드 연산 (100% 원본 보존)
+# 4. 14대 퀀트 기술지표 및 직관적 동적 상태 판정 엔진
 # ----------------------------------------------------
 def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if df is None or len(df) < 10:
@@ -543,18 +543,125 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     volumes = df['Volume']
     n_bars = len(df)
 
-    ma5 = round_fn(closes.tail(5).mean())
+    ma5_val = float(closes.tail(5).mean())
     ma20_val = float(closes.tail(20).mean())
-    ma20 = round_fn(ma20_val)
     ma60_val = float(closes.tail(60).mean()) if n_bars >= 60 else None
+    ma120_val = float(closes.tail(120).mean()) if n_bars >= 120 else None
+    ma600_val = float(closes.tail(600).mean()) if n_bars >= 600 else None
+    ma1200_val = float(closes.tail(1200).mean()) if n_bars >= 1200 else None
+
+    ma5 = round_fn(ma5_val)
+    ma20 = round_fn(ma20_val)
     ma60 = round_fn(ma60_val) if ma60_val else "-"
-    ma120 = round_fn(closes.tail(120).mean()) if n_bars >= 120 else "-"
-    ma600 = round_fn(closes.tail(600).mean()) if n_bars >= 600 else "-"
-    ma1200 = round_fn(closes.tail(1200).mean()) if n_bars >= 1200 else "-"
+    ma120 = round_fn(ma120_val) if ma120_val else "-"
+    ma600 = round_fn(ma600_val) if ma600_val else "-"
+    ma1200 = round_fn(ma1200_val) if ma1200_val else "-"
+
+    # 이동평균선 지지 / 이탈 동적 상태 판정
+    ma5_state = "5일선 상회 (단기 지지)" if raw_price >= ma5_val else "5일선 하회 (단기 저항)"
+    ma5_color = "positive" if raw_price >= ma5_val else "negative"
+
+    ma20_state = "20일선 지지 (추세 유지)" if raw_price >= ma20_val else "20일선 이탈 (조정 국면)"
+    ma20_color = "positive" if raw_price >= ma20_val else "negative"
+
+    ma60_state = "60일선 수급선 지지" if ma60_val and raw_price >= ma60_val else "60일선 하회 (매물 저항)"
+    ma60_color = "positive" if ma60_val and raw_price >= ma60_val else "warning"
+
+    ma120_state = "120일선 경기선 상회" if ma120_val and raw_price >= ma120_val else "120일선 저항"
+    ma120_color = "positive" if ma120_val and raw_price >= ma120_val else "negative"
+
+    # 볼린저 밴드 (60, 2)
+    bb_period = min(60, n_bars)
+    bb_mid = float(closes.tail(bb_period).mean())
+    bb_std = float(closes.tail(bb_period).std())
+    bb_upper = bb_mid + (bb_std * 2)
+    bb_lower = bb_mid - (bb_std * 2)
+    bb_str = f"{round_fn(bb_upper)} / {round_fn(bb_lower)}"
+
+    if raw_price >= bb_upper:
+        bb_state = "상단 밴드 돌파 (강한 상승세)"
+        bb_color = "positive"
+    elif raw_price <= bb_lower:
+        bb_state = "하단 밴드 지지 (과매도 반등구간)"
+        bb_color = "warning"
+    else:
+        bb_state = "밴드 내 안정적 등락"
+        bb_color = "neutral"
+
+    # MACD
+    if n_bars >= 35:
+        ema12 = closes.ewm(span=12, adjust=False).mean()
+        ema26 = closes.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        macd_val = float(macd_line.iloc[-1])
+        sig_val = float(signal_line.iloc[-1])
+        macd_str = f"{macd_val:+.2f} (시그널: {sig_val:+.2f})"
+        if macd_val >= sig_val:
+            macd_state = "골든크로스 (상승 모멘텀)"
+            macd_color = "positive"
+        else:
+            macd_state = "데드크로스 (하방 압력)"
+            macd_color = "negative"
+    else:
+        macd_str = "-"
+        macd_state = "데이터 집계 중"
+        macd_color = "neutral"
+
+    # 52주 고저 위치
+    df_1y = df.tail(250)
+    high_52w = float(df_1y['High'].max())
+    low_52w = float(df_1y['Low'].min())
+    if high_52w > low_52w:
+        pos_52w = ((raw_price - low_52w) / (high_52w - low_52w)) * 100
+        pos_52w_str = f"{pos_52w:.1f}% (고:{round_fn(high_52w)}/저:{round_fn(low_52w)})"
+        slider_fill_pct = min(92, max(8, int(pos_52w)))
+    else:
+        pos_52w_str = "-"
+        pos_52w = 50.0
+        slider_fill_pct = 50
+
+    # 이격도
+    disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
+    disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
+    disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"
+    disp_state = "적정 이격 유지" if 98.0 <= disp20 <= 104.0 else ("단기 과열 주의" if disp20 > 104.0 else "단기 과매도 구간")
+    disp_color = "positive" if 98.0 <= disp20 <= 104.0 else ("warning" if disp20 > 104.0 else "neutral")
+
+    # RSI (14)
+    delta = closes.diff()
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    rs = gain / loss
+    rsi_series = 100 - (100 / (1 + rs))
+    rsi_num = float(rsi_series.iloc[-1]) if not np.isnan(rsi_series.iloc[-1]) else 50.0
+    rsi_val = f"{rsi_num:.1f}"
+    if rsi_num >= 70:
+        rsi_state = "과열권 (차익실현 경계)"
+        rsi_color = "warning"
+    elif rsi_num <= 30:
+        rsi_state = "침체권 (기술적 반등 기대)"
+        rsi_color = "positive"
+    else:
+        rsi_state = "중립 (안정적 심리)"
+        rsi_color = "neutral"
+
+    # ATR & 거래량
+    high_low = df['High'] - df['Low']
+    atr_raw = float(high_low.tail(14).mean())
+    atr_val = round_fn(atr_raw)
+    atr_ratio = f"{((atr_raw / raw_price) * 100):.2f}%" if raw_price > 0 else "0.0%"
+
+    v_mean5 = float(volumes.tail(5).mean())
+    v_curr = float(volumes.iloc[-1])
+    vol_pct = ((v_curr / v_mean5) * 100) if v_mean5 > 0 else 100.0
+    vol_ratio = f"{vol_pct:.1f}%"
+    vol_state = "거래량 급증 (수급 유입)" if vol_pct >= 150 else ("거래량 보통" if vol_pct >= 70 else "거래량 침체 (관망세)")
+    vol_color = "positive" if vol_pct >= 150 else "neutral"
 
     rank_str = get_trading_val_rank(symbol, is_krw)
     if n_bars >= 20:
-        val_20d = (closes.tail(20) * volumes.tail(20)).mean()
+        val_20d = float((closes.tail(20) * volumes.tail(20)).mean())
         if is_krw:
             if val_20d >= 100_000_000_000:
                 tval_20d_str = f"{val_20d / 100_000_000_000:.1f}천억원{rank_str}"
@@ -572,52 +679,17 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     else:
         tval_20d_str = "-"
 
-    bb_period = min(60, n_bars)
-    bb_mid = closes.tail(bb_period).mean()
-    bb_std = closes.tail(bb_period).std()
-    bb_upper = bb_mid + (bb_std * 2)
-    bb_lower = bb_mid - (bb_std * 2)
-    bb_str = f"{round_fn(bb_upper)} / {round_fn(bb_lower)}"
+    # 100점 만점 퀀트 기술 점수 산출
+    bullish_count = 0
+    if raw_price >= ma5_val: bullish_count += 1
+    if raw_price >= ma20_val: bullish_count += 1
+    if ma60_val and raw_price >= ma60_val: bullish_count += 1
+    if n_bars >= 35 and macd_val >= sig_val: bullish_count += 1
+    if 40.0 <= rsi_num <= 65.0: bullish_count += 1
+    if vol_pct >= 100: bullish_count += 1
 
-    if n_bars >= 35:
-        ema12 = closes.ewm(span=12, adjust=False).mean()
-        ema26 = closes.ewm(span=26, adjust=False).mean()
-        macd_line = ema12 - ema26
-        signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        macd_val = macd_line.iloc[-1]
-        sig_val = signal_line.iloc[-1]
-        macd_str = f"{macd_val:+.2f} (시그널: {sig_val:+.2f})"
-    else:
-        macd_str = "-"
-
-    df_1y = df.tail(250)
-    high_52w = float(df_1y['High'].max())
-    low_52w = float(df_1y['Low'].min())
-    if high_52w > low_52w:
-        pos_52w = ((raw_price - low_52w) / (high_52w - low_52w)) * 100
-        pos_52w_str = f"{pos_52w:.1f}% (고:{round_fn(high_52w)}/저:{round_fn(low_52w)})"
-    else:
-        pos_52w_str = "-"
-
-    disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
-    disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
-    disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"
-
-    delta = closes.diff()
-    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
-    rs = gain / loss
-    rsi_series = 100 - (100 / (1 + rs))
-    rsi_val = f"{float(rsi_series.iloc[-1]):.2f}" if not np.isnan(rsi_series.iloc[-1]) else "50.0"
-
-    high_low = df['High'] - df['Low']
-    atr_raw = float(high_low.tail(14).mean())
-    atr_val = round_fn(atr_raw)
-    atr_ratio = f"{((atr_raw / raw_price) * 100):.2f}%" if raw_price > 0 else "0.0%"
-
-    v_mean5 = volumes.tail(5).mean()
-    v_curr = volumes.iloc[-1]
-    vol_ratio = f"{((v_curr / v_mean5) * 100):.1f}%" if v_mean5 > 0 else "100.0%"
+    quant_score = int(min(98, max(42, int(45 + (bullish_count * 9)))))
+    score_badge = "강력 매수" if quant_score >= 80 else ("매수 우세" if quant_score >= 65 else "중립 관망")
 
     if ma60_val and raw_price > ma20_val > ma60_val:
         trend = "정배열 상승 추세"
@@ -646,29 +718,29 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     rr_2y = round(rr_1y * 1.75, 1)
 
     return {
+        "quant_score": str(quant_score),
+        "score_badge": score_badge,
+        "score_dots": f"<span style='color:#10b981; font-weight:700;'>상승 시그널 {bullish_count}</span> &nbsp; <span style='color:#0284c7; font-weight:700;'>중립 {6 - bullish_count}</span>",
         "trend": trend,
-        "ma5": ma5, "ma20": ma20, "ma60": ma60, "ma120": ma120,
+        "ma5": ma5, "ma5_state": ma5_state, "ma5_color": ma5_color,
+        "ma20": ma20, "ma20_state": ma20_state, "ma20_color": ma20_color,
+        "ma60": ma60, "ma60_state": ma60_state, "ma60_color": ma60_color,
+        "ma120": ma120, "ma120_state": ma120_state, "ma120_color": ma120_color,
         "ma600": ma600, "ma1200": ma1200,
-        "bollinger": bb_str,
-        "macd": macd_str,
-        "pos_52w": pos_52w_str,
-        "disp": disp_str,
-        "rsi": rsi_val,
-        "atr": atr_val,
-        "atr_ratio": atr_ratio,
-        "vol_ratio": vol_ratio,
+        "bollinger": bb_str, "bb_state": bb_state, "bb_color": bb_color,
+        "macd": macd_str, "macd_state": macd_state, "macd_color": macd_color,
+        "pos_52w": pos_52w_str, "slider_fill_pct": slider_fill_pct,
+        "high_52w": round_fn(high_52w), "low_52w": round_fn(low_52w),
+        "disp": disp_str, "disp_state": disp_state, "disp_color": disp_color, "disp20_num": f"{disp20:+.1f}%",
+        "rsi": rsi_val, "rsi_state": rsi_state, "rsi_color": rsi_color,
+        "atr": atr_val, "atr_ratio": atr_ratio,
+        "vol_ratio": vol_ratio, "vol_state": vol_state, "vol_color": vol_color,
         "tval_20d": tval_20d_str,
-        "entry1": entry1,
-        "entry2": entry2,
-        "target1": target1,
-        "target2": target2,
-        "stop_p": stop_p,
-        "sig_fill_pct": sig_fill_pct,
-        "guide_text": guide_text,
-        "bt_1y": f"1년 {win_1y}%",
-        "bt_2y": f"2년 {win_2y}%",
-        "win_rate_num": f"{int(win_2y)}%",
-        "rr_str": f"손익비 1:{rr_2y}"
+        "entry1": entry1, "entry2": entry2,
+        "target1": target1, "target2": target2, "stop_p": stop_p,
+        "sig_fill_pct": sig_fill_pct, "guide_text": guide_text,
+        "bt_1y": f"1년 {win_1y}%", "bt_2y": f"2년 {win_2y}%",
+        "win_rate_num": f"{int(win_2y)}%", "rr_str": f"손익비 1:{rr_2y}"
     }
 
 # ----------------------------------------------------
@@ -878,7 +950,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (순서: 차트 -> 기술지표 -> 종목뉴스)
+# 7. 웹 프론트엔드 UI (세련된 기술 지표 & 퀀트 분석 카드)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1133,7 +1205,7 @@ HTML_PAGE = """<!DOCTYPE html>
             padding-bottom: 6px;
             border-bottom: 1px solid var(--border-line);
         }
-        .board-header-title { font-size: 0.92rem; font-weight: 800; color: var(--text-title); }
+        .board-header-title { font-size: 0.95rem; font-weight: 800; color: var(--text-title); }
         .board-header-sub { font-size: 0.7rem; color: var(--text-muted); }
 
         .board-2col-grid {
@@ -1178,10 +1250,50 @@ HTML_PAGE = """<!DOCTYPE html>
         .val-up { color: #ef4444; }
         .val-down { color: #0284c7; }
 
-        .quant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-        .quant-item { background: var(--bg-subcard); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border-line); min-width: 0; }
-        .quant-item .q-label { color: var(--text-muted); font-size: 0.74rem; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .quant-item .q-val { color: var(--text-title); font-size: 0.88rem; font-weight: 700; word-break: break-all; }
+        /* 세련된 퀀트 지표 리스트 스타일 */
+        .quant-row-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border-line);
+            font-size: 0.84rem;
+        }
+        .quant-row-item:last-child {
+            border-bottom: none;
+        }
+        .quant-row-left {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            min-width: 0;
+        }
+        .quant-row-name {
+            font-weight: 700;
+            color: var(--text-title);
+        }
+        .quant-row-status {
+            font-size: 0.72rem;
+            font-weight: 700;
+        }
+        .quant-row-right {
+            text-align: right;
+            flex-shrink: 0;
+        }
+        .quant-row-val {
+            font-weight: 800;
+            color: var(--text-title);
+        }
+        .quant-row-subval {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .status-pill-positive { color: #10b981; }
+        .status-pill-negative { color: #ef4444; }
+        .status-pill-warning { color: #d97706; }
+        .status-pill-neutral { color: var(--text-muted); }
 
         .dart-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
         .dart-item:last-child { border-bottom: none; }
@@ -1430,8 +1542,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     
                     <!-- 1. 메인 차트 + 우측 '증시는 지금' -->
                     <div class="chart-dual-grid">
-                        
-                        <!-- 좌측 메인 차트 카드 -->
                         <div class="chart-main-card">
                             <div>
                                 <div class="price-title" id="rTitle"></div>
@@ -1447,44 +1557,77 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
-                        <!-- 우측 10대 지표 보드 (프레임리스 '증시는 지금') -->
                         <div class="global-board-card">
                             <div class="board-header">
                                 <span class="board-header-title">증시는 지금</span>
                                 <span class="board-header-sub">실시간 연동</span>
                             </div>
-                            <div class="board-2col-grid" id="worldBoardGrid">
-                                <!-- 10대 지표 2열 5행 렌더링 영역 -->
+                            <div class="board-2col-grid" id="worldBoardGrid"></div>
+                        </div>
+                    </div>
+
+                    <!-- 2. 차트 바로 아래: 세련된 기술 지표 & 퀀트 분석 카드 -->
+                    <div class="card">
+                        <div style="margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;">
+                            <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">기술 지표 & 퀀트 분석</span>
+                            <span id="qTrendBadge" style="font-size:0.75rem; color:#0284c7; font-weight:700;"></span>
+                        </div>
+
+                        <!-- 상단 요약 게이지 & 상태 뱃지 -->
+                        <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid var(--border-line);">
+                            <div class="gauge-inner-box">
+                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="qScoreVal"></span>
+                                <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">기술점수</span>
+                            </div>
+                            <div style="min-width:0;">
+                                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                    <span style="font-size:0.78rem; color:var(--text-muted);">종합 평가</span>
+                                    <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="qScoreBadge"></span>
+                                </div>
+                                <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="qScoreDots"></div>
                             </div>
                         </div>
 
+                        <!-- 2개 주요 하이라이트 지표 -->
+                        <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
+                            <div>
+                                <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">20일 이격도</div>
+                                <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="qDispVal"></div>
+                            </div>
+                            <div style="text-align:right;">
+                                <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">RSI (14) 모멘텀</div>
+                                <div style="font-size:1.15rem; font-weight:700; color:var(--text-title);" id="qRsiVal"></div>
+                            </div>
+                        </div>
+
+                        <!-- 52주 고저 위치 슬라이더 바 -->
+                        <div style="margin:20px 0 14px; position:relative;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                <span style="color:var(--text-muted);" id="qLow52w"></span>
+                                <span style="color:#10b981; font-weight:700;" id="qPos52wLabel">52주 가격 위치</span>
+                                <span style="color:var(--text-muted);" id="qHigh52w"></span>
+                            </div>
+                            <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
+                                <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="qSliderFill"></div>
+                                <div class="dot-marker-style" id="qDotMarker"></div>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted); margin-top:6px; white-space:nowrap;">
+                                <span>52주 최저가</span>
+                                <span>52주 최고가</span>
+                            </div>
+                        </div>
+
+                        <!-- 세부 지표 & 상태 라벨 리스트 -->
+                        <div style="margin-top:16px; border-top:1px solid var(--border-line); padding-top:12px;">
+                            <div style="font-size:0.82rem; font-weight:700; color:var(--text-sub); margin-bottom:8px; display:flex; justify-content:space-between;">
+                                <span>핵심 기술 지표 판정</span>
+                                <span style="font-size:0.68rem; color:var(--text-muted); font-weight:normal;">14대 퀀트 알고리즘</span>
+                            </div>
+                            <div id="quantDetailList"></div>
+                        </div>
                     </div>
 
-                    <!-- 2. 차트 바로 아래: 기술 지표 (요청에 따라 위치 이동) -->
-                    <div class="card">
-                        <div class="section-title">
-                            <span>기술 지표</span>
-                            <span id="rTrend" style="font-size:0.82rem; color:#0284c7;"></span>
-                        </div>
-                        <div class="quant-grid">
-                            <div class="quant-item"><div class="q-label">5일선</div><div class="q-val" id="rMa5"></div></div>
-                            <div class="quant-item"><div class="q-label">20일선</div><div class="q-val" id="rMa20"></div></div>
-                            <div class="quant-item"><div class="q-label">60일선</div><div class="q-val" id="rMa60"></div></div>
-                            <div class="quant-item"><div class="q-label">120일선</div><div class="q-val" id="rMa120"></div></div>
-                            <div class="quant-item"><div class="q-label">600일선</div><div class="q-val" id="rMa600"></div></div>
-                            <div class="quant-item"><div class="q-label">1200일선</div><div class="q-val" id="rMa1200"></div></div>
-                            <div class="quant-item"><div class="q-label">볼린저 밴드 (60, 2) 상/하</div><div class="q-val" id="rBb"></div></div>
-                            <div class="quant-item"><div class="q-label">MACD (12,26,9)</div><div class="q-val" id="rMacd"></div></div>
-                            <div class="quant-item"><div class="q-label">52주 고/저 대비 위치</div><div class="q-val" id="rPos52w"></div></div>
-                            <div class="quant-item"><div class="q-label">이격도 (20일 / 60일)</div><div class="q-val" id="rDisp"></div></div>
-                            <div class="quant-item"><div class="q-label">RSI (14)</div><div class="q-val" id="rRsi"></div></div>
-                            <div class="quant-item"><div class="q-label">ATR (14) 변동폭 / 비율</div><div class="q-val" id="rAtr"></div></div>
-                            <div class="quant-item"><div class="q-label">거래량 / 5일평균 대비</div><div class="q-val" id="rVolRatio"></div></div>
-                            <div class="quant-item"><div class="q-label">20일 평균 거래대금</div><div class="q-val" id="rTval20d"></div></div>
-                        </div>
-                    </div>
-
-                    <!-- 3. 기술 지표 바로 아래: 종목 뉴스 (요청에 따라 위치 이동) -->
+                    <!-- 3. 기술 지표 바로 아래: 종목 뉴스 -->
                     <div class="card">
                         <div class="section-title">종목 뉴스</div>
                         <div id="stockNewsList"></div>
@@ -2124,25 +2267,106 @@ HTML_PAGE = """<!DOCTYPE html>
                     });
                 }
 
-                // 2. 기술 지표 데이터 바인딩
+                // 2. 세련된 기술 지표 & 퀀트 분석 데이터 렌더링
                 const q = data.quant;
-                document.getElementById('rTrend').innerText = q.trend;
-                document.getElementById('rMa5').innerText = q.ma5;
-                document.getElementById('rMa20').innerText = q.ma20;
-                document.getElementById('rMa60').innerText = q.ma60;
-                document.getElementById('rMa120').innerText = q.ma120;
-                document.getElementById('rMa600').innerText = q.ma600;
-                document.getElementById('rMa1200').innerText = q.ma1200;
-                document.getElementById('rBb').innerText = q.bollinger;
-                document.getElementById('rMacd').innerText = q.macd;
-                document.getElementById('rPos52w').innerText = q.pos52w || q.pos_52w;
-                document.getElementById('rDisp').innerText = q.disp;
-                document.getElementById('rRsi').innerText = q.rsi;
-                document.getElementById('rAtr').innerText = `${q.atr} (${q.atr_ratio})`;
-                document.getElementById('rVolRatio').innerText = q.vol_ratio;
-                document.getElementById('rTval20d').innerText = q.tval_20d;
+                document.getElementById('qTrendBadge').innerText = q.trend;
+                document.getElementById('qScoreVal').innerText = q.quant_score;
+                document.getElementById('qScoreBadge').innerText = q.score_badge;
+                document.getElementById('qScoreDots').innerHTML = q.score_dots;
 
-                // 3. 종목 뉴스 데이터 바인딩
+                document.getElementById('qDispVal').innerText = q.disp20_num;
+                document.getElementById('qRsiVal').innerText = `${q.rsi} (${q.rsi_state.split(' ')[0]})`;
+
+                document.getElementById('qLow52w').innerText = `최저 ${q.low_52w}`;
+                document.getElementById('qHigh52w').innerText = `최고 ${q.high_52w}`;
+                document.getElementById('qSliderFill').style.width = q.slider_fill_pct + '%';
+                document.getElementById('qDotMarker').style.left = q.slider_fill_pct + '%';
+
+                const qList = document.getElementById('quantDetailList');
+                qList.innerHTML = `
+                    <div class="quant-row-item">
+                        <div class="quant-row-left">
+                            <span class="quant-row-name">5일 이동평균선</span>
+                            <span class="quant-row-status status-pill-${q.ma5_color}">${q.ma5_state}</span>
+                        </div>
+                        <div class="quant-row-right">
+                            <div class="quant-row-val">${q.ma5}</div>
+                            <div class="quant-row-subval">단기 지지선</div>
+                        </div>
+                    </div>
+                    <div class="quant-row-item">
+                        <div class="quant-row-left">
+                            <span class="quant-row-name">20일 이동평균선</span>
+                            <span class="quant-row-status status-pill-${q.ma20_color}">${q.ma20_state}</span>
+                        </div>
+                        <div class="quant-row-right">
+                            <div class="quant-row-val">${q.ma20}</div>
+                            <div class="quant-row-subval">중기 생명선</div>
+                        </div>
+                    </div>
+                    <div class="quant-row-item">
+                        <div class="quant-row-left">
+                            <span class="quant-row-name">60일 이동평균선</span>
+                            <span class="quant-row-status status-pill-${q.ma60_color}">${q.ma60_state}</span>
+                        </div>
+                        <div class="quant-row-right">
+                            <div class="quant-row-val">${q.ma60}</div>
+                            <div class="quant-row-subval">중장기 수급선</div>
+                        </div>
+                    </div>
+                    <div class="quant-row-item">
+                        <div class="quant-row-left">
+                            <span class="quant-row-name">볼린저 밴드 (60, 2)</span>
+                            <span class="quant-row-status status-pill-${q.bb_color}">${q.bb_state}</span>
+                        </div>
+                        <div class="quant-row-right">
+                            <div class="quant-row-val">${q.bollinger}</div>
+                            <div class="quant-row-subval">상단 / 하단</div>
+                        </div>
+                    </div>
+                    <div class="quant-row-item">
+                        <div class="quant-row-left">
+                            <span class="quant-row-name">MACD (12, 26, 9)</span>
+                            <span class="quant-row-status status-pill-${q.macd_color}">${q.macd_state}</span>
+                        </div>
+                        <div class="quant-row-right">
+                            <div class="quant-row-val">${q.macd}</div>
+                            <div class="quant-row-subval">모멘텀 추세</div>
+                        </div>
+                    </div>
+                    <div class="quant-row-item">
+                        <div class="quant-row-left">
+                            <span class="quant-row-name">RSI (14)</span>
+                            <span class="quant-row-status status-pill-${q.rsi_color}">${q.rsi_state}</span>
+                        </div>
+                        <div class="quant-row-right">
+                            <div class="quant-row-val">${q.rsi} pt</div>
+                            <div class="quant-row-subval">상대강도지수</div>
+                        </div>
+                    </div>
+                    <div class="quant-row-item">
+                        <div class="quant-row-left">
+                            <span class="quant-row-name">거래량 / 5일평균</span>
+                            <span class="quant-row-status status-pill-${q.vol_color}">${q.vol_state}</span>
+                        </div>
+                        <div class="quant-row-right">
+                            <div class="quant-row-val">${q.vol_ratio}</div>
+                            <div class="quant-row-subval">평균 대비 비율</div>
+                        </div>
+                    </div>
+                    <div class="quant-row-item">
+                        <div class="quant-row-left">
+                            <span class="quant-row-name">20일 평균 거래대금</span>
+                            <span class="quant-row-status status-pill-neutral">유동성 척도</span>
+                        </div>
+                        <div class="quant-row-right">
+                            <div class="quant-row-val">${q.tval_20d}</div>
+                            <div class="quant-row-subval">실시간 집계</div>
+                        </div>
+                    </div>
+                `;
+
+                // 3. 종목 뉴스 렌더링
                 const sNews = document.getElementById('stockNewsList');
                 sNews.innerHTML = '';
                 if (data.stock_news && data.stock_news.length > 0) {
@@ -2158,7 +2382,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
                 }
 
-                // 4. 컨센서스 데이터 바인딩
+                // 4. 컨센서스 렌더링
                 const c = data.consensus;
                 const uCard = document.getElementById('unifiedCard');
                 if (c) {
@@ -2245,7 +2469,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
                 }
 
-                // 시그널 바인딩
+                // gaemiGTP 시그널 바인딩
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
                 document.getElementById('rBt1yTag').innerText = q.bt_1y;
                 document.getElementById('rBt2yTag').innerText = q.bt_2y;

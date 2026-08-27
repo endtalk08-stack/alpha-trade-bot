@@ -1316,7 +1316,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (해외 뉴스 캘린더 하단 이동 & 아이콘 삭제 완료)
+# 7. 웹 프론트엔드 UI (페이지네이션 & 스크롤바 없는 1:1 대칭)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1518,31 +1518,80 @@ HTML_PAGE = """<!DOCTYPE html>
         .mini-price { font-size: 0.88rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
         .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
 
-        /* 캘린더 위젯 스타일 */
-        .cal-top-title-area { margin-bottom: 12px; }
-        .cal-top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+        /* 캘린더 위젯 스타일 (고정 높이 & 내부 스크롤바 삭제) */
+        .cal-top-title-area { margin-bottom: 8px; }
+        .cal-top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
         .cal-date-ctrl { display: flex; align-items: center; gap: 8px; }
         .cal-arrow-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.75rem; transition: all 0.2s; }
         .cal-arrow-btn:hover { background: var(--btn-hover); color: var(--text-title); border-color: var(--border-focus); }
-        .cal-current-date { font-size: 1.0rem; font-weight: 800; color: var(--text-title); letter-spacing: -0.3px; }
-        .cal-today-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); font-size: 0.72rem; font-weight: 700; padding: 4px 9px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+        .cal-current-date { font-size: 0.98rem; font-weight: 800; color: var(--text-title); letter-spacing: -0.3px; }
+        .cal-today-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); font-size: 0.72rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
         .cal-today-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
-        .cal-filter-bar { display: flex; align-items: center; gap: 5px; margin-bottom: 10px; overflow-x: auto; padding-bottom: 2px; }
-        .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 3px 8px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+        .cal-filter-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; overflow-x: auto; padding-bottom: 2px; }
+        .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
         .cal-filter-pill.active { background: #ffffff; color: #121212; border-color: #ffffff; }
         .cal-filter-pill .star-gold { color: var(--star-gold); }
 
-        .cal-day-header { font-size: 0.75rem; font-weight: 700; color: var(--text-muted); margin: 4px 0 8px; }
-        .cal-event-list-wrap { flex: 1; overflow-y: auto; max-height: 480px; padding-right: 2px; display: flex; flex-direction: column; gap: 6px; }
-        .cal-card-item { background: var(--bg-cal-card); border: 1px solid var(--border-line); border-radius: 10px; padding: 9px 11px; display: flex; align-items: flex-start; gap: 10px; transition: all 0.2s; cursor: pointer; }
+        .cal-day-header { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); margin: 2px 0 6px; }
+        
+        /* [중요] 스크롤바 원천 제거 및 4개 카드 고정 프레임 */
+        .cal-event-list-wrap {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            overflow: hidden;
+            justify-content: flex-start;
+        }
+
+        .cal-card-item {
+            background: var(--bg-cal-card);
+            border: 1px solid var(--border-line);
+            border-radius: 10px;
+            padding: 8px 10px;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            transition: all 0.2s;
+            cursor: pointer;
+            min-height: 68px;
+        }
         .cal-card-item:hover { border-color: var(--border-focus); background: var(--btn-hover); }
-        .cal-time-col { font-size: 0.75rem; font-weight: 800; color: var(--text-muted); width: 40px; flex-shrink: 0; padding-top: 1px; }
+        .cal-time-col { font-size: 0.74rem; font-weight: 800; color: var(--text-muted); width: 38px; flex-shrink: 0; padding-top: 1px; }
         .cal-detail-col { flex: 1; min-width: 0; }
-        .cal-stars-row { font-size: 0.6rem; letter-spacing: 1px; color: var(--star-gold); margin-bottom: 2px; }
-        .cal-event-title { font-size: 0.82rem; font-weight: 700; color: var(--text-title); line-height: 1.35; word-break: keep-all; margin-bottom: 3px; }
-        .cal-event-meta { font-size: 0.7rem; color: var(--text-muted); line-height: 1.3; }
-        .cal-actual-val { color: #38bdf8; font-weight: 700; margin-right: 4px; }
+        .cal-stars-row { font-size: 0.6rem; letter-spacing: 1px; color: var(--star-gold); margin-bottom: 1px; }
+        .cal-event-title { font-size: 0.8rem; font-weight: 700; color: var(--text-title); line-height: 1.3; word-break: keep-all; margin-bottom: 2px; }
+        .cal-event-meta { font-size: 0.68rem; color: var(--text-muted); line-height: 1.25; }
+        .cal-actual-val { color: #38bdf8; font-weight: 700; margin-right: 3px; }
+
+        /* 하단 페이지네이션 바 */
+        .cal-pagination-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding-top: 8px;
+            margin-top: auto;
+            border-top: 1px solid var(--border-line);
+        }
+        .cal-page-btn {
+            background: var(--bg-subcard);
+            border: 1px solid var(--border-line);
+            color: var(--text-sub);
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 0.65rem;
+            transition: all 0.2s;
+        }
+        .cal-page-btn:hover:not(:disabled) { background: var(--btn-hover); color: var(--text-title); }
+        .cal-page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .cal-page-txt { font-size: 0.72rem; font-weight: 700; color: var(--text-muted); }
 
         /* 퀀트 지표 레이아웃 */
         .gauge-inner-box { width: 62px; height: 62px; border-radius: 50%; border: 4px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--bg-subcard); flex-shrink: 0; }
@@ -1607,7 +1656,6 @@ HTML_PAGE = """<!DOCTYPE html>
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 10px;
             color: #10b981;
             font-size: 0.95rem;
             font-weight: 800;
@@ -1642,7 +1690,6 @@ HTML_PAGE = """<!DOCTYPE html>
             z-index: 50;
         }
         
-        /* 하단 검색창을 좌측 832px 열과 수직 1:1 완벽 정렬 */
         .bottom-bar-grid-wrapper {
             width: 100%;
             max-width: 1196px;
@@ -1670,7 +1717,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .val-up { color: #ef4444; }
         .val-down { color: #38bdf8; }
 
-        /* [모바일 1열 순차 정렬] 1200px 이하에서는 좌측 9종 먼저 ➔ 우측 3종(증시/캘린더/해외뉴스)이 맨 아래에 배치 */
+        /* [모바일 1열 순차 정렬] */
         @media (max-width: 1200px) {
             .dashboard-master-grid {
                 display: flex;
@@ -1876,32 +1923,42 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 2행 우측: 캘린더 (348px, 퀀트 분석 카드와 높이 100% 일치) -->
+                        <!-- 2행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
                         <div class="card" id="rowCalendar">
-                            <div class="cal-top-title-area">
-                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">캘린더</span>
-                            </div>
-
-                            <div class="cal-top-nav">
-                                <div class="cal-date-ctrl">
-                                    <button class="cal-arrow-btn" onclick="shiftCalendarDate(-1)">&#10094;</button>
-                                    <span class="cal-current-date" id="calDisplayDate">--</span>
-                                    <button class="cal-arrow-btn" onclick="shiftCalendarDate(1)">&#10095;</button>
+                            <div>
+                                <div class="cal-top-title-area">
+                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">캘린더</span>
                                 </div>
-                                <button class="cal-today-btn" onclick="resetCalendarDate()">오늘</button>
+
+                                <div class="cal-top-nav">
+                                    <div class="cal-date-ctrl">
+                                        <button class="cal-arrow-btn" onclick="shiftCalendarDate(-1)">&#10094;</button>
+                                        <span class="cal-current-date" id="calDisplayDate">--</span>
+                                        <button class="cal-arrow-btn" onclick="shiftCalendarDate(1)">&#10095;</button>
+                                    </div>
+                                    <button class="cal-today-btn" onclick="resetCalendarDate()">오늘</button>
+                                </div>
+
+                                <div class="cal-filter-bar">
+                                    <button class="cal-filter-pill active" id="filterAll" onclick="setCalendarFilter('all')">전체</button>
+                                    <button class="cal-filter-pill" id="filterStar3" onclick="setCalendarFilter('star3')"><span class="star-gold">★★★</span></button>
+                                    <button class="cal-filter-pill" id="filterStar2" onclick="setCalendarFilter('star2')"><span class="star-gold">★★☆</span></button>
+                                    <button class="cal-filter-pill" id="filterEarn" onclick="setCalendarFilter('earn')">실적</button>
+                                    <button class="cal-filter-pill" id="filterEco" onclick="setCalendarFilter('eco')">경제</button>
+                                </div>
+
+                                <div class="cal-day-header" id="calDayHeader">--</div>
                             </div>
 
-                            <div class="cal-filter-bar">
-                                <button class="cal-filter-pill active" id="filterAll" onclick="setCalendarFilter('all')">전체</button>
-                                <button class="cal-filter-pill" id="filterStar3" onclick="setCalendarFilter('star3')"><span class="star-gold">★★★</span></button>
-                                <button class="cal-filter-pill" id="filterStar2" onclick="setCalendarFilter('star2')"><span class="star-gold">★★☆</span></button>
-                                <button class="cal-filter-pill" id="filterEarn" onclick="setCalendarFilter('earn')">실적</button>
-                                <button class="cal-filter-pill" id="filterEco" onclick="setCalendarFilter('eco')">경제</button>
-                            </div>
-
-                            <div class="cal-day-header" id="calDayHeader">--</div>
-
+                            <!-- 4개씩 깔끔하게 노출되는 프레임 -->
                             <div class="cal-event-list-wrap" id="calEventList"></div>
+
+                            <!-- 스크롤 없는 페이지 이동 컨트롤러 -->
+                            <div class="cal-pagination-bar">
+                                <button class="cal-page-btn" id="btnCalPrev" onclick="changeCalPage(-1)">&#10094;</button>
+                                <span class="cal-page-txt" id="calPageIndicator">1 / 1</span>
+                                <button class="cal-page-btn" id="btnCalNext" onclick="changeCalPage(1)">&#10095;</button>
+                            </div>
                         </div>
 
                         <!-- 3행 좌측: 종목 뉴스 (832px) -->
@@ -1938,11 +1995,11 @@ HTML_PAGE = """<!DOCTYPE html>
 
                             <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
                                 <div>
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uPrimaryLabel"></div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">평균 목표가</div>
                                     <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
                                 </div>
                                 <div style="text-align:right;">
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uSecondaryLabel"></div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재가</div>
                                     <div style="font-size:1.15rem; font-weight:700; color:var(--text-title);" id="uSecondaryVal"></div>
                                 </div>
                             </div>
@@ -2094,7 +2151,6 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
 
         <div id="bottom-bar">
-            <!-- 하단 바 내부 검색창을 좌측 832px 열과 수직 1:1 완벽 정렬 -->
             <div class="bottom-bar-grid-wrapper">
                 <div class="search-container">
                     <div class="search-box">
@@ -2137,6 +2193,8 @@ HTML_PAGE = """<!DOCTYPE html>
         let globalMarketCalendar = [];
         let currentCalOffset = 0;
         let currentCalFilter = 'all';
+        let currentCalPage = 1;
+        const calItemsPerPage = 4;
 
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
         function setHtml(id, val) { const el = document.getElementById(id); if (el) el.innerHTML = (val !== undefined && val !== null) ? String(val) : ''; }
@@ -2310,22 +2368,30 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function shiftCalendarDate(delta) {
             currentCalOffset += delta;
+            currentCalPage = 1;
             renderMarketCalendarView();
         }
 
         function resetCalendarDate() {
             currentCalOffset = 0;
+            currentCalPage = 1;
             renderMarketCalendarView();
         }
 
         function setCalendarFilter(filterKey) {
             currentCalFilter = filterKey;
+            currentCalPage = 1;
             document.querySelectorAll('.cal-filter-pill').forEach(btn => btn.classList.remove('active'));
             if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
             if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
             if (filterKey === 'star2') document.getElementById('filterStar2').classList.add('active');
             if (filterKey === 'earn') document.getElementById('filterEarn').classList.add('active');
             if (filterKey === 'eco') document.getElementById('filterEco').classList.add('active');
+            renderMarketCalendarView();
+        }
+
+        function changeCalPage(delta) {
+            currentCalPage += delta;
             renderMarketCalendarView();
         }
 
@@ -2353,16 +2419,29 @@ HTML_PAGE = """<!DOCTYPE html>
             if (currentCalFilter === 'earn') filtered = filtered.filter(ev => ev.type === 'earn');
             if (currentCalFilter === 'eco') filtered = filtered.filter(ev => ev.type === 'eco');
 
+            const totalPages = Math.ceil(filtered.length / calItemsPerPage) || 1;
+            if (currentCalPage < 1) currentCalPage = 1;
+            if (currentCalPage > totalPages) currentCalPage = totalPages;
+
+            const btnPrev = document.getElementById('btnCalPrev');
+            const btnNext = document.getElementById('btnCalNext');
+            if (btnPrev) btnPrev.disabled = (currentCalPage <= 1);
+            if (btnNext) btnNext.disabled = (currentCalPage >= totalPages);
+            setTxt('calPageIndicator', `${currentCalPage} / ${totalPages}`);
+
             if (filtered.length === 0) {
                 container.innerHTML = `
-                    <div style="text-align:center; padding:40px 10px; color:var(--text-muted); font-size:0.85rem;">
-                        해당 일자에 예정된 실시간 증시 일정이 없습니다.
+                    <div style="display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-muted); font-size:0.82rem; text-align:center; padding:40px 10px;">
+                        해당 일자에 예정된 실시간 일정이 없습니다.
                     </div>
                 `;
                 return;
             }
 
-            filtered.forEach(ev => {
+            const startIdx = (currentCalPage - 1) * calItemsPerPage;
+            const pageItems = filtered.slice(startIdx, startIdx + calItemsPerPage);
+
+            pageItems.forEach(ev => {
                 const isEarn = ev.type === 'earn';
                 const clickAttr = isEarn && ev.ticker ? `onclick="doSearch('${ev.ticker}')"` : '';
                 container.innerHTML += `

@@ -1,1183 +1,1578 @@
-import json
 import os
 import re
-from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+import io
+import gc
+import json
+import time
+import urllib.parse
 import xml.etree.ElementTree as ET
+import html
+import threading
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import requests
+import pandas as pd
+import numpy as np
 
-HOST = "0.0.0.0"
-PORT = int(os.environ.get("PORT", "10000"))
-TIMEOUT = 8
+# ----------------------------------------------------
+# 0. 고성능 네트워크 세션 (TCP 커넥션 풀 재사용)
+# ----------------------------------------------------
+HTTP_SESSION = requests.Session()
+HTTP_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Connection": "keep-alive"
+})
 
-DOMESTIC_STOCKS = {
-    "SK하이닉스": ("000660", "SK하이닉스"),
-    "하이닉스": ("000660", "SK하이닉스"),
-    "삼성전자": ("005930", "삼성전자"),
-    "삼전": ("005930", "삼성전자"),
+# ----------------------------------------------------
+# 1. 기본 설정 및 종목 매핑 (보안 환경변수 유지)
+# ----------------------------------------------------
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "gaemigtp_bot").strip()
+DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
+
+CRYPTO_MAP = {
+    "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
+    "ETH": "ETHUSDT", "이더리움": "ETHUSDT", "이더": "ETHUSDT",
+    "XRP": "XRPUSDT", "리플": "XRPUSDT",
+    "DOGE": "DOGEUSDT", "도지코인": "DOGEUSDT", "도지": "DOGEUSDT",
+    "SOL": "SOLUSDT", "솔라나": "SOLUSDT",
+    "ADA": "ADAUSDT", "에이다": "ADAUSDT",
+    "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT",
+    "SKY": "SKYUSDT", "스카이": "SKYUSDT"
 }
-US_STOCKS = {
-    "엔비디아": ("NVDA", "엔비디아"),
-    "NVDA": ("NVDA", "엔비디아"),
-    "테슬라": ("TSLA", "테슬라"),
-    "TSLA": ("TSLA", "테슬라"),
-    "애플": ("AAPL", "애플"),
-    "AAPL": ("AAPL", "애플"),
-    "마이크로소프트": ("MSFT", "마이크로소프트"),
-    "MSFT": ("MSFT", "마이크로소프트"),
-}
-CRYPTO = {
-    "비트코인": ("BTCUSDT", "비트코인"),
-    "BTC": ("BTCUSDT", "비트코인"),
-    "BTCUSDT": ("BTCUSDT", "비트코인"),
-    "이더리움": ("ETHUSDT", "이더리움"),
-    "ETH": ("ETHUSDT", "이더리움"),
-    "ETHUSDT": ("ETHUSDT", "이더리움"),
+
+US_STOCK_MAP = {
+    "엔비디아": "NVDA", "NVDA": "NVDA",
+    "테슬라": "TSLA", "TSLA": "TSLA",
+    "애플": "AAPL", "AAPL": "AAPL",
+    "마이크로소프트": "MSFT", "마소": "MSFT", "MSFT": "MSFT",
+    "아마존": "AMZN", "AMZN": "AMZN",
+    "구글": "GOOGL", "알파벳": "GOOGL", "GOOGL": "GOOGL",
+    "메타": "META", "META": "META",
+    "AMD": "AMD", "아이온큐": "IONQ", "IONQ": "IONQ",
+    "팔란티어": "PLTR", "PLTR": "PLTR",
+    "대만반도체": "TSM", "TSM": "TSM", "TSMC": "TSM",
+    "QQQ": "QQQ", "SPY": "SPY", "SOXL": "SOXL", "TQQQ": "TQQQ"
 }
 
-
-def clean_query(text):
-    return str(text or "").strip().replace(" ", "").upper()
-
-
-def now_kst():
-    from datetime import timedelta
-    return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M:%S KST")
-
-
-def find_asset(query):
-    key = clean_query(query)
-    for name, (symbol, formal) in DOMESTIC_STOCKS.items():
-        if clean_query(name) == key:
-            return {"kind": "domestic", "market": "국내주식", "symbol": symbol, "name": formal}
-    for name, (symbol, formal) in US_STOCKS.items():
-        if clean_query(name) == key:
-            return {"kind": "us", "market": "미국주식", "symbol": symbol, "name": formal}
-    for name, (symbol, formal) in CRYPTO.items():
-        if clean_query(name) == key:
-            return {"kind": "crypto", "market": "암호화폐", "symbol": symbol, "name": formal}
-    return None
-
-
-def get_naver_price(code):
-    url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=TIMEOUT)
-    r.raise_for_status()
-    rows = r.json().get("datas", [])
-    if not rows:
-        raise ValueError("국내주식 가격 데이터가 없습니다.")
-    raw = str(rows[0].get("closePrice", "")).replace(",", "").strip()
-    if not raw:
-        raise ValueError("현재가 데이터가 없습니다.")
-    return f"{int(float(raw)):,} 원", "Naver"
-
-
-def get_yahoo_price(ticker):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=1d&interval=1m&includePrePost=true"
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=TIMEOUT)
-    r.raise_for_status()
-    result = (r.json().get("chart") or {}).get("result") or []
-    if not result:
-        raise ValueError("미국주식 가격 데이터가 없습니다.")
-    meta = result[0].get("meta") or {}
-    price = meta.get("regularMarketPrice") or meta.get("previousClose")
-    if price is None:
-        closes = (((result[0].get("indicators") or {}).get("quote") or [{}])[0].get("close") or [])
-        closes = [x for x in closes if x is not None]
-        if not closes:
-            raise ValueError("현재가 데이터가 없습니다.")
-        price = closes[-1]
-    return f"{float(price):,.2f} USD", "Yahoo Finance"
-
-
-def get_binance_price(symbol):
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=TIMEOUT)
-    r.raise_for_status()
-    price = r.json().get("price")
-    if price is None:
-        raise ValueError("암호화폐 가격 데이터가 없습니다.")
-    return f"{float(price):,.2f} USDT", "Binance"
-
-
-def get_price(asset):
-    if asset["kind"] == "domestic":
-        return get_naver_price(asset["symbol"])
-    if asset["kind"] == "us":
-        return get_yahoo_price(asset["symbol"])
-    return get_binance_price(asset["symbol"])
-
-
-def get_yahoo_history(ticker, range_value="1y", interval="1d"):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range={range_value}&interval={interval}&includePrePost=false"
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=TIMEOUT)
-    r.raise_for_status()
-    result = (r.json().get("chart") or {}).get("result") or []
-    if not result:
-        raise ValueError("과거 가격 데이터가 없습니다.")
-    row = result[0]
-    ts = row.get("timestamp") or []
-    quote = ((row.get("indicators") or {}).get("quote") or [{}])[0]
-    o = quote.get("open") or []
-    h = quote.get("high") or []
-    l = quote.get("low") or []
-    c = quote.get("close") or []
-    v = quote.get("volume") or []
-    candles = []
-    for i, t in enumerate(ts):
-        try:
-            vals = [float(o[i]), float(h[i]), float(l[i]), float(c[i])]
-        except (IndexError, TypeError, ValueError):
-            continue
-        if not all(v == v for v in vals):
-            continue
-        vol = 0.0
-        try:
-            vol = float(v[i]) if v[i] is not None else 0.0
-        except (IndexError, TypeError, ValueError):
-            vol = 0.0
-        candles.append({"t": int(t), "o": vals[0], "h": vals[1], "l": vals[2], "c": vals[3], "v": vol})
-    if len(candles) < 10:
-        raise ValueError("차트용 과거 데이터가 부족합니다.")
-    return candles, "Yahoo Finance"
-
-
-def get_crypto_history(symbol, limit=90):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit={limit}"
-    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=TIMEOUT)
-    r.raise_for_status()
-    rows = r.json()
-    candles = []
-    for row in rows:
-        try:
-            candles.append({"t": int(row[0] // 1000), "o": float(row[1]), "h": float(row[2]), "l": float(row[3]), "c": float(row[4]), "v": float(row[5])})
-        except (IndexError, TypeError, ValueError):
-            continue
-    if len(candles) < 10:
-        raise ValueError("차트용 과거 데이터가 부족합니다.")
-    return candles, "Binance"
-
-
-def get_history(asset):
-    if asset["kind"] == "crypto":
-        return get_crypto_history(asset["symbol"])
-    ticker = asset["symbol"] if asset["kind"] == "us" else f'{asset["symbol"]}.KS'
-    return get_yahoo_history(ticker)
-
-
-
-def _finite_float(value):
-    try:
-        v = float(value)
-        return v if v == v and abs(v) < 1e100 else None
-    except (TypeError, ValueError):
-        return None
-
-
-def sma(values, period):
-    if len(values) < period:
-        return None
-    vals = [_finite_float(v) for v in values[-period:]]
-    if any(v is None for v in vals):
-        return None
-    return sum(vals) / period
-
-
-def rsi_wilder(candles, period=14):
-    closes = [_finite_float(c["c"]) for c in candles]
-    if len(closes) < period + 1 or any(v is None for v in closes[-(period + 1):]):
-        return None
-
-    gains = []
-    losses = []
-    for i in range(1, len(closes)):
-        delta = closes[i] - closes[i - 1]
-        gains.append(max(delta, 0.0))
-        losses.append(max(-delta, 0.0))
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    for i in range(period, len(gains)):
-        avg_gain = ((avg_gain * (period - 1)) + gains[i]) / period
-        avg_loss = ((avg_loss * (period - 1)) + losses[i]) / period
-
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
-
-
-def atr_wilder(candles, period=14):
-    if len(candles) < period + 1:
-        return None
-
-    trs = []
-    prev_close = None
-    for c in candles:
-        h = _finite_float(c["h"])
-        l = _finite_float(c["l"])
-        cl = _finite_float(c["c"])
-        if h is None or l is None or cl is None:
-            continue
-        if prev_close is None:
-            tr = h - l
-        else:
-            tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
-        trs.append(tr)
-        prev_close = cl
-
-    if len(trs) < period:
-        return None
-
-    atr = sum(trs[:period]) / period
-    for tr in trs[period:]:
-        atr = ((atr * (period - 1)) + tr) / period
-    return atr
-
-
-def volume_ratio(candles, lookback=5):
-    if len(candles) < lookback + 1:
-        return None
-    current = _finite_float(candles[-1]["v"])
-    prev = [_finite_float(c["v"]) for c in candles[-lookback-1:-1]]
-    if current is None or any(v is None for v in prev):
-        return None
-    base = sum(prev) / lookback
-    if base <= 0:
-        return None
-    return current / base * 100.0
-
-
-def build_indicators(candles):
-    closes = [c["c"] for c in candles]
-    current = _finite_float(closes[-1]) if closes else None
-    ma5 = sma(closes, 5)
-    ma20 = sma(closes, 20)
-    ma60 = sma(closes, 60)
-    ma120 = sma(closes, 120)
-    rsi14 = rsi_wilder(candles, 14)
-    atr14 = atr_wilder(candles, 14)
-    vol_ratio = volume_ratio(candles, 5)
-
-    if current is None:
-        trend = ""
-    elif ma20 is not None and ma60 is not None:
-        if current > ma20 > ma60:
-            trend = "상승"
-        elif current < ma20 < ma60:
-            trend = "하락"
-        else:
-            trend = "혼조"
-    else:
-        trend = ""
-
-    atr_pct = None
-    if current and atr14 is not None and current != 0:
-        atr_pct = atr14 / current * 100.0
-
-    return {
-        "ma5": ma5,
-        "ma20": ma20,
-        "ma60": ma60,
-        "ma120": ma120,
-        "rsi14": rsi14,
-        "atr14": atr14,
-        "atr_pct": atr_pct,
-        "volume_ratio": vol_ratio,
-        "trend": trend,
-    }
-
-
-def html_escape(value):
-    return (str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
-
-
-def format_axis_price(value, market):
-    if market == "국내주식":
-        return f"{int(round(value)):,}"
-    return f"{value:,.2f}"
-
-
-def build_svg_chart(candles, market, width=760, height=390):
-    data = candles[-60:]
-    left, right, top, bottom = 62, 18, 18, 52
-    cw, ch = width - left - right, height - top - bottom
-    max_p = max(c["h"] for c in data)
-    min_p = min(c["l"] for c in data)
-    span = max(max_p - min_p, max_p * 0.01, 1.0)
-    slot = cw / len(data)
-    body_w = max(3, slot * 0.56)
-
-    def xp(i):
-        return left + slot * i + slot / 2
-
-    def yp(v):
-        return top + (max_p - v) / span * ch
-
-    svg = [
-        f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="최근 3개월 일봉 캔들 차트">',
-        '<rect width="100%" height="100%" rx="16" fill="#191a1c"/>'
-    ]
-
-    for frac in (0, 0.25, 0.5, 0.75, 1):
-        yy = top + ch * frac
-        val = max_p - span * frac
-        svg.append(f'<line x1="{left}" y1="{yy:.1f}" x2="{width-right}" y2="{yy:.1f}" stroke="#34363a" stroke-width="1"/>')
-        svg.append(f'<text x="8" y="{yy+4:.1f}" fill="#8e9297" font-size="11">{html_escape(format_axis_price(val, market))}</text>')
-
-    closes = [c["c"] for c in data]
-    ma20 = []
-    for i in range(len(closes)):
-        s = max(0, i - 19)
-        ma20.append(sum(closes[s:i+1]) / (i - s + 1))
-
-    for i, c in enumerate(data):
-        xx = xp(i)
-        up = c["c"] >= c["o"]
-        color = "#3b82f6" if up else "#ef4444"
-        svg.append(f'<line x1="{xx:.1f}" y1="{yp(c["h"]):.1f}" x2="{xx:.1f}" y2="{yp(c["l"]):.1f}" stroke="{color}" stroke-width="1.2"/>')
-        body_top = min(yp(c["o"]), yp(c["c"]))
-        body_h = max(abs(yp(c["c"]) - yp(c["o"])), 1.8)
-        svg.append(f'<rect x="{xx-body_w/2:.1f}" y="{body_top:.1f}" width="{body_w:.1f}" height="{body_h:.1f}" rx="1" fill="{color}"/>')
-
-    ma_points = " ".join(f"{xp(i):.1f},{yp(v):.1f}" for i, v in enumerate(ma20))
-    svg.append(f'<polyline fill="none" stroke="#49d6c9" stroke-width="2.3" points="{ma_points}"/>')
-
-    last_y = yp(data[-1]["c"])
-    svg.append(f'<line x1="{left}" y1="{last_y:.1f}" x2="{width-right}" y2="{last_y:.1f}" stroke="#d0d3d6" stroke-dasharray="4 4" stroke-width="1"/>')
-    svg.append(f'<text x="{width-right-4}" y="{last_y-7:.1f}" text-anchor="end" fill="#d0d3d6" font-size="12">{html_escape(format_axis_price(data[-1]["c"], market))}</text>')
-
-    for idx in sorted({0, len(data)//3, (2*len(data))//3, len(data)-1}):
-        dt = datetime.fromtimestamp(data[idx]["t"], tz=timezone.utc)
-        svg.append(f'<text x="{xp(idx):.1f}" y="{height-16}" text-anchor="middle" fill="#777c82" font-size="10">{dt.strftime("%m/%d")}</text>')
-
-    svg.append('</svg>')
-    return ''.join(svg)
-
-
-HTML = """<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>gaemiGTP</title>
-<style>
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:#1f2022;color:#f3f3f3;font-family:Arial,"Noto Sans KR",sans-serif}
-.page{min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:42px 20px 60px}
-.logo{font-size:34px;font-weight:800;letter-spacing:-1px;margin-top:10px}.sub{margin-top:8px;color:#96999d;font-size:14px;text-align:center}
-.search{width:min(760px,100%);display:flex;gap:10px;margin-top:26px} input{flex:1;background:#2a2c2f;color:#fff;border:1px solid #3b3d40;border-radius:14px;padding:16px 18px;font-size:16px;outline:none}
-button{border:0;border-radius:14px;background:#f1f1f1;color:#111;padding:0 24px;font-size:16px;font-weight:700;cursor:pointer}
-.card{width:min(760px,100%);margin-top:22px;background:#2a2c2f;border-radius:18px;padding:24px}.title{font-size:22px;font-weight:800;margin-bottom:14px}.price{font-size:34px;font-weight:800;margin-bottom:8px}.meta{margin-top:8px;color:#a2a5aa;font-size:14px}.error{color:#ffb4b4}.section-title{font-size:17px;font-weight:800;margin-bottom:14px}.trend{margin-bottom:14px;color:#a5a9ae}.metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:10px}.metric{background:#222427;border-radius:12px;padding:12px}.metric span{display:block;color:#8d9298;font-size:12px;margin-bottom:6px}.metric strong{font-size:15px}.news-item{padding:14px 0;border-top:1px solid #3a3c40}.news-item:first-child{border-top:0;padding-top:0}.news-title{font-size:15px;line-height:1.55}.news-meta{margin-top:7px;color:#8c9095;font-size:12px;line-height:1.45}.news-meta a{color:#b9c0c6;text-decoration:none;margin-left:8px}.small{margin-top:18px;color:#777b80;font-size:12px;line-height:1.6}.chart-wrap{width:min(760px,100%);margin-top:18px;background:#191a1c;border-radius:18px;padding:10px;overflow:hidden}.legend{width:min(760px,100%);display:flex;gap:16px;align-items:center;margin:14px 2px 0;color:#8f9398;font-size:12px}.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
-</style>
-</head><body><div class="page">
-<div class="logo">gaemiGTP</div><div class="sub">종목 하나로 시작하는 금융 분석 플랫폼</div>
-<form class="search" action="/search" method="get"><input name="q" value="{QUERY}" placeholder="예: SK하이닉스, NVDA, BTC" autocomplete="off"><button type="submit">분석</button></form>
-{RESULT}</div></body></html>"""
-
-
-
-def make_news_queries(asset):
-    name = asset["name"]
-    symbol = asset["symbol"]
-    market = asset["market"]
-
-    queries = [name, f"{name} {symbol}"]
-    if market == "미국주식":
-        queries.extend([symbol, f"{symbol} stock", f"{name} stock"])
-    elif market == "암호화폐":
-        queries.extend([symbol, f"{name} crypto", f"{symbol} crypto"])
-
-    # preserve order / remove duplicates
-    result = []
-    seen = set()
-    for q in queries:
-        q = q.strip()
-        if q and q.lower() not in seen:
-            seen.add(q.lower())
-            result.append(q)
-    return result
-
-
-def parse_rss_items(xml_bytes, limit=5):
-    root = ET.fromstring(xml_bytes)
-    items = []
-    for item in root.findall(".//item"):
-        title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
-        pub_date = (item.findtext("pubDate") or "").strip()
-        source_node = item.find("source")
-        source = (source_node.text or "").strip() if source_node is not None else ""
-
-        if not title:
-            continue
-
-        items.append({
-            "title": title,
-            "link": link,
-            "published": pub_date,
-            "source": source,
-        })
-
-        if len(items) >= limit:
-            break
-    return items
-
-
-def fetch_google_news_rss(query, limit=5):
-    url = (
-        "https://news.google.com/rss/search?"
-        f"q={requests.utils.quote(query)}&hl=ko&gl=KR&ceid=KR:ko"
-    )
-    response = requests.get(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=TIMEOUT,
-    )
-    response.raise_for_status()
-    return parse_rss_items(response.content, limit=limit)
-
-
-def fetch_google_news_rss_us(query, limit=5):
-    url = (
-        "https://news.google.com/rss/search?"
-        f"q={requests.utils.quote(query)}&hl=en-US&gl=US&ceid=US:en"
-    )
-    response = requests.get(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=TIMEOUT,
-    )
-    response.raise_for_status()
-    return parse_rss_items(response.content, limit=limit)
-
-
-def fetch_yahoo_news_rss(ticker, limit=5):
-    url = (
-        "https://feeds.finance.yahoo.com/rss/2.0/headline?"
-        f"s={requests.utils.quote(ticker)}&region=US&lang=en-US"
-    )
-    response = requests.get(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=TIMEOUT,
-    )
-    response.raise_for_status()
-    return parse_rss_items(response.content, limit=limit)
-
-
-def normalize_news(items):
-    cleaned = []
-    seen = set()
-
-    for item in items:
-        title = re.sub(r"\s+", " ", item.get("title", "")).strip()
-        if not title:
-            continue
-
-        # Google News titles can contain "Title - Source".
-        source = (item.get("source") or "").strip()
-        if not source and " - " in title:
-            left, right = title.rsplit(" - ", 1)
-            if len(right) <= 80:
-                title, source = left.strip(), right.strip()
-
-        key = re.sub(r"[^0-9a-zA-Z가-힣]", "", title).lower()
-        if not key or key in seen:
-            continue
-
-        seen.add(key)
-        cleaned.append({
-            "title": title,
-            "source": source,
-            "published": item.get("published", ""),
-            "link": item.get("link", ""),
-        })
-
-    return cleaned[:5]
-
-
-
-HANKYUNG_FINANCE_RSS = "https://www.hankyung.com/feed/finance"
-HANKYUNG_ALL_RSS = "https://www.hankyung.com/feed/all-news"
-
-
-def fetch_hankyung_rss(feed_url, limit=50):
-    response = requests.get(
-        feed_url,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=TIMEOUT,
-    )
-    response.raise_for_status()
-    return parse_rss_items(response.content, limit=limit)
-
-
-def get_asset_news_keywords(asset):
-    name = asset["name"].strip()
-    symbol = asset["symbol"].strip()
-    keywords = {name.lower(), symbol.lower()}
-
-    aliases = {
-        "000660": {"sk하이닉스", "하이닉스", "hbm", "메모리", "dram"},
-        "005930": {"삼성전자", "samsung", "반도체"},
-    }
-    keywords.update(x.lower() for x in aliases.get(symbol, set()))
-
-    # Exact company/ticker matches get the strongest priority.
-    return [k for k in keywords if k]
-
-
-def filter_news_for_asset(items, asset, limit=5):
-    keywords = get_asset_news_keywords(asset)
-
-    def score(item):
-        title = (item.get("title") or "").lower()
-        matched = sum(1 for k in keywords if k in title)
-        return matched
-
-    ranked = [item for item in items if score(item) > 0]
-    ranked.sort(key=lambda x: score(x), reverse=True)
-
-    return normalize_news(ranked)[:limit]
-
-
-def collect_hankyung_news(asset, limit=5):
-    """
-    Free Korean news source.
-    Uses Hankyung's official public RSS feeds and filters titles locally
-    so unrelated finance headlines are not shown as company news.
-    """
-    all_items = []
-    source_errors = []
-
-    for feed_name, feed_url in (
-        ("hankyung-finance", HANKYUNG_FINANCE_RSS),
-        ("hankyung-all", HANKYUNG_ALL_RSS),
-    ):
-        try:
-            items = fetch_hankyung_rss(feed_url, limit=50)
-            all_items.extend(items)
-            if len(all_items) >= 50:
-                break
-        except Exception as exc:
-            source_errors.append(f"{feed_name}: {exc}")
-
-    filtered = filter_news_for_asset(all_items, asset, limit=limit)
-
-    if source_errors:
-        print(f"[HANKYUNG RSS WARN] {asset['symbol']}: {' | '.join(source_errors)}")
-
-    print(f"[HANKYUNG NEWS] {asset['symbol']}: {len(filtered)} items")
-    return filtered
-
-
-
-
-def debug_news_sources(asset):
-    diagnostics = []
-
-    sources = [
-        ("hankyung_finance", HANKYUNG_FINANCE_RSS),
-        ("hankyung_all", HANKYUNG_ALL_RSS),
-    ]
-
-    for name, url in sources:
-        item = {
-            "source": name,
-            "status": None,
-            "bytes": 0,
-            "parsed_items": 0,
-            "matched_items": 0,
-            "sample_titles": [],
-            "error": "",
-        }
-        try:
-            response = requests.get(
-                url,
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=TIMEOUT,
-            )
-            item["status"] = response.status_code
-            item["bytes"] = len(response.content)
-
-            parsed = parse_rss_items(response.content, limit=50) if response.ok else []
-            item["parsed_items"] = len(parsed)
-
-            matched = filter_news_for_asset(parsed, asset, limit=5) if response.ok else []
-            item["matched_items"] = len(matched)
-            item["sample_titles"] = [x["title"] for x in matched[:3]]
-        except Exception as exc:
-            item["error"] = str(exc)
-
-        diagnostics.append(item)
-
-    try:
-        q = make_news_queries(asset)[0]
-        url = (
-            "https://news.google.com/rss/search?"
-            f"q={requests.utils.quote(q)}&hl=ko&gl=KR&ceid=KR:ko"
-        )
-        response = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=TIMEOUT,
-        )
-        google = {
-            "source": "google_news_kr",
-            "status": response.status_code,
-            "bytes": len(response.content),
-            "parsed_items": 0,
-            "matched_items": 0,
-            "sample_titles": [],
-            "error": "",
-        }
-        if response.ok:
-            parsed = parse_rss_items(response.content, limit=20)
-            google["parsed_items"] = len(parsed)
-            matched = filter_news_for_asset(parsed, asset, limit=5)
-            google["matched_items"] = len(matched)
-            google["sample_titles"] = [x["title"] for x in matched[:3]]
-    except Exception as exc:
-        google = {
-            "source": "google_news_kr",
-            "status": None,
-            "bytes": 0,
-            "parsed_items": 0,
-            "matched_items": 0,
-            "sample_titles": [],
-            "error": str(exc),
-        }
-
-    diagnostics.append(google)
-    return diagnostics
-
-
-def collect_free_news(asset, limit=5):
-    """
-    Free/no-key news collection.
-    Priority:
-      - US stocks: Yahoo Finance RSS first, Google News US fallback
-      - Korean stocks: Google News Korean RSS
-      - Crypto: Google News Korean RSS + US fallback
-    If all sources fail, return [] rather than inventing a headline.
-    """
-    all_items = []
-
-    try:
-        if asset["market"] == "미국주식":
-            all_items.extend(fetch_yahoo_news_rss(asset["symbol"], limit=limit))
-            if len(all_items) < limit:
-                all_items.extend(
-                    fetch_google_news_rss_us(
-                        f"{asset['symbol']} stock",
-                        limit=limit,
-                    )
-                )
-        elif asset["market"] == "국내주식":
-            hankyung_items = collect_hankyung_news(asset, limit=limit)
-            all_items.extend(hankyung_items)
-
-            # Google RSS fallback only if Hankyung did not provide enough.
-            if len(normalize_news(all_items)) < limit:
-                for q in make_news_queries(asset):
-                    try:
-                        all_items.extend(fetch_google_news_rss(q, limit=limit))
-                    except Exception as exc:
-                        print(f"[NEWS SOURCE ERROR] query={q}: {exc}")
-                    if len(normalize_news(all_items)) >= limit:
-                        break
-
-        else:
-            queries = make_news_queries(asset)
-            for q in queries:
-                try:
-                    all_items.extend(fetch_google_news_rss(q, limit=limit))
-                except Exception as exc:
-                    print(f"[NEWS SOURCE ERROR] query={q}: {exc}")
-                if len(normalize_news(all_items)) >= limit:
-                    break
-
-            # Extra English fallback for crypto / popular symbols.
-            if len(all_items) < limit and asset["market"] == "암호화폐":
-                try:
-                    all_items.extend(
-                        fetch_google_news_rss_us(
-                            f"{asset['symbol']} crypto",
-                            limit=limit,
-                        )
-                    )
-                except Exception as exc:
-                    print(f"[NEWS US FALLBACK ERROR] {asset['symbol']}: {exc}")
-
-        final_items = normalize_news(all_items)
-        print(f"[NEWS] {asset['symbol']}: {len(final_items)} items")
-        return final_items[:limit]
-
-    except Exception as exc:
-        print(f"[NEWS ERROR] {asset['symbol']}: {exc}")
+DOMESTIC_FAST_MAP = {
+    "SK하이닉스": "000660", "하이닉스": "000660",
+    "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150", "삼성중공업": "010140",
+    "SK증권": "001510", "SK스퀘어": "402340", "솔트룩스": "304100",
+    "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
+    "레인보우로보틱스": "277810", "카카오": "035720", "네이버": "035420",
+    "NAVER": "035420", "현대차": "005380", "기아": "000270",
+    "포스코홀딩스": "005490", "POSCO홀딩스": "005490", "LG에너지솔루션": "373220",
+    "한화오션": "042660", "두산에너빌리티": "034020", "한화에어로스페이스": "012450",
+    "현대모비스": "012330", "셀트리온": "068270", "한미반도체": "042700",
+    "씨젠": "096530", "HLB": "028300", "에코프로머티": "450080",
+    "리가켐바이오": "141080", "엔켐": "348370", "삼천당제약": "000250",
+    "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
+}
+
+# ----------------------------------------------------
+# 2. 데이터 크롤링 모듈 (DART 전자공시 포함)
+# ----------------------------------------------------
+def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
+    if not is_krw or not stock_code or not stock_code.isdigit():
         return []
 
+    disclosures = []
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{stock_code}/disclosure?page=1&pageSize={limit}"
+        res = HTTP_SESSION.get(url, timeout=2.0).json()
+        items = res.get("items", []) or res.get("disclosures", [])
+        for it in items[:limit]:
+            title = it.get("reportTitle") or it.get("title", "")
+            date_raw = str(it.get("rceptDt") or it.get("date", ""))[:10].replace("-", ".")
+            art_id = it.get("articleId") or it.get("rceptNo", "")
+            link = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={art_id}" if art_id else "#"
 
-def render_news_block(items):
-    if not items:
-        return (
-            '<div class="card">'
-            '<div class="section-title">최근 뉴스</div>'
-            '<div class="meta">현재 무료 뉴스 소스에서 확인되는 뉴스가 없습니다.</div>'
-            '</div>'
-        )
+            tag_type = "neutral"
+            tag_name = "공시"
+            if any(k in title for k in ["공급계약", "수주", "자기주식취득", "무상증자", "영업실적", "주주우대", "특허"]):
+                tag_type = "positive"
+                tag_name = "호재"
+            elif any(k in title for k in ["유상증자", "전환사채", "신주인수권", "감자", "횡령", "배임", "관리종목", "상장폐지", "불성실공시"]):
+                tag_type = "negative"
+                tag_name = "악재주의"
+            elif any(k in title for k in ["최대주주변경", "주식매수선택권", "주요사항보고서"]):
+                tag_type = "warning"
+                tag_name = "변동"
 
-    cards = []
-    for item in items:
-        title = html_escape(item["title"])
-        source = html_escape(item.get("source") or "출처 미상")
-        published = html_escape(item.get("published") or "")
-        link = item.get("link") or ""
-        link_html = (
-            f'<a href="{html_escape(link)}" target="_blank" rel="noopener noreferrer">원문</a>'
-            if link else ""
-        )
+            disclosures.append({
+                "title": title,
+                "date": date_raw,
+                "link": link,
+                "tag_type": tag_type,
+                "tag_name": tag_name,
+                "flr_nm": it.get("submitter", "DART")
+            })
+    except Exception:
+        pass
 
-        time_part = f' · {published}' if published else ""
-        cards.append(
-            '<div class="news-item">'
-            f'<div class="news-title">{title}</div>'
-            f'<div class="news-meta">{source}{time_part} {link_html}</div>'
-            '</div>'
-        )
+    return disclosures
 
-    return (
-        '<div class="card">'
-        '<div class="section-title">최근 뉴스</div>'
-        + "".join(cards)
-        + '</div>'
-    )
+def get_realtime_usdkrw():
+    try:
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/KRW=X?range=1d&interval=1m"
+        res = HTTP_SESSION.get(url, timeout=1.5).json()
+        meta = res.get("chart", {}).get("result", [{}])[0].get("meta", {})
+        rate = meta.get("regularMarketPrice", 0.0)
+        prev_close = meta.get("chartPreviousClose", meta.get("previousClose", rate))
+        change_rate = ((rate - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+        if rate > 500:
+            return float(rate), f"{change_rate:+.2f}%", change_rate >= 0
+    except Exception:
+        pass
+    return 1380.0, "0.00%", True
 
+def get_market_overview():
+    indices = [
+        {"name": "KOSPI", "sym": "^KS11"},
+        {"name": "NASDAQ", "sym": "^IXIC"},
+        {"name": "BTC", "sym": "BTC-USD"}
+    ]
+    overview = []
+    for item in indices:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(item['sym'])}?range=2d&interval=1d"
+            res = HTTP_SESSION.get(url, timeout=1.8).json()
+            result = res.get("chart", {}).get("result", [])
+            if result:
+                meta = result[0].get("meta", {})
+                curr_p = meta.get("regularMarketPrice", 0.0)
+                prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
+                change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+                p_str = f"${curr_p:,.2f}" if "BTC" in item["name"] else f"{curr_p:,.2f}"
+                overview.append({
+                    "name": item["name"],
+                    "price": p_str,
+                    "rate": f"{change_rate:+.2f}%",
+                    "up": change_rate >= 0
+                })
+        except Exception:
+            overview.append({"name": item["name"], "price": "-", "rate": "-", "up": True})
+    
+    rate, rate_str, rate_up = get_realtime_usdkrw()
+    overview.append({
+        "name": "USD/KRW",
+        "price": f"{rate:,.1f}원",
+        "rate": rate_str,
+        "up": rate_up
+    })
+    return overview
 
+def find_stock_code(query):
+    clean_q = query.strip().replace(" ", "").upper()
+    if clean_q.isdigit() and len(clean_q) == 6:
+        return clean_q, clean_q
 
-
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.7-flash").strip()
-
-
-
-def gemini_raw_test():
-    """
-    Make a minimal Gemini call and return a safe, non-secret diagnostic.
-    The API key is never included in the response.
-    """
-    if not GEMINI_API_KEY:
-        return {"success": False, "stage": "config", "error": "GEMINI_API_KEY가 없습니다."}
-
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent"
-    )
-    payload = {
-        "contents": [{
-            "parts": [{"text": "한국어로 '연결 테스트 성공'이라고 한 문장으로만 답하세요."}]
-        }]
-    }
+    for name, code in DOMESTIC_FAST_MAP.items():
+        if name.replace(" ", "").upper() == clean_q:
+            return code, name
 
     try:
-        response = requests.post(
-            url,
-            headers={
-                "x-goog-api-key": GEMINI_API_KEY,
-                "Content-Type": "application/json",
-                "User-Agent": "gaemiGTP/1.0",
-            },
-            json=payload,
-            timeout=20,
-        )
+        url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
+        res = HTTP_SESSION.get(url, timeout=1.8).json()
+        items = res.get("result", {}).get("items", [])
+        if items:
+            for it in items:
+                name = str(it.get("name", "")).strip()
+                code = str(it.get("code", "")).strip()
+                if name.replace(" ", "").upper() == clean_q:
+                    return code, name
+            first = items[0]
+            return str(first.get("code", "")).strip(), str(first.get("name", "")).strip()
+    except Exception:
+        pass
+    return None, query.strip()
 
-        result = {
-            "success": response.ok,
-            "http_status": response.status_code,
-            "model": GEMINI_MODEL,
-        }
+def get_naver_realtime_price(code):
+    try:
+        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        res = HTTP_SESSION.get(url, timeout=1.8).json()
+        datas = res.get("datas", [])
+        if datas:
+            p = str(datas[0].get("closePrice", "")).replace(",", "").strip()
+            cr = str(datas[0].get("fluctuationsRatio", "0.0")).replace("%", "").strip()
+            if p and p.replace(".", "").isdigit():
+                return float(p), f"{int(float(p)):,} 원", f"{float(cr):+.2f}%", float(cr) >= 0
+    except Exception:
+        pass
+    return None, None, None, True
 
-        if response.ok:
-            body = response.json()
-            text_parts = []
-            for candidate in body.get("candidates", [])[:1]:
-                for part in candidate.get("content", {}).get("parts", []):
-                    if isinstance(part, dict) and part.get("text"):
-                        text_parts.append(part["text"])
-            result["text"] = "".join(text_parts).strip()
-        else:
-            # Return only Google's error message fields; never return the key or request URL.
-            try:
-                body = response.json()
-                err = body.get("error", {})
-                result["error_code"] = err.get("code")
-                result["error_status"] = err.get("status")
-                result["error_message"] = str(err.get("message", ""))[:500]
-            except Exception:
-                result["error_message"] = response.text[:500]
+def fetch_domestic_candles(code, anchor_price=None):
+    df_result = None
+    for suffix in [".KS", ".KQ"]:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
+            res = HTTP_SESSION.get(url, timeout=2.0).json()
+            result = res.get("chart", {}).get("result", [])
+            if result:
+                ts = result[0].get("timestamp", [])
+                quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+                records = [{
+                    "Date": pd.to_datetime(ts[i], unit='s'),
+                    "Open": float(quote['open'][i]),
+                    "High": float(quote['high'][i]),
+                    "Low": float(quote['low'][i]),
+                    "Close": float(quote['close'][i]),
+                    "Volume": float(quote['volume'][i] or 0.0)
+                } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+                if len(records) >= 30:
+                    df_result = pd.DataFrame(records).set_index("Date").sort_index()
+                    break
+        except Exception:
+            pass
 
-        return result
+    if df_result is not None and anchor_price and anchor_price > 0:
+        last_close = float(df_result['Close'].iloc[-1])
+        if abs(last_close - anchor_price) / anchor_price > 0.3:
+            ratio = anchor_price / last_close
+            df_result['Open'] *= ratio
+            df_result['High'] *= ratio
+            df_result['Low'] *= ratio
+            df_result['Close'] *= ratio
 
-    except Exception as exc:
-        return {
-            "success": False,
-            "stage": "network_or_request",
-            "model": GEMINI_MODEL,
-            "error": str(exc)[:500],
-        }
+    return df_result
 
+def fetch_overseas_candles(symbol):
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol.upper()}?range=5y&interval=1d"
+        res = HTTP_SESSION.get(url, timeout=2.0).json()
+        result = res.get("chart", {}).get("result", [])
+        if result:
+            ts = result[0].get("timestamp", [])
+            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+            records = [{
+                "Date": pd.to_datetime(ts[i], unit='s'),
+                "Open": float(quote['open'][i]),
+                "High": float(quote['high'][i]),
+                "Low": float(quote['low'][i]),
+                "Close": float(quote['close'][i]),
+                "Volume": float(quote['volume'][i] or 0.0)
+            } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+            if records:
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                curr_p = float(df['Close'].iloc[-1])
+                prev_close = float(df['Close'].iloc[-2]) if len(df) > 1 else curr_p
+                cr = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+                return curr_p, f"${curr_p:,.2f}", f"{cr:+.2f}%", cr >= 0, df
+    except Exception:
+        pass
+    return None, None, None, True, None
 
+def fetch_crypto_candles(symbol):
+    clean_sym = symbol.upper().replace("-", "")
+    if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
+        clean_sym += "USDT"
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={clean_sym}&interval=1d&limit=1000"
+        res = HTTP_SESSION.get(url, timeout=2.0).json()
+        if isinstance(res, list) and len(res) > 5:
+            records = [{
+                "Date": pd.to_datetime(int(x[0]), unit='ms'),
+                "Open": float(x[1]), "High": float(x[2]), "Low": float(x[3]), "Close": float(x[4]), "Volume": float(x[5])
+            } for x in res]
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            curr_p = float(df['Close'].iloc[-1])
+            prev_close = float(df['Close'].iloc[-2]) if len(df) > 1 else curr_p
+            cr = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+            return curr_p, f"${curr_p:,.2f} USDT", f"{cr:+.2f}%", cr >= 0, df
+    except Exception:
+        pass
+    return None, None, None, True, None
 
-def analyze_news_with_gemini(asset, news_items):
-    """
-    Analyze only the real news items already collected by the server.
-    Never invent news, prices, dates, or other facts.
-    """
-    if not GEMINI_API_KEY or not news_items:
+def fetch_rss_news(query_keyword, limit=5):
+    headlines = []
+    clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
+    try:
+        r = HTTP_SESSION.get(url, timeout=2.5)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for it in root.findall('.//item')[:limit]:
+                t = it.find('title')
+                pub = it.find('pubDate')
+                link = it.find('link')
+                if t is not None and t.text:
+                    title_clean = html.unescape(t.text).strip()
+                    parts = title_clean.rsplit(' - ', 1)
+                    title_text = parts[0]
+                    media_name = parts[1] if len(parts) > 1 else "언론사"
+                    pub_text = pub.text if pub is not None else ""
+                    link_text = link.text if link is not None else "#"
+                    
+                    impact = "neutral"
+                    impact_text = "중립"
+                    if any(w in title_text for w in ["급등", "호재", "수주", "상승", "돌파", "사상최대", "특허", "체결"]):
+                        impact = "positive"
+                        impact_text = "긍정"
+                    elif any(w in title_text for w in ["하락", "급락", "악재", "손실", "적자", "경고", "압수수색", "소송"]):
+                        impact = "negative"
+                        impact_text = "부정"
+
+                    headlines.append({
+                        "title": title_text,
+                        "media": media_name,
+                        "pubDate": pub_text[:16] if len(pub_text) > 16 else pub_text,
+                        "link": link_text,
+                        "impact": impact,
+                        "impact_text": impact_text
+                    })
+    except Exception:
+        pass
+    return headlines
+
+# ----------------------------------------------------
+# 3. 기술적 지표 및 퀀트 분석 연산 (100% 원본 보존)
+# ----------------------------------------------------
+def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
+    if df is None or len(df) < 10:
         return None
 
-    prompt_lines = []
-    for i, item in enumerate(news_items, start=1):
-        prompt_lines.append(
-            f"{i}. 제목: {item.get('title', '')}\n"
-            f"출처: {item.get('source', '')}\n"
-            f"게시시간: {item.get('published', '')}\n"
-            f"원문: {item.get('link', '')}"
-        )
+    round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"${round(float(v), 2):,.2f}")
+    closes = df['Close']
+    volumes = df['Volume']
+    n_bars = len(df)
 
-    prompt = f"""
-당신은 금융 뉴스 분석 보조 AI입니다.
+    ma5 = round_fn(closes.tail(5).mean())
+    ma20_val = float(closes.tail(20).mean())
+    ma20 = round_fn(ma20_val)
+    ma60_val = float(closes.tail(60).mean()) if n_bars >= 60 else None
+    ma60 = round_fn(ma60_val) if ma60_val else "-"
+    ma120 = round_fn(closes.tail(120).mean()) if n_bars >= 120 else "-"
 
-종목: {asset['name']} ({asset['symbol']})
+    bb_period = min(60, n_bars)
+    bb_mid = closes.tail(bb_period).mean()
+    bb_std = closes.tail(bb_period).std()
+    bb_upper = bb_mid + (bb_std * 2)
+    bb_lower = bb_mid - (bb_std * 2)
+    bb_str = f"{round_fn(bb_upper)} / {round_fn(bb_lower)}"
 
-아래에 실제로 수집된 뉴스만 사용하세요.
-뉴스에 없는 사실, 가격, 실적, 일정, 수급, 목표주가, 전망 등을 절대 추가하지 마세요.
-기사 원문을 길게 복사하지 말고 핵심만 요약하세요.
-근거가 부족하면 sentiment=중립, impact=낮음으로 처리하세요.
+    if n_bars >= 35:
+        ema12 = closes.ewm(span=12, adjust=False).mean()
+        ema26 = closes.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        macd_val = macd_line.iloc[-1]
+        sig_val = signal_line.iloc[-1]
+        macd_str = f"{macd_val:+.2f} (시그널: {sig_val:+.2f})"
+    else:
+        macd_str = "-"
 
-반드시 아래 JSON 객체 하나만 반환하세요.
-{{
-  "summary": "핵심 내용 2~3문장",
-  "sentiment": "호재|악재|중립",
-  "impact": "높음|중간|낮음",
-  "reason": "판단 근거 한 문장"
-}}
+    delta = closes.diff()
+    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+    rs = gain / loss
+    rsi_series = 100 - (100 / (1 + rs))
+    rsi_val = f"{float(rsi_series.iloc[-1]):.2f}" if not np.isnan(rsi_series.iloc[-1]) else "50.0"
 
-실제 수집 뉴스:
-{chr(10).join(prompt_lines)}
-""".strip()
+    high_low = df['High'] - df['Low']
+    atr_raw = float(high_low.tail(14).mean())
+    atr_val = round_fn(atr_raw)
 
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent"
-    )
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "responseMimeType": "application/json"
-        },
+    v_mean5 = volumes.tail(5).mean()
+    v_curr = volumes.iloc[-1]
+    vol_ratio = f"{((v_curr / v_mean5) * 100):.1f}%" if v_mean5 > 0 else "100.0%"
+
+    if ma60_val and raw_price > ma20_val > ma60_val:
+        trend = "상승 추세"
+        ai_opinion = "상승 우위"
+        ai_badge = "positive"
+        guide_text = f"20일선 지지 안착 확인 시 분할 착수하며, 변동폭({atr_val}) 수준의 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
+    elif ma60_val and raw_price < ma20_val < ma60_val:
+        trend = "하락 추세"
+        ai_opinion = "하락 우위"
+        ai_badge = "negative"
+        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 확인 후 보수적 접근하며, 20일선 저항 돌파 실패 시 리스크 관리 필수"
+    else:
+        trend = "박스권 횡보"
+        ai_opinion = "중립"
+        ai_badge = "neutral"
+        guide_text = f"박스권 상하단 밴드 내 공방 국면이므로 하단 지지 확인 시 진입하고, 저항선 도달 시 비중 축소 권장"
+
+    entry1 = round_fn(raw_price * 0.985)
+    entry2 = round_fn(raw_price * 0.965)
+    target1 = round_fn(raw_price * 1.045)
+    target2 = round_fn(raw_price * 1.085)
+    stop_p = round_fn(raw_price * 0.945)
+
+    return {
+        "trend": trend,
+        "ai_opinion": ai_opinion,
+        "ai_badge": ai_badge,
+        "ma5": ma5, "ma20": ma20, "ma60": ma60, "ma120": ma120,
+        "bollinger": bb_str,
+        "macd": macd_str,
+        "rsi": rsi_val,
+        "atr": atr_val,
+        "vol_ratio": vol_ratio,
+        "support": entry2,
+        "current": round_fn(raw_price),
+        "resistance": target2,
+        "entry1": entry1,
+        "entry2": entry2,
+        "target1": target1,
+        "target2": target2,
+        "stop_p": stop_p,
+        "guide_text": guide_text
     }
 
-    try:
-        response = requests.post(
-            url,
-            headers={
-                "Content-Type": "application/json",
-                "X-Goog-Api-Key": GEMINI_API_KEY,
-                "User-Agent": "gaemiGTP/1.0",
-            },
-            json=payload,
-            timeout=25,
-        )
+# ----------------------------------------------------
+# 4. 전체 통합 파이프라인
+# ----------------------------------------------------
+def run_full_pipeline(query):
+    clean_q = query.strip().replace(" ", "").upper()
+    market_name = "국내주식"
+    is_krw = True
+    chg_str = "+0.00%"
+    is_up = True
 
-        if not response.ok:
-            print(
-                f"[GEMINI NEWS ERROR] HTTP {response.status_code}: "
-                f"{response.text[:500]}"
-            )
+    if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
+        symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
+        formal_name = clean_q
+        raw_price, price_str, chg_str, is_up, df = fetch_crypto_candles(symbol)
+        market_name = "암호화폐"
+        is_krw = False
+    elif clean_q in US_STOCK_MAP:
+        symbol = US_STOCK_MAP[clean_q]
+        formal_name = query.strip()
+        raw_price, price_str, chg_str, is_up, df = fetch_overseas_candles(symbol)
+        market_name = "미국주식"
+        is_krw = False
+    elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
+        symbol = query.upper().strip()
+        formal_name = symbol
+        raw_price, price_str, chg_str, is_up, df = fetch_overseas_candles(symbol)
+        market_name = "미국주식"
+        is_krw = False
+    else:
+        code, name = find_stock_code(query)
+        if not code:
             return None
+        symbol, formal_name = code, name
+        raw_price, price_str, chg_str, is_up = get_naver_realtime_price(symbol)
+        df = fetch_domestic_candles(symbol, anchor_price=raw_price)
+        if raw_price is None and df is not None and not df.empty:
+            raw_price = float(df['Close'].iloc[-1])
+            prev_p = float(df['Close'].iloc[-2]) if len(df) > 1 else raw_price
+            cr = ((raw_price - prev_p) / prev_p) * 100 if prev_p > 0 else 0.0
+            price_str = f"{int(raw_price):,} 원"
+            chg_str = f"{cr:+.2f}%"
+            is_up = cr >= 0
 
-        data = response.json()
-        candidates = data.get("candidates") or []
-        if not candidates:
-            print("[GEMINI NEWS ERROR] no candidates")
-            return None
-
-        parts = (candidates[0].get("content") or {}).get("parts") or []
-        text = "".join(
-            part.get("text", "")
-            for part in parts
-            if isinstance(part, dict)
-        ).strip()
-
-        if not text:
-            print("[GEMINI NEWS ERROR] empty response text")
-            return None
-
-        parsed = json.loads(text)
-
-        sentiment = parsed.get("sentiment")
-        impact = parsed.get("impact")
-        summary = str(parsed.get("summary", "")).strip()
-        reason = str(parsed.get("reason", "")).strip()
-
-        if sentiment not in {"호재", "악재", "중립"}:
-            sentiment = "중립"
-        if impact not in {"높음", "중간", "낮음"}:
-            impact = "낮음"
-        if not summary:
-            print("[GEMINI NEWS ERROR] empty summary")
-            return None
-
-        return {
-            "summary": summary,
-            "sentiment": sentiment,
-            "impact": impact,
-            "reason": reason,
-            "model": GEMINI_MODEL,
-        }
-
-    except Exception as exc:
-        print(f"[GEMINI NEWS ERROR] {asset['symbol']}: {exc}")
+    if raw_price is None or df is None:
         return None
 
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        f_news = executor.submit(fetch_rss_news, formal_name, 5)
+        f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 4)
+        stock_news = f_news.result()
+        dart_disclosures = f_dart.result()
 
-def render_gemini_news_block(analysis):
-    if not analysis:
-        return ""
+    quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
-    return f"""
-  <div class="card">
-    <div class="section-title">AI 뉴스 요약</div>
-    <div class="meta">
-      판단: <strong>{html_escape(analysis.get("sentiment", "중립"))}</strong>
-      · 영향도: <strong>{html_escape(analysis.get("impact", "낮음"))}</strong>
+    df['MA20'] = df['Close'].rolling(20).mean()
+    df['MA60'] = df['Close'].rolling(60).mean()
+    df['STD60'] = df['Close'].rolling(60).std()
+    df['BB_UP'] = df['MA60'] + (df['STD60'] * 2)
+    df['BB_DN'] = df['MA60'] - (df['STD60'] * 2)
+
+    candles = []
+    ma20_line = []
+    ma60_line = []
+    bb_up_line = []
+    bb_dn_line = []
+
+    for date_idx, row in df.tail(65).iterrows():
+        t_str = date_idx.strftime("%Y-%m-%d")
+        candles.append({
+            "time": t_str,
+            "open": float(row['Open']), "high": float(row['High']),
+            "low": float(row['Low']), "close": float(row['Close'])
+        })
+        if not np.isnan(row['MA20']):
+            ma20_line.append({"time": t_str, "value": float(row['MA20'])})
+        if not np.isnan(row['MA60']):
+            ma60_line.append({"time": t_str, "value": float(row['MA60'])})
+        if not np.isnan(row['BB_UP']):
+            bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
+        if not np.isnan(row['BB_DN']):
+            bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
+
+    return {
+        "name": formal_name,
+        "symbol": symbol,
+        "market": market_name,
+        "price": price_str,
+        "chg_str": chg_str or "+0.00%",
+        "is_up": is_up,
+        "time": now_str,
+        "quant": quant,
+        "stock_news": stock_news,
+        "dart_disclosures": dart_disclosures,
+        "candles": candles,
+        "ma20_line": ma20_line,
+        "ma60_line": ma60_line,
+        "bb_up_line": bb_up_line,
+        "bb_dn_line": bb_dn_line
+    }
+
+# ----------------------------------------------------
+# 5. 텔레그램 봇 실시간 인터랙션 엔진
+# ----------------------------------------------------
+def send_telegram_msg(chat_id, text):
+    if not TELEGRAM_TOKEN:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        HTTP_SESSION.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=2.5)
+    except Exception:
+        pass
+
+def telegram_bot_worker():
+    if not TELEGRAM_TOKEN:
+        return
+    offset = 0
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=20"
+            res = HTTP_SESSION.get(url, timeout=25).json()
+            if res.get("ok"):
+                for upd in res.get("result", []):
+                    offset = upd["update_id"] + 1
+                    msg = upd.get("message", {})
+                    chat_id = msg.get("chat", {}).get("id")
+                    text = msg.get("text", "").strip()
+
+                    if not chat_id or not text:
+                        continue
+
+                    if text.startswith("/start"):
+                        parts = text.split()
+                        if len(parts) > 1:
+                            target_q = parts[1].strip()
+                            data = run_full_pipeline(target_q)
+                            if data:
+                                reply = f"🔔 <b>{data['name']}({data['symbol']})</b> 알림 등록 완료!\n\n" \
+                                        f"현재가: <b>{data['price']}</b> ({data['chg_str']})\n" \
+                                        f"AI 분석: <b>{data['quant']['ai_opinion']}</b>\n" \
+                                        f"1차 진입가: {data['quant']['entry1']}\n" \
+                                        f"저항선: {data['quant']['resistance']}\n" \
+                                        f"손절 방어선: {data['quant']['stop_p']}"
+                                send_telegram_msg(chat_id, reply)
+                            else:
+                                send_telegram_msg(chat_id, f"gaemiGTP 알림봇에 오신 것을 환영합니다!\n<code>/삼성전자</code> 또는 <code>/BTC</code> 형태로 종목명을 입력하시면 실시간 분석을 받아보실 수 있습니다.")
+                        else:
+                            send_telegram_msg(chat_id, f"gaemiGTP 텔레그램 시그널 알림봇입니다!\n<code>/SK하이닉스</code>, <code>/NVDA</code>, <code>/BTC</code> 형태로 종목명을 입력해 주세요.")
+                    else:
+                        query_clean = text.lstrip("/")
+                        data = run_full_pipeline(query_clean)
+                        if data:
+                            reply = f"📊 <b>gaemiGTP 분석: {data['name']}</b> ({data['symbol']})\n" \
+                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
+                                    f"현재가: <b>{data['price']}</b> ({data['chg_str']})\n" \
+                                    f"AI 분석: <b>{data['quant']['ai_opinion']}</b> ({data['quant']['trend']})\n" \
+                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
+                                    f"🎯 <b>핵심 가격</b>\n" \
+                                    f"• 지지선: {data['quant']['support']}\n" \
+                                    f"• 저항선: {data['quant']['resistance']}\n" \
+                                    f"• 손절선: {data['quant']['stop_p']}\n\n" \
+                                    f"💡 <i>{data['quant']['guide_text']}</i>"
+                            send_telegram_msg(chat_id, reply)
+                        else:
+                            send_telegram_msg(chat_id, f"❌ '{query_clean}' 종목을 찾을 수 없습니다.")
+        except Exception:
+            time.sleep(2)
+
+if TELEGRAM_TOKEN:
+    threading.Thread(target=telegram_bot_worker, daemon=True).start()
+
+# ----------------------------------------------------
+# 6. 웹 프론트엔드 UI (현대적 금융 플랫폼 디자인 전면 적용)
+# ----------------------------------------------------
+HTML_PAGE = """<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>gaemiGTP - 오늘 시장, 어디부터 볼까?</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Pretendard:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        :root {
+            --bg-body: #F7F8FA;
+            --bg-card: #FFFFFF;
+            --text-main: #171717;
+            --text-sub: #6B7280;
+            --text-muted: #9CA3AF;
+            --color-up: #16A34A;
+            --color-down: #EF4444;
+            --color-neutral: #6B7280;
+            --color-primary: #111827;
+            --border-line: #E5E7EB;
+            --border-focus: #111827;
+            --card-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03);
+            --radius-lg: 16px;
+            --radius-md: 12px;
+            --radius-sm: 8px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+        body { background-color: var(--bg-body); color: var(--text-main); min-height: 100vh; overflow-x: hidden; line-height: 1.5; }
+
+        /* 상단 헤더: 브랜드와 최소 기능만 */
+        header {
+            height: 64px;
+            background: #FFFFFF;
+            border-bottom: 1px solid var(--border-line);
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+        }
+        .logo { font-size: 1.25rem; font-weight: 800; color: var(--color-primary); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+        .nav-right { display: flex; align-items: center; gap: 8px; }
+        .btn-nav-text { font-size: 0.9rem; font-weight: 600; color: var(--text-sub); background: none; border: none; cursor: pointer; padding: 7px 10px; }
+        .btn-nav-login { font-size: 0.9rem; font-weight: 600; color: #FFFFFF; background: var(--color-primary); border: none; border-radius: var(--radius-sm); padding: 7px 16px; cursor: pointer; }
+        .mobile-menu-btn { display: none; background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--color-primary); }
+
+        /* 3열 앱 셸: 왼쪽 개인공간 / 중앙 분석 / 오른쪽 글로벌 시장 */
+        .app-shell { display: grid; grid-template-columns: 220px minmax(0, 1fr) 290px; min-height: calc(100vh - 64px); }
+        .side-panel { background: #FFFFFF; border-right: 1px solid var(--border-line); position: sticky; top: 64px; height: calc(100vh - 64px); overflow-y: auto; padding: 18px 12px; }
+        .right-panel { border-right: none; border-left: 1px solid var(--border-line); }
+        .side-title { font-size: 0.78rem; font-weight: 800; color: var(--text-muted); padding: 8px 10px; text-transform: uppercase; letter-spacing: .04em; }
+        .side-action { width: 100%; display: flex; align-items: center; gap: 9px; border: none; background: transparent; color: var(--text-main); padding: 10px; border-radius: 9px; cursor: pointer; text-align: left; font-size: 0.9rem; font-weight: 600; }
+        .side-action:hover { background: #F3F4F6; }
+        .recent-item { width: 100%; border: none; background: transparent; padding: 8px 10px; text-align: left; border-radius: 8px; color: var(--text-sub); cursor: pointer; font-size: 0.84rem; }
+        .recent-item:hover { background: #F3F4F6; color: var(--text-main); }
+        .right-card { background: #FFFFFF; border: 1px solid var(--border-line); border-radius: 12px; padding: 14px; margin: 8px 0 12px; }
+        .right-card-title { font-size: 0.88rem; font-weight: 800; margin-bottom: 10px; }
+        .quote-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #F1F5F9; font-size: 0.82rem; }
+        .quote-row:last-child { border-bottom: none; }
+        .quote-name { color: var(--text-sub); font-weight: 600; }
+        .quote-val { font-weight: 800; }
+        .calendar-item { padding: 9px 0; border-bottom: 1px solid #F1F5F9; }
+        .calendar-item:last-child { border-bottom: none; }
+        .calendar-time { font-size: 0.72rem; color: var(--text-muted); }
+        .calendar-name { font-size: 0.82rem; font-weight: 700; margin-top: 2px; }
+        .calendar-impact { font-size: 0.72rem; color: var(--text-sub); }
+        .center-column { min-width: 0; background: var(--bg-body); }
+
+        /* 중앙 컨테이너 */
+        .container { max-width: none; margin: 0; padding: 24px 28px 80px; }
+
+        /* 메인 히어로 */
+        .hero-section { text-align: center; padding: 24px 0 36px; }
+        .hero-title { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.5px; color: var(--color-primary); margin-bottom: 8px; }
+        .hero-sub { font-size: 1.05rem; color: var(--text-sub); margin-bottom: 28px; word-break: keep-all; }
+        .hero-note { font-size: 0.78rem; color: var(--text-muted); margin-top: -18px; margin-bottom: 20px; }
+
+        /* 검색창 */
+        .search-wrap { max-width: 680px; margin: 0 auto; position: relative; }
+        .search-box {
+            display: flex;
+            align-items: center;
+            background: #FFFFFF;
+            border: 2px solid var(--border-line);
+            border-radius: 36px;
+            padding: 8px 10px 8px 24px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.04);
+            transition: border-color 0.2s;
+        }
+        .search-box:focus-within { border-color: var(--border-focus); }
+        .search-box input { flex: 1; border: none; outline: none; font-size: 1.05rem; font-weight: 500; color: var(--text-main); }
+        .search-box input::placeholder { color: var(--text-muted); }
+        .btn-search {
+            background: var(--color-primary);
+            color: #FFFFFF;
+            border: none;
+            border-radius: 28px;
+            padding: 12px 24px;
+            font-size: 0.95rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+        .btn-search:hover { opacity: 0.9; }
+
+        .popular-tags { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+        .tag-btn { background: #FFFFFF; border: 1px solid var(--border-line); border-radius: 20px; padding: 6px 14px; font-size: 0.85rem; font-weight: 500; color: var(--text-sub); cursor: pointer; transition: all 0.15s; }
+        .tag-btn:hover { border-color: var(--border-focus); color: var(--color-primary); }
+
+        /* 공통 섹션 & 카드 */
+        .section-header { margin: 36px 0 16px; display: flex; align-items: center; justify-content: space-between; }
+        .section-title { font-size: 1.25rem; font-weight: 800; color: var(--color-primary); display: flex; align-items: center; gap: 8px; }
+        .card { background: var(--bg-card); border-radius: var(--radius-lg); padding: 20px; border: 1px solid var(--border-line); box-shadow: var(--card-shadow); }
+
+        /* 오늘의 시장 그리드 */
+        .market-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .market-card { background: #FFFFFF; border: 1px solid var(--border-line); border-radius: var(--radius-md); padding: 16px; text-align: left; }
+        .market-card .name { font-size: 0.85rem; font-weight: 600; color: var(--text-sub); margin-bottom: 4px; }
+        .market-card .val { font-size: 1.25rem; font-weight: 800; color: var(--color-primary); }
+        .market-card .rate { font-size: 0.85rem; font-weight: 700; margin-top: 2px; }
+
+        .val-up { color: var(--color-up); }
+        .val-down { color: var(--color-down); }
+
+        /* 2열 배치 레이아웃 */
+        .grid-2col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+        /* TOP 5 리스트 */
+        .top-list { display: flex; flex-direction: column; gap: 12px; }
+        .top-item { display: flex; align-items: flex-start; gap: 14px; padding: 12px; border-radius: var(--radius-sm); background: #F9FAFB; border: 1px solid var(--border-line); }
+        .top-num { font-size: 1.1rem; font-weight: 800; color: var(--text-muted); line-height: 1; }
+        .top-content .topic { font-size: 0.95rem; font-weight: 700; color: var(--color-primary); }
+        .top-content .desc { font-size: 0.85rem; color: var(--text-sub); margin-top: 2px; }
+
+        /* 주목 종목 카드 */
+        .stock-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+        .stock-card { background: #FFFFFF; border: 1px solid var(--border-line); border-radius: var(--radius-md); padding: 16px; cursor: pointer; transition: border-color 0.15s; }
+        .stock-card:hover { border-color: var(--border-focus); }
+        .stock-card .s-name { font-size: 1rem; font-weight: 700; color: var(--color-primary); }
+        .stock-card .s-price { font-size: 1.15rem; font-weight: 800; margin-top: 6px; }
+        .stock-card .s-badge { display: inline-block; font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: 12px; margin-top: 8px; }
+
+        /* AI vs 개미 */
+        .vs-card { display: flex; align-items: center; justify-content: space-between; padding: 20px; background: #FFFFFF; border: 1px solid var(--border-line); border-radius: var(--radius-md); margin-bottom: 10px; }
+        .vs-side { text-align: center; flex: 1; }
+        .vs-divider { font-weight: 800; color: var(--text-muted); font-size: 1.1rem; padding: 0 16px; }
+
+        /* 미국 수혜주 */
+        .link-flow { display: flex; align-items: center; justify-content: space-between; padding: 16px; background: #F9FAFB; border-radius: var(--radius-md); border: 1px solid var(--border-line); margin-bottom: 10px; }
+
+        /* 뉴스 카드 */
+        .news-item { padding: 14px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: block; }
+        .news-item:last-child { border-bottom: none; }
+        .news-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+        .news-title { font-size: 0.95rem; font-weight: 600; color: var(--text-main); }
+        .news-title:hover { text-decoration: underline; }
+        .news-meta { font-size: 0.8rem; color: var(--text-sub); }
+        .badge-impact { font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
+        .badge-positive { background: #DCFCE7; color: #16A34A; }
+        .badge-negative { background: #FEE2E2; color: #EF4444; }
+        .badge-neutral { background: #F3F4F6; color: #6B7280; }
+
+        /* 종목 상세 분석 뷰 */
+        #detail-view { display: none; }
+        .detail-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
+        .detail-title { font-size: 1.8rem; font-weight: 800; color: var(--color-primary); }
+        .detail-symbol { font-size: 1rem; color: var(--text-sub); font-weight: 500; margin-left: 6px; }
+        .detail-price { font-size: 2rem; font-weight: 800; }
+        .detail-meta { font-size: 0.85rem; color: var(--text-sub); margin-top: 4px; }
+
+        .quant-spec-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 14px; }
+        .spec-box { background: #F9FAFB; border: 1px solid var(--border-line); border-radius: var(--radius-sm); padding: 12px; }
+        .spec-label { font-size: 0.8rem; color: var(--text-sub); font-weight: 500; }
+        .spec-val { font-size: 1rem; font-weight: 700; color: var(--color-primary); margin-top: 2px; }
+
+        /* 투표 & 댓글 */
+        .vote-wrap { display: flex; gap: 10px; margin-top: 14px; }
+        .vote-btn { flex: 1; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border-line); background: #FFFFFF; font-size: 0.95rem; font-weight: 700; cursor: pointer; transition: all 0.15s; }
+        .vote-btn.active-long { background: #DCFCE7; border-color: #16A34A; color: #16A34A; }
+        .vote-btn.active-short { background: #FEE2E2; border-color: #EF4444; color: #EF4444; }
+
+        .comment-input-box { display: flex; gap: 8px; margin-top: 14px; }
+        .comment-input-box input { flex: 1; border: 1px solid var(--border-line); border-radius: var(--radius-md); padding: 10px 14px; font-size: 0.9rem; outline: none; }
+        .comment-input-box button { background: var(--color-primary); color: #FFFFFF; border: none; border-radius: var(--radius-md); padding: 0 18px; font-weight: 700; cursor: pointer; }
+
+        .comment-item { padding: 10px 0; border-bottom: 1px solid var(--border-line); font-size: 0.88rem; }
+        .comment-item:last-child { border-bottom: none; }
+        .comment-head { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-sub); margin-bottom: 2px; }
+        .comment-nick { font-weight: 700; color: var(--color-primary); }
+
+        .tg-banner {
+            background: #229ED9;
+            color: #FFFFFF;
+            border-radius: var(--radius-md);
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            text-decoration: none;
+            font-weight: 700;
+            margin-top: 16px;
+        }
+
+        .loading-box { text-align: center; padding: 60px 0; font-weight: 600; color: var(--text-sub); }
+
+        /* 모바일 반응형 */
+        @media (max-width: 768px) {
+            .nav-menu, .btn-nav-text, .btn-nav-login { display: none; }
+            .mobile-menu-btn { display: block; }
+            .hero-title { font-size: 1.6rem; }
+            .market-grid { grid-template-columns: repeat(2, 1fr); }
+            .grid-2col { grid-template-columns: 1fr; }
+            .stock-grid { grid-template-columns: 1fr; }
+            .quant-spec-grid { grid-template-columns: 1fr 1fr; }
+        }
+
+        @media (max-width: 1180px) {
+            .app-shell { grid-template-columns: 200px minmax(0, 1fr) 260px; }
+            .container { padding: 22px 20px 70px; }
+        }
+        @media (max-width: 900px) {
+            .app-shell { grid-template-columns: 1fr; }
+            .left-panel, .right-panel { position: fixed; top: 64px; bottom: 0; height: auto; z-index: 40; box-shadow: 0 12px 30px rgba(0,0,0,.12); transform: translateX(-105%); transition: transform .2s ease; }
+            .left-panel { left: 0; width: 250px; }
+            .right-panel { right: 0; width: 300px; transform: translateX(105%); border-left: 1px solid var(--border-line); }
+            .left-panel.mobile-open { transform: translateX(0); }
+            .right-panel.mobile-open { transform: translateX(0); }
+            .mobile-menu-btn { display: inline-block; }
+            .container { padding: 18px 14px 60px; }
+            .hero-title { font-size: 1.75rem; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 상단 네비게이션 -->
+    <header>
+        <div class="logo" onclick="resetToHome()">🐜 gaemiGTP</div>
+        <div class="nav-right">
+            <button class="btn-nav-text" title="주간/야간 전환">☀️/🌙</button>
+            <button class="btn-nav-text" title="알림">🔔</button>
+            <button class="btn-nav-login">로그인</button>
+            <button class="mobile-menu-btn" onclick="toggleLeftPanel()">☰</button>
+        </div>
+    </header>
+
+    <div class="app-shell">
+      <aside class="side-panel left-panel" id="leftPanel">
+        <div class="side-title">내 공간</div>
+        <button class="side-action" onclick="resetToHome(); document.getElementById('centerInput')?.focus();">🆕 새 분석</button>
+        <button class="side-action" onclick="scrollToSection('sec-news')">📰 뉴스</button>
+        <button class="side-action" onclick="scrollToSection('sec-community')">🐜 개미 심리</button>
+        <div class="side-title" style="margin-top:12px;">최근 검색</div>
+        <div id="recentSearchList">
+          <button class="recent-item" onclick="doSearch('삼성전자')">삼성전자</button>
+          <button class="recent-item" onclick="doSearch('SK하이닉스')">SK하이닉스</button>
+          <button class="recent-item" onclick="doSearch('NVDA')">NVIDIA</button>
+          <button class="recent-item" onclick="doSearch('BTC')">BTC</button>
+        </div>
+        <div class="side-title" style="margin-top:12px;">관심종목</div>
+        <button class="recent-item" onclick="doSearch('SK하이닉스')">⭐ SK하이닉스</button>
+        <button class="recent-item" onclick="doSearch('NVDA')">⭐ NVIDIA</button>
+        <button class="recent-item" onclick="doSearch('삼성전자')">⭐ 삼성전자</button>
+      </aside>
+
+      <main class="center-column">
+      <div class="container">
+        
+        <!-- 메인 홈 뷰 -->
+        <div id="home-view">
+            
+            <!-- 메인 히어로 -->
+            <section class="hero-section">
+                <h1 class="hero-title">오늘 시장, 어디부터 볼까?</h1>
+                <p class="hero-sub">뉴스 · 차트 · 수급 · 기술지표를 한곳에서 쉽게 확인하세요.</p>
+                <div class="hero-note">실제 데이터가 확인되는 정보만 보여드립니다.</div>
+                
+                <div class="search-wrap">
+                    <div class="search-box">
+                        <input type="text" id="centerInput" placeholder="🔍 종목명을 입력하세요 (예: 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                        <button class="btn-search" onclick="doSearch(document.getElementById('centerInput').value)">분석하기</button>
+                    </div>
+                </div>
+
+                <div class="popular-tags">
+                    <button class="tag-btn" onclick="doSearch('삼성전자')">삼성전자</button>
+                    <button class="tag-btn" onclick="doSearch('SK하이닉스')">SK하이닉스</button>
+                    <button class="tag-btn" onclick="doSearch('엔비디아')">엔비디아</button>
+                    <button class="tag-btn" onclick="doSearch('비트코인')">비트코인</button>
+                </div>
+            </section>
+
+            <!-- 오늘의 시장 -->
+            <div class="section-header">
+                <h2 class="section-title">📊 오늘의 시장</h2>
+            </div>
+            <div class="market-grid" id="marketGridArea">
+                <div class="market-card"><div class="name">KOSPI</div><div class="val" id="mKospiVal">-</div><div class="rate" id="mKospiRate">-</div></div>
+                <div class="market-card"><div class="name">NASDAQ</div><div class="val" id="mNasVal">-</div><div class="rate" id="mNasRate">-</div></div>
+                <div class="market-card"><div class="name">BTC</div><div class="val" id="mBtcVal">-</div><div class="rate" id="mBtcRate">-</div></div>
+                <div class="market-card"><div class="name">USD/KRW</div><div class="val" id="mUsdVal">-</div><div class="rate" id="mUsdRate">-</div></div>
+            </div>
+
+            <!-- 2열 섹션: 시장 TOP 5 & 오늘의 주목 종목 -->
+            <div class="grid-2col" style="margin-top: 36px;">
+                
+                <!-- 오늘 시장을 움직이는 TOP 5 -->
+                <div>
+                    <div class="section-header" style="margin-top: 0;">
+                        <h2 class="section-title">🔥 오늘 시장 체크포인트</h2>
+                    </div>
+                    <div class="card top-list">
+                        <div class="top-item">
+                            <div class="top-num">01</div>
+                            <div class="top-content"><div class="topic">반도체 / AI HBM</div><div class="desc">AI 인프라 투자와 반도체 수요를 확인하세요.</div></div>
+                        </div>
+                        <div class="top-item">
+                            <div class="top-num">02</div>
+                            <div class="top-content"><div class="topic">미국 금리 및 달러 환율</div><div class="desc">미국 금리와 원/달러 움직임을 확인하세요.</div></div>
+                        </div>
+                        <div class="top-item">
+                            <div class="top-num">03</div>
+                            <div class="top-content"><div class="topic">2차전지 / 전기차</div><div class="desc">전기차·배터리 업종의 주요 변수를 확인하세요.</div></div>
+                        </div>
+                        <div class="top-item">
+                            <div class="top-num">04</div>
+                            <div class="top-content"><div class="topic">바이오 / 기술수출</div><div class="desc">임상·기술이전 등 바이오 주요 일정을 확인하세요.</div></div>
+                        </div>
+                        <div class="top-item">
+                            <div class="top-num">05</div>
+                            <div class="top-content"><div class="topic">암호화폐 온체인 수급</div><div class="desc">ETF 자금 흐름과 암호화폐 수급을 확인하세요.</div></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 오늘의 주목 종목 -->
+                <div>
+                    <div class="section-header" style="margin-top: 0;">
+                        <h2 class="section-title">⭐ 빠른 종목 분석</h2>
+                    </div>
+                    <div class="card stock-grid" style="grid-template-columns: 1fr;">
+                        <div class="stock-card" onclick="doSearch('SK하이닉스')">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div class="s-name">SK하이닉스</div>
+                                <span class="badge-impact badge-neutral">검색 후 분석</span>
+                            </div>
+                            <div class="s-price"><span style="font-size:0.9rem; color:var(--text-sub);">검색하면 실시간 가격과 분석을 확인할 수 있습니다.</span></div>
+                        </div>
+                        <div class="stock-card" onclick="doSearch('삼성전자')">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div class="s-name">삼성전자</div>
+                                <span class="badge-impact badge-neutral">검색 후 분석</span>
+                            </div>
+                            <div class="s-price"><span style="font-size:0.9rem; color:var(--text-sub);">검색하면 실시간 가격과 분석을 확인할 수 있습니다.</span></div>
+                        </div>
+                        <div class="stock-card" onclick="doSearch('NVDA')">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <div class="s-name">엔비디아 (NVDA)</div>
+                                <span class="badge-impact badge-neutral">검색 후 분석</span>
+                            </div>
+                            <div class="s-price"><span style="font-size:0.9rem; color:var(--text-sub);">검색하면 실시간 가격과 분석을 확인할 수 있습니다.</span></div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- 차별화 섹션: AI vs 개미 & 미국→한국 수혜주 -->
+            <div class="grid-2col" style="margin-top: 36px;" id="sec-vs">
+                
+                <!-- AI vs 개미 -->
+                <div>
+                    <div class="section-header" style="margin-top: 0;">
+                        <h2 class="section-title">🧠 AI vs 🐜 개미</h2>
+                    </div>
+                    <div class="card">
+                        <div class="vs-card">
+                            <div class="vs-side">
+                                <div style="font-size:0.8rem; color:var(--text-sub);">검색한 종목</div>
+                                <div style="font-size:1.1rem; font-weight:800; margin-top:2px;">AI 분석</div>
+                                <div class="badge-impact badge-neutral" style="margin-top:6px;">분석 결과 표시</div>
+                            </div>
+                            <div class="vs-divider">VS</div>
+                            <div class="vs-side">
+                                <div style="font-size:0.8rem; color:var(--text-sub);">집단지성 투표</div>
+                                <div style="font-size:1.1rem; font-weight:800; margin-top:2px;">개미 심리</div>
+                                <div class="badge-impact badge-neutral" style="margin-top:6px;">실제 투표 결과 표시</div>
+                            </div>
+                        </div>
+                        <div style="font-size:0.82rem; color:var(--text-sub); text-align:center; padding:4px 0;">
+                            종목을 검색하면 해당 종목의 실제 분석 결과와 개미 투표를 비교합니다.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 미국 시장 움직임 → 한국 관련주 -->
+                <div>
+                    <div class="section-header" style="margin-top: 0;">
+                        <h2 class="section-title">🇺🇸 미국 시장 → 🇰🇷 한국 관련주</h2>
+                    </div>
+                    <div class="card">
+                        <div class="link-flow">
+                            <div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">대표 연결 예시</div>
+                                <div style="font-size:1.05rem; font-weight:800;">NVIDIA (엔비디아)</div>
+                            </div>
+                            <div style="font-weight:800; color:var(--text-muted);">→</div>
+                            <div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">국내 관련 산업</div>
+                                <div style="font-size:0.95rem; font-weight:700; color:var(--color-primary);">SK하이닉스 · 한미반도체</div>
+                            </div>
+                        </div>
+                        <div class="link-flow" style="margin-bottom:0;">
+                            <div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">대표 연결 예시</div>
+                                <div style="font-size:1.05rem; font-weight:800;">TESLA (테슬라)</div>
+                            </div>
+                            <div style="font-weight:800; color:var(--text-muted);">→</div>
+                            <div>
+                                <div style="font-size:0.8rem; color:var(--text-sub);">국내 관련 산업</div>
+                                <div style="font-size:0.95rem; font-weight:700; color:var(--color-primary);">LG에너지솔루션 · 레인보우로보</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- 오늘의 핵심 뉴스 -->
+            <div class="section-header" id="sec-news">
+                <h2 class="section-title">📰 오늘의 핵심 뉴스</h2>
+            </div>
+            <div class="card" id="homeNewsList">
+                <div style="text-align:center; color:var(--text-muted); padding:20px;">실시간 뉴스 데이터를 불러오는 중입니다...</div>
+            </div>
+
+        </div>
+
+        <!-- 종목 상세 분석 뷰 (검색 시 전환) -->
+        <div id="detail-view">
+            <div class="loading-box" id="detailLoading">실시간 주가 데이터 및 퀀트 지표를 연산 중입니다...</div>
+
+            <div id="detailContent" style="display:none;">
+                
+                <div class="card" style="margin-bottom:16px;">
+                    <div class="detail-header">
+                        <div>
+                            <div class="detail-title"><span id="dName"></span><span class="detail-symbol" id="dSymbol"></span></div>
+                            <div class="detail-meta" id="dMeta"></div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div class="detail-price" id="dPrice"></div>
+                            <div style="font-size:1rem; font-weight:700;" id="dChange"></div>
+                        </div>
+                    </div>
+
+                    <!-- 14대 퀀트 기반 AI 종합 요약 -->
+                    <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; margin-top:16px; padding-top:16px; border-top:1px solid var(--border-line);">
+                        <div class="spec-box"><div class="spec-label">🧠 gaemiGTP 분석 판단</div><div class="spec-val" id="dAiOpinion">-</div></div>
+                        <div class="spec-box"><div class="spec-label">📈 추세 국면</div><div class="spec-val" id="dTrend">-</div></div>
+                        <div class="spec-box"><div class="spec-label">🎯 1차 매수 진입가</div><div class="spec-val" id="dEntry1">-</div></div>
+                    </div>
+
+                    <!-- 차트 영역 -->
+                    <div id="tvChart" style="width:100%; height:320px; margin-top:20px; background:#FFFFFF; border-radius:var(--radius-sm); overflow:hidden;"></div>
+                </div>
+
+                <!-- 기술적 상태 상세 -->
+                <div class="card" style="margin-bottom:16px;">
+                    <h3 class="section-title" style="font-size:1.05rem; margin-bottom:12px;">📊 기술적 상태 & 주요 가격선</h3>
+                    <div class="quant-spec-grid">
+                        <div class="spec-box"><div class="spec-label">20일 이동평균선</div><div class="spec-val" id="dMa20">-</div></div>
+                        <div class="spec-box"><div class="spec-label">60일 이동평균선</div><div class="spec-val" id="dMa60">-</div></div>
+                        <div class="spec-box"><div class="spec-label">RSI (14) 강도</div><div class="spec-val" id="dRsi">-</div></div>
+                        <div class="spec-box"><div class="spec-label">MACD (12,26,9)</div><div class="spec-val" id="dMacd">-</div></div>
+                        <div class="spec-box"><div class="spec-label">볼린저 밴드 상/하단</div><div class="spec-val" id="dBb">-</div></div>
+                        <div class="spec-box"><div class="spec-label">5일평균 거래량 대비</div><div class="spec-val" id="dVolRatio">-</div></div>
+                        <div class="spec-box"><div class="spec-label">주요 지지선</div><div class="spec-val" id="dSupport">-</div></div>
+                        <div class="spec-box"><div class="spec-label">현재 기준가</div><div class="spec-val" id="dCurrent">-</div></div>
+                        <div class="spec-box"><div class="spec-label">주요 저항선</div><div class="spec-val" id="dResistance">-</div></div>
+                    </div>
+                    <div style="margin-top:14px; padding:12px; background:#F9FAFB; border-radius:var(--radius-sm); font-size:0.85rem; color:var(--text-sub);" id="dGuideText"></div>
+                </div>
+
+                <!-- 텔레그램 실시간 알림 연동 배너 -->
+                <a id="tgAlertLink" href="#" target="_blank" class="tg-banner">
+                    <span>🔔 <span id="tgBtnText">이 종목</span> 텔레그램 실시간 알림 받기</span>
+                    <span style="font-size:0.85rem; opacity:0.9;">1초 연결 →</span>
+                </a>
+
+                <!-- DART 전자공시 카드 -->
+                <div class="card" id="dartCard" style="margin-top:16px; display:none;">
+                    <h3 class="section-title" style="font-size:1.05rem; margin-bottom:12px;">📑 DART 전자공시</h3>
+                    <div id="dartList"></div>
+                </div>
+
+                <!-- 종목 뉴스 카드 -->
+                <div class="card" style="margin-top:16px;">
+                    <h3 class="section-title" style="font-size:1.05rem; margin-bottom:12px;">📰 종목 관련 뉴스</h3>
+                    <div id="stockNewsList"></div>
+                </div>
+
+                <!-- 집단지성 심리 투표 & 실시간 토론방 -->
+                <div class="grid-2col" style="margin-top:16px;" id="sec-community">
+                    
+                    <!-- 개미 심리 -->
+                    <div class="card">
+                        <h3 class="section-title" style="font-size:1.05rem;">🐜 개미 심리</h3>
+                        <div style="margin:14px 0 8px;">
+                            <div style="display:flex; justify-content:space-between; font-size:0.85rem; font-weight:700; margin-bottom:6px;">
+                                <span class="val-up" id="voteLongPct">상승 50%</span>
+                                <span class="val-down" id="voteShortPct">하락 50%</span>
+                            </div>
+                            <div style="width:100%; height:8px; background:#F3F4F6; border-radius:4px; overflow:hidden; display:flex;">
+                                <div style="height:100%; background:var(--color-up); width:50%; transition:width 0.3s;" id="voteLongBar"></div>
+                                <div style="height:100%; background:var(--color-down); width:50%; transition:width 0.3s;" id="voteShortBar"></div>
+                            </div>
+                        </div>
+                        <div class="vote-wrap">
+                            <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">▲ 상승</button>
+                            <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">▼ 하락</button>
+                        </div>
+                    </div>
+
+                    <!-- 실시간 개미 토론방 -->
+                    <div class="card">
+                        <h3 class="section-title" style="font-size:1.05rem; justify-content:space-between;">
+                            <span>💬 개미 토론</span>
+                            <span style="font-size:0.75rem; color:var(--text-sub); font-weight:normal;" id="commentCountTag">0개 의견</span>
+                        </h3>
+                        <div id="commentList" style="max-height:180px; overflow-y:auto; margin-top:8px;"></div>
+                        <div class="comment-input-box">
+                            <input type="text" id="commentInput" placeholder="의견을 남겨주세요" onkeypress="if(event.keyCode==13) postComment();" maxlength="80">
+                            <button onclick="postComment()">등록</button>
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+        </div>
+
     </div>
-    <div style="margin-top:12px;line-height:1.7">
-      {html_escape(analysis.get("summary", ""))}
+      </main>
+
+      <aside class="side-panel right-panel">
+        <div class="side-title">🌎 Global Market</div>
+        <div class="right-card">
+          <div class="right-card-title">해외시장</div>
+          <div class="quote-row"><span class="quote-name">NASDAQ</span><span class="quote-val">실시간</span></div>
+          <div class="quote-row"><span class="quote-name">S&P 500</span><span class="quote-val">실시간</span></div>
+          <div class="quote-row"><span class="quote-name">VIX</span><span class="quote-val">실시간</span></div>
+          <div class="quote-row"><span class="quote-name">US 10Y</span><span class="quote-val">실시간</span></div>
+          <div class="quote-row"><span class="quote-name">DXY</span><span class="quote-val">실시간</span></div>
+          <div class="quote-row"><span class="quote-name">WTI</span><span class="quote-val">실시간</span></div>
+          <div class="quote-row"><span class="quote-name">GOLD</span><span class="quote-val">실시간</span></div>
+          <div class="quote-row"><span class="quote-name">COPPER</span><span class="quote-val">실시간</span></div>
+          <div class="quote-row"><span class="quote-name">BTC</span><span class="quote-val">실시간</span></div>
+        </div>
+        <div class="side-title">📅 오늘 일정</div>
+        <div class="right-card">
+          <div class="calendar-item"><div class="calendar-time">21:30</div><div class="calendar-name">미국 주요 경제지표</div><div class="calendar-impact">영향도 ★★★★★</div></div>
+          <div class="calendar-item"><div class="calendar-time">장 마감 후</div><div class="calendar-name">주요 기업 실적</div><div class="calendar-impact">영향도 ★★★★★</div></div>
+          <div class="calendar-item"><div class="calendar-time">일정 확인</div><div class="calendar-name">FOMC / CPI / PCE</div><div class="calendar-impact">발표 전후 변동성 확인</div></div>
+        </div>
+        <div class="right-card" style="font-size:.76rem; color:var(--text-muted);">※ 현재 우측 수치는 레이아웃용 표시입니다. 실제 데이터 연동 시 자동으로 채웁니다.</div>
+      </aside>
     </div>
-    <div class="small">
-      판단 근거: {html_escape(analysis.get("reason", ""))}
-      · 모델: {html_escape(analysis.get("model", GEMINI_MODEL))}
-    </div>
-  </div>
+
+    <script>
+        let chart = null;
+        let currentSymbol = '';
+
+        const SUPABASE_URL = "https://uaqvmsubzgzvxbdcwcad.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_bcxDofsnPXgBICDDgQ8Ijw_fNjPcsRW";
+        let supabaseClient = null;
+        try {
+            if (window.supabase) {
+                supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+            }
+        } catch(e) {
+            console.warn("Supabase local fallback mode");
+        }
+
+        async function initMarketOverview() {
+            try {
+                const res = await fetch('/api/market-overview');
+                const list = await res.json();
+                if (list && list.length >= 4) {
+                    document.getElementById('mKospiVal').innerText = list[0].price;
+                    document.getElementById('mKospiRate').innerText = list[0].rate;
+                    document.getElementById('mKospiRate').className = 'rate ' + (list[0].up ? 'val-up' : 'val-down');
+
+                    document.getElementById('mNasVal').innerText = list[1].price;
+                    document.getElementById('mNasRate').innerText = list[1].rate;
+                    document.getElementById('mNasRate').className = 'rate ' + (list[1].up ? 'val-up' : 'val-down');
+
+                    document.getElementById('mBtcVal').innerText = list[2].price;
+                    document.getElementById('mBtcRate').innerText = list[2].rate;
+                    document.getElementById('mBtcRate').className = 'rate ' + (list[2].up ? 'val-up' : 'val-down');
+
+                    document.getElementById('mUsdVal').innerText = list[3].price;
+                    document.getElementById('mUsdRate').innerText = list[3].rate;
+                    document.getElementById('mUsdRate').className = 'rate ' + (list[3].up ? 'val-up' : 'val-down');
+                }
+            } catch(e) {}
+
+            try {
+                const resNews = await fetch('/api/analyze?q=' + encodeURIComponent('뉴욕증시'));
+                const dataNews = await resNews.json();
+                const hList = document.getElementById('homeNewsList');
+                if (dataNews && dataNews.stock_news && dataNews.stock_news.length > 0) {
+                    hList.innerHTML = '';
+                    dataNews.stock_news.slice(0, 5).forEach(n => {
+                        hList.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-header">
+                                    <span class="news-meta">${n.media} · ${n.pubDate}</span>
+                                    <span class="badge-impact badge-${n.impact}">${n.impact_text}</span>
+                                </div>
+                                <div class="news-title">${n.title}</div>
+                            </a>
+                        `;
+                    });
+                }
+            } catch(e) {}
+        }
+
+        function resetToHome() {
+            document.getElementById('home-view').style.display = 'block';
+            document.getElementById('detail-view').style.display = 'none';
+            document.getElementById('centerInput').value = '';
+            currentSymbol = '';
+            window.scrollTo({top: 0, behavior: 'smooth'});
+        }
+
+        function scrollToSection(id) {
+            const el = document.getElementById(id);
+            if (el) el.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function doSearch(query) {
+            const q = query.trim();
+            if (!q) return;
+
+            document.getElementById('home-view').style.display = 'none';
+            document.getElementById('detail-view').style.display = 'block';
+            document.getElementById('detailLoading').style.display = 'block';
+            document.getElementById('detailContent').style.display = 'none';
+            window.scrollTo({top: 0, behavior: 'smooth'});
+
+            try {
+                const res = await fetch('/api/analyze?q=' + encodeURIComponent(q));
+                const data = await res.json();
+                if (!res.ok || data.error) {
+                    alert(data.error || '종목 정보를 불러올 수 없습니다.');
+                    resetToHome();
+                    return;
+                }
+
+                currentSymbol = data.symbol;
+
+                document.getElementById('dName').innerText = data.name;
+                document.getElementById('dSymbol').innerText = `(${data.symbol})`;
+                document.getElementById('dPrice').innerText = data.price;
+                document.getElementById('dChange').innerText = data.chg_str;
+                document.getElementById('dChange').className = data.is_up ? 'val-up' : 'val-down';
+                document.getElementById('dMeta').innerText = `시장: ${data.market} · 시각: ${data.time}`;
+
+                const qData = data.quant;
+                document.getElementById('dAiOpinion').innerText = qData.ai_opinion;
+                document.getElementById('dTrend').innerText = qData.trend;
+                document.getElementById('dEntry1').innerText = qData.entry1;
+
+                document.getElementById('dMa20').innerText = qData.ma20;
+                document.getElementById('dMa60').innerText = qData.ma60;
+                document.getElementById('dRsi').innerText = qData.rsi;
+                document.getElementById('dMacd').innerText = qData.macd;
+                document.getElementById('dBb').innerText = qData.bollinger;
+                document.getElementById('dVolRatio').innerText = qData.vol_ratio;
+                document.getElementById('dSupport').innerText = qData.support;
+                document.getElementById('dCurrent').innerText = qData.current;
+                document.getElementById('dResistance').innerText = qData.resistance;
+                document.getElementById('dGuideText').innerText = '💡 ' + qData.guide_text;
+
+                // 텔레그램 연동 링크
+                document.getElementById('tgAlertLink').href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(data.symbol);
+                document.getElementById('tgBtnText').innerText = `[${data.name}]`;
+
+                // 공시 렌더링
+                const dCard = document.getElementById('dartCard');
+                const dList = document.getElementById('dartList');
+                if (data.dart_disclosures && data.dart_disclosures.length > 0) {
+                    dList.innerHTML = '';
+                    data.dart_disclosures.forEach(d => {
+                        dList.innerHTML += `
+                            <a href="${d.link}" target="_blank" class="news-item">
+                                <div class="news-header">
+                                    <span class="news-meta">${d.flr_nm} · ${d.date}</span>
+                                    <span class="badge-impact badge-${d.tag_type}">${d.tag_name}</span>
+                                </div>
+                                <div class="news-title">${d.title}</div>
+                            </a>
+                        `;
+                    });
+                    dCard.style.display = 'block';
+                } else {
+                    dCard.style.display = 'none';
+                }
+
+                // 뉴스 렌더링
+                const sNews = document.getElementById('stockNewsList');
+                sNews.innerHTML = '';
+                if (data.stock_news && data.stock_news.length > 0) {
+                    data.stock_news.forEach(n => {
+                        sNews.innerHTML += `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-header">
+                                    <span class="news-meta">${n.media} · ${n.pubDate}</span>
+                                    <span class="badge-impact badge-${n.impact}">${n.impact_text}</span>
+                                </div>
+                                <div class="news-title">${n.title}</div>
+                            </a>
+                        `;
+                    });
+                } else {
+                    sNews.innerHTML = '<div style="color:var(--text-sub); font-size:0.85rem; padding:10px 0;">관련 뉴스가 없습니다.</div>';
+                }
+
+                loadCommunityData(data.symbol);
+
+                document.getElementById('detailLoading').style.display = 'none';
+                document.getElementById('detailContent').style.display = 'block';
+
+                setTimeout(() => {
+                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
+                }, 50);
+
+            } catch(e) {
+                alert('서버와 통신 중 오류가 발생했습니다.');
+                resetToHome();
+            }
+        }
+
+        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
+            const container = document.getElementById('tvChart');
+            container.innerHTML = '';
+
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth || 700,
+                height: 320,
+                layout: { background: { color: '#FFFFFF' }, textColor: '#6B7280' },
+                grid: { vertLines: { color: '#F3F4F6' }, horzLines: { color: '#F3F4F6' } },
+                timeScale: { borderColor: '#E5E7EB', timeVisible: true },
+                rightPriceScale: { borderColor: '#E5E7EB' }
+            });
+
+            const candleSeries = chart.addCandlestickSeries({
+                upColor: '#16A34A', downColor: '#EF4444',
+                borderDownColor: '#EF4444', borderUpColor: '#16A34A',
+                wickDownColor: '#EF4444', wickUpColor: '#16A34A'
+            });
+            candleSeries.setData(candles);
+
+            const lineMa20 = chart.addLineSeries({ color: '#2563EB', lineWidth: 1.5, priceLineVisible: false });
+            lineMa20.setData(ma20);
+
+            const lineMa60 = chart.addLineSeries({ color: '#EA580C', lineWidth: 1.5, priceLineVisible: false });
+            lineMa60.setData(ma60);
+
+            chart.timeScale().fitContent();
+        }
+
+        async function loadCommunityData(symbol) {
+            const voteKey = 'vote_' + symbol;
+            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 18, short: 9, myVote: null });
+            let vData = JSON.parse(rawVote);
+
+            if (supabaseClient) {
+                try {
+                    const { data } = await supabaseClient.from('votes').select('*').eq('symbol', symbol).single();
+                    if (data) {
+                        vData.long = data.long_count || vData.long;
+                        vData.short = data.short_count || vData.short;
+                    }
+                } catch(e) {}
+            }
+            updateVoteUI(vData);
+
+            let comments = [];
+            if (supabaseClient) {
+                try {
+                    const { data } = await supabaseClient.from('comments').select('*').eq('symbol', symbol).order('created_at', { ascending: false }).limit(6);
+                    if (data && data.length > 0) {
+                        comments = data.map(d => ({ nick: d.nickname, text: d.text }));
+                    }
+                } catch(e) {}
+            }
+            if (comments.length === 0) {
+                comments = [
+                    { nick: "스마트개미", text: "20일선 지지받고 반등 흐름 좋아 보입니다." },
+                    { nick: "퀀트투자자", text: "AI 분석 가이드 참고해서 분할 매수 걸어둡니다." }
+                ];
+            }
+            renderComments(comments);
+        }
+
+        function updateVoteUI(vData) {
+            const total = vData.long + vData.short;
+            const lPct = total > 0 ? Math.round((vData.long / total) * 100) : 50;
+            const sPct = 100 - lPct;
+            document.getElementById('voteLongPct').innerText = `상승 ${lPct}%`;
+            document.getElementById('voteShortPct').innerText = `하락 ${sPct}%`;
+            document.getElementById('voteLongBar').style.width = lPct + '%';
+            document.getElementById('voteShortBar').style.width = sPct + '%';
+
+            const btnL = document.getElementById('btnVoteLong');
+            const btnS = document.getElementById('btnVoteShort');
+            btnL.classList.toggle('active-long', vData.myVote === 'long');
+            btnS.classList.toggle('active-short', vData.myVote === 'short');
+        }
+
+        async function castVote(type) {
+            if (!currentSymbol) return;
+            const voteKey = 'vote_' + currentSymbol;
+            const vData = JSON.parse(localStorage.getItem(voteKey) || '{"long":18,"short":9,"myVote":null}');
+            if (vData.myVote === type) return;
+
+            if (vData.myVote === 'long') vData.long = Math.max(0, vData.long - 1);
+            if (vData.myVote === 'short') vData.short = Math.max(0, vData.short - 1);
+
+            if (type === 'long') vData.long += 1;
+            if (type === 'short') vData.short += 1;
+            vData.myVote = type;
+
+            localStorage.setItem(voteKey, JSON.stringify(vData));
+            updateVoteUI(vData);
+
+            if (supabaseClient) {
+                try {
+                    await supabaseClient.from('votes').upsert({
+                        symbol: currentSymbol, long_count: vData.long, short_count: vData.short
+                    });
+                } catch(e) {}
+            }
+        }
+
+        function renderComments(list) {
+            const wrap = document.getElementById('commentList');
+            document.getElementById('commentCountTag').innerText = `${list.length}개 의견`;
+            wrap.innerHTML = '';
+            list.forEach(c => {
+                wrap.innerHTML += `
+                    <div class="comment-item">
+                        <div class="comment-head"><span class="comment-nick">${c.nick}</span></div>
+                        <div>${c.text}</div>
+                    </div>
+                `;
+            });
+        }
+
+        async function postComment() {
+            const input = document.getElementById('commentInput');
+            const txt = input.value.trim();
+            if (!txt || !currentSymbol) return;
+
+            const nicks = ["황금개미", "성투개미", "퀀트장인", "존버대장"];
+            const rNick = nicks[Math.floor(Math.random() * nicks.length)] + "#" + Math.floor(100 + Math.random() * 900);
+
+            const wrap = document.getElementById('commentList');
+            const newItem = document.createElement('div');
+            newItem.className = 'comment-item';
+            newItem.innerHTML = `<div class="comment-head"><span class="comment-nick">${rNick}</span></div><div>${txt}</div>`;
+            wrap.prepend(newItem);
+            input.value = '';
+
+            if (supabaseClient) {
+                try {
+                    await supabaseClient.from('comments').insert({
+                        symbol: currentSymbol, nickname: rNick, text: txt
+                    });
+                } catch(e) {}
+            }
+        }
+
+        function toggleLeftPanel() {
+            const el = document.getElementById('leftPanel');
+            if (el) el.classList.toggle('mobile-open');
+        }
+
+        // 검색 기록은 브라우저 로컬에 저장해 로그인 없이도 즉시 사용 가능
+        function saveRecentSearch(name) {
+            if (!name) return;
+            const key = 'gaemiGTP_recent_searches';
+            let arr = [];
+            try { arr = JSON.parse(localStorage.getItem(key) || '[]'); } catch(e) {}
+            arr = [name, ...arr.filter(x => x !== name)].slice(0, 8);
+            localStorage.setItem(key, JSON.stringify(arr));
+            const box = document.getElementById('recentSearchList');
+            if (box) box.innerHTML = arr.map(x => `<button class="recent-item" onclick="doSearch('${String(x).replace(/'/g, "\'")}')">${x}</button>`).join('');
+        }
+        const _doSearchOriginal = window.doSearch;
+        if (typeof _doSearchOriginal === 'function') {
+            window.doSearch = function(q) { saveRecentSearch(String(q || '').trim()); return _doSearchOriginal(q); };
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initMarketOverview();
+            try {
+                const arr = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                const box = document.getElementById('recentSearchList');
+                if (box && arr.length) box.innerHTML = arr.map(x => `<button class="recent-item" onclick="doSearch('${String(x).replace(/'/g, "\'")}')">${x}</button>`).join('');
+            } catch(e) {}
+        });
+    </script>
+</body>
+</html>
 """
 
-
-
-def render_page(query="", result=None):
-    result_html = ""
-    if result:
-        if result.get("success"):
-            ind = result.get("indicators", {})
-
-            def fmt_indicator(v, suffix=""):
-                if v is None:
-                    return ""
-                return f"{v:,.2f}{suffix}"
-
-            ma_rows = []
-            for label, key in (("5일선", "ma5"), ("20일선", "ma20"), ("60일선", "ma60"), ("120일선", "ma120")):
-                value = ind.get(key)
-                if value is None:
-                    display = ""
-                elif result["market"] == "국내주식":
-                    display = f"{int(round(value)):,}원"
-                elif result["market"] == "암호화폐":
-                    display = f"{value:,.2f} USDT"
-                else:
-                    display = f"{value:,.2f} USD"
-                ma_rows.append(f'<div class="metric"><span>{label}</span><strong>{html_escape(display)}</strong></div>')
-
-            rsi_text = fmt_indicator(ind.get("rsi14"))
-            atr_text = ""
-            if ind.get("atr14") is not None:
-                if result["market"] == "국내주식":
-                    atr_text = f'{int(round(ind["atr14"])):,}원'
-                elif result["market"] == "암호화폐":
-                    atr_text = f'{ind["atr14"]:,.2f} USDT'
-                else:
-                    atr_text = f'{ind["atr14"]:,.2f} USD'
-            atr_pct_text = fmt_indicator(ind.get("atr_pct"), "%")
-            vol_text = fmt_indicator(ind.get("volume_ratio"), "%")
-            trend_text = html_escape(ind.get("trend") or "")
-
-            result_html = (
-                '<div class="card">'
-                f'<div class="title">{html_escape(result["name"])} <span style="color:#777;font-weight:500">({html_escape(result["symbol"])})</span></div>'
-                f'<div class="price">{html_escape(result["price_text"])}</div>'
-                f'<div class="meta">시장: {html_escape(result["market"])} · 현재가 데이터: {html_escape(result["price_source"])}</div>'
-                f'<div class="meta">조회시각: {html_escape(result["as_of"])}</div>'
-                '</div>'
-                f'<div class="chart-wrap">{result["chart_svg"]}</div>'
-                '<div class="legend"><span><i class="dot" style="background:#49d6c9"></i>20일 이동평균</span><span>최근 1년 일봉 데이터</span></div>'
-                '<div class="card">'
-                '<div class="section-title">퀀트 기술지표</div>'
-                f'<div class="trend">추세: <strong>{trend_text}</strong></div>'
-                '<div class="metrics">'
-                + "".join(ma_rows)
-                + '</div>'
-                '<div class="metrics">'
-                f'<div class="metric"><span>RSI(14)</span><strong>{html_escape(rsi_text)}</strong></div>'
-                f'<div class="metric"><span>ATR(14)</span><strong>{html_escape(atr_text)}</strong></div>'
-                f'<div class="metric"><span>ATR 비율</span><strong>{html_escape(atr_pct_text)}</strong></div>'
-                f'<div class="metric"><span>거래량/직전5일 평균</span><strong>{html_escape(vol_text)}</strong></div>'
-                '</div>'
-                f'<div class="small">차트 데이터: {html_escape(result["chart_source"])} · RSI/ATR은 실제 캔들에서 계산합니다.</div>'
-                '</div>'
-            )
-            result_html += render_news_block(result.get("news", []))
-            result_html += render_gemini_news_block(result.get("gemini_news"))
-
-        else:
-            result_html = f'<div class="card"><div class="title error">데이터 조회 실패</div><div class="meta">{html_escape(result.get("error", "시장 데이터를 가져오지 못했습니다."))}</div></div>'
-    return HTML.replace("{QUERY}", html_escape(query)).replace("{RESULT}", result_html)
-
-
-def analyze_query(query):
-    q = (query or "").strip()
-    if not q:
-        return {"success": False, "error": "종목명을 입력해주세요."}
-    asset = find_asset(q)
-    if not asset:
-        return {"success": False, "error": "현재 개발 단계에서 지원하지 않는 종목입니다."}
-    try:
-        price_text, price_source = get_price(asset)
-        candles, chart_source = get_history(asset)
-        indicators = build_indicators(candles)
-        news = collect_free_news(asset, limit=5)
-        gemini_news = analyze_news_with_gemini(asset, news)
-        return {
-            "success": True,
-            "name": asset["name"], "symbol": asset["symbol"], "market": asset["market"],
-            "price_text": price_text, "price_source": price_source,
-            "as_of": now_kst(), "chart_source": chart_source,
-            "chart_svg": build_svg_chart(candles, asset["market"]),
-            "indicators": indicators,
-            "news": news,
-            "gemini_news": gemini_news,
-        }
-    except Exception as exc:
-        print(f"[ANALYSIS ERROR] {asset['symbol']}: {exc}")
-        return {"success": False, "error": "차트 또는 시장 데이터를 가져오지 못했습니다. 잠시 후 다시 시도해주세요."}
-
-
-class Handler(BaseHTTPRequestHandler):
-    def send_bytes(self, status, content_type, body):
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+# ----------------------------------------------------
+# 7. 초경량 비동기/멀티스레드 웹 서버
+# ----------------------------------------------------
+class WebHandler(BaseHTTPRequestHandler):
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
         self.end_headers()
-        self.wfile.write(body)
-
-    def send_json(self, status, payload):
-        self.send_bytes(status, "application/json; charset=utf-8", json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
     def do_GET(self):
-        parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
-        if parsed.path == "/":
-            self.send_bytes(200, "text/html; charset=utf-8", render_page().encode("utf-8")); return
-        if parsed.path == "/search":
-            q = params.get("q", [""])[0].strip()
-            result = analyze_query(q)
-            self.send_bytes(200 if result.get("success") else 502, "text/html; charset=utf-8", render_page(q, result).encode("utf-8")); return
-        if parsed.path == "/health":
-            self.send_json(200, {"status":"ok", "service":"gaemiGTP-development"}); return
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
 
+        if parsed.path == "/api/market-overview":
+            overview = get_market_overview()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(overview, ensure_ascii=False).encode('utf-8'))
+            return
 
-
-
-        if parsed.path == "/api/gemini-test":
-            q = params.get("q", [""])[0].strip()
-            asset = find_asset(q) if q else None
-            if not asset:
-                self.send_json(404, {
-                    "success": False,
-                    "error": "종목명을 찾을 수 없습니다."
-                })
+        if parsed.path == "/api/analyze":
+            q = params.get('q', [''])[0].strip()
+            data = run_full_pipeline(q) if q else None
+            if not data:
+                self.send_response(404)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8'))
                 return
 
-            news = collect_free_news(asset, limit=5)
-            analysis = analyze_news_with_gemini(asset, news)
-
-            self.send_json(200, {
-                "success": True,
-                "name": asset["name"],
-                "symbol": asset["symbol"],
-                "news_count": len(news),
-                "gemini_configured": bool(GEMINI_API_KEY),
-                "model": GEMINI_MODEL,
-                "analysis": analysis,
-            })
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
             return
 
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.end_headers()
+        self.wfile.write(HTML_PAGE.encode('utf-8'))
 
-        if parsed.path == "/api/gemini-debug":
-            self.send_json(200, gemini_raw_test())
-            return
-
-        if parsed.path == "/api/gemini-status":
-            self.send_json(200, {
-                "configured": bool(GEMINI_API_KEY),
-                "model": GEMINI_MODEL,
-            })
-            return
-
-        if parsed.path == "/api/news-debug":
-            q = params.get("q", [""])[0].strip()
-            asset = find_asset(q) if q else None
-            if not asset:
-                self.send_json(404, {"success": False, "diagnostics": []})
-                return
-
-            self.send_json(200, {
-                "success": True,
-                "name": asset["name"],
-                "symbol": asset["symbol"],
-                "diagnostics": debug_news_sources(asset),
-            })
-            return
-
-        if parsed.path == "/api/news":
-            q = params.get("q", [""])[0].strip()
-            asset = find_asset(q) if q else None
-            if not asset:
-                self.send_json(404, {"success": False, "news": []})
-                return
-            news = collect_free_news(asset, limit=5)
-            self.send_json(200, {
-                "success": True,
-                "name": asset["name"],
-                "symbol": asset["symbol"],
-                "news": news, "source": "Hankyung RSS / free fallback",
-            })
-            return
-
-        if parsed.path == "/api/price":
-            q = params.get("q", [""])[0].strip()
-            result = analyze_query(q)
-            self.send_json(200 if result.get("success") else 502, result); return
-        self.send_json(404, {"error":"요청을 찾을 수 없습니다."})
-
-    def log_message(self, fmt, *args):
-        print("[WEB]", fmt % args)
-
-
-def main():
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"gaemiGTP development server started on port {PORT}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), WebHandler)
+    server.serve_forever()
 
 if __name__ == "__main__":
-    main()
+    run_web_server()

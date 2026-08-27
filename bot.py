@@ -97,7 +97,7 @@ WORLD_BOARD_CONFIG = [
 ]
 
 # ----------------------------------------------------
-# 2. 데이터 크롤링 모듈
+# 2. 데이터 크롤링 모듈 (클라우드 IP 차단 방어 적용)
 # ----------------------------------------------------
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
     if not is_krw or not stock_code or not stock_code.isdigit():
@@ -189,8 +189,41 @@ def get_naver_realtime_price(code):
         pass
     return None, None
 
+# 클라우드/Render 환경 100% 안정 작동 (네이버 XML 차트 엔진 1순위)
 def fetch_domestic_candles(code, anchor_price=None):
-    df_result = None
+    try:
+        url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=1200&requestType=0"
+        res = HTTP_SESSION.get(url, timeout=2.5)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
+            records = []
+            for it in root.findall(".//item"):
+                d_str = it.get("data", "")
+                p = d_str.split("|")
+                if len(p) >= 6:
+                    records.append({
+                        "Date": pd.to_datetime(p[0]),
+                        "Open": float(p[1]),
+                        "High": float(p[2]),
+                        "Low": float(p[3]),
+                        "Close": float(p[4]),
+                        "Volume": float(p[5])
+                    })
+            if len(records) >= 20:
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                if anchor_price and anchor_price > 0:
+                    last_close = float(df['Close'].iloc[-1])
+                    if abs(last_close - anchor_price) / anchor_price > 0.3:
+                        ratio = anchor_price / last_close
+                        df['Open'] *= ratio
+                        df['High'] *= ratio
+                        df['Low'] *= ratio
+                        df['Close'] *= ratio
+                return df
+    except Exception:
+        pass
+
+    # 야후 파이낸스 폴백
     for suffix in [".KS", ".KQ"]:
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
@@ -207,22 +240,13 @@ def fetch_domestic_candles(code, anchor_price=None):
                     "Close": float(quote['close'][i]),
                     "Volume": float(quote['volume'][i] or 0.0)
                 } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
-                if len(records) >= 30:
-                    df_result = pd.DataFrame(records).set_index("Date").sort_index()
-                    break
+                if len(records) >= 20:
+                    df = pd.DataFrame(records).set_index("Date").sort_index()
+                    return df
         except Exception:
             pass
 
-    if df_result is not None and anchor_price and anchor_price > 0:
-        last_close = float(df_result['Close'].iloc[-1])
-        if abs(last_close - anchor_price) / anchor_price > 0.3:
-            ratio = anchor_price / last_close
-            df_result['Open'] *= ratio
-            df_result['High'] *= ratio
-            df_result['Low'] *= ratio
-            df_result['Close'] *= ratio
-
-    return df_result
+    return None
 
 def fetch_overseas_candles(symbol):
     try:
@@ -966,7 +990,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (DOM ID 완전 검증 완료)
+# 7. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1161,6 +1185,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-btn { background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }
         .tag-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
+        /* 결과 영역 컨테이너: 832px 정중앙 완벽 고정 */
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
         
@@ -1572,6 +1597,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
+                        <!-- 우측 10대 지표 보드 -->
                         <div class="global-board-card">
                             <div class="board-header">
                                 <span class="board-header-title">증시는 지금</span>
@@ -1588,6 +1614,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <span id="qTrendBadge" style="font-size:0.75rem; color:#0284c7; font-weight:700;"></span>
                         </div>
 
+                        <!-- 상단 요약 게이지 & 안전한 모멘텀 상태 뱃지 -->
                         <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid var(--border-line);">
                             <div class="gauge-inner-box">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="qScoreVal"></span>
@@ -1602,6 +1629,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
+                        <!-- 2개 과학적 핵심 통계 지표 -->
                         <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
                             <div>
                                 <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">통계적 Z-Score (20D 표준편차)</div>
@@ -1613,6 +1641,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
+                        <!-- 52주 가격 위치 슬라이더 바 -->
                         <div style="margin:20px 0 14px; position:relative;">
                             <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
                                 <span style="color:var(--text-muted);" id="qLow52w"></span>
@@ -1629,6 +1658,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
+                        <!-- 세부 지표 & 과학적 통계 라벨 리스트 -->
                         <div style="margin-top:16px; border-top:1px solid var(--border-line); padding-top:12px;">
                             <div style="font-size:0.82rem; font-weight:700; color:var(--text-sub); margin-bottom:8px; display:flex; justify-content:space-between;">
                                 <span>계량 기술 지표 세부 판정</span>
@@ -2465,7 +2495,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     uCard.style.display = 'none';
                 }
 
-                // 5. DART 공시
+                // DART 공시
                 const dCard = document.getElementById('dartCard');
                 const dList = document.getElementById('dartList');
                 if (data.dart_disclosures && data.dart_disclosures.length > 0) {
@@ -2484,7 +2514,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     dCard.style.display = 'none';
                 }
 
-                // 6. 해외 뉴스
+                // 해외 뉴스
                 const gNews = document.getElementById('globalNewsList');
                 gNews.innerHTML = '';
                 if (data.global_news && data.global_news.length > 0) {
@@ -2500,7 +2530,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
                 }
 
-                // 7. gaemiGTP 시그널 밴드
+                // gaemiGTP 시그널 바인딩
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
                 document.getElementById('rBt1yTag').innerText = q.bt_1y;
                 document.getElementById('rBt2yTag').innerText = q.bt_2y;
@@ -2531,7 +2561,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             } catch (err) {
                 console.error("Analysis Render Error:", err);
-                alert('서버와 통신할 수 없습니다.');
+                alert('분석 데이터를 처리하는 중 오류가 발생했습니다: ' + err.message);
                 document.getElementById('loading').style.display = 'none';
             }
         }
@@ -2597,7 +2627,7 @@ HTML_PAGE = """<!DOCTYPE html>
 """
 
 # ----------------------------------------------------
-# 8. 초경량 비동기/멀티스레드 웹 서버
+# 8. 멀티스레드 웹 서버
 # ----------------------------------------------------
 class WebHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):

@@ -212,67 +212,95 @@ MAJOR_US_TECH_TICKERS = [
 # [수정] 이중 API 백업 로직이 추가된 실적 발표 파서
 def fetch_single_ticker_real_earnings(ticker_info):
     sym, ko_name = ticker_info
-    
     target_dt = None
     eps_avg = "-"
     rev_avg = "-"
-    
-    # 1차 시도: v10 (종종 당일에 데이터가 사라지거나 401 차단됨)
+
+    # 1차: Yahoo quoteSummary calendarEvents
     try:
         url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules=calendarEvents"
-        res = HTTP_SESSION.get(url, timeout=2.0).json()
-        cal = res.get("quoteSummary", {}).get("result", [{}])[0].get("calendarEvents", {})
-        earn = cal.get("earnings", {})
-        e_dates = earn.get("earningsDate", [])
-        if e_dates:
-            raw_ts = e_dates[0].get("raw") if isinstance(e_dates[0], dict) else e_dates[0]
-            if raw_ts:
-                target_dt = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
-                ea = earn.get("earningsAverage", {}).get("fmt")
-                ra = earn.get("revenueAverage", {}).get("fmt")
-                if ea: eps_avg = f"EPS ${ea}"
-                if ra: rev_avg = f"매출 ${ra}"
-    except Exception:
-        pass
+        res = HTTP_SESSION.get(url, timeout=3.0).json()
+        result = res.get("quoteSummary", {}).get("result") or []
+        cal = result[0].get("calendarEvents", {}) if result else {}
+        earn = cal.get("earnings", {}) or {}
+        e_dates = earn.get("earningsDate", []) or []
 
-    # 2차 시도: v8 차트 이벤트 API (차단이 거의 없고 과거 데이터도 남음)
+        candidates = []
+        today_kst = datetime.now(timezone(timedelta(hours=9))).date()
+        for item in e_dates:
+            raw_ts = item.get("raw") if isinstance(item, dict) else item
+            try:
+                dt = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                if dt.astimezone(timezone(timedelta(hours=9))).date() >= today_kst:
+                    candidates.append(dt)
+            except (TypeError, ValueError, OverflowError):
+                continue
+        if candidates:
+            target_dt = min(candidates, key=lambda d: d.timestamp())
+
+        ea = earn.get("earningsAverage", {}) or {}
+        ra = earn.get("revenueAverage", {}) or {}
+        if isinstance(ea, dict) and ea.get("fmt"):
+            eps_avg = f"EPS ${ea['fmt']}"
+        if isinstance(ra, dict) and ra.get("fmt"):
+            rev_avg = f"매출 ${ra['fmt']}"
+    except Exception as exc:
+        print(f"[EARNINGS][v10] {sym}: {type(exc).__name__}: {exc}")
+
+    # 2차: Yahoo chart earnings 이벤트
+    # 과거 3개월 데이터가 섞이므로 오늘 이후 일정만 후보로 사용
     try:
         url_v8 = f"https://query2.finance.yahoo.com/v8/finance/chart/{sym}?range=3mo&interval=1d&events=earnings"
-        res_v8 = HTTP_SESSION.get(url_v8, timeout=2.0).json()
-        events = res_v8.get("chart", {}).get("result", [{}])[0].get("events", {}).get("earnings", {})
-        
-        valid_dates = [v["date"] for k, v in events.items() if "date" in v]
-        if valid_dates:
-            now_ts = time.time()
-            # 현재 시점과 가장 가까운 발표일 탐색
-            closest_ts = min(valid_dates, key=lambda x: abs(x - now_ts))
-            
-            # v10에서 못 가져왔거나, 가져온 날짜가 완전히 엉뚱한(3개월 차이) 경우 강제 보정
-            if not target_dt or abs(target_dt.timestamp() - closest_ts) > 86400 * 30:
-                target_dt = datetime.fromtimestamp(int(closest_ts), tz=timezone.utc)
-                if eps_avg == "-": eps_avg = "예상치 집계중"
-    except Exception:
-        pass
+        res_v8 = HTTP_SESSION.get(url_v8, timeout=3.0).json()
+        result = res_v8.get("chart", {}).get("result") or []
+        events = result[0].get("events", {}).get("earnings", {}) if result else {}
+        candidates = []
+        today_kst = datetime.now(timezone(timedelta(hours=9))).date()
+        if isinstance(events, dict):
+            for item in events.values():
+                if not isinstance(item, dict) or "date" not in item:
+                    continue
+                try:
+                    dt = datetime.fromtimestamp(int(item["date"]), tz=timezone.utc)
+                    if dt.astimezone(timezone(timedelta(hours=9))).date() >= today_kst:
+                        candidates.append(dt)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        if candidates:
+            fallback_dt = min(candidates, key=lambda d: d.timestamp())
+            if target_dt is None or abs(target_dt.timestamp() - fallback_dt.timestamp()) > 86400 * 30:
+                target_dt = fallback_dt
+                if eps_avg == "-":
+                    eps_avg = "예상치 집계중"
+    except Exception as exc:
+        print(f"[EARNINGS][v8] {sym}: {type(exc).__name__}: {exc}")
 
-    if target_dt:
-        kst_dt = target_dt.astimezone(timezone(timedelta(hours=9)))
-        days_map = ["일", "월", "화", "수", "목", "금", "토"]
-        date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
-        
-        return {
-            "ts": target_dt.timestamp(),
-            "date_str": date_formatted,
-            "time": kst_dt.strftime("%H:%M"),
-            "stars": 3,
-            "star_str": "★★★",
-            "type": "earn",
-            "name": f"{ko_name} ({sym}) 실적",
-            "ticker": sym,
-            "val": "발표완료" if target_dt.timestamp() < time.time() else "발표예정",
-            "exp": eps_avg,
-            "prev": rev_avg
-        }
-    return None
+    if not target_dt:
+        return None
+
+    kst = timezone(timedelta(hours=9))
+    kst_dt = target_dt.astimezone(kst)
+    days_map = ["일", "월", "화", "수", "목", "금", "토"]
+    weekday = days_map[int(kst_dt.strftime('%w'))]
+    date_key = kst_dt.strftime("%Y.%m.%d")
+    date_str = f"{kst_dt.month}.{kst_dt.day} ({weekday})"
+    date_header = f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일"
+
+    return {
+        "ts": target_dt.timestamp(),
+        "date_key": date_key,
+        "date_str": date_str,
+        "date_header": date_header,
+        "time": kst_dt.strftime("%H:%M"),
+        "stars": 3,
+        "star_str": "★★★",
+        "type": "earn",
+        "name": f"{ko_name} ({sym}) 실적",
+        "ticker": sym,
+        "val": "발표완료" if target_dt.timestamp() <= time.time() else "발표예정",
+        "exp": eps_avg,
+        "prev": rev_avg
+    }
 
 def fetch_real_market_calendar_live():
     combined_events = []
@@ -290,7 +318,9 @@ def fetch_real_market_calendar_live():
                 
                 utc_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
                 kst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
+                date_key = kst_dt.strftime("%Y.%m.%d")
                 date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
+                date_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일"
                 time_str = kst_dt.strftime("%H:%M")
                 
                 country = it.get("country", "")
@@ -313,7 +343,9 @@ def fetch_real_market_calendar_live():
                 
                 combined_events.append({
                     "ts": utc_dt.timestamp(),
+                    "date_key": date_key,
                     "date_str": date_formatted,
+                    "date_header": date_header,
                     "time": time_str,
                     "stars": stars,
                     "star_str": star_str,
@@ -2388,12 +2420,15 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         function getTargetDateStr(offset) {
-            const d = new Date();
-            d.setDate(d.getDate() + offset);
-            const yyyy = d.getFullYear();
-            const mm = String(d.getMonth() + 1).padStart(2, '0');
-            const dd = String(d.getDate()).padStart(2, '0');
-            return `${yyyy}.${mm}.${dd}`;
+            // 한국시간(KST) 기준으로 날짜를 계산하여 서버/PC 시간대 차이 방지
+            const now = new Date();
+            const kstString = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Seoul',
+                year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(now);
+            const [yyyy, mm, dd] = kstString.split('-').map(Number);
+            const d = new Date(Date.UTC(yyyy, mm - 1, dd + Number(offset || 0)));
+            return `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`;
         }
 
         function shiftCalendarDate(delta) {
@@ -2433,7 +2468,21 @@ HTML_PAGE = """<!DOCTYPE html>
             if (!container) return;
             container.innerHTML = '';
 
-            let filtered = globalMarketCalendar.filter(ev => ev.date_key === dateStr);
+            const normalizedCalendar = Array.isArray(globalMarketCalendar)
+                ? globalMarketCalendar.map(ev => {
+                    if (!ev || ev.date_key) return ev;
+                    if (ev.ts) {
+                        const d = new Date(Number(ev.ts) * 1000);
+                        const k = new Intl.DateTimeFormat('en-CA', {
+                            timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
+                        }).format(d);
+                        return { ...ev, date_key: k.replace(/-/g, '.') };
+                    }
+                    return ev;
+                }).filter(Boolean)
+                : [];
+
+            let filtered = normalizedCalendar.filter(ev => ev.date_key === dateStr);
 
             if (filtered.length > 0) {
                 setTxt('calDayHeader', filtered[0].date_header);

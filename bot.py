@@ -1635,54 +1635,6 @@ HTML_PAGE = """<!DOCTYPE html>
         .cal-filter-pill .star-gold { color: var(--star-gold); }
 
         .cal-day-header { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); margin: 2px 0 6px; }
-        /* QUANT CALENDAR 2·6·8 */
-        .cal-event-list-wrap, .cal-card-item, .cal-event-title, .cal-event-meta, .cal-day-header {
-            font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
-        }
-        .cal-time-col, .cal-stars-row, .cal-quant-label, .cal-quant-score {
-            font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
-            font-variant-numeric: tabular-nums;
-        }
-        .cal-stars-row {
-            font-size: 0.62rem;
-            letter-spacing: 1px;
-            color: var(--star-gold);
-            margin-bottom: 2px;
-        }
-        .cal-quant-wrap {
-            margin-top: 5px;
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            width: 100%;
-        }
-        .cal-quant-label {
-            min-width: 35px;
-            font-size: 0.58rem;
-            font-weight: 700;
-            color: var(--text-muted);
-        }
-        .cal-quant-track {
-            flex: 1;
-            height: 5px;
-            background: var(--bg-subcard);
-            border: 1px solid var(--border-line);
-            border-radius: 4px;
-            overflow: hidden;
-        }
-        .cal-quant-fill {
-            height: 100%;
-            background: #8b5cf6;
-            border-radius: 4px;
-            transition: width 0.25s ease;
-        }
-        .cal-quant-score {
-            width: 26px;
-            text-align: right;
-            font-size: 0.62rem;
-            font-weight: 800;
-            color: #a78bfa;
-        }
         
         .cal-event-list-wrap {
             flex: 1;
@@ -2339,10 +2291,9 @@ HTML_PAGE = """<!DOCTYPE html>
         let selectedMode = 'gaemi';
         let currentSymbol = '';
         let globalMarketCalendar = [];
-        let currentCalOffset = parseInt(localStorage.getItem('gaemi_cal_offset') || '0', 10) || 0;
-        let currentCalFilter = localStorage.getItem('gaemi_cal_filter') || 'all';
-        let currentCalPage = parseInt(localStorage.getItem('gaemi_cal_page') || '1', 10) || 1;
-        let currentQuantScore = 72;
+        let currentCalOffset = 0;
+        let currentCalFilter = 'all';
+        let currentCalPage = 1;
         const calItemsPerPage = 4;
 
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
@@ -2442,9 +2393,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (cd) cd.style.display = 'none';
                 if (bd) bd.style.display = 'none';
             }
-            if (window.innerWidth <= 900 &&
-                !e.target.closest('#sidebar-wrapper') &&
-                !e.target.closest('#headerToggleBtn')) {
+            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
                 const side = document.getElementById('sidebar-wrapper');
                 if (side && side.classList.contains('open')) {
                     side.classList.remove('open');
@@ -2519,30 +2468,21 @@ HTML_PAGE = """<!DOCTYPE html>
             return `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`;
         }
 
-        function saveCalendarState() {
-            localStorage.setItem('gaemi_cal_offset', String(currentCalOffset));
-            localStorage.setItem('gaemi_cal_filter', currentCalFilter);
-            localStorage.setItem('gaemi_cal_page', String(currentCalPage));
-        }
-
         function shiftCalendarDate(delta) {
             currentCalOffset += delta;
             currentCalPage = 1;
-            saveCalendarState();
             renderMarketCalendarView();
         }
 
         function resetCalendarDate() {
             currentCalOffset = 0;
             currentCalPage = 1;
-            saveCalendarState();
             renderMarketCalendarView();
         }
 
         function setCalendarFilter(filterKey) {
             currentCalFilter = filterKey;
             currentCalPage = 1;
-            saveCalendarState();
             document.querySelectorAll('.cal-filter-pill').forEach(btn => btn.classList.remove('active'));
             if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
             if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
@@ -2554,7 +2494,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function changeCalPage(delta) {
             currentCalPage += delta;
-            saveCalendarState();
             renderMarketCalendarView();
         }
 
@@ -2621,8 +2560,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 const isEarn = ev.type === 'earn';
                 const clickAttr = isEarn && ev.ticker ? `onclick="doSearch('${ev.ticker}')"` : '';
                 const timePrefix = (currentCalFilter === 'earn' && ev.date_str) ? `${ev.date_str} ` : '';
-                const quantScore = Math.max(0, Math.min(100, Number(currentQuantScore) || 72));
-
+                
                 container.innerHTML += `
                     <div class="cal-card-item" ${clickAttr}>
                         <div class="cal-time-col">${timePrefix}${ev.time}</div>
@@ -2633,17 +2571,9 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <span class="cal-actual-val">${ev.val}</span>
                                 (${ev.exp} &nbsp; ${ev.prev})
                             </div>
-                            <div class="cal-quant-wrap" title="현재 종목 퀀트 분석 점수와 1:1 연동">
-                                <span class="cal-quant-label">퀀트</span>
-                                <div class="cal-quant-track">
-                                    <div class="cal-quant-fill" style="width:${quantScore}%;"></div>
-                                </div>
-                                <span class="cal-quant-score">${quantScore}</span>
-                            </div>
                         </div>
                     </div>
                 `;
-            });
             });
         }
 
@@ -2835,7 +2765,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 // 3. 퀀트 분석 데이터 렌더링
                 const q = data.quant;
                 if (q) {
-                    currentQuantScore = Math.max(0, Math.min(100, Number(q.quant_score) || 72));
                     setTxt('qScoreVal', q.quant_score);
                     setTxt('qScoreBadge', q.score_badge);
                     setHtml('qScoreDots', q.score_dots);

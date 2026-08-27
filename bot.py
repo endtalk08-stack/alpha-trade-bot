@@ -1651,50 +1651,114 @@ HTML_PAGE = """<!DOCTYPE html>
             justify-content: flex-start;
         }
 
+        /* 캘린더 카드 고도화: 기존 색상/구조를 유지하면서 여백과 위계를 정리 */
         .cal-card-item {
+            position: relative;
             background: var(--bg-cal-card);
             border: 1px solid var(--border-line);
             border-radius: 10px;
-            padding: 8px 10px;
+            padding: 9px 10px;
             display: flex;
             align-items: flex-start;
             gap: 10px;
-            transition: all 0.2s;
+            transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
             cursor: pointer;
-            min-height: 68px;
+            min-height: 72px;
+            overflow: hidden;
         }
-        .cal-card-item:hover { border-color: var(--border-focus); background: var(--btn-hover); }
-        .cal-time-col { font-size: 0.74rem; font-weight: 800; color: var(--text-muted); width: 44px; flex-shrink: 0; padding-top: 1px; }
+        .cal-card-item::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 10px;
+            bottom: 10px;
+            width: 2px;
+            border-radius: 2px;
+            background: #10b981;
+            opacity: 0.75;
+        }
+        .cal-card-item:hover {
+            border-color: var(--border-focus);
+            background: var(--btn-hover);
+            transform: translateY(-1px);
+        }
+        .cal-time-col {
+            width: 46px;
+            flex-shrink: 0;
+            padding-top: 1px;
+            font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
+            font-size: 0.72rem;
+            font-weight: 800;
+            line-height: 1.15;
+            color: var(--text-sub);
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.02em;
+        }
         .cal-detail-col { flex: 1; min-width: 0; }
-        .cal-stars-row { font-size: 0.6rem; letter-spacing: 1px; color: var(--star-gold); margin-bottom: 1px; }
-        /* 캘린더 중요도 막대 - 52주 가격 위치 그래프와 같은 시각적 느낌 */
+        .cal-event-title {
+            font-size: 0.8rem;
+            font-weight: 750;
+            color: var(--text-title);
+            line-height: 1.3;
+            word-break: keep-all;
+            margin-bottom: 3px;
+            letter-spacing: -0.015em;
+        }
+        .cal-event-meta {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 2px;
+            font-size: 0.66rem;
+            color: var(--text-muted);
+            line-height: 1.25;
+        }
+        .cal-actual-val {
+            color: #38bdf8;
+            font-weight: 750;
+            margin-right: 1px;
+        }
+
+        /* 중요도 막대: 우리 기존 청록 계열로 절제 */
         .cal-importance-wrap {
-            margin-top: 6px;
+            margin-top: 7px;
             width: 100%;
         }
         .cal-importance-bar {
             position: relative;
             width: 100%;
-            height: 6px;
+            height: 5px;
             border-radius: 5px;
-            background: linear-gradient(90deg, #38bdf8 0%, #10b981 50%, #f59e0b 78%, #ef4444 100%);
+            background: #2a2f32;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.035);
+        }
+        .cal-importance-bar::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            width: var(--importance-width, 50%);
+            border-radius: inherit;
+            background: linear-gradient(90deg, #38bdf8 0%, #10b981 100%);
+            opacity: 0.9;
         }
         .cal-importance-marker {
             position: absolute;
             top: 50%;
-            width: 10px;
-            height: 10px;
+            left: var(--importance-width, 50%);
+            width: 9px;
+            height: 9px;
             transform: translate(-50%, -50%);
             border-radius: 50%;
             background: #ffffff;
             border: 2px solid #10b981;
+            box-shadow: 0 0 0 2px rgba(16,185,129,0.10);
         }
         .cal-importance-labels {
             display: flex;
             align-items: center;
             justify-content: space-between;
             margin-top: 4px;
-            font-size: 0.56rem;
+            font-size: 0.55rem;
             line-height: 1;
             color: var(--text-muted);
             font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
@@ -1710,13 +1774,6 @@ HTML_PAGE = """<!DOCTYPE html>
             font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
             font-variant-numeric: tabular-nums;
         }
-        .cal-time-col {
-            font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
-            font-variant-numeric: tabular-nums;
-        }
-        .cal-event-title { font-size: 0.8rem; font-weight: 700; color: var(--text-title); line-height: 1.3; word-break: keep-all; margin-bottom: 2px; }
-        .cal-event-meta { font-size: 0.68rem; color: var(--text-muted); line-height: 1.25; }
-        .cal-actual-val { color: #38bdf8; font-weight: 700; margin-right: 3px; }
 
         /* 하단 페이지네이션 바 */
         .cal-pagination-bar {
@@ -2665,10 +2722,8 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="cal-importance-wrap" title="시장 중요도 ${importanceScore}">
 
 
-                                <div class="cal-importance-bar">
-
-
-                                    <div class="cal-importance-marker" style="left:${importanceWidth}%;"></div>
+                                <div class="cal-importance-bar" style="--importance-width:${importanceWidth}%;">
+                                    <div class="cal-importance-marker"></div>div>
 
 
                                 </div>

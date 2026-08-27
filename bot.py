@@ -102,27 +102,6 @@ WORLD_BOARD_CONFIG = [
 CACHED_WORLD_BOARD = []
 ANALYSIS_CACHE = {}
 
-def clean_for_json(obj):
-    if isinstance(obj, dict):
-        return {str(k): clean_for_json(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [clean_for_json(v) for v in obj]
-    elif isinstance(obj, tuple):
-        return [clean_for_json(v) for v in obj]
-    elif isinstance(obj, (np.floating, float)):
-        if np.isnan(obj) or np.isinf(obj):
-            return 0.0
-        return float(obj)
-    elif isinstance(obj, (np.integer, int)):
-        return int(obj)
-    elif isinstance(obj, (np.bool_, bool)):
-        return bool(obj)
-    elif isinstance(obj, (pd.Timestamp, datetime)):
-        return obj.strftime("%Y-%m-%d")
-    elif isinstance(obj, np.ndarray):
-        return clean_for_json(obj.tolist())
-    return obj
-
 def fetch_single_world_item(item):
     name = item["name"]
     sym = item["sym"]
@@ -140,7 +119,7 @@ def fetch_single_world_item(item):
             change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
             
             raw_closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-            sparkline = [round(float(c), 2) for c in raw_closes if c is not None and not np.isnan(float(c))][-7:]
+            sparkline = [round(float(c), 2) for c in raw_closes if c is not None and not np.isnan(c)][-7:]
             
             if "KRW" in sym:
                 price_str = f"{curr_p:,.1f}원"
@@ -154,7 +133,7 @@ def fetch_single_world_item(item):
                 "tag": tag,
                 "price": price_str,
                 "rate": f"{change_rate:+.2f}%",
-                "up": bool(change_rate >= 0),
+                "up": change_rate >= 0,
                 "sparkline": sparkline
             }
     except Exception:
@@ -228,7 +207,7 @@ def get_realtime_usdkrw():
             return float(rate)
     except Exception:
         pass
-    return 1380.0
+    return None
 
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()
@@ -272,8 +251,8 @@ def fetch_domestic_candles(code, anchor_price=None):
     try:
         url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=1200&requestType=0"
         res = HTTP_SESSION.get(url, timeout=2.2)
-        if res.status_code == 200 and '<item data=' in res.text:
-            root = ET.fromstring(res.content)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
             records = []
             for it in root.findall(".//item"):
                 d_str = it.get("data", "")
@@ -287,7 +266,7 @@ def fetch_domestic_candles(code, anchor_price=None):
                         "Close": float(p[4]),
                         "Volume": float(p[5])
                     })
-            if len(records) >= 15:
+            if len(records) >= 20:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 if anchor_price and anchor_price > 0:
                     last_close = float(df['Close'].iloc[-1])
@@ -298,25 +277,6 @@ def fetch_domestic_candles(code, anchor_price=None):
                         df['Low'] *= ratio
                         df['Close'] *= ratio
                 return df
-    except Exception:
-        pass
-
-    try:
-        url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
-        res = HTTP_SESSION.get(url, timeout=2.0).json()
-        if isinstance(res, list) and len(res) > 10:
-            records = []
-            for it in res:
-                records.append({
-                    "Date": pd.to_datetime(it['localTrdDd']),
-                    "Open": float(str(it['openPrice']).replace(',', '')),
-                    "High": float(str(it['highPrice']).replace(',', '')),
-                    "Low": float(str(it['lowPrice']).replace(',', '')),
-                    "Close": float(str(it['closePrice']).replace(',', '')),
-                    "Volume": float(str(it['accumulatedTradingVolume']).replace(',', ''))
-                })
-            if len(records) >= 15:
-                return pd.DataFrame(records).set_index("Date").sort_index()
     except Exception:
         pass
 
@@ -336,7 +296,7 @@ def fetch_domestic_candles(code, anchor_price=None):
                     "Close": float(quote['close'][i]),
                     "Volume": float(quote['volume'][i] or 0.0)
                 } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
-                if len(records) >= 15:
+                if len(records) >= 20:
                     return pd.DataFrame(records).set_index("Date").sort_index()
         except Exception:
             pass
@@ -388,25 +348,96 @@ def fetch_crypto_candles(symbol):
     return None, None, None
 
 # ----------------------------------------------------
-# 4. 실시간 퀀트 백테스팅 & 동적 시그널 연산
+# 4. 뉴스/시장 보조 데이터 (무료 공개 엔드포인트)
+# ----------------------------------------------------
+def fetch_rss_news(query_keyword, limit=5):
+    headlines = []
+    clean_k = re.sub(r"\(.*?\)", "", query_keyword).replace("USDT", "").strip()
+    if not clean_k:
+        return headlines
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
+    try:
+        r = HTTP_SESSION.get(url, timeout=2.5)
+        r.raise_for_status()
+        root = ET.fromstring(r.content)
+        for it in root.findall('.//item')[:limit]:
+            t, pub, link = it.find('title'), it.find('pubDate'), it.find('link')
+            if t is not None and t.text:
+                title_clean = html.unescape(t.text).strip()
+                parts = title_clean.rsplit(' - ', 1)
+                headlines.append({
+                    "title": parts[0],
+                    "media": parts[1] if len(parts) > 1 else "언론사",
+                    "pubDate": pub.text if pub is not None else "",
+                    "link": link.text if link is not None else "#"
+                })
+    except Exception:
+        pass
+    return headlines
+
+def get_trading_val_rank(symbol, is_krw=True):
+    if not is_krw:
+        return ""
+    try:
+        url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
+        r = HTTP_SESSION.get(url, timeout=1.8)
+        stocks = r.json().get("stocks", [])
+        for idx, item in enumerate(stocks):
+            if str(item.get("itemCode", "")).strip() == str(symbol).strip():
+                return f" ({idx+1}위)"
+    except Exception:
+        pass
+    return ""
+
+def fetch_all_world_board_parallel():
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        return list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
+
+def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
+    # 실제 데이터가 없는 경우 카드를 숨기고 가짜 수치를 만들지 않는다.
+    if market_name in ["암호화폐"]:
+        try:
+            clean_sym = symbol.upper().replace("-", "")
+            if not clean_sym.endswith("USDT"):
+                clean_sym += "USDT"
+            f = HTTP_SESSION.get(f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={clean_sym}&limit=1", timeout=1.8).json()
+            funding = None
+            if isinstance(f, list) and f:
+                funding = float(f[0].get("fundingRate", 0.0)) * 100
+            oi = HTTP_SESSION.get(f"https://fapi.binance.com/fapi/v1/openInterest?symbol={clean_sym}", timeout=1.8).json()
+            oi_val = float(oi.get("openInterest")) if isinstance(oi, dict) and oi.get("openInterest") else None
+            if funding is None and oi_val is None:
+                return None
+            items=[]
+            if funding is not None:
+                items.append({"main":"Binance 선물", "sub":"펀딩비 (실시간)", "val":f"{funding:+.4f}%", "sub_val":"실시간"})
+            if oi_val is not None:
+                items.append({"main":"미결제약정", "sub":"Binance Futures", "val":f"{oi_val:,.0f}", "sub_val":"실시간"})
+            return {"title":"암호화폐 파생 데이터", "gauge_val":"-", "gauge_label":"실시간", "status_label":"실측 데이터", "badge_text":"실제 데이터", "dots":"", "primary_label":"현재가", "primary_val":f"{raw_price:,.2f}", "secondary_label":"종목", "secondary_val":formal_name, "slider_left":"", "slider_mid":"", "slider_right":"", "slider_bottom_left":"", "slider_bottom_right":"", "fill_pct":50, "list_title":"실시간 파생 데이터", "source_tag":"출처: Binance 공개 API", "items":items}
+        except Exception:
+            return None
+    return None
+
+# ----------------------------------------------------
+# 4. 100% 실시간 퀀트 백테스팅 & 동적 시그널 연산
 # ----------------------------------------------------
 def run_real_vectorized_backtest(df):
-    if df is None or len(df) < 30:
-        return 72.0, 78.0, 2.4
+    if df is None or len(df) < 50:
+        return None, None, None
     try:
-        closes = df['Close'].astype(float).values
-        highs = df['High'].astype(float).values
-        lows = df['Low'].astype(float).values
+        closes = df['Close'].values
+        highs = df['High'].values
+        lows = df['Low'].values
         n = len(closes)
         
         ma20 = pd.Series(closes).rolling(20).mean().values
         signals = []
-        for i in range(21, n - 10):
+        for i in range(21, n - 15):
             if closes[i-1] <= ma20[i-1] and closes[i] > ma20[i]:
                 signals.append(i)
         
         if not signals:
-            return 70.0, 75.0, 2.2
+            return None, None, None
 
         results = []
         pnl_wins = []
@@ -432,23 +463,23 @@ def run_real_vectorized_backtest(df):
                 results.append((s, outcome))
 
         if not results:
-            return 70.0, 75.0, 2.2
+            return None, None, None
 
         cutoff_1y = n - 250
         res_1y = [r[1] for r in results if r[0] >= cutoff_1y]
-        win_1y = (sum(res_1y) / len(res_1y) * 100.0) if res_1y else (sum([r[1] for r in results]) / len(results) * 100.0)
+        win_1y = (sum(res_1y) / len(res_1y) * 100) if res_1y else (sum([r[1] for r in results]) / len(results) * 100)
 
         cutoff_2y = n - 500
         res_2y = [r[1] for r in results if r[0] >= cutoff_2y]
-        win_2y = (sum(res_2y) / len(res_2y) * 100.0) if res_2y else win_1y
+        win_2y = (sum(res_2y) / len(res_2y) * 100) if res_2y else win_1y
 
-        avg_w = float(np.mean(pnl_wins)) if pnl_wins else 0.05
-        avg_l = float(np.mean(pnl_losses)) if pnl_losses else 0.03
-        rr = round(float(avg_w / max(0.01, avg_l)), 1)
+        avg_w = np.mean(pnl_wins) if pnl_wins else 0.05
+        avg_l = np.mean(pnl_losses) if pnl_losses else 0.03
+        rr = round(avg_w / max(0.01, avg_l), 1)
 
-        return round(float(min(98.0, max(42.0, win_1y))), 1), round(float(min(98.0, max(42.0, win_2y))), 1), float(max(1.5, rr))
+        return round(win_1y, 1), round(win_2y, 1), rr
     except Exception:
-        return 72.0, 78.0, 2.4
+        return None, None, None
 
 def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if df is None or len(df) < 10:
@@ -498,10 +529,10 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         z_color = "neutral"
 
     pct_changes = closes.pct_change().dropna().tail(20)
-    ann_vol = float(pct_changes.std() * np.sqrt(250) * 100) if len(pct_changes) > 5 else 20.0
-    if np.isnan(ann_vol): ann_vol = 20.0
-    vol_risk_state = "고변동성 (모멘텀)" if ann_vol >= 40 else ("적정 변동성" if ann_vol >= 18 else "저변동성 (안정)")
-    vol_risk_color = "warning" if ann_vol >= 40 else ("positive" if ann_vol >= 18 else "neutral")
+    ann_vol = float(pct_changes.std() * np.sqrt(250) * 100) if len(pct_changes) > 5 else None
+    if ann_vol is not None and np.isnan(ann_vol): ann_vol = None
+    vol_risk_state = ("고변동성 (모멘텀)" if ann_vol >= 40 else ("적정 변동성" if ann_vol >= 18 else "저변동성 (안정)")) if ann_vol is not None else "데이터 없음"
+    vol_risk_color = ("warning" if ann_vol >= 40 else ("positive" if ann_vol >= 18 else "neutral")) if ann_vol is not None else "neutral"
 
     bb_period = min(60, n_bars)
     bb_mid = float(closes.tail(bb_period).mean())
@@ -548,30 +579,36 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         slider_fill_pct = min(92, max(8, int(pos_52w)))
     else:
         pos_52w_str = "-"
-        pos_52w = 50.0
+        pos_52w = None
         slider_fill_pct = 50
 
-    disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
-    disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
-    disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"
-    disp_state = "적정 이격 유지" if 98.0 <= disp20 <= 104.0 else ("단기 과열 경계" if disp20 > 104.0 else "단기 과매도 구간")
-    disp_color = "positive" if 98.0 <= disp20 <= 104.0 else ("warning" if disp20 > 104.0 else "neutral")
+    disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else None
+    disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else None
+    disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%" if disp20 is not None and disp60 is not None else "-"
+    if disp20 is None:
+        disp_state = "데이터 없음"; disp_color = "neutral"
+    else:
+        disp_state = "적정 이격 유지" if 98.0 <= disp20 <= 104.0 else ("단기 과열 경계" if disp20 > 104.0 else "단기 과매도 구간")
+        disp_color = "positive" if 98.0 <= disp20 <= 104.0 else ("warning" if disp20 > 104.0 else "neutral")
 
     delta = closes.diff()
     gain = delta.where(delta > 0, 0.0).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
     rs = gain / loss
     rsi_series = 100 - (100 / (1 + rs))
-    rsi_num = float(rsi_series.iloc[-1]) if not np.isnan(rsi_series.iloc[-1]) else 50.0
-    rsi_val = f"{rsi_num:.1f}"
-    if rsi_num >= 70:
+    rsi_num = float(rsi_series.iloc[-1]) if not np.isnan(rsi_series.iloc[-1]) else None
+    rsi_val = f"{rsi_num:.1f}" if rsi_num is not None else "-"
+    if rsi_num is not None and rsi_num >= 70:
         rsi_state = "과열권 (차익실현 경계)"
         rsi_color = "warning"
-    elif rsi_num <= 30:
+    elif rsi_num is not None and rsi_num <= 30:
         rsi_state = "침체권 (기술적 반등 기대)"
         rsi_color = "positive"
-    else:
+    elif rsi_num is not None:
         rsi_state = "중립 (안정적 심리)"
+        rsi_color = "neutral"
+    else:
+        rsi_state = "데이터 없음"
         rsi_color = "neutral"
 
     high_low = df['High'] - df['Low']
@@ -581,10 +618,10 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
 
     v_mean5 = float(volumes.tail(5).mean())
     v_curr = float(volumes.iloc[-1])
-    vol_pct = ((v_curr / v_mean5) * 100) if v_mean5 > 0 else 100.0
-    vol_ratio = f"{vol_pct:.1f}%"
-    vol_state = "거래량 급증 (수급 유입)" if vol_pct >= 150 else ("거래량 보통" if vol_pct >= 70 else "거래량 침체 (관망세)")
-    vol_color = "positive" if vol_pct >= 150 else "neutral"
+    vol_pct = ((v_curr / v_mean5) * 100) if v_mean5 > 0 else None
+    vol_ratio = f"{vol_pct:.1f}%" if vol_pct is not None else "-"
+    vol_state = ("거래량 급증 (수급 유입)" if vol_pct >= 150 else ("거래량 보통" if vol_pct >= 70 else "거래량 침체 (관망세)")) if vol_pct is not None else "데이터 없음"
+    vol_color = "positive" if vol_pct is not None and vol_pct >= 150 else "neutral"
 
     rank_str = get_trading_val_rank(symbol, is_krw)
     if n_bars >= 20:
@@ -611,10 +648,10 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if raw_price >= ma20_val: bullish_count += 1
     if ma60_val and raw_price >= ma60_val: bullish_count += 1
     if n_bars >= 35 and macd_val >= sig_val: bullish_count += 1
-    if 40.0 <= rsi_num <= 65.0: bullish_count += 1
-    if vol_pct >= 100: bullish_count += 1
+    if rsi_num is not None and 40.0 <= rsi_num <= 65.0: bullish_count += 1
+    if vol_pct is not None and vol_pct >= 100: bullish_count += 1
 
-    quant_score = int(min(98, max(42, int(45 + (bullish_count * 9)))))
+    quant_score = int(45 + (bullish_count * 9))
     score_badge = "모멘텀 최강세" if quant_score >= 80 else ("상승 모멘텀 우세" if quant_score >= 65 else "중립 횡보 국면")
 
     if ma60_val and raw_price > ma20_val > ma60_val:
@@ -627,6 +664,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         trend = "박스권 혼조세"
         guide_text = f"박스권 상하단 밴드 내 매물 공방 국면이므로 볼린저 밴드 하단 지지 확인 시 진입하고, 1차 목표가 도달 시 비중 축소 권장"
 
+    # 동적 ATR 기반 시그널 밴드
     entry1_val = raw_price - (0.5 * atr_raw)
     entry2_val = raw_price - (1.2 * atr_raw)
     target1_val = raw_price + (1.5 * atr_raw)
@@ -641,15 +679,20 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
 
     sig_fill_pct = min(92, max(8, int(((entry1_val - stop_val) / max(1, target2_val - stop_val)) * 100)))
 
+    # 실제 5년 캔들 벡터 백테스팅 결과 도출
     win_1y, win_2y, rr_actual = run_real_vectorized_backtest(df)
+    win_1y_txt = f"1년 실측 {win_1y}%" if win_1y is not None else "1년 실측 -"
+    win_2y_txt = f"2년 실측 {win_2y}%" if win_2y is not None else "2년 실측 -"
+    win_rate_txt = f"{int(win_2y)}%" if win_2y is not None else "-"
+    rr_txt = f"실측 손익비 1:{rr_actual}" if rr_actual is not None else "실측 손익비 -"
 
     return {
         "quant_score": str(quant_score),
         "score_badge": score_badge,
         "score_dots": f"<span style='color:#10b981; font-weight:700;'>상승 시그널 {bullish_count}</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>중립 {6 - bullish_count}</span>",
         "trend": trend,
-        "z_score": f"{z_score:+.2f} σ", "z_state": z_state, "z_color": z_color,
-        "ann_vol": f"{ann_vol:.1f}%", "vol_risk_state": vol_risk_state, "vol_risk_color": vol_risk_color,
+        "z_score": f"{z_score:+.2f} σ" if z_score is not None else "-", "z_state": z_state, "z_color": z_color,
+        "ann_vol": f"{ann_vol:.1f}%" if ann_vol is not None else "-", "vol_risk_state": vol_risk_state, "vol_risk_color": vol_risk_color,
         "ma5": ma5, "ma5_state": ma5_state, "ma5_color": ma5_color,
         "ma20": ma20, "ma20_state": ma20_state, "ma20_color": ma20_color,
         "ma60": ma60, "ma60_state": ma60_state, "ma60_color": ma60_color,
@@ -659,7 +702,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "macd": macd_str, "macd_state": macd_state, "macd_color": macd_color,
         "pos_52w": pos_52w_str, "slider_fill_pct": slider_fill_pct,
         "high_52w": round_fn(high_52w), "low_52w": round_fn(low_52w),
-        "disp": disp_str, "disp_state": disp_state, "disp_color": disp_color, "disp20_num": f"{disp20:+.1f}%",
+        "disp": disp_str, "disp_state": disp_state, "disp_color": disp_color, "disp20_num": f"{disp20:+.1f}%" if disp20 is not None else "-",
         "rsi": rsi_val, "rsi_state": rsi_state, "rsi_color": rsi_color,
         "atr": atr_val, "atr_ratio": atr_ratio,
         "vol_ratio": vol_ratio, "vol_state": vol_state, "vol_color": vol_color,
@@ -667,12 +710,12 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "entry1": entry1, "entry2": entry2,
         "target1": target1, "target2": target2, "stop_p": stop_p,
         "sig_fill_pct": sig_fill_pct, "guide_text": guide_text,
-        "bt_1y": f"1년 실측 {win_1y}%", "bt_2y": f"2년 실측 {win_2y}%",
-        "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}"
+        "bt_1y": win_1y_txt, "bt_2y": win_2y_txt,
+        "win_rate_num": win_rate_txt, "rr_str": rr_txt
     }
 
 # ----------------------------------------------------
-# 5. 전체 통합 파이프라인
+# 5. 전체 통합 파이프라인 (인메모리 캐시 장착)
 # ----------------------------------------------------
 def run_full_pipeline(query):
     global ANALYSIS_CACHE, CACHED_WORLD_BOARD
@@ -775,23 +818,18 @@ def run_full_pipeline(query):
 
     for date_idx, row in df.tail(65).iterrows():
         t_str = date_idx.strftime("%Y-%m-%d")
-        o = float(row['Open'])
-        h = float(row['High'])
-        l = float(row['Low'])
-        c = float(row['Close'])
-        if not (np.isnan(o) or np.isnan(h) or np.isnan(l) or np.isnan(c)):
-            candles.append({
-                "time": t_str,
-                "open": o, "high": h,
-                "low": l, "close": c
-            })
-        if 'MA20' in row and not np.isnan(row['MA20']):
+        candles.append({
+            "time": t_str,
+            "open": float(row['Open']), "high": float(row['High']),
+            "low": float(row['Low']), "close": float(row['Close'])
+        })
+        if not np.isnan(row['MA20']):
             ma20_line.append({"time": t_str, "value": float(row['MA20'])})
-        if 'MA60' in row and not np.isnan(row['MA60']):
+        if not np.isnan(row['MA60']):
             ma60_line.append({"time": t_str, "value": float(row['MA60'])})
-        if 'BB_UP' in row and not np.isnan(row['BB_UP']):
+        if not np.isnan(row['BB_UP']):
             bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
-        if 'BB_DN' in row and not np.isnan(row['BB_DN']):
+        if not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
 
     result_data = {
@@ -895,7 +933,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI
+# 7. 웹 프론트엔드 UI (안전 DOM 함수 완비)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -2190,18 +2228,13 @@ HTML_PAGE = """<!DOCTYPE html>
             try {
                 const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
                 const response = await fetch(url);
-                
+                const contentType = response.headers.get('content-type') || '';
+                const raw = await response.text();
                 let data;
-                const contentType = response.headers.get("content-type") || "";
-                if (contentType.includes("application/json")) {
-                    data = await response.json();
-                } else {
-                    const text = await response.text();
-                    throw new Error("서버 상태 오류 (" + response.status + ")");
-                }
-                
+                try { data = contentType.includes('application/json') ? JSON.parse(raw) : {error: '서버가 JSON이 아닌 응답을 반환했습니다.'}; }
+                catch (_) { data = {error: '서버 응답을 읽을 수 없습니다.'}; }
                 if (!response.ok || data.error) {
-                    alert(data.error || '종목을 찾을 수 없습니다.');
+                    alert(data.error || '종목을 찾을 수 없거나 분석 중 오류가 발생했습니다.');
                     document.getElementById('loading').style.display = 'none';
                     return;
                 }
@@ -2508,7 +2541,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
-                console.error("Analysis Error:", err);
+                console.error("Analysis Render Error:", err);
                 alert('데이터를 처리하는 중 오류가 발생했습니다: ' + err.message);
                 document.getElementById('loading').style.display = 'none';
             }
@@ -2536,7 +2569,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     vertLine: { visible: false },
                     horzLine: { visible: false }
                 },
-                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
+                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c', timeVisible: true },
                 rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
             });
 
@@ -2591,45 +2624,26 @@ class WebHandler(BaseHTTPRequestHandler):
         params = urllib.parse.parse_qs(parsed.query)
 
         if parsed.path == "/api/analyze":
+            q = params.get('q', [''])[0].strip()
             try:
-                q = params.get('q', [''])[0].strip()
                 data = run_full_pipeline(q) if q else None
                 if not data:
-                    err_json = json.dumps({"error": "종목을 찾을 수 없습니다."}, ensure_ascii=False).encode('utf-8')
-                    self.send_response(404)
-                    self.send_header('Content-Type', 'application/json; charset=utf-8')
-                    self.send_header('Access-Control-Allow-Origin', '*')
-                    self.send_header('Content-Length', str(len(err_json)))
-                    self.end_headers()
-                    self.wfile.write(err_json)
-                    return
-
-                clean_data = clean_for_json(data)
-                json_bytes = json.dumps(clean_data, ensure_ascii=False).encode('utf-8')
-
+                    raise ValueError("종목 데이터를 가져오지 못했습니다.")
+                payload = data
                 self.send_response(200)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.send_header('Content-Length', str(len(json_bytes)))
-                self.end_headers()
-                self.wfile.write(json_bytes)
-                return
-            except Exception as e:
-                err_msg = json.dumps({"error": f"서버 처리 오류: {str(e)}"}, ensure_ascii=False).encode('utf-8')
+            except Exception as exc:
+                payload = {"error": "서버 내부 오류: " + str(exc)}
                 self.send_response(500)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.send_header('Content-Length', str(len(err_msg)))
-                self.end_headers()
-                self.wfile.write(err_msg)
-                return
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(payload, ensure_ascii=False, default=str).encode('utf-8'))
+            return
 
-        html_bytes = HTML_PAGE.encode('utf-8')
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
-        self.send_header('Content-Length', str(len(html_bytes)))
         self.end_headers()
-        self.wfile.write(html_bytes)
+        self.wfile.write(HTML_PAGE.encode('utf-8'))
 
 def run_web_server():
     port = int(os.environ.get("PORT", 10000))

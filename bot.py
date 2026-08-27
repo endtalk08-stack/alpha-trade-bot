@@ -2096,6 +2096,7 @@ HTML_PAGE = """<!DOCTYPE html>
                                     <button class="cal-filter-pill active" id="filterAll" onclick="setCalendarFilter('all')">전체</button>
                                     <button class="cal-filter-pill" id="filterStar3" onclick="setCalendarFilter('star3')"><span class="star-gold">★★★</span></button>
                                     <button class="cal-filter-pill" id="filterStar2" onclick="setCalendarFilter('star2')"><span class="star-gold">★★☆</span></button>
+                                    <button class="cal-filter-pill" id="filterStar1" onclick="setCalendarFilter('star1')"><span class="star-gold">★☆☆</span></button>
                                     <button class="cal-filter-pill" id="filterEarn" onclick="setCalendarFilter('earn')">실적</button>
                                     <button class="cal-filter-pill" id="filterEco" onclick="setCalendarFilter('eco')">경제</button>
                                 </div>
@@ -2540,6 +2541,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
             if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
             if (filterKey === 'star2') document.getElementById('filterStar2').classList.add('active');
+            if (filterKey === 'star1') document.getElementById('filterStar1').classList.add('active');
             if (filterKey === 'earn') document.getElementById('filterEarn').classList.add('active');
             if (filterKey === 'eco') document.getElementById('filterEco').classList.add('active');
             renderMarketCalendarView();
@@ -2583,7 +2585,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
 
                 if (currentCalFilter === 'star3') filtered = filtered.filter(ev => ev.stars === 3);
-                if (currentCalFilter === 'star2') filtered = filtered.filter(ev => ev.stars >= 2);
+                if (currentCalFilter === 'star2') filtered = filtered.filter(ev => ev.stars === 2);
+                if (currentCalFilter === 'star1') filtered = filtered.filter(ev => ev.stars === 1);
                 if (currentCalFilter === 'eco') filtered = filtered.filter(ev => ev.type === 'eco');
             }
 

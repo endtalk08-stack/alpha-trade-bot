@@ -2281,9 +2281,9 @@ HTML_PAGE = """<!DOCTYPE html>
         let selectedMode = 'gaemi';
         let currentSymbol = '';
         let globalMarketCalendar = [];
-        let currentCalOffset = 0;
-        let currentCalFilter = 'all';
-        let currentCalPage = 1;
+        let currentCalOffset = parseInt(localStorage.getItem('gaemi_cal_offset') || '0', 10) || 0;
+        let currentCalFilter = localStorage.getItem('gaemi_cal_filter') || 'all';
+        let currentCalPage = parseInt(localStorage.getItem('gaemi_cal_page') || '1', 10) || 1;
         const calItemsPerPage = 4;
 
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
@@ -2383,7 +2383,11 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (cd) cd.style.display = 'none';
                 if (bd) bd.style.display = 'none';
             }
-            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
+            // 모바일에서만 바깥 영역 클릭 시 사이드바 자동 닫기
+            // PC에서는 사이드바를 열어둔 상태로 유지
+            if (window.innerWidth <= 900 &&
+                !e.target.closest('#sidebar-wrapper') &&
+                !e.target.closest('#headerToggleBtn')) {
                 const side = document.getElementById('sidebar-wrapper');
                 if (side && side.classList.contains('open')) {
                     side.classList.remove('open');
@@ -2458,21 +2462,30 @@ HTML_PAGE = """<!DOCTYPE html>
             return `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`;
         }
 
+        function saveCalendarState() {
+            localStorage.setItem('gaemi_cal_offset', String(currentCalOffset));
+            localStorage.setItem('gaemi_cal_filter', currentCalFilter);
+            localStorage.setItem('gaemi_cal_page', String(currentCalPage));
+        }
+
         function shiftCalendarDate(delta) {
             currentCalOffset += delta;
             currentCalPage = 1;
+            saveCalendarState();
             renderMarketCalendarView();
         }
 
         function resetCalendarDate() {
             currentCalOffset = 0;
             currentCalPage = 1;
+            saveCalendarState();
             renderMarketCalendarView();
         }
 
         function setCalendarFilter(filterKey) {
             currentCalFilter = filterKey;
             currentCalPage = 1;
+            saveCalendarState();
             document.querySelectorAll('.cal-filter-pill').forEach(btn => btn.classList.remove('active'));
             if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
             if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
@@ -2484,6 +2497,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function changeCalPage(delta) {
             currentCalPage += delta;
+            saveCalendarState();
             renderMarketCalendarView();
         }
 

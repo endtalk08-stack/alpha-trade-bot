@@ -358,7 +358,6 @@ def fetch_all_real_earnings():
     for sym, ko, d_str, hr, eps, rev in master_schedule:
         if sym not in captured_syms:
             us_dt = datetime.strptime(d_str, "%Y-%m-%d")
-            # 국내 기업은 한국 시간 아침 09:00, 미국 기업은 장 마감 후 기준
             if sym.isdigit():
                 dt_utc = us_dt.replace(tzinfo=timezone(timedelta(hours=9)))
             else:
@@ -371,7 +370,7 @@ def fetch_real_market_calendar_live():
     combined_events = []
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
-    # 1. 글로벌 경제 지표 API (헤더 및 예외처리 강화)
+    # 1. 글로벌 경제 지표 API 연동
     try:
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         res = HTTP_SESSION.get(url, timeout=3.5).json()
@@ -438,13 +437,11 @@ def background_worker():
     global CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
     while True:
         try:
-            # 증시 시세 갱신 (30초 주기)
             with ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
             if results and any(r["price"] != "-" for r in results):
                 CACHED_WORLD_BOARD = results
             
-            # 경제지표/실적 캘린더 갱신 (Rate Limit 방지를 위해 5분 주기 적용)
             now_t = time.time()
             if now_t - LAST_CALENDAR_FETCH_TIME > 300 or not CACHED_MARKET_CALENDAR:
                 cal_live = fetch_real_market_calendar_live()
@@ -1444,7 +1441,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 8. 웹 프론트엔드 UI
+# 8. 웹 프론트엔드 UI (전문 캘린더 디자인 및 1:1 대칭 완벽 적용)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1646,7 +1643,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .mini-price { font-size: 0.88rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
         .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
 
-        /* 캘린더 위젯 스타일 */
+        /* 캘린더 위젯 스타일 (전문 핀테크 디자인 고도화) */
         .cal-top-title-area { margin-bottom: 8px; }
         .cal-top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
         .cal-date-ctrl { display: flex; align-items: center; gap: 8px; }
@@ -1657,7 +1654,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .cal-today-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
         .cal-filter-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; overflow-x: auto; padding-bottom: 2px; }
-        .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+        .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 3px 8px; border-radius: 14px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
         .cal-filter-pill.active { background: #ffffff; color: #121212; border-color: #ffffff; }
         .cal-filter-pill .star-gold { color: var(--star-gold); }
 
@@ -1672,25 +1669,83 @@ HTML_PAGE = """<!DOCTYPE html>
             justify-content: flex-start;
         }
 
+        /* 고도화된 캘린더 카드 아이템 */
         .cal-card-item {
             background: var(--bg-cal-card);
             border: 1px solid var(--border-line);
-            border-radius: 10px;
-            padding: 8px 10px;
+            border-radius: 12px;
+            padding: 9px 12px;
             display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            transition: all 0.2s;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 5px;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
             cursor: pointer;
-            min-height: 68px;
+            min-height: 70px;
         }
-        .cal-card-item:hover { border-color: var(--border-focus); background: var(--btn-hover); }
-        .cal-time-col { font-size: 0.74rem; font-weight: 800; color: var(--text-muted); width: 44px; flex-shrink: 0; padding-top: 1px; }
-        .cal-detail-col { flex: 1; min-width: 0; }
-        .cal-stars-row { font-size: 0.6rem; letter-spacing: 1px; color: var(--star-gold); margin-bottom: 1px; }
-        .cal-event-title { font-size: 0.8rem; font-weight: 700; color: var(--text-title); line-height: 1.3; word-break: keep-all; margin-bottom: 2px; }
-        .cal-event-meta { font-size: 0.68rem; color: var(--text-muted); line-height: 1.25; }
-        .cal-actual-val { color: #38bdf8; font-weight: 700; margin-right: 3px; }
+        .cal-card-item:hover { border-color: var(--border-focus); background: var(--btn-hover); transform: translateY(-1px); }
+        
+        .cal-card-header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+        }
+        .cal-card-time {
+            font-size: 0.72rem;
+            font-weight: 800;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .cal-impact-badge {
+            font-size: 0.62rem;
+            font-weight: 800;
+            padding: 1px 5px;
+            border-radius: 5px;
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+        }
+        .impact-3 { background: rgba(245, 158, 11, 0.15); color: var(--star-gold); border: 1px solid rgba(245, 158, 11, 0.35); }
+        .impact-2 { background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25); }
+        .impact-1 { background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }
+
+        .cal-card-title {
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: var(--text-title);
+            line-height: 1.35;
+            word-break: keep-all;
+        }
+        
+        .cal-card-bottom-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.7rem;
+            margin-top: 1px;
+        }
+        .cal-status-badge {
+            font-size: 0.65rem;
+            font-weight: 800;
+            padding: 2px 7px;
+            border-radius: 6px;
+            display: inline-block;
+        }
+        .cal-badge-upcoming { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
+        .cal-badge-completed { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+
+        .cal-metrics-text {
+            color: var(--text-muted);
+            font-size: 0.69rem;
+            font-weight: 500;
+            text-align: right;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
 
         /* 하단 페이지네이션 바 */
         .cal-pagination-bar {
@@ -2122,11 +2177,11 @@ HTML_PAGE = """<!DOCTYPE html>
 
                             <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
                                 <div>
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">평균 목표가</div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uPrimaryLabel"></div>
                                     <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
                                 </div>
                                 <div style="text-align:right;">
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재가</div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;" id="uSecondaryLabel"></div>
                                     <div style="font-size:1.15rem; font-weight:700; color:var(--text-title);" id="uSecondaryVal"></div>
                                 </div>
                             </div>
@@ -2318,9 +2373,9 @@ HTML_PAGE = """<!DOCTYPE html>
         let selectedMode = 'gaemi';
         let currentSymbol = '';
         let globalMarketCalendar = [];
-        let currentCalOffset = 0;
-        let currentCalFilter = 'all';
-        let currentCalPage = 1;
+        let currentCalOffset = parseInt(localStorage.getItem('gaemi_cal_offset') || '0', 10) || 0;
+        let currentCalFilter = localStorage.getItem('gaemi_cal_filter') || 'all';
+        let currentCalPage = parseInt(localStorage.getItem('gaemi_cal_page') || '1', 10) || 1;
         const calItemsPerPage = 4;
 
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
@@ -2420,7 +2475,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (cd) cd.style.display = 'none';
                 if (bd) bd.style.display = 'none';
             }
-            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
+            if (window.innerWidth <= 900 &&
+                !e.target.closest('#sidebar-wrapper') &&
+                !e.target.closest('#headerToggleBtn')) {
                 const side = document.getElementById('sidebar-wrapper');
                 if (side && side.classList.contains('open')) {
                     side.classList.remove('open');
@@ -2495,21 +2552,30 @@ HTML_PAGE = """<!DOCTYPE html>
             return `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`;
         }
 
+        function saveCalendarState() {
+            localStorage.setItem('gaemi_cal_offset', String(currentCalOffset));
+            localStorage.setItem('gaemi_cal_filter', currentCalFilter);
+            localStorage.setItem('gaemi_cal_page', String(currentCalPage));
+        }
+
         function shiftCalendarDate(delta) {
             currentCalOffset += delta;
             currentCalPage = 1;
+            saveCalendarState();
             renderMarketCalendarView();
         }
 
         function resetCalendarDate() {
             currentCalOffset = 0;
             currentCalPage = 1;
+            saveCalendarState();
             renderMarketCalendarView();
         }
 
         function setCalendarFilter(filterKey) {
             currentCalFilter = filterKey;
             currentCalPage = 1;
+            saveCalendarState();
             document.querySelectorAll('.cal-filter-pill').forEach(btn => btn.classList.remove('active'));
             if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
             if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
@@ -2521,6 +2587,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function changeCalPage(delta) {
             currentCalPage += delta;
+            saveCalendarState();
             renderMarketCalendarView();
         }
 
@@ -2536,11 +2603,9 @@ HTML_PAGE = """<!DOCTYPE html>
             let filtered = [];
 
             if (currentCalFilter === 'earn') {
-                // 실적 탭: 날짜에 구애받지 않고 주요 기업 실적 전체를 시간순 페이징 노출
                 filtered = normalizedCalendar.filter(ev => ev.type === 'earn');
                 setTxt('calDayHeader', '주요 빅테크 및 국내 기업 실적 발표');
             } else {
-                // 전체 / 경제 / 별점 탭: 선택된 날짜 기준 필터링
                 filtered = normalizedCalendar.filter(ev => ev.date_key === dateStr);
                 
                 if (filtered.length > 0) {
@@ -2588,16 +2653,36 @@ HTML_PAGE = """<!DOCTYPE html>
                 const clickAttr = isEarn && ev.ticker ? `onclick="doSearch('${ev.ticker}')"` : '';
                 const timePrefix = (currentCalFilter === 'earn' && ev.date_str) ? `${ev.date_str} ` : '';
                 
+                // 1. 상태 뱃지 판별
+                const isCompleted = ev.val && !ev.val.includes('대기') && !ev.val.includes('예정');
+                const badgeClass = isCompleted ? 'cal-badge-completed' : 'cal-badge-upcoming';
+                const statusBadgeHtml = `<span class="cal-status-badge ${badgeClass}">${ev.val}</span>`;
+
+                // 2. 중요도 뱃지 판별
+                let impactBadgeHtml = '';
+                if (ev.stars === 3) {
+                    impactBadgeHtml = `<span class="cal-impact-badge impact-3">★★★ HIGH</span>`;
+                } else if (ev.stars === 2) {
+                    impactBadgeHtml = `<span class="cal-impact-badge impact-2">★★☆ MID</span>`;
+                } else {
+                    impactBadgeHtml = `<span class="cal-impact-badge impact-1">★☆☆ LOW</span>`;
+                }
+
+                // 3. 지표 수치 정돈
+                const metricsText = (ev.exp !== '-' || ev.prev !== '-')
+                    ? `<span class="cal-metrics-text">${ev.exp} · ${ev.prev}</span>`
+                    : '';
+
                 container.innerHTML += `
                     <div class="cal-card-item" ${clickAttr}>
-                        <div class="cal-time-col">${timePrefix}${ev.time}</div>
-                        <div class="cal-detail-col">
-                            <div class="cal-stars-row">${ev.star_str}</div>
-                            <div class="cal-event-title">${ev.name}</div>
-                            <div class="cal-event-meta">
-                                <span class="cal-actual-val">${ev.val}</span>
-                                (${ev.exp} &nbsp; ${ev.prev})
-                            </div>
+                        <div class="cal-card-header-row">
+                            <span class="cal-card-time">${timePrefix}${ev.time}</span>
+                            ${impactBadgeHtml}
+                        </div>
+                        <div class="cal-card-title">${ev.name}</div>
+                        <div class="cal-card-bottom-row">
+                            ${statusBadgeHtml}
+                            ${metricsText}
                         </div>
                     </div>
                 `;

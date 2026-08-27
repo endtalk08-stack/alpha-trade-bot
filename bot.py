@@ -1,3 +1,16 @@
+**방법 1: 2열 콤팩트 그리드(스크롤 없음, 차트 높이와 1:1 일치)** 레이아웃을 사이트에서 바로 눈으로 확인할 수 있도록 완성된 **`bot.py` 전체 코드**입니다.
+
+---
+
+### 레이아웃 변경 핵심 포인트
+
+* **컨테이너 확장 & 2단 분할:** 상단 메인 차트 영역을 `65:35` 그리드로 분할하여 좌측은 메인 캔들 차트, 우측은 전세계 증시 보드를 배치했습니다.
+* **스크롤바 제로 (No-Scroll):** 우측 증시 보드 내부를 **2열(2-Column) 콤팩트 카드**로 구성하여 스크롤 없이 8대 핵심 지수(코스피, 코스닥, QQQ, SPY, DIA, SOXX, VIX, 환율)가 좌측 차트 높이와 1px 오차 없이 정확히 맞물립니다.
+* **모바일 반응형:** 화면 폭이 900px 이하로 좁아지면 차트 아래로 자연스럽게 세로 정렬됩니다.
+
+---
+
+```python
 import os
 import re
 import io
@@ -73,16 +86,15 @@ DOMESTIC_FAST_MAP = {
     "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
 }
 
-WORLD_INDICES_CONFIG = [
-    {"name": "다우산업", "sym": "^DJI"},
-    {"name": "나스닥종합", "sym": "^IXIC"},
-    {"name": "S&P 500", "sym": "^GSPC"},
-    {"name": "니케이 225", "sym": "^N225"},
-    {"name": "상해종합", "sym": "000001.SS"},
-    {"name": "항셍", "sym": "^HSI"},
-    {"name": "영국 FTSE", "sym": "^FTSE"},
-    {"name": "프랑스 CAC", "sym": "^FCHI"},
-    {"name": "독일 DAX", "sym": "^GDAXI"}
+WORLD_BOARD_CONFIG = [
+    {"name": "코스피", "sym": "^KS11", "tag": "국내"},
+    {"name": "코스닥", "sym": "^KQ11", "tag": "국내"},
+    {"name": "QQQ", "sym": "QQQ", "tag": "나스닥100"},
+    {"name": "SPY", "sym": "SPY", "tag": "S&P500"},
+    {"name": "DIA", "sym": "DIA", "tag": "다우존스"},
+    {"name": "SOXX", "sym": "SOXX", "tag": "반도체"},
+    {"name": "VIX", "sym": "^VIX", "tag": "변동성"},
+    {"name": "USD/KRW", "sym": "KRW=X", "tag": "환율"}
 ]
 
 # ----------------------------------------------------
@@ -461,9 +473,10 @@ def fetch_rss_news(query_keyword, limit=5):
         pass
     return headlines
 
-def fetch_single_world_index(item):
+def fetch_single_world_item(item):
     name = item["name"]
     sym = item["sym"]
+    tag = item["tag"]
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=2d&interval=1d"
         res = HTTP_SESSION.get(url, timeout=1.8).json()
@@ -473,19 +486,28 @@ def fetch_single_world_index(item):
             curr_p = meta.get("regularMarketPrice", 0.0)
             prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
             change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
+            
+            if "KRW" in sym:
+                price_str = f"{curr_p:,.1f}원"
+            elif curr_p > 1000:
+                price_str = f"{curr_p:,.2f}"
+            else:
+                price_str = f"{curr_p:,.2f}"
+
             return {
                 "name": name,
-                "price": f"{curr_p:,.2f}",
+                "tag": tag,
+                "price": price_str,
                 "rate": f"{change_rate:+.2f}%",
                 "up": change_rate >= 0
             }
     except Exception:
         pass
-    return {"name": name, "price": "-", "rate": "-", "up": True}
+    return {"name": name, "tag": tag, "price": "-", "rate": "-", "up": True}
 
-def fetch_all_world_indices_parallel():
-    with ThreadPoolExecutor(max_workers=9) as executor:
-        results = list(executor.map(fetch_single_world_index, WORLD_INDICES_CONFIG))
+def fetch_all_world_board_parallel():
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
     return results
 
 def get_trading_val_rank(symbol, is_krw=True):
@@ -685,13 +707,13 @@ def run_full_pipeline(query):
     with ThreadPoolExecutor(max_workers=9) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 5)
         f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 4)
-        f_world_indices = executor.submit(fetch_all_world_indices_parallel)
+        f_world_board = executor.submit(fetch_all_world_board_parallel)
         f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
         f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 5)
 
         stock_news = f_news.result()
         global_news = f_global_news.result()
-        world_indices = f_world_indices.result()
+        world_board = f_world_board.result()
         consensus = f_consensus.result()
         dart_disclosures = f_dart.result()
 
@@ -739,7 +761,7 @@ def run_full_pipeline(query):
         "consensus": consensus,
         "stock_news": stock_news,
         "global_news": global_news,
-        "world_indices": world_indices,
+        "world_board": world_board,
         "dart_disclosures": dart_disclosures,
         "candles": candles,
         "ma20_line": ma20_line,
@@ -749,7 +771,7 @@ def run_full_pipeline(query):
     }
 
 # ----------------------------------------------------
-# 6. 텔레그램 봇 실시간 인터랙션 엔진 (환경변수 없을 시 안전 대기)
+# 6. 텔레그램 봇 실시간 인터랙션 엔진
 # ----------------------------------------------------
 def send_telegram_msg(chat_id, text):
     if not TELEGRAM_TOKEN:
@@ -820,12 +842,11 @@ def telegram_bot_worker():
         except Exception:
             time.sleep(2)
 
-# 백그라운드 텔레그램 데몬 구동 (토큰 있을 때만 활성화)
 if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (순수 문자열로 f-string 에러 원천 차단)
+# 7. 웹 프론트엔드 UI (65:35 듀얼 보드 레이아웃)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1020,27 +1041,95 @@ HTML_PAGE = """<!DOCTYPE html>
         .tag-btn { background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }
         .tag-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
-        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
-        .result-inner { max-width: 832px; margin: 0 auto; }
+        /* 결과 영역 컨테이너: 1180px 확장 */
+        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 16px 100px; }
+        .result-inner { max-width: 1180px; margin: 0 auto; }
         
         .card { background: var(--bg-card); border-radius: 16px; padding: 18px 16px; margin-bottom: 14px; border: 1px solid var(--border-line); box-shadow: 0 2px 10px rgba(0,0,0,0.03); }
+        
+        /* 65 : 35 듀얼 대시보드 그리드 */
+        .chart-dual-grid {
+            display: grid;
+            grid-template-columns: 65fr 35fr;
+            gap: 14px;
+            margin-bottom: 14px;
+            align-items: stretch;
+        }
+
+        .chart-main-card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 18px 16px;
+            border: 1px solid var(--border-line);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
         .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
         .price-title span { color: var(--text-muted); font-size: 0.85rem; font-weight: 400; margin-left: 4px; }
         .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
         .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
 
-        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 12px; }
+        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; }
         .legend-tag { display: flex; align-items: center; gap: 4px; }
         .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
+        /* 우측 글로벌 증시 보드: 2열 콤팩트 (스크롤 없음) */
+        .global-board-card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 16px 14px;
+            border: 1px solid var(--border-line);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .board-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-line);
+        }
+        .board-header-title { font-size: 0.95rem; font-weight: 800; color: var(--text-title); display: flex; align-items: center; gap: 6px; }
+        .board-header-sub { font-size: 0.72rem; color: var(--text-muted); }
+
+        .board-2col-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            flex: 1;
+        }
+
+        .mini-index-card {
+            background: var(--bg-subcard);
+            border: 1px solid var(--border-line);
+            border-radius: 10px;
+            padding: 9px 10px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: border-color 0.15s, background 0.15s;
+            cursor: pointer;
+        }
+        .mini-index-card:hover {
+            border-color: var(--border-focus);
+            background: var(--btn-hover);
+        }
+        .mini-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
+        .mini-name { font-size: 0.78rem; font-weight: 800; color: var(--text-title); }
+        .mini-tag { font-size: 0.62rem; color: var(--text-muted); background: var(--btn-hover); padding: 1px 4px; border-radius: 4px; }
+        .mini-price { font-size: 0.95rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+        .mini-rate { font-size: 0.75rem; font-weight: 700; margin-top: 1px; }
+
         .section-title { font-size: 1rem; font-weight: 700; color: var(--text-title); margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
         
-        .world-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-        .world-item { background: var(--bg-subcard); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border-line); min-width: 0; }
-        .world-name { font-size: 0.72rem; color: var(--text-muted); margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .world-val { font-size: 0.88rem; font-weight: 700; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .world-rate { font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
         .val-up { color: #ef4444; }
         .val-down { color: #0284c7; }
 
@@ -1112,7 +1201,7 @@ HTML_PAGE = """<!DOCTYPE html>
             transition: transform 0.25s ease;
         }
 
-        /* 통일된 프리미엄 텔레그램 연동 버튼 (모바일/PC 반응형 완벽 호환) */
+        /* 통일된 프리미엄 텔레그램 연동 버튼 */
         .signal-premium-btn {
             width: 100%;
             background: var(--bg-card);
@@ -1172,6 +1261,16 @@ HTML_PAGE = """<!DOCTYPE html>
 
         #bottom-bar { display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 74px; background: var(--bottom-fade); align-items: center; justify-content: center; padding: 0 12px 6px; z-index: 50; }
         .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }
+
+        /* 모바일 반응형: 900px 이하 1열 전환 */
+        @media (max-width: 900px) {
+            .chart-dual-grid {
+                grid-template-columns: 1fr;
+            }
+            .global-board-card {
+                margin-top: 4px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1267,17 +1366,36 @@ HTML_PAGE = """<!DOCTYPE html>
                 <div class="loading" id="loading">세계 증시, 전자공시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
                 <div id="result-card-wrap" style="display:none;">
                     
-                    <div class="card">
-                        <div class="price-title" id="rTitle"></div>
-                        <div class="price-val" id="rPrice"></div>
-                        <div class="price-meta" id="rMeta"></div>
-                        <div class="chart-legend">
-                            <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
-                            <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
-                            <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
-                            <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
+                    <!-- 65:35 듀얼 보드 (좌: 메인 차트 / 우: 2열 콤팩트 글로벌 증시 보드) -->
+                    <div class="chart-dual-grid">
+                        
+                        <!-- 좌측 메인 차트 카드 -->
+                        <div class="chart-main-card">
+                            <div>
+                                <div class="price-title" id="rTitle"></div>
+                                <div class="price-val" id="rPrice"></div>
+                                <div class="price-meta" id="rMeta"></div>
+                                <div class="chart-legend">
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
+                                </div>
+                            </div>
+                            <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
-                        <div class="chart-box-wrap" id="tvChart"></div>
+
+                        <!-- 우측 글로벌 증시 보드 (차트 높이와 1:1 일치, 스크롤 없음) -->
+                        <div class="global-board-card">
+                            <div class="board-header">
+                                <span class="board-header-title">🌐 글로벌 핵심 증시</span>
+                                <span class="board-header-sub">실시간 연동</span>
+                            </div>
+                            <div class="board-2col-grid" id="worldBoardGrid">
+                                <!-- 8대 핵심 지수 2열 렌더링 영역 -->
+                            </div>
+                        </div>
+
                     </div>
 
                     <!-- 3대 시장 통합 컨센서스 (애널리스트 컨센서스) 카드 -->
@@ -1392,12 +1510,6 @@ HTML_PAGE = """<!DOCTYPE html>
                         <div id="dartList"></div>
                     </div>
 
-                    <!-- 간결화된 세계 증시 -->
-                    <div class="card">
-                        <div class="section-title">세계 증시</div>
-                        <div class="world-grid" id="worldGrid"></div>
-                    </div>
-
                     <!-- 간결화된 해외 뉴스 -->
                     <div class="card">
                         <div class="section-title">해외 뉴스</div>
@@ -1494,7 +1606,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <!-- gaemiGTP 브랜드가 유지된 시그널 가이드 -->
                             <div class="guide-box">
                                 <div class="guide-title">gaemiGTP 시그널 가이드</div>
                                 <div id="rGuideText" style="margin-top:4px; color:var(--text-sub); word-break:keep-all;"></div>
@@ -1551,9 +1662,6 @@ HTML_PAGE = """<!DOCTYPE html>
         let selectedMode = 'gaemi';
         let currentSymbol = '';
 
-        // ----------------------------------------------------
-        // Supabase 실시간 클라이언트 초기화
-        // ----------------------------------------------------
         const SUPABASE_URL = "https://uaqvmsubzgzvxbdcwcad.supabase.co";
         const SUPABASE_KEY = "sb_publishable_bcxDofsnPXgBICDDgQ8Ijw_fNjPcsRW";
         let supabaseClient = null;
@@ -1565,7 +1673,6 @@ HTML_PAGE = """<!DOCTYPE html>
             console.warn("Supabase init fallback to local:", e);
         }
 
-        // 테마 관리 (다크 / 라이트)
         function initTheme() {
             const saved = localStorage.getItem('gaemi_theme') || 'dark';
             if (saved === 'light') {
@@ -1687,14 +1794,10 @@ HTML_PAGE = """<!DOCTYPE html>
             }
         }
 
-        // ----------------------------------------------------
-        // Supabase 실시간 투표 및 토론방 엔진
-        // ----------------------------------------------------
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;
             const targetName = displayName || symbol;
             
-            // 텔레그램 딥링크 버튼 업데이트 (종목명으로 표시)
             const tgLink = document.getElementById('tgAlertLink');
             const tgBtnText = document.getElementById('tgAlertBtnText');
             if (tgLink && tgBtnText) {
@@ -1912,6 +2015,25 @@ HTML_PAGE = """<!DOCTYPE html>
 
                 loadCommunityData(data.symbol, displayName);
 
+                // 우측 글로벌 증시 보드 (8대 핵심 지수 2열 렌더링)
+                const wBoardGrid = document.getElementById('worldBoardGrid');
+                wBoardGrid.innerHTML = '';
+                if (data.world_board) {
+                    data.world_board.forEach(w => {
+                        const cls = w.up ? 'val-up' : 'val-down';
+                        wBoardGrid.innerHTML += `
+                            <div class="mini-index-card" onclick="doSearch('${w.name === 'USD/KRW' ? '환율' : w.name}')">
+                                <div class="mini-top">
+                                    <span class="mini-name">${w.name}</span>
+                                    <span class="mini-tag">${w.tag}</span>
+                                </div>
+                                <div class="mini-price">${w.price}</div>
+                                <div class="mini-rate ${cls}">${w.rate}</div>
+                            </div>
+                        `;
+                    });
+                }
+
                 const c = data.consensus;
                 const uCard = document.getElementById('unifiedCard');
                 if (c) {
@@ -1961,21 +2083,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     uCard.style.display = 'block';
                 } else {
                     uCard.style.display = 'none';
-                }
-
-                const wGrid = document.getElementById('worldGrid');
-                wGrid.innerHTML = '';
-                if (data.world_indices) {
-                    data.world_indices.forEach(w => {
-                        const cls = w.up ? 'val-up' : 'val-down';
-                        wGrid.innerHTML += `
-                            <div class="world-item">
-                                <div class="world-name">${w.name}</div>
-                                <div class="world-val">${w.price}</div>
-                                <div class="world-rate ${cls}">${w.rate}</div>
-                            </div>
-                        `;
-                    });
                 }
 
                 const sNews = document.getElementById('stockNewsList');
@@ -2046,6 +2153,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 document.getElementById('rWinRateGauge').innerText = q.win_rate_num;
                 document.getElementById('rBt1yTag').innerText = `● ${q.bt_1y}`;
                 document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;
+                document.getElementById('rBt2yTag').innerText = `● ${q.bt_2y}`;
                 document.getElementById('rRrTag').innerText = `● ${q.rr_str}`;
 
                 document.getElementById('rSliderStop').innerText = q.stop_p;
@@ -2084,7 +2192,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const isLight = document.body.classList.contains('light-theme');
 
             chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 700,
+                width: container.clientWidth || 600,
                 height: 300,
                 layout: { 
                     background: { color: isLight ? '#ffffff' : '#1e1f20' }, 
@@ -2182,3 +2290,5 @@ def run_web_server():
 
 if __name__ == "__main__":
     run_web_server()
+
+```

@@ -1316,7 +1316,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (해외 뉴스 캘린더 하단 배치 완료)
+# 7. 웹 프론트엔드 UI (해외 뉴스 캘린더 하단 이동 & 아이콘 삭제 완료)
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1414,7 +1414,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
 
-        /* 모델 선택기 */
+        /* 모델 선택기 (gaemi / info / pro) */
         .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
         .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
         .model-pill-btn:hover { background: var(--btn-hover); }
@@ -1849,7 +1849,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <!-- 최근 60거래일 상승 모멘텀 흐름 곡선 -->
                             <div style="margin:16px 0 12px; position:relative;">
                                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                                     <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 상승 모멘텀 흐름</span>
@@ -1860,7 +1859,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <!-- 52주 가격 위치 슬라이더 바 -->
                             <div style="margin:12px 0 12px; position:relative;">
                                 <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
                                     <span style="color:var(--text-muted);" id="qLow52w"></span>
@@ -1873,7 +1871,6 @@ HTML_PAGE = """<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <!-- 세부 지표 리스트 -->
                             <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
                                 <div id="quantDetailList"></div>
                             </div>
@@ -2086,8 +2083,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <!-- 9행: 텔레그램 알림 받기 버튼 (832px) -->
                         <div id="rowTelegram" style="width:100%;">
                             <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
-                                <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
-                                <span id="tgAlertBtnText">gaemiGTP 시그널 텔레그램 실시간 알림 받기</span>
+                                <span id="tgAlertBtnText">gaemiGTP 시그널 텔레그램 알림</span>
                             </a>
                         </div>
 
@@ -2393,7 +2389,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const tgBtnText = document.getElementById('tgAlertBtnText');
             if (tgLink && tgBtnText) {
                 tgLink.href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(symbol);
-                tgBtnText.innerText = '[' + targetName + '] gaemiGTP 시그널 텔레그램 실시간 알림 받기';
+                tgBtnText.innerText = '[' + targetName + '] gaemiGTP 시그널 텔레그램 알림';
             }
 
             const voteKey = 'vote_' + symbol;

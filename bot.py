@@ -2743,12 +2743,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (cd) cd.style.display = 'none';
                 if (bd) bd.style.display = 'none';
             }
-            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
-                const side = document.getElementById('sidebar-wrapper');
-                if (side && side.classList.contains('open')) {
-                    side.classList.remove('open');
-                }
-            }
         });
 
         function resetToHome() {

@@ -1829,79 +1829,91 @@ HTML_PAGE = """<!DOCTYPE html>
         .mini-price { font-size: 0.88rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
         .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
 
-        /* 캘린더 위젯 스타일 */
+        /* 캘린더 위젯 스타일
+           퀀트 분석 카드의 타이포그래피/색상 체계와 통일
+           ※ 832px/348px, 1:1 높이, 카드 구조는 변경하지 않음 */
         .cal-top-title-area { margin-bottom: 8px; }
-        .cal-top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-        .cal-date-ctrl { display: flex; align-items: center; gap: 8px; }
-        .cal-arrow-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.75rem; transition: all 0.2s; }
-        .cal-arrow-btn:hover { background: var(--btn-hover); color: var(--text-title); border-color: var(--border-focus); }
-        .cal-current-date { font-size: 0.98rem; font-weight: 800; color: var(--text-title); letter-spacing: -0.3px; }
-        .cal-today-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); font-size: 0.72rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
-        .cal-today-btn:hover { background: var(--btn-hover); color: var(--text-title); }
+        .cal-top-title-area > span {
+            font-size: 1.05rem !important;
+            font-weight: 800 !important;
+            color: var(--text-title) !important;
+            letter-spacing: -0.25px;
+        }
 
-        .cal-filter-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; overflow-x: auto; padding-bottom: 2px; }
-        .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
-        .cal-filter-pill.active { background: #ffffff; color: #121212; border-color: #ffffff; }
-        .cal-filter-pill .star-gold { color: var(--star-gold); }
+        .cal-top-nav { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+        .cal-date-ctrl { display:flex; align-items:center; gap:8px; }
+        .cal-arrow-btn {
+            background:var(--bg-subcard); border:1px solid var(--border-line); color:var(--text-sub);
+            width:26px; height:26px; border-radius:8px; display:flex; align-items:center; justify-content:center;
+            cursor:pointer; font-size:0.75rem; transition:all 0.2s;
+        }
+        .cal-arrow-btn:hover {
+            background:rgba(16,185,129,0.08); color:#10b981; border-color:rgba(16,185,129,0.35);
+        }
+        .cal-current-date { font-size:0.98rem; font-weight:800; color:var(--text-title); letter-spacing:-0.3px; }
+        .cal-today-btn {
+            background:rgba(16,185,129,0.10); border:1px solid rgba(16,185,129,0.30); color:#10b981;
+            font-size:0.72rem; font-weight:800; padding:3px 8px; border-radius:8px; cursor:pointer; transition:all 0.2s;
+        }
+        .cal-today-btn:hover { background:rgba(16,185,129,0.16); border-color:rgba(16,185,129,0.45); }
 
-        .cal-day-header { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); margin: 2px 0 6px; }
-        
+        .cal-filter-bar { display:flex; align-items:center; gap:4px; margin-bottom:8px; overflow-x:auto; padding-bottom:2px; }
+        .cal-filter-pill {
+            background:var(--bg-subcard); border:1px solid var(--border-line); color:var(--text-muted);
+            font-size:0.68rem; font-weight:700; padding:2px 7px; border-radius:12px; cursor:pointer;
+            white-space:nowrap; transition:all 0.15s;
+        }
+        .cal-filter-pill:hover { color:var(--text-sub); border-color:var(--border-focus); }
+        .cal-filter-pill.active {
+            background:rgba(16,185,129,0.12); color:#10b981; border-color:rgba(16,185,129,0.35);
+        }
+        .cal-filter-pill .star-gold { color:#10b981; }
+
+        .cal-day-header {
+            font-size:0.72rem; font-weight:700; color:var(--text-muted); margin:2px 0 6px; letter-spacing:-0.15px;
+        }
+
         .cal-event-list-wrap {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            overflow: hidden;
-            justify-content: flex-start;
+            flex:1; display:flex; flex-direction:column; gap:6px; overflow:hidden; justify-content:flex-start;
         }
 
         .cal-card-item {
-            background: var(--bg-cal-card);
-            border: 1px solid var(--border-line);
-            border-radius: 10px;
-            padding: 8px 10px;
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            transition: all 0.2s;
-            cursor: pointer;
-            min-height: 68px;
+            background:var(--bg-subcard); border:1px solid var(--border-line); border-radius:10px;
+            padding:8px 10px; display:flex; align-items:flex-start; gap:10px; transition:all 0.2s;
+            cursor:pointer; min-height:68px;
         }
-        .cal-card-item:hover { border-color: var(--border-focus); background: var(--btn-hover); }
-        .cal-time-col { font-size: 0.74rem; font-weight: 800; color: var(--text-muted); width: 44px; flex-shrink: 0; padding-top: 1px; }
-        .cal-detail-col { flex: 1; min-width: 0; }
-        .cal-stars-row { font-size: 0.6rem; letter-spacing: 1px; color: var(--star-gold); margin-bottom: 1px; }
-        .cal-event-title { font-size: 0.8rem; font-weight: 700; color: var(--text-title); line-height: 1.3; word-break: keep-all; margin-bottom: 2px; }
-        .cal-event-meta { font-size: 0.68rem; color: var(--text-muted); line-height: 1.25; }
-        .cal-actual-val { color: #38bdf8; font-weight: 700; margin-right: 3px; }
+        .cal-card-item:hover {
+            border-color:rgba(16,185,129,0.32); background:rgba(16,185,129,0.035);
+        }
+        .cal-time-col {
+            font-size:0.72rem; font-weight:800; color:var(--text-muted); width:44px; flex-shrink:0;
+            padding-top:1px; letter-spacing:-0.15px;
+        }
+        .cal-detail-col { flex:1; min-width:0; }
+        .cal-stars-row {
+            font-size:0.58rem; letter-spacing:1px; color:#10b981; margin-bottom:2px;
+        }
+        .cal-event-title {
+            font-size:0.79rem; font-weight:700; color:var(--text-title); line-height:1.3;
+            word-break:keep-all; margin-bottom:2px; letter-spacing:-0.1px;
+        }
+        .cal-event-meta { font-size:0.67rem; color:var(--text-muted); line-height:1.25; }
+        .cal-actual-val { color:#38bdf8; font-weight:700; margin-right:3px; }
 
-        /* 하단 페이지네이션 바 */
         .cal-pagination-bar {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            padding-top: 8px;
-            margin-top: auto;
-            border-top: 1px solid var(--border-line);
+            display:flex; align-items:center; justify-content:center; gap:12px; padding-top:8px;
+            margin-top:auto; border-top:1px solid var(--border-line);
         }
         .cal-page-btn {
-            background: var(--bg-subcard);
-            border: 1px solid var(--border-line);
-            color: var(--text-sub);
-            width: 22px;
-            height: 22px;
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            font-size: 0.65rem;
-            transition: all 0.2s;
+            background:var(--bg-subcard); border:1px solid var(--border-line); color:var(--text-sub);
+            width:22px; height:22px; border-radius:6px; display:flex; align-items:center; justify-content:center;
+            cursor:pointer; font-size:0.65rem; transition:all 0.2s;
         }
-        .cal-page-btn:hover:not(:disabled) { background: var(--btn-hover); color: var(--text-title); }
-        .cal-page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-        .cal-page-txt { font-size: 0.72rem; font-weight: 700; color: var(--text-muted); }
+        .cal-page-btn:hover:not(:disabled) {
+            background:rgba(16,185,129,0.08); color:#10b981; border-color:rgba(16,185,129,0.35);
+        }
+        .cal-page-btn:disabled { opacity:0.3; cursor:not-allowed; }
+        .cal-page-txt { font-size:0.72rem; font-weight:700; color:var(--text-muted); }
 
         /* 퀀트 지표 레이아웃 */
         .gauge-inner-box { width: 62px; height: 62px; border-radius: 50%; border: 4px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--bg-subcard); flex-shrink: 0; }
@@ -2750,7 +2762,7 @@ HTML_PAGE = """<!DOCTYPE html>
             if (filtered.length === 0) {
                 container.innerHTML = `
                     <div style="display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-muted); font-size:0.82rem; text-align:center; padding:40px 10px;">
-                        해당 일자에 예정된 실시간 일정이 없습니다.
+                        해당 일자에 예정된 일정이 없습니다.
                     </div>
                 `;
                 return;

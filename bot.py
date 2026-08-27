@@ -1,32 +1,3 @@
-문제의 원인은 각각의 위젯들이 쪼개져서 좌/우 행 단위로 묶여 있었기 때문에, 화면이 아래로 내려갈 때 좌측과 우측의 순서가 엇갈리고 너비가 제각각 풀려버린 구조적인 문제였습니다.
-
----
-
-### 구조 개편 내용
-
-* **완벽한 좌/우 2열 마스터 컨테이너 분리:**
-* **좌측 메인 열 (`832px` 통일 & 정중앙):**
-`차트` ➔ `퀀트 분석` ➔ `종목 뉴스` ➔ `애널리스트 컨센서스` ➔ `개미 투표` ➔ `개미 토론` ➔ `DART 공시` ➔ `해외 뉴스` ➔ `gaemi 시그널` ➔ `텔레그램 버튼`이 끊김 없이 한 줄로 곧게 정렬됩니다.
-* **우측 사이드 열 (`348px` 통일):**
-`증시는 지금` 바로 아래에 `캘린더`가 배치됩니다.
-
-
-* **모바일 렌더링 순서 최적화:**
-* 화면 폭이 좁아지는 모바일 환경에서는 **좌측 10개 핵심 위젯이 먼저 순서대로 표시된 후, 맨 아래에 `증시는 지금`과 `캘린더`가 자연스럽게 배치**됩니다.
-
-
-* **모델 선택기 복원:**
-* 검색창의 `gaemi`, `info`, `pro` 드롭다운 및 도움말 텍스트를 정상 복원했습니다.
-
-
-
----
-
-### 수정된 전체 소스 코드 (`bot.py`)
-
-기존 `bot.py` 파일의 내용을 모두 지우고 아래 코드를 복사하여 붙여넣으시면 됩니다.
-
-```python
 import os
 import re
 import io
@@ -1330,8 +1301,8 @@ def telegram_bot_worker():
                                     f"<b>gaemiGTP 시그널 밴드</b>\n" \
                                     f"• 1차 진입가: {data['quant']['entry1']}\n" \
                                     f"• 2차 분할가: {data['quant']['entry2']}\n" \
-                                    f"• 목표 수익가: {data['quant']['target2']} (+8.5%)\n" \
-                                    f"• 방어 손절선: {data['quant']['stop_p']} (-5.5%)\n" \
+                                    f"• 목표 수익가: {data['quant']['target2']}\n" \
+                                    f"• 방어 손절선: {data['quant']['stop_p']}\n" \
                                     f"━━━━━━━━━━━━━━━━━━━━\n" \
                                     f"<i>{data['quant']['guide_text']}</i>\n\n" \
                                     f"웹에서 상세 차트 보기: https://www.gaemigtp.com"
@@ -1345,7 +1316,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (좌측 832px 단일 정렬 + 우측 348px 분리 완료)
+# 7. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1443,7 +1414,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
         .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
 
-        /* 모델 선택기 (gaemi / info / pro) */
+        /* 모델 선택기 */
         .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
         .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
         .model-pill-btn:hover { background: var(--btn-hover); }
@@ -1469,7 +1440,7 @@ HTML_PAGE = """<!DOCTYPE html>
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
 
-        /* [핵심 레이아웃] 좌측 832px 전담 열 vs 우측 348px 사이드바 열 */
+        /* [핵심 그리드] 좌측 832px 독립 열 vs 우측 348px 사이드바 열 */
         .main-dashboard-grid {
             display: grid;
             grid-template-columns: 832px 348px;
@@ -1538,7 +1509,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .mini-price { font-size: 0.88rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
         .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
 
-        /* 캘린더 위젯 전용 스타일 */
+        /* 캘린더 위젯 스타일 */
         .cal-top-title-area { margin-bottom: 12px; }
         .cal-top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
         .cal-date-ctrl { display: flex; align-items: center; gap: 8px; }
@@ -1568,7 +1539,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .gauge-inner-box { width: 62px; height: 62px; border-radius: 50%; border: 4px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--bg-subcard); flex-shrink: 0; }
         .quant-row-item { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border-line); font-size: 0.83rem; }
         .quant-row-item:last-child { border-bottom: none; }
-        .quant-row-left { display: flex; direction: column; gap: 2px; min-width: 0; }
+        .quant-row-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
         .quant-row-name { font-weight: 700; color: var(--text-title); }
         .quant-row-status { font-size: 0.7rem; font-weight: 700; }
         .quant-row-right { text-align: right; flex-shrink: 0; }
@@ -2936,5 +2907,3 @@ def run_web_server():
 
 if __name__ == "__main__":
     run_web_server()
-
-```

@@ -284,6 +284,163 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         })
     return res
 
+def _parse_kr_datetime(raw_value, default_hour=9):
+    """국내 IR/공시에서 넘어오는 다양한 날짜 문자열을 KST datetime으로 정규화."""
+    if raw_value is None:
+        return None
+    raw = str(raw_value).strip()
+    if not raw:
+        return None
+    raw = raw.replace('T', ' ').replace('/', '-').replace('.', '-')
+    raw = re.sub(r'\s+', ' ', raw)
+    patterns = [
+        (r'^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$', True),
+        (r'^(\d{4})-(\d{2})-(\d{2})$', False),
+        (r'^(\d{4})(\d{2})(\d{2})$', False),
+    ]
+    for pat, has_time in patterns:
+        m = re.match(pat, raw)
+        if m:
+            try:
+                if has_time:
+                    hh = int(m.group(4)); mm = int(m.group(5)); ss = int(m.group(6) or 0)
+                else:
+                    parts = re.findall(r'\d+', raw)
+                    if len(parts) == 3:
+                        y, mo, d = map(int, parts)
+                    else:
+                        y, mo, d = int(raw[:4]), int(raw[4:6]), int(raw[6:8])
+                    hh, mm, ss = default_hour, 0, 0
+                    return datetime(y, mo, d, hh, mm, ss, tzinfo=timezone(timedelta(hours=9)))
+                return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)), hh, mm, ss,
+                                tzinfo=timezone(timedelta(hours=9)))
+            except Exception:
+                return None
+    return None
+
+
+def fetch_domestic_earnings_events():
+    """국내 주요 종목의 실제 IR/실적 관련 일정을 네이버 증권 공개 데이터에서 수집.
+
+    국내 실적은 미국처럼 Finnhub earnings-calendar 하나로 통일되어 있지 않기 때문에
+    IR 일정/공시 제목에 '실적'이 명시된 경우만 earnings 이벤트로 변환한다.
+    """
+    events = []
+    now_kst = datetime.now(timezone(timedelta(hours=9)))
+    seen = set()
+
+    for code, ko_name in MAJOR_KR_EARNINGS.items():
+        if not code.isdigit():
+            continue
+        try:
+            # 1) 네이버 증권 IR 일정/자료
+            url = f"https://m.stock.naver.com/api/domestic/detail/ir/{code}?startIdx=0&pageSize=30"
+            r = HTTP_SESSION.get(url, timeout=2.2)
+            if r.status_code == 200:
+                payload = r.json()
+                candidates = []
+                if isinstance(payload, dict):
+                    for key in ("items", "irList", "data", "result", "list"):
+                        val = payload.get(key)
+                        if isinstance(val, list):
+                            candidates.extend(val)
+                        elif isinstance(val, dict):
+                            for subkey in ("items", "list", "data", "contents"):
+                                subval = val.get(subkey)
+                                if isinstance(subval, list):
+                                    candidates.extend(subval)
+                elif isinstance(payload, list):
+                    candidates = payload
+
+                for it in candidates[:30]:
+                    if not isinstance(it, dict):
+                        continue
+                    title = str(it.get("title") or it.get("irTitle") or it.get("eventName") or it.get("name") or "").strip()
+                    blob = title + " " + " ".join(str(v) for v in it.values() if isinstance(v, (str, int, float)))
+                    if "실적" not in blob and "경영실적" not in blob and "분기" not in blob:
+                        continue
+
+                    raw_date = (it.get("date") or it.get("irDate") or it.get("eventDate") or
+                                it.get("startDate") or it.get("startDt") or it.get("localDate") or
+                                it.get("scheduleDate"))
+                    dt_kst = _parse_kr_datetime(raw_date, default_hour=14)
+                    if dt_kst is None:
+                        # 날짜가 제목/기타 문자열에 들어있는 경우 보조 추출
+                        m = re.search(r'(20\d{2})[.\-/](\d{1,2})[.\-/](\d{1,2})', blob)
+                        if m:
+                            dt_kst = _parse_kr_datetime(f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}", default_hour=14)
+                    if dt_kst is None:
+                        continue
+
+                    # 너무 오래된 자료는 제외. 최근 60일 + 향후 120일만 표시.
+                    if dt_kst < now_kst - timedelta(days=60) or dt_kst > now_kst + timedelta(days=120):
+                        continue
+
+                    key = (code, dt_kst.strftime("%Y-%m-%d"), title[:80])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    ts = dt_kst.astimezone(timezone.utc).timestamp()
+                    days_map = ["일", "월", "화", "수", "목", "금", "토"]
+                    weekday = days_map[int(dt_kst.strftime('%w'))]
+                    status = "발표완료" if dt_kst <= now_kst else "발표예정"
+                    events.append({
+                        "ts": ts,
+                        "date_key": dt_kst.strftime("%Y.%m.%d"),
+                        "date_str": f"{dt_kst.month}.{dt_kst.day} ({weekday})",
+                        "date_header": f"{dt_kst.month}월 {dt_kst.day}일 {weekday}요일",
+                        "time": dt_kst.strftime("%H:%M"),
+                        "stars": 3,
+                        "star_str": "★★★",
+                        "type": "earn",
+                        "name": f"{ko_name} ({code}) {title[:70]}",
+                        "ticker": code,
+                        "val": status,
+                        "exp": "국내 IR/실적 일정",
+                        "prev": "출처: 네이버 증권 IR"
+                    })
+
+            # 2) 네이버 공시 백업: '영업(잠정)실적' 등 실제 실적 발표가 올라온 날짜
+            durl = f"https://m.stock.naver.com/api/stock/{code}/disclosure?page=1&pageSize=30"
+            dr = HTTP_SESSION.get(durl, timeout=2.2)
+            if dr.status_code == 200:
+                dp = dr.json()
+                items = dp.get("items", []) or dp.get("disclosures", []) if isinstance(dp, dict) else []
+                for it in items[:30]:
+                    title = str(it.get("reportTitle") or it.get("title") or "").strip()
+                    if not any(k in title for k in ["영업(잠정)실적", "영업실적", "경영실적"]):
+                        continue
+                    raw_date = str(it.get("rceptDt") or it.get("date") or "")[:10]
+                    dt_kst = _parse_kr_datetime(raw_date, default_hour=14)
+                    if dt_kst is None or dt_kst < now_kst - timedelta(days=90) or dt_kst > now_kst:
+                        continue
+                    key = (code, dt_kst.strftime("%Y-%m-%d"), title[:80])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    days_map = ["일", "월", "화", "수", "목", "금", "토"]
+                    weekday = days_map[int(dt_kst.strftime('%w'))]
+                    events.append({
+                        "ts": dt_kst.astimezone(timezone.utc).timestamp(),
+                        "date_key": dt_kst.strftime("%Y.%m.%d"),
+                        "date_str": f"{dt_kst.month}.{dt_kst.day} ({weekday})",
+                        "date_header": f"{dt_kst.month}월 {dt_kst.day}일 {weekday}요일",
+                        "time": dt_kst.strftime("%H:%M"),
+                        "stars": 3,
+                        "star_str": "★★★",
+                        "type": "earn",
+                        "name": f"{ko_name} ({code}) {title[:70]}",
+                        "ticker": code,
+                        "val": "발표완료",
+                        "exp": "국내 실적 공시",
+                        "prev": "출처: 네이버 증권 공시"
+                    })
+        except Exception:
+            continue
+
+    return events
+
+
 def fetch_all_real_earnings():
     events = []
     sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
@@ -307,10 +464,8 @@ def fetch_all_real_earnings():
                     rev_est = it.get("revenueEstimate")
                     eps_str = f"예상 EPS ${eps_est:.2f}" if eps_est is not None else "예상치 집계중"
                     rev_str = f"예상 매출 ${rev_est/1e9:.1f}B" if rev_est is not None else "-"
-                    
                     us_dt = datetime.strptime(raw_date, "%Y-%m-%d")
                     dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21 if hour == "amc" else 12)
-                    
                     events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc, eps_str, rev_str, hour))
                     captured_syms.add(sym)
         except Exception:
@@ -346,14 +501,24 @@ def fetch_all_real_earnings():
         ("PLTR", "팔란티어", (today_dt + timedelta(days=7)).strftime("%Y-%m-%d"), "amc", "예상 EPS $0.09", "예상 매출 $678M"),
         ("AMD", "AMD", (today_dt + timedelta(days=8)).strftime("%Y-%m-%d"), "amc", "예상 EPS $0.68", "예상 매출 $5.8B")
     ]
-
     for sym, ko, d_str, hr, eps, rev in master_schedule:
         if sym not in captured_syms:
             us_dt = datetime.strptime(d_str, "%Y-%m-%d")
             dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21 if hr == "amc" else 12)
             events.extend(build_earnings_event(sym, ko, dt_utc, eps, rev, hr))
 
-    return events
+    # Tier 4: 국내 주요 기업 실적/IR 일정
+    try:
+        events.extend(fetch_domestic_earnings_events())
+    except Exception:
+        pass
+
+    # 동일 일정 중복 제거
+    unique = {}
+    for ev in events:
+        key = (ev.get("ticker", ""), ev.get("date_key", ""), ev.get("time", ""), ev.get("name", ""))
+        unique[key] = ev
+    return sorted(unique.values(), key=lambda x: x.get("ts", 0))
 
 def fetch_real_market_calendar_live():
     combined_events = []

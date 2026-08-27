@@ -1750,6 +1750,8 @@ HTML_PAGE = """<!DOCTYPE html>
             max-width: 1196px;
             justify-content: center;
             align-items: stretch;
+        
+            transform: translateX(-182px);
         }
 
         /* 1행: 차트(좌) & 증시(우) - 높이 100% 동기화 */
@@ -2025,6 +2027,8 @@ HTML_PAGE = """<!DOCTYPE html>
                 align-items: center;
                 max-width: 832px;
                 gap: 14px;
+            
+                transform: none;
             }
             .card, .signal-premium-card, .signal-premium-btn {
                 width: 100%;

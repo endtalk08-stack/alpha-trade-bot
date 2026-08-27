@@ -213,168 +213,138 @@ MAJOR_US_TECH_TICKERS = [
 ]
 
 MAJOR_KR_EARNINGS = {
-    "005930": "삼성전자",
-    "000660": "SK하이닉스",
-    "005380": "현대차",
-    "000270": "기아",
-    "005490": "POSCO홀딩스",
-    "012450": "한화에어로스페이스",
-    "042660": "한화오션",
-    "034020": "두산에너빌리티",
-    "012330": "현대모비스",
-    "009150": "삼성전기",
-    "373220": "LG에너지솔루션",
-    "035420": "NAVER",
-    "035720": "카카오",
-    "068270": "셀트리온",
-    "042700": "한미반도체"
+    "005930": "삼성전자", "005930.KS": "삼성전자",
+    "000660": "SK하이닉스", "000660.KS": "SK하이닉스",
+    "005380": "현대차", "005380.KS": "현대차",
+    "000270": "기아", "000270.KS": "기아",
+    "005490": "POSCO홀딩스", "005490.KS": "POSCO홀딩스",
+    "012450": "한화에어로스페이스", "012450.KS": "한화에어로스페이스",
+    "042660": "한화오션", "042660.KS": "한화오션",
+    "034020": "두산에너빌리티", "034020.KS": "두산에너빌리티",
+    "012330": "현대모비스", "012330.KS": "현대모비스",
+    "009150": "삼성전기", "009150.KS": "삼성전기",
+    "373220": "LG에너지솔루션", "373220.KS": "LG에너지솔루션",
+    "035420": "NAVER", "035420.KS": "NAVER",
+    "035720": "카카오", "035720.KS": "카카오",
+    "068270": "셀트리온", "068270.KS": "셀트리온",
+    "042700": "한미반도체", "042700.KS": "한미반도체"
 }
 
 # ----------------------------------------------------
-# 3. 실적 수집 엔진 (중복 제거 & 실제 확정 일자 단일 등록)
+# 3. 3단계 하이브리드 실적 일정 수집기 (한국/미국 완벽 대응)
 # ----------------------------------------------------
+def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc"):
+    """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
+    days_map = ["일", "월", "화", "수", "목", "금", "토"]
+    kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
+
+    date_key = kst_dt.strftime("%Y.%m.%d")
+    weekday = days_map[int(kst_dt.strftime('%w'))]
+    date_str = f"{kst_dt.month}.{kst_dt.day} ({weekday})"
+    date_header = f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일"
+    time_str = kst_dt.strftime("%H:%M")
+
+    val_str = "발표완료" if dt_utc <= datetime.now(timezone.utc) else "발표예정"
+    hour_code = str(hour).lower().strip()
+    hour_label = "(美장마감후)" if hour_code == "amc" else ("(美장시작전)" if hour_code == "bmo" else "")
+
+    return [{
+        "ts": dt_utc.timestamp(),
+        "date_key": date_key,
+        "date_str": date_str,
+        "date_header": date_header,
+        "time": time_str,
+        "stars": 3,
+        "star_str": "★★★",
+        "type": "earn",
+        "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
+        "ticker": sym,
+        "val": val_str,
+        "exp": eps_str,
+        "prev": rev_str
+    }]
+
 def fetch_all_real_earnings():
     events = []
-    days_map = ["일", "월", "화", "수", "목", "금", "토"]
-    
-    us_stock_dict = dict(MAJOR_US_TECH_TICKERS)
-    kr_stock_dict = dict(MAJOR_KR_EARNINGS)
-    
-    seen_keys = set()
+    sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
+    for k_code, k_name in MAJOR_KR_EARNINGS.items():
+        sym_to_ko[k_code] = k_name
+
+    captured_syms = set()
     now_kst = datetime.now(timezone(timedelta(hours=9)))
 
-    # 1. Finnhub 정식 API 수집
+    # Tier 1: Finnhub API 연동
     if FINNHUB_API_KEY:
         try:
             from_d = (now_kst - timedelta(days=7)).strftime("%Y-%m-%d")
-            to_d = (now_kst + timedelta(days=90)).strftime("%Y-%m-%d")
+            to_d = (now_kst + timedelta(days=60)).strftime("%Y-%m-%d")
             url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
             res = HTTP_SESSION.get(url, timeout=3.0).json()
             items = res.get("earningsCalendar", [])
             for it in items:
-                raw_sym = str(it.get("symbol", "")).upper()
-                clean_sym = raw_sym.split(".")[0]
-                
-                ko_name = us_stock_dict.get(raw_sym) or kr_stock_dict.get(clean_sym)
-                if not ko_name:
+                sym = str(it.get("symbol", "")).upper()
+                if sym not in sym_to_ko:
                     continue
-                
-                raw_date = str(it.get("date", ""))[:10]
-                if not raw_date or len(raw_date) < 10:
+                raw_date = str(it.get("date", "")).strip()
+                if not raw_date:
                     continue
-                    
-                hour = str(it.get("hour", "")).lower()
-                us_dt = datetime.strptime(raw_date, "%Y-%m-%d")
-                
-                # 시간대 변환 (KST 기준 단일 시각 확정)
-                if hour == "amc":
-                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21) # 익일 새벽 06:00 KST
-                    time_str = "06:00"
-                    hour_label = "(美장마감후)"
-                elif hour == "bmo":
-                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=12, minutes=30) # 당일 밤 21:30 KST
-                    time_str = "21:30"
-                    hour_label = "(美장시작전)"
-                else:
-                    if clean_sym.isdigit():
-                        dt_utc = us_dt.replace(tzinfo=timezone(timedelta(hours=9))).astimezone(timezone.utc)
-                        time_str = "09:00"
-                        hour_label = ""
-                    else:
-                        dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21)
-                        time_str = "시간미정"
-                        hour_label = ""
-
-                kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-                date_key = kst_dt.strftime("%Y.%m.%d")
-                weekday = days_map[int(kst_dt.strftime('%w'))]
-
-                dedup_key = (clean_sym, date_key)
-                if dedup_key in seen_keys:
-                    continue
-                seen_keys.add(dedup_key)
-
+                hour = str(it.get("hour", "amc")).lower().strip()
                 eps_est = it.get("epsEstimate")
-                eps_act = it.get("epsActual")
                 rev_est = it.get("revenueEstimate")
-
                 eps_str = f"예상 EPS ${eps_est:.2f}" if eps_est is not None else "예상치 집계중"
                 rev_str = f"예상 매출 ${rev_est/1e9:.1f}B" if rev_est is not None else "-"
-                val_str = f"발표치 EPS ${eps_act:.2f}" if eps_act is not None else ("발표완료" if dt_utc <= datetime.now(timezone.utc) else "발표예정")
 
-                events.append({
-                    "ts": dt_utc.timestamp(),
-                    "date_key": date_key,
-                    "date_str": f"{kst_dt.month}.{kst_dt.day} ({weekday})",
-                    "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일",
-                    "time": time_str,
-                    "stars": 3,
-                    "star_str": "★★★",
-                    "type": "earn",
-                    "name": f"{ko_name} ({clean_sym}) 실적 {hour_label}".strip(),
-                    "ticker": clean_sym,
-                    "val": val_str,
-                    "exp": eps_str,
-                    "prev": rev_str
-                })
-        except Exception as e:
-            print("[FINNHUB] Earnings fetch error:", e)
+                # Finnhub의 date는 미국 현지 날짜. AMC는 미국 장마감 후이므로
+                # UTC 21:00(미 동부 서머타임 기준) → KST 다음 날 06:00으로 변환.
+                us_dt = datetime.strptime(raw_date, "%Y-%m-%d")
+                if hour == "amc":
+                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21)
+                elif hour == "bmo":
+                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=12)
+                else:
+                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=16)
 
-    # 2. Yahoo Finance API 백업 (Finnhub에서 누락된 미국 빅테크만 실제 Timestamp 조회)
-    missing_us = [sym for sym, _ in MAJOR_US_TECH_TICKERS if not any(k[0] == sym for k in seen_keys)]
-    if missing_us:
+                events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc, eps_str, rev_str, hour))
+                captured_syms.add(sym)
+        except Exception as exc:
+            print("[CALENDAR][EARN] Finnhub 오류:", exc)
+
+    # Tier 2: Yahoo Finance API 배치 백업
+    missing = [s for s in [item[0] for item in MAJOR_US_TECH_TICKERS] if s not in captured_syms]
+    if missing:
         try:
-            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing_us)}"
+            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing)}"
             res = HTTP_SESSION.get(url, timeout=2.5).json()
             items = res.get("quoteResponse", {}).get("result", [])
-            now_utc = datetime.now(timezone.utc)
             for it in items:
                 sym = it.get("symbol", "").upper()
                 raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
-                if sym in us_stock_dict and raw_ts:
+                if sym in sym_to_ko and raw_ts:
                     dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
-                    if abs((dt_utc - now_utc).days) > 90:
-                        continue
-                    
-                    kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-                    date_key = kst_dt.strftime("%Y.%m.%d")
-                    weekday = days_map[int(kst_dt.strftime('%w'))]
-                    
-                    dedup_key = (sym, date_key)
-                    if dedup_key in seen_keys:
-                        continue
-                    seen_keys.add(dedup_key)
-                    
                     eps_f = it.get("epsForward")
                     eps_str = f"예상 EPS ${eps_f:.2f}" if eps_f is not None else "예상치 집계중"
-                    val_str = "발표완료" if dt_utc <= now_utc else "발표예정"
-                    
-                    events.append({
-                        "ts": dt_utc.timestamp(),
-                        "date_key": date_key,
-                        "date_str": f"{kst_dt.month}.{kst_dt.day} ({weekday})",
-                        "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일",
-                        "time": kst_dt.strftime("%H:%M"),
-                        "stars": 3,
-                        "star_str": "★★★",
-                        "type": "earn",
-                        "name": f"{us_stock_dict[sym]} ({sym}) 실적",
-                        "ticker": sym,
-                        "val": val_str,
-                        "exp": eps_str,
-                        "prev": "-"
-                    })
-        except Exception as e:
-            print("[YAHOO] Earnings backup error:", e)
+                    events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc, eps_str, "-", "amc"))
+                    captured_syms.add(sym)
+        except Exception as exc:
+            print("[CALENDAR][EARN] Yahoo 오류:", exc)
 
-    events.sort(key=lambda x: x["ts"])
-    return events
+    # 국내 실적은 Finnhub/Yahoo의 해외 실적 API에 의존하지 않고 별도 데이터가
+    # 들어오는 경우에만 표시합니다. 잘못된 가상 날짜를 생성하지 않습니다.
+
+    # 최종 안전장치: 같은 종목이 같은 한국 날짜/시간에 여러 번 들어오면 1건만 유지.
+    unique = {}
+    for ev in events:
+        key = (ev.get("ticker", ""), ev.get("date_key", ""), ev.get("time", ""))
+        if key not in unique:
+            unique[key] = ev
+    return sorted(unique.values(), key=lambda x: x.get("ts", 0))
+
 
 def fetch_real_market_calendar_live():
     combined_events = []
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
-    # 1. 글로벌 경제 지표 API 연동
+    # 1. 글로벌 경제 지표 API (헤더 및 예외처리 강화)
     try:
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         res = HTTP_SESSION.get(url, timeout=3.5).json()
@@ -427,12 +397,12 @@ def fetch_real_market_calendar_live():
     except Exception as exc:
         print("[CALENDAR][ECO] 경제지표 파싱 에러:", exc)
 
-    # 2. 실적 발표 데이터 결합
+    # 2. 미국/국내 기업 실적 발표 결합
     try:
         earnings_events = fetch_all_real_earnings()
         combined_events.extend(earnings_events)
     except Exception as exc:
-        print("[CALENDAR][EARN] 실적 데이터 결합 에러:", exc)
+        print("[CALENDAR][EARN] 실적 데이터 파싱 에러:", exc)
 
     combined_events.sort(key=lambda x: x["ts"])
     return combined_events
@@ -441,11 +411,13 @@ def background_worker():
     global CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
     while True:
         try:
+            # 증시 시세 갱신 (30초 주기)
             with ThreadPoolExecutor(max_workers=10) as executor:
                 results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
             if results and any(r["price"] != "-" for r in results):
                 CACHED_WORLD_BOARD = results
             
+            # 경제지표/실적 캘린더 갱신 (Rate Limit 방지를 위해 5분 주기 적용)
             now_t = time.time()
             if now_t - LAST_CALENDAR_FETCH_TIME > 300 or not CACHED_MARKET_CALENDAR:
                 cal_live = fetch_real_market_calendar_live()
@@ -1445,7 +1417,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 8. 웹 프론트엔드 UI (전문 캘린더 디자인 및 1:1 대칭 완벽 적용)
+# 8. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1658,7 +1630,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .cal-today-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
         .cal-filter-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; overflow-x: auto; padding-bottom: 2px; }
-        .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 3px 8px; border-radius: 14px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+        .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
         .cal-filter-pill.active { background: #ffffff; color: #121212; border-color: #ffffff; }
         .cal-filter-pill .star-gold { color: var(--star-gold); }
 
@@ -1676,79 +1648,22 @@ HTML_PAGE = """<!DOCTYPE html>
         .cal-card-item {
             background: var(--bg-cal-card);
             border: 1px solid var(--border-line);
-            border-radius: 12px;
-            padding: 9px 12px;
+            border-radius: 10px;
+            padding: 8px 10px;
             display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            gap: 5px;
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            align-items: flex-start;
+            gap: 10px;
+            transition: all 0.2s;
             cursor: pointer;
-            min-height: 70px;
+            min-height: 68px;
         }
-        .cal-card-item:hover { border-color: var(--border-focus); background: var(--btn-hover); transform: translateY(-1px); }
-        
-        .cal-card-header-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 6px;
-        }
-        .cal-card-time {
-            font-size: 0.72rem;
-            font-weight: 800;
-            color: var(--text-muted);
-            display: flex;
-            align-items: center;
-            gap: 5px;
-        }
-        .cal-impact-badge {
-            font-size: 0.62rem;
-            font-weight: 800;
-            padding: 1px 5px;
-            border-radius: 5px;
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-        }
-        .impact-3 { background: rgba(245, 158, 11, 0.15); color: var(--star-gold); border: 1px solid rgba(245, 158, 11, 0.35); }
-        .impact-2 { background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.25); }
-        .impact-1 { background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }
-
-        .cal-card-title {
-            font-size: 0.82rem;
-            font-weight: 700;
-            color: var(--text-title);
-            line-height: 1.35;
-            word-break: keep-all;
-        }
-        
-        .cal-card-bottom-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            font-size: 0.7rem;
-            margin-top: 1px;
-        }
-        .cal-status-badge {
-            font-size: 0.65rem;
-            font-weight: 800;
-            padding: 2px 7px;
-            border-radius: 6px;
-            display: inline-block;
-        }
-        .cal-badge-upcoming { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
-        .cal-badge-completed { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
-
-        .cal-metrics-text {
-            color: var(--text-muted);
-            font-size: 0.69rem;
-            font-weight: 500;
-            text-align: right;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
+        .cal-card-item:hover { border-color: var(--border-focus); background: var(--btn-hover); }
+        .cal-time-col { font-size: 0.74rem; font-weight: 800; color: var(--text-muted); width: 44px; flex-shrink: 0; padding-top: 1px; }
+        .cal-detail-col { flex: 1; min-width: 0; }
+        .cal-stars-row { font-size: 0.6rem; letter-spacing: 1px; color: var(--star-gold); margin-bottom: 1px; }
+        .cal-event-title { font-size: 0.8rem; font-weight: 700; color: var(--text-title); line-height: 1.3; word-break: keep-all; margin-bottom: 2px; }
+        .cal-event-meta { font-size: 0.68rem; color: var(--text-muted); line-height: 1.25; }
+        .cal-actual-val { color: #38bdf8; font-weight: 700; margin-right: 3px; }
 
         /* 하단 페이지네이션 바 */
         .cal-pagination-bar {
@@ -2376,9 +2291,9 @@ HTML_PAGE = """<!DOCTYPE html>
         let selectedMode = 'gaemi';
         let currentSymbol = '';
         let globalMarketCalendar = [];
-        let currentCalOffset = parseInt(localStorage.getItem('gaemi_cal_offset') || '0', 10) || 0;
-        let currentCalFilter = localStorage.getItem('gaemi_cal_filter') || 'all';
-        let currentCalPage = parseInt(localStorage.getItem('gaemi_cal_page') || '1', 10) || 1;
+        let currentCalOffset = 0;
+        let currentCalFilter = 'all';
+        let currentCalPage = 1;
         const calItemsPerPage = 4;
 
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
@@ -2478,9 +2393,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (cd) cd.style.display = 'none';
                 if (bd) bd.style.display = 'none';
             }
-            if (window.innerWidth <= 900 &&
-                !e.target.closest('#sidebar-wrapper') &&
-                !e.target.closest('#headerToggleBtn')) {
+            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
                 const side = document.getElementById('sidebar-wrapper');
                 if (side && side.classList.contains('open')) {
                     side.classList.remove('open');
@@ -2555,30 +2468,21 @@ HTML_PAGE = """<!DOCTYPE html>
             return `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`;
         }
 
-        function saveCalendarState() {
-            localStorage.setItem('gaemi_cal_offset', String(currentCalOffset));
-            localStorage.setItem('gaemi_cal_filter', currentCalFilter);
-            localStorage.setItem('gaemi_cal_page', String(currentCalPage));
-        }
-
         function shiftCalendarDate(delta) {
             currentCalOffset += delta;
             currentCalPage = 1;
-            saveCalendarState();
             renderMarketCalendarView();
         }
 
         function resetCalendarDate() {
             currentCalOffset = 0;
             currentCalPage = 1;
-            saveCalendarState();
             renderMarketCalendarView();
         }
 
         function setCalendarFilter(filterKey) {
             currentCalFilter = filterKey;
             currentCalPage = 1;
-            saveCalendarState();
             document.querySelectorAll('.cal-filter-pill').forEach(btn => btn.classList.remove('active'));
             if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
             if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
@@ -2590,7 +2494,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function changeCalPage(delta) {
             currentCalPage += delta;
-            saveCalendarState();
             renderMarketCalendarView();
         }
 
@@ -2606,9 +2509,11 @@ HTML_PAGE = """<!DOCTYPE html>
             let filtered = [];
 
             if (currentCalFilter === 'earn') {
+                // 실적 탭: 날짜에 구애받지 않고 주요 기업 실적 전체를 시간순 페이징 노출
                 filtered = normalizedCalendar.filter(ev => ev.type === 'earn');
-                setTxt('calDayHeader', '주요 기업 실적 발표 일정');
+                setTxt('calDayHeader', '주요 빅테크 및 국내 기업 실적 발표');
             } else {
+                // 전체 / 경제 / 별점 탭: 선택된 날짜 기준 필터링
                 filtered = normalizedCalendar.filter(ev => ev.date_key === dateStr);
                 
                 if (filtered.length > 0) {
@@ -2656,36 +2561,16 @@ HTML_PAGE = """<!DOCTYPE html>
                 const clickAttr = isEarn && ev.ticker ? `onclick="doSearch('${ev.ticker}')"` : '';
                 const timePrefix = (currentCalFilter === 'earn' && ev.date_str) ? `${ev.date_str} ` : '';
                 
-                // 1. 상태 뱃지 판별
-                const isCompleted = ev.val && !ev.val.includes('대기') && !ev.val.includes('예정');
-                const badgeClass = isCompleted ? 'cal-badge-completed' : 'cal-badge-upcoming';
-                const statusBadgeHtml = `<span class="cal-status-badge ${badgeClass}">${ev.val}</span>`;
-
-                // 2. 중요도 뱃지 판별
-                let impactBadgeHtml = '';
-                if (ev.stars === 3) {
-                    impactBadgeHtml = `<span class="cal-impact-badge impact-3">★★★ HIGH</span>`;
-                } else if (ev.stars === 2) {
-                    impactBadgeHtml = `<span class="cal-impact-badge impact-2">★★☆ MID</span>`;
-                } else {
-                    impactBadgeHtml = `<span class="cal-impact-badge impact-1">★☆☆ LOW</span>`;
-                }
-
-                // 3. 지표 수치 정돈
-                const metricsText = (ev.exp !== '-' || ev.prev !== '-')
-                    ? `<span class="cal-metrics-text">${ev.exp} · ${ev.prev}</span>`
-                    : '';
-
                 container.innerHTML += `
                     <div class="cal-card-item" ${clickAttr}>
-                        <div class="cal-card-header-row">
-                            <span class="cal-card-time">${timePrefix}${ev.time}</span>
-                            ${impactBadgeHtml}
-                        </div>
-                        <div class="cal-card-title">${ev.name}</div>
-                        <div class="cal-card-bottom-row">
-                            ${statusBadgeHtml}
-                            ${metricsText}
+                        <div class="cal-time-col">${timePrefix}${ev.time}</div>
+                        <div class="cal-detail-col">
+                            <div class="cal-stars-row">${ev.star_str}</div>
+                            <div class="cal-event-title">${ev.name}</div>
+                            <div class="cal-event-meta">
+                                <span class="cal-actual-val">${ev.val}</span>
+                                (${ev.exp} &nbsp; ${ev.prev})
+                            </div>
                         </div>
                     </div>
                 `;

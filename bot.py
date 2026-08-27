@@ -3356,7 +3356,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
                 }, 50);
 
-                window.scrollTo({top: 0, behavior: 'smooth'});
+
 
             } catch (err) {
                 console.error("Analysis Error:", err);
@@ -3419,6 +3419,35 @@ HTML_PAGE = """<!DOCTYPE html>
 
             window.addEventListener('resize', resizeChart);
         }
+
+
+        // ===== 새로고침 시 현재 화면 위치 유지 =====
+        (function initScrollPositionRestore() {
+            const SCROLL_KEY = 'gaemiGTP_scrollY';
+
+            try {
+                window.addEventListener('beforeunload', function () {
+                    sessionStorage.setItem(SCROLL_KEY, String(window.scrollY || window.pageYOffset || 0));
+                });
+
+                window.addEventListener('DOMContentLoaded', function () {
+                    const saved = sessionStorage.getItem(SCROLL_KEY);
+                    if (saved === null) return;
+
+                    const y = parseInt(saved, 10);
+                    if (!Number.isFinite(y) || y < 0) return;
+
+                    // 동적 콘텐츠/카드가 그려진 뒤 복원
+                    requestAnimationFrame(function () {
+                        setTimeout(function () {
+                            window.scrollTo(0, y);
+                        }, 80);
+                    });
+                });
+            } catch (e) {
+                console.warn('스크롤 위치 복원 기능을 사용할 수 없습니다:', e);
+            }
+        })();
 
         window.addEventListener('DOMContentLoaded', initTheme);
     </script>

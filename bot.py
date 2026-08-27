@@ -569,58 +569,178 @@ def _append_te_calendar_events(combined_events, days_map):
 
 
 def fetch_real_market_calendar_live():
+    """
+    경제지표 + 실적 통합 캘린더.
+    - 경제지표: 이번주 → 다음주 백업 피드 순서
+    - API 오류/빈 응답 시 기존 캐시를 건드리지 않도록 호출부에서 처리
+    - 모든 이벤트에 date_key/date_header를 생성
+    - 동일 일정 중복 제거
+    - 실적 수집 로직은 기존 함수 그대로 사용
+    """
     combined_events = []
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
+    kst = timezone(timedelta(hours=9))
 
-    # 1. 글로벌 경제지표: 이번 주 + 다음 주 + 지난 주를 함께 수집.
-    #    한 피드가 실패해도 다른 피드/기존 캐시가 살아 있도록 구성한다.
-    economic_feeds = [
+    # ----------------------------------------------------
+    # 1) 글로벌 경제지표
+    # ----------------------------------------------------
+    eco_events = []
+
+    # Forex Factory 공개 피드: 현재 주 → 다음 주
+    feed_urls = [
         "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
         "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
-        "https://nfs.faireconomy.media/ff_calendar_lastweek.json"
     ]
-    seen_eco = set()
-    for feed_url in economic_feeds:
-        _append_economic_events_from_feed(combined_events, feed_url, days_map)
 
-    # 1차 피드가 모두 실패했거나 데이터가 부족한 경우 보조 피드 사용
-    if not any(ev.get("type") == "eco" for ev in combined_events):
-        _append_te_calendar_events(combined_events, days_map)
+    for url in feed_urls:
+        try:
+            res = HTTP_SESSION.get(
+                url,
+                timeout=5.0,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json,text/plain,*/*",
+                    "Cache-Control": "no-cache",
+                },
+            )
+
+            if not res.ok:
+                print(f"[CALENDAR][ECO] HTTP {res.status_code}: {url}")
+                continue
+
+            data = res.json()
+            if not isinstance(data, list):
+                print(f"[CALENDAR][ECO] 리스트 응답 아님: {url}")
+                continue
+
+            for it in data:
+                if not isinstance(it, dict):
+                    continue
+
+                raw_date = str(it.get("date") or "").strip()
+                if not raw_date:
+                    continue
+
+                try:
+                    # Z 또는 +09:00/-04:00 등 ISO offset 모두 처리
+                    dt = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                except (TypeError, ValueError):
+                    print(f"[CALENDAR][ECO] 날짜 파싱 실패: {raw_date}")
+                    continue
+
+                kst_dt = dt.astimezone(kst)
+                date_key = kst_dt.strftime("%Y.%m.%d")
+                weekday = kst_dt.weekday()  # 월=0
+                date_formatted = f"{kst_dt.month}.{kst_dt.day} ({['월','화','수','목','금','토','일'][weekday]})"
+                date_header = f"{kst_dt.month}월 {kst_dt.day}일 {['월','화','수','목','금','토','일'][weekday]}요일"
+
+                country = str(it.get("country") or "").strip()
+                prefix = COUNTRY_PREFIX_MAP.get(country, "")
+                raw_title = str(it.get("title") or "").strip()
+                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
+                full_name = f"{prefix}{title_ko}" if prefix else title_ko
+
+                impact_raw = str(it.get("impact") or "").strip()
+                if impact_raw == "High":
+                    stars, star_str = 3, "★★★"
+                elif impact_raw == "Medium":
+                    stars, star_str = 2, "★★☆"
+                else:
+                    stars, star_str = 1, "★☆☆"
+
+                actual = str(it.get("actual") or "").strip() or "발표대기"
+                forecast = str(it.get("forecast") or "").strip() or "-"
+                previous = str(it.get("previous") or "").strip() or "-"
+
+                eco_events.append({
+                    "ts": dt.timestamp(),
+                    "date_key": date_key,
+                    "date_str": date_formatted,
+                    "date_header": date_header,
+                    "time": kst_dt.strftime("%H:%M"),
+                    "stars": stars,
+                    "star_str": star_str,
+                    "type": "eco",
+                    "name": full_name,
+                    "ticker": "",
+                    "val": actual,
+                    "exp": forecast,
+                    "prev": previous,
+                })
+
+            # 현재 주 피드가 정상적으로 들어오면 다음 주 피드에서
+            # 같은 기간/항목을 중복 추가해도 아래 dedupe가 처리합니다.
+        except Exception as exc:
+            print(f"[CALENDAR][ECO] 피드 실패: {type(exc).__name__}: {exc}")
 
     # 경제지표 중복 제거
-    unique_events = []
-    for ev in combined_events:
-        if ev.get("type") == "eco":
-            key = (ev.get("ts"), ev.get("name"), ev.get("country", ""))
-            if key in seen_eco:
-                continue
-            seen_eco.add(key)
-        unique_events.append(ev)
-    combined_events = unique_events
+    eco_seen = set()
+    for ev in eco_events:
+        key = (
+            ev.get("date_key"),
+            ev.get("time"),
+            ev.get("name"),
+            ev.get("type"),
+        )
+        if key not in eco_seen:
+            eco_seen.add(key)
+            combined_events.append(ev)
 
-    # 2. 국내주식 실적: DART에서 실제 발표된 영업(잠정)실적 공시 추가.
+    print(f"[CALENDAR][ECO] 경제지표 {len(eco_seen)}건 수집")
+
+    # ----------------------------------------------------
+    # 2) 실적
+    # ----------------------------------------------------
     try:
-        combined_events.extend(fetch_domestic_earnings_dart())
-    except Exception:
-        pass
+        finnhub_events = fetch_finnhub_earnings_calendar()
+        combined_events.extend(finnhub_events)
 
-    # 3. 미국 테크 실적 결합
-    try:
-        earnings_events = fetch_all_real_earnings()
-        combined_events.extend(earnings_events)
-    except Exception:
-        pass
+        finnhub_us = {
+            e.get("ticker")
+            for e in finnhub_events
+            if e.get("ticker")
+        }
+        missing_us = [
+            item for item in MAJOR_US_TECH_TICKERS
+            if item[0] not in finnhub_us
+        ]
 
-    # 최종 중복 제거
-    dedup = {}
-    for ev in combined_events:
-        key = (ev.get("type"), ev.get("ts"), ev.get("name"), ev.get("ticker", ""))
-        dedup[key] = ev
+        if missing_us:
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                earnings_results = list(
+                    ex.map(fetch_single_ticker_real_earnings, missing_us)
+                )
 
-    result = list(dedup.values())
-    result.sort(key=lambda x: x.get("ts", 0))
-    return result
+            for earn_ev in earnings_results:
+                if not earn_ev:
+                    continue
 
+                key = (
+                    earn_ev.get("date_key"),
+                    earn_ev.get("ticker"),
+                )
+
+                if not any(
+                    e.get("type") == "earn"
+                    and (e.get("date_key"), e.get("ticker")) == key
+                    for e in combined_events
+                ):
+                    combined_events.append(earn_ev)
+
+        print(
+            f"[CALENDAR][EARNINGS] 미국+국내 실적 "
+            f"{sum(1 for x in combined_events if x.get('type') == 'earn')}건"
+        )
+    except Exception as exc:
+        print(
+            f"[CALENDAR][EARNINGS] 전체 처리 실패: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    combined_events.sort(key=lambda x: x.get("ts", 0))
+    return combined_events
 
 def background_worker():
     global CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR
@@ -634,6 +754,13 @@ def background_worker():
             cal_live = fetch_real_market_calendar_live()
             if cal_live:
                 CACHED_MARKET_CALENDAR = cal_live
+                print(
+                    f"[CALENDAR] 총 {len(cal_live)}건 / "
+                    f"경제 {sum(1 for x in cal_live if x.get('type') == 'eco')}건 / "
+                    f"실적 {sum(1 for x in cal_live if x.get('type') == 'earn')}건"
+                )
+            else:
+                print("[CALENDAR] 새 데이터가 없어 기존 캐시 유지")
         except Exception:
             pass
         time.sleep(30)

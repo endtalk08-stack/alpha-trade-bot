@@ -35,21 +35,32 @@ DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 
 GLOBAL_INDEX_MAP = {
-    "코스피": "^KS11", "KOSPI": "^KS11",
-    "코스닥": "^KQ11", "KOSDAQ": "^KQ11",
-    "VIX": "^VIX", "빅스": "^VIX", "변동성": "^VIX",
-    "WTI유가": "CL=F", "WTI": "CL=F", "유가": "CL=F", "원유": "CL=F",
-    "금": "GC=F", "GOLD": "GC=F", "골드": "GC=F",
-    "환율": "KRW=X", "USD/KRW": "KRW=X", "원달러": "KRW=X"
-}
+let filtered;
 
-CRYPTO_MAP = {
-    "BTC": "BTCUSDT", "비트코인": "BTCUSDT", "비트": "BTCUSDT",
-    "ETH": "ETHUSDT", "이더리움": "ETHUSDT", "이더": "ETHUSDT",
-    "XRP": "XRPUSDT", "리플": "XRPUSDT",
-    "DOGE": "DOGEUSDT", "도지코인": "DOGEUSDT", "도지": "DOGEUSDT",
-    "SOL": "SOLUSDT", "솔라나": "SOLUSDT",
-    "ADA": "ADAUSDT", "에이다": "ADAUSDT",
+if (currentCalFilter === 'earn') {
+    // 실적: 선택한 날짜와 관계없이 앞으로 예정된 실적을 가까운 순서로 표시
+    const nowTs = Date.now() / 1000;
+
+    filtered = normalizedCalendar
+        .filter(ev => ev.type === 'earn' && Number(ev.ts) >= nowTs)
+        .sort((a, b) => Number(a.ts) - Number(b.ts));
+} else {
+    // 전체 / 별표 / 경제: 기존처럼 선택한 날짜만 표시
+    filtered = normalizedCalendar.filter(ev => ev.date_key === dateStr);
+
+    if (filtered.length > 0) {
+        setTxt('calDayHeader', filtered[0].date_header);
+    } else {
+        const d = new Date();
+        d.setDate(d.getDate() + currentCalOffset);
+        const daysMap = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
+        setTxt('calDayHeader', `${d.getMonth() + 1}월 ${d.getDate()}일 ${daysMap[d.getDay()]}`);
+    }
+
+    if (currentCalFilter === 'star3') filtered = filtered.filter(ev => ev.stars === 3);
+    if (currentCalFilter === 'star2') filtered = filtered.filter(ev => ev.stars >= 2);
+    if (currentCalFilter === 'eco') filtered = filtered.filter(ev => ev.type === 'eco');
+}
     "AVAX": "AVAXUSDT", "아발란체": "AVAXUSDT",
     "SKY": "SKYUSDT", "스카이": "SKYUSDT"
 }

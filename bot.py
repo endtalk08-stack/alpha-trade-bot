@@ -612,7 +612,7 @@ def get_trading_val_rank(symbol, is_krw=True):
     return ""
 
 # ----------------------------------------------------
-# 4. 실시간 퀀트 백테스팅 & 60일 모멘텀 파동 계산
+# 4. 실시간 6대 퀀트 팩터 및 파동 연산 (수식 100% 동기화)
 # ----------------------------------------------------
 def run_real_vectorized_backtest(df):
     if df is None or len(df) < 30:
@@ -839,41 +839,51 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     else:
         tval_20d_str = "-"
 
-    # 6개 퀀트 팩터 기반 모멘텀 점수 계산
-    bullish_count = 0
-    if raw_price >= ma5_val: bullish_count += 1
-    if raw_price >= ma20_val: bullish_count += 1
-    if ma60_val and raw_price >= ma60_val: bullish_count += 1
-    if n_bars >= 35 and macd_val >= sig_val: bullish_count += 1
-    if 40.0 <= rsi_num <= 65.0: bullish_count += 1
-    if vol_pct >= 100: bullish_count += 1
-
-    quant_score = int(min(98, max(42, int(45 + (bullish_count * 9)))))
-    score_badge = "모멘텀 최강세" if quant_score >= 80 else ("상승 모멘텀 우세" if quant_score >= 65 else "중립 횡보 국면")
-
-    # 최근 60거래일 실제 모멘텀 파동 계산
+    # 최근 60거래일 실제 6대 지표 모멘텀 파동 계산 (상단 게이지와 100% 일치)
     momentum_history = []
     try:
-        hist_closes = df['Close'].tail(75)
-        hist_volumes = df['Volume'].tail(75)
-        h_ma5 = hist_closes.rolling(5).mean()
-        h_ma20 = hist_closes.rolling(20).mean()
-        h_ma60 = hist_closes.rolling(60).mean()
-        h_vmean5 = hist_volumes.rolling(5).mean()
+        hist_df = df.tail(80).copy()
+        h_close = hist_df['Close'].astype(float)
+        h_vol = hist_df['Volume'].astype(float)
+        h_ma5 = h_close.rolling(5).mean()
+        h_ma20 = h_close.rolling(20).mean()
+        h_ma60 = h_close.rolling(60).mean()
+        h_vmean5 = h_vol.rolling(5).mean()
 
-        for idx in hist_closes.tail(60).index:
-            p_curr = float(hist_closes.loc[idx])
+        h_ema12 = h_close.ewm(span=12, adjust=False).mean()
+        h_ema26 = h_close.ewm(span=26, adjust=False).mean()
+        h_macd = h_ema12 - h_ema26
+        h_macdsig = h_macd.ewm(span=9, adjust=False).mean()
+
+        h_delta = h_close.diff()
+        h_gain = h_delta.where(h_delta > 0, 0.0).rolling(14).mean()
+        h_loss = (-h_delta.where(h_delta < 0, 0.0)).rolling(14).mean()
+        h_rs = h_gain / h_loss.replace(0, np.nan)
+        h_rsi = 100 - (100 / (1 + h_rs))
+
+        for idx in hist_df.tail(60).index:
+            p_c = float(h_close.loc[idx])
             b_cnt = 0
-            if pd.notna(h_ma5.loc[idx]) and p_curr >= float(h_ma5.loc[idx]): b_cnt += 1
-            if pd.notna(h_ma20.loc[idx]) and p_curr >= float(h_ma20.loc[idx]): b_cnt += 1
-            if pd.notna(h_ma60.loc[idx]) and p_curr >= float(h_ma60.loc[idx]): b_cnt += 1
-            if pd.notna(h_vmean5.loc[idx]) and float(hist_volumes.loc[idx]) >= float(h_vmean5.loc[idx]): b_cnt += 1
-            
-            day_score = int(min(98, max(35, int(40 + (b_cnt * 14.5)))))
+            if pd.notna(h_ma5.loc[idx]) and p_c >= float(h_ma5.loc[idx]): b_cnt += 1
+            if pd.notna(h_ma20.loc[idx]) and p_c >= float(h_ma20.loc[idx]): b_cnt += 1
+            if pd.notna(h_ma60.loc[idx]) and p_c >= float(h_ma60.loc[idx]): b_cnt += 1
+            if pd.notna(h_macd.loc[idx]) and pd.notna(h_macdsig.loc[idx]) and float(h_macd.loc[idx]) >= float(h_macdsig.loc[idx]): b_cnt += 1
+            if pd.notna(h_rsi.loc[idx]) and (40.0 <= float(h_rsi.loc[idx]) <= 65.0): b_cnt += 1
+            if pd.notna(h_vmean5.loc[idx]) and float(h_vol.loc[idx]) >= float(h_vmean5.loc[idx]): b_cnt += 1
+
+            day_score = int(min(98, max(42, int(45 + (b_cnt * 9)))))
             t_str = pd.to_datetime(idx).strftime("%Y-%m-%d")
             momentum_history.append({"time": t_str, "score": day_score})
+
+        # 오늘 점수는 momentum_history의 마지막 점수로 100% 일치
+        quant_score = momentum_history[-1]["score"] if momentum_history else 72
+        bullish_count = int(round((quant_score - 45) / 9)) if quant_score >= 45 else 0
     except Exception:
         momentum_history = []
+        quant_score = 72
+        bullish_count = 3
+
+    score_badge = "모멘텀 최강세" if quant_score >= 80 else ("상승 모멘텀 우세" if quant_score >= 65 else "중립 횡보 국면")
 
     if ma60_val and raw_price > ma20_val > ma60_val:
         trend = "정배열 상승 추세"
@@ -1156,7 +1166,7 @@ if TELEGRAM_TOKEN:
     threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
-# 7. 웹 프론트엔드 UI (모멘텀 SVG 파동 차트 장착)
+# 7. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="ko">
@@ -1806,7 +1816,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 1) 최근 60거래일 상승 모멘텀 추세 파동 그래프 (인라인 SVG Area Chart) -->
+                        <!-- 1) 최근 60거래일 상승 모멘텀 파동 곡선 차트 (인라인 SVG Area Chart) -->
                         <div style="margin:20px 0 14px; position:relative;">
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                                 <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 상승 모멘텀 흐름</span>
@@ -2526,7 +2536,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     setTxt('qZScoreVal', q.z_score);
                     setTxt('qVolVal', `${q.ann_vol} (${q.vol_risk_state ? q.vol_risk_state.split(' ')[0] : ''})`);
 
-                    // 1) 최근 60거래일 상승 모멘텀 파동 차트 렌더링
+                    // 1) 최근 60거래일 상승 모멘텀 파동 곡선 렌더링
                     const qSignalChart = document.getElementById('qSignalChart');
                     const qSignalNow = document.getElementById('qMomentumValTxt');
                     if (qSignalChart && Array.isArray(q.momentum_history) && q.momentum_history.length > 1) {
@@ -2555,7 +2565,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <path d="${linePath}" fill="none" stroke="#10b981" stroke-width="3" vector-effect="non-scaling-stroke"/>
                             <circle cx="${coords[coords.length-1].split(',')[0]}" cy="${coords[coords.length-1].split(',')[1]}" r="5" fill="#10b981" stroke="#ffffff" stroke-width="2" vector-effect="non-scaling-stroke"/>
                         `;
-                        if (qSignalNow) qSignalNow.innerText = `현재 ${lastScore}점 (최강세 구간)`;
+                        if (qSignalNow) qSignalNow.innerText = `현재 ${lastScore}점 (${q.score_badge})`;
                     } else if (qSignalNow) {
                         qSignalNow.innerText = `현재 ${q.quant_score}점`;
                     }

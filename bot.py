@@ -173,6 +173,55 @@ def fetch_naver_realtime_index(index_code):
 
 
 
+def fetch_market_5day_returns_from_df(df, index_name):
+    """주어진 일봉 데이터에서 최근 5거래일 수익률 흐름을 계산합니다."""
+    try:
+        if df is None or df.empty or "Close" not in df.columns:
+            return None
+        closes = [float(x) for x in df["Close"].dropna().tail(6).tolist()]
+        if len(closes) < 6:
+            return None
+        points = []
+        base = closes[0]
+        for i in range(1, 6):
+            prev_close, close = closes[i - 1], closes[i]
+            daily = ((close / prev_close) - 1.0) * 100.0 if prev_close else 0.0
+            cumulative = ((close / base) - 1.0) * 100.0 if base else 0.0
+            points.append({
+                "date": f"D-{6-i}",
+                "close": round(close, 8),
+                "daily_return": round(daily, 2),
+                "cumulative_return": round(cumulative, 2),
+            })
+        total = points[-1]["cumulative_return"]
+        score = 2 if total >= 1.0 else 1 if total >= 0.3 else -2 if total <= -1.0 else -1 if total <= -0.3 else 0
+        return {
+            "index_name": index_name, "score": score,
+            "detail": f"{index_name} 최근 5거래일 {total:+.2f}%",
+            "total_return": round(total, 2), "points": points,
+            "source": "실제 일봉 데이터"
+        }
+    except Exception as exc:
+        print(f"[MARKET 5D DF] {index_name} failed: {exc}")
+        return None
+
+
+def fetch_market_5day_returns_from_symbol(symbol, index_name, world_item=None):
+    """Yahoo의 실제 일봉으로 미국 시장 등 지수의 최근 5거래일 흐름을 계산합니다."""
+    try:
+        if isinstance(world_item, dict):
+            closes = [float(x) for x in (world_item.get("sparkline") or []) if x is not None]
+            if len(closes) >= 6:
+                return fetch_market_5day_returns_from_df(
+                    pd.DataFrame({"Close": closes}), index_name
+                )
+        _, _, df = fetch_overseas_candles(symbol)
+        return fetch_market_5day_returns_from_df(df, index_name)
+    except Exception as exc:
+        print(f"[MARKET 5D SYMBOL] {index_name} failed: {exc}")
+        return None
+
+
 def fetch_naver_index_5day_returns(index_code="KOSPI", world_item=None):
     """실제 시장 지수의 최근 5거래일 흐름을 계산한다.
     우선 이미 /api/analyze에서 정상 수집된 world_board의 실제 종가 history를 사용하고,
@@ -1633,7 +1682,9 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     spy = _find_world_item(world_board, ["SPY"])
 
     if market_name in ("국내주식", "국내증시"):
-        ref = kospi if kospi and kospi.get("rate") != "-" else kosdaq
+        # 종목의 실제 거래시장(KOSPI/KOSDAQ)을 기준으로 시장 카드를 선택합니다.
+        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else "KOSPI"
+        ref = kospi if selected_index == "KOSPI" else kosdaq
         if ref:
             rate = _movement_rate_to_float(ref.get("rate"))
             if rate is not None:
@@ -1662,6 +1713,27 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
                     market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
                 else:
                     market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
+    elif market_name == "암호화폐":
+        # 암호화폐는 KOSPI/NASDAQ 같은 전통시장 지수를 쓰지 않고
+        # 검색한 코인 자체의 최근 일간 등락을 시장 요인으로 사용합니다.
+        if df is not None and len(df) >= 2:
+            try:
+                prev_close = float(df["Close"].iloc[-2])
+                current_close = float(df["Close"].iloc[-1])
+                rate = ((current_close / prev_close) - 1.0) * 100.0 if prev_close else 0.0
+                label = formal_name or symbol or "코인"
+                if rate >= 1.0:
+                    market_score, market_detail = 2, f"{label} 시장 강세 ({rate:+.2f}%)"
+                elif rate >= 0.3:
+                    market_score, market_detail = 1, f"{label} 시장 상승 ({rate:+.2f}%)"
+                elif rate <= -1.0:
+                    market_score, market_detail = -2, f"{label} 시장 약세 ({rate:+.2f}%)"
+                elif rate <= -0.3:
+                    market_score, market_detail = -1, f"{label} 시장 하락 ({rate:+.2f}%)"
+                else:
+                    market_detail = f"{label} 시장 보합 ({rate:+.2f}%)"
+            except Exception:
+                pass
     else:
         market_detail = "시장 공통 요인 영향 낮음"
 
@@ -1761,6 +1833,13 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else "KOSPI"
         ref5 = _find_world_item(world_board, ["코스피" if selected_index == "KOSPI" else "코스닥"])
         market5 = fetch_naver_index_5day_returns(selected_index, ref5)
+    elif market_name == "미국주식":
+        # 미국 개별주식은 Nasdaq 계열 대표 지표로 QQQ를 사용합니다.
+        ref5 = _find_world_item(world_board, ["QQQ"])
+        market5 = fetch_market_5day_returns_from_symbol("QQQ", "NASDAQ", ref5)
+    elif market_name == "암호화폐":
+        # 코인은 해당 코인 자체의 최근 5거래일 흐름을 사용합니다.
+        market5 = fetch_market_5day_returns_from_df(df, formal_name or symbol or "Crypto")
 
     if market5:
         market5_score = int(market5["score"])
@@ -1768,7 +1847,7 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         market5_points = market5["points"]
     else:
         market5_score = 0
-        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else "KOSPI"
+        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else ("NASDAQ" if market_name == "미국주식" else (formal_name or symbol or "시장"))
         market5_detail = f"{selected_index} 최근 5거래일 데이터 확인 필요"
         market5_points = []
 

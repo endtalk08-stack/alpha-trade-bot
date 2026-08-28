@@ -1720,6 +1720,7 @@ HTML_PAGE = """<!DOCTYPE html>
             display: inline-flex;
             align-items: center;
             justify-content: center;
+            align-self: center;
             opacity: 0.78;
             transition: all 0.18s ease;
         }

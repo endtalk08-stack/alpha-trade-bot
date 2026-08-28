@@ -3247,8 +3247,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function parseCalendarEventTime(ev) {
             if (!ev || !ev.date_key || !ev.time) return null;
-            const m = String(ev.date_key).match(/^(\\d{4})[.\\-/](\\d{1,2})[.\\-/](\\d{1,2})$/);
-            const t = String(ev.time).match(/^(\\d{1,2}):(\\d{2})$/);
+            const m = String(ev.date_key).match(/^([0-9]{4})[./-]([0-9]{1,2})[./-]([0-9]{1,2})$/);
+            const t = String(ev.time).match(/^([0-9]{1,2}):([0-9]{2})$/);
             if (!m || !t) return null;
 
             // 캘린더의 날짜/시간은 기존 화면 기준 한국시간(KST)으로 처리합니다.

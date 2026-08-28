@@ -375,6 +375,31 @@ def fetch_all_real_earnings():
                         dt_utc = yahoo_dt
                         hour = _classify_earnings_hour(yahoo_dt)
 
+                        # MSFT는 현재 Yahoo가 장중(22:30 KST) 시각을 반환하는
+                        # 경우가 있어, 실적 발표의 장마감 후 기준과 충돌하지 않도록
+                        # 미국 동부시간 16:00(장마감) 기준으로 보정합니다.
+                        # 2026년 Q1 발표일 자체는 Microsoft 공식 IR에서 아직
+                        # 확정 발표하지 않았으므로, 날짜를 '확정'으로 취급하지 않습니다.
+                        if sym == "MSFT" and hour == "dmh":
+                            if ZoneInfo is not None:
+                                try:
+                                    et_zone = ZoneInfo("America/New_York")
+                                    # Yahoo가 제공한 현지 날짜를 기준으로
+                                    # 장마감 후(16:00 ET) 시각을 사용합니다.
+                                    et_date = yahoo_dt.astimezone(et_zone).date()
+                                    local_et = datetime.combine(
+                                        et_date,
+                                        datetime.min.time()
+                                    ).replace(
+                                        hour=16,
+                                        minute=0,
+                                        tzinfo=et_zone
+                                    )
+                                    dt_utc = local_et.astimezone(timezone.utc)
+                                    hour = "amc"
+                                except Exception:
+                                    pass
+
                 # Yahoo timestamp가 없거나 날짜가 맞지 않을 때만
                 # 미국 동부시간의 표준 발표 시각을 안전한 fallback으로 사용합니다.
                 if dt_utc is None:

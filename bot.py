@@ -1627,17 +1627,67 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     negative_count = sum(1 for x in reasons if x["score"] < 0)
     evidence_count = sum(1 for x in reasons if x["score"] != 0)
 
-    confidence = "높음" if evidence_count >= 4 else ("중간" if evidence_count >= 2 else "낮음")
+    # 근거 개수만으로 신뢰도를 정하지 않고, 방향 일치도까지 반영한다.
+    aligned_count = positive_count if total_score > 0 else negative_count if total_score < 0 else 0
+    if aligned_count >= 4 and abs(total_score) >= 5:
+        confidence = "높음"
+    elif aligned_count >= 3 and abs(total_score) >= 3:
+        confidence = "중간"
+    elif aligned_count >= 1:
+        confidence = "낮음"
+    else:
+        confidence = "판단 보류"
+
     direction = "상승" if total_score >= 4 else ("하락" if total_score <= -4 else "혼조")
     sorted_reasons = sorted(reasons, key=lambda x: abs(int(x["score"])), reverse=True)
     main_reason = sorted_reasons[0]["label"] if sorted_reasons else "-"
 
     if direction == "상승":
-        summary = f"{main_reason} 요인이 가장 강하게 나타났고, 전체적으로 상승에 우호적인 근거가 {positive_count}개 확인됩니다."
+        summary = f"{main_reason} 쪽 근거가 가장 강하고, 상승에 우호적인 데이터가 {positive_count}개 확인돼요."
     elif direction == "하락":
-        summary = f"{main_reason} 요인이 가장 강하게 나타났고, 전체적으로 하락에 우호적인 근거가 {negative_count}개 확인됩니다."
+        summary = f"{main_reason} 쪽 근거가 가장 강하고, 하락에 우호적인 데이터가 {negative_count}개 확인돼요."
     else:
-        summary = "시장·재료·수급·기술 요인이 서로 엇갈려 단일 원인으로 설명하기 어려운 상태입니다."
+        summary = "여러 신호가 엇갈려서 지금은 한 가지 원인으로 단정하기 어려워요."
+
+    # ------------------------------------------------
+    # 🐜 gaemiGTP 친구 말투 엔진
+    # 숫자/근거는 그대로 두고, 설명 문장만 친근하게 만든다.
+    # ------------------------------------------------
+    if confidence == "판단 보류":
+        friendly_message = (
+            "🐜 개미야, 잠깐만! 지금은 근거가 충분하지 않아. "
+            "괜히 아는 척하지 말고 확인되는 데이터부터 보자."
+        )
+    elif direction == "상승" and confidence == "높음":
+        friendly_message = (
+            "🐜 개미야, 오늘은 꽤 그럴듯한 조합이야 👀 "
+            "시장·업종·재료·거래량 같은 신호가 여러 곳에서 같이 붙었어."
+        )
+    elif direction == "상승":
+        friendly_message = (
+            "🐜 오, 오늘은 올라왔네. 그런데 잠깐! "
+            "좋은 신호는 보이지만 아직 모든 근거가 한 방향으로 모인 건 아니야."
+        )
+    elif direction == "하락" and confidence == "높음":
+        friendly_message = (
+            "🐜 개미야, 오늘은 분위기가 꽤 싸늘한데? 🥶 "
+            "여러 데이터가 하락 쪽으로 같이 움직이고 있어."
+        )
+    elif direction == "하락":
+        friendly_message = (
+            "🐜 어… 오늘은 좀 약하네. "
+            "하락 신호가 보이긴 하지만 아직 한쪽으로 확실히 몰렸다고 보긴 어려워."
+        )
+    else:
+        friendly_message = (
+            "🐜 음… 지금은 신호들이 서로 의견이 갈리네. "
+            "이럴 땐 억지로 결론 내리지 말고 과거 사례를 같이 보는 게 좋아."
+        )
+
+    if main_reason and main_reason != "-":
+        friendly_followup = f"🐜 내가 제일 눈여겨보는 건 {main_reason}이야. 과거에도 비슷했는지 한번 확인해보자."
+    else:
+        friendly_followup = "🐜 아직 뚜렷한 핵심 원인을 찾기 어렵네. 데이터가 더 필요해."
 
     return {
         "direction": direction,
@@ -1645,6 +1695,8 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         "total_score": total_score,
         "main_reason": main_reason,
         "summary": summary,
+        "friendly_message": friendly_message,
+        "friendly_followup": friendly_followup,
         "reasons": reasons,
         "news_evidence": news_evidence[:5]
     }
@@ -3811,9 +3863,11 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div style="font-size:1.02rem;font-weight:800;color:var(--text-title);">🔥 ${directionText} — 왜 움직였을까?</div>
                             <span style="font-size:0.66rem;font-weight:800;padding:3px 7px;border-radius:10px;white-space:nowrap;${confidenceStyle}">근거 ${mr.confidence}</span>
                         </div>
-                        <div style="font-size:0.82rem;color:var(--text-sub);line-height:1.55;margin-bottom:10px;">${mr.summary}</div>
+                        <div style="font-size:0.84rem;color:var(--text-title);line-height:1.6;margin-bottom:8px;font-weight:700;">${mr.friendly_message || mr.summary}</div>
+                        <div style="font-size:0.76rem;color:var(--text-sub);line-height:1.55;margin-bottom:10px;">${mr.summary}</div>
                         <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:5px;">확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}</div>
                         ${reasonRows}
+                        <div style="margin-top:9px;padding:9px 10px;border-radius:10px;background:rgba(59,130,246,0.06);border:1px solid var(--border-line);font-size:0.72rem;color:var(--text-sub);line-height:1.5;">${mr.friendly_followup || '🐜 과거에도 비슷했는지 한번 확인해보자.'}</div>
                         <div style="margin-top:8px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.</div>
                     `;
                 }

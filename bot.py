@@ -2889,7 +2889,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
                                 onclick="event.stopPropagation(); toggleCalendarAlarm(${JSON.stringify(ev).replace(/`/g, '\\`')})"
                                 title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
-                                aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">${alarmActive ? '🔔' : '♧'}</button>
+                                aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">${alarmActive ? '🔔' : '🔔'}</button>
                     </div>
 
 

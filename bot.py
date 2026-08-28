@@ -246,6 +246,108 @@ def make_dynamic_gaemi_comment(evidence=None, theme_result=None, us_kr_result=No
     return lead + "\n\n" + detail
 
 
+# ===== Strong material/news comment engine =====
+def _extract_news_items(items):
+    out = []
+    for item in (items or []):
+        if isinstance(item, dict):
+            title = str(item.get("title") or item.get("headline") or "").strip()
+            summary = str(item.get("summary") or item.get("description") or "").strip()
+            source = str(item.get("source") or item.get("publisher") or "").strip()
+            published = str(item.get("published_at") or item.get("date") or "").strip()
+            if title:
+                out.append({"title": title, "summary": summary, "source": source, "published": published})
+        elif str(item).strip():
+            out.append({"title": str(item).strip(), "summary": "", "source": "", "published": ""})
+    return out
+
+def make_strong_gaemi_comment(evidence=None, news_items=None, us_kr_result=None, theme_result=None):
+    """
+    Dynamic comment:
+    - When news/material evidence exists, show the actual headline and explain why it matters.
+    - Add a second corroborating signal when available.
+    - If no concrete material exists, fall back to the strongest quantitative signal.
+    """
+    evidence = evidence or {}
+    news = _extract_news_items(news_items)
+
+    material_score = float(evidence.get("material_score", 0) or 0)
+    material_value = evidence.get("material")
+    material_active = bool(news) or bool(material_value) or material_score > 0
+
+    # Prefer the most recent/first concrete headline.
+    lead_news = news[0] if news else None
+
+    if material_active and lead_news:
+        title = lead_news["title"]
+        # Keep the displayed source text concise.
+        summary = lead_news["summary"]
+        source = lead_news["source"]
+
+        detail = f"📰 {title}"
+        if summary and summary != title:
+            detail += f"\n{summary[:180]}"
+
+        explanation = "이 재료가 오늘 주가 움직임과 연결되는지 거래대금과 수급 흐름을 함께 보고 있어."
+        corroboration = []
+
+        if us_kr_result and us_kr_result.get("matched"):
+            corroboration.append(
+                f'{us_kr_result.get("company")} 관련 해외 흐름과 국내 {us_kr_result.get("theme")} 움직임도 함께 확인돼.'
+            )
+        if theme_result and theme_result.get("matched"):
+            corroboration.append(
+                f'{theme_result.get("theme")} 관련 종목들의 동반 움직임도 확인돼.'
+            )
+
+        for key, label in (
+            ("turnover", "거래대금"),
+            ("volume", "거래량"),
+            ("foreign", "외국인 수급"),
+            ("institution", "기관 수급"),
+            ("program", "프로그램"),
+        ):
+            if evidence.get(key) not in (None, "", "-", "데이터 확인 필요"):
+                corroboration.append(f"{label} 흐름도 같이 나타나고 있어.")
+                if len(corroboration) >= 2:
+                    break
+
+        source_line = f"\n출처: {source}" if source else ""
+        return (
+            "🐜 개미들아! 오늘은 이 재료부터 보자 👀\n\n"
+            + detail
+            + source_line
+            + "\n\n"
+            + explanation
+            + (" " + " ".join(corroboration) if corroboration else "")
+        )
+
+    # No concrete news: use the strongest non-material signal.
+    fallback = [
+        ("program", "프로그램", "🐜 개미들아! 오늘은 프로그램 흐름이 눈에 들어와 👀"),
+        ("foreign", "외국인 수급", "🐜 개미들아! 오늘은 외국인 수급이 눈에 들어와 👀"),
+        ("institution", "기관 수급", "🐜 개미들아! 오늘은 기관 수급이 눈에 들어와 👀"),
+        ("turnover", "거래대금", "🐜 개미들아! 오늘은 거래대금이 확 눈에 들어와 👀"),
+        ("volume", "거래량", "🐜 개미들아! 오늘은 거래량이 눈에 띄네 👀"),
+        ("sector", "업종·테마", "🐜 개미들아! 오늘은 업종·테마 흐름이 눈에 들어와 👀"),
+    ]
+    scored = []
+    for key, label, sentence in fallback:
+        try:
+            score = float(evidence.get(f"{key}_score", 0) or 0)
+        except (TypeError, ValueError):
+            score = 0
+        if evidence.get(key) not in (None, "", "-", "데이터 확인 필요"):
+            scored.append((score, sentence, label))
+
+    if scored:
+        scored.sort(reverse=True, key=lambda x: x[0])
+        _, sentence, label = scored[0]
+        return sentence + f"\n\n{label} 흐름을 중심으로 오늘 움직임을 확인해보자."
+
+    return "🐜 개미들아! 오늘은 딱 하나의 이유로 설명하기 어렵네 👀 확인된 데이터부터 차근차근 보자."
+
+
 def analyze_us_kr_relation(news_items=None, us_items=None, kr_items=None):
     """
     Detect a candidate US -> KR theme relationship.

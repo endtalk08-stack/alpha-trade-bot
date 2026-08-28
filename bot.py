@@ -240,6 +240,25 @@ MAJOR_KR_EARNINGS = {
 def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None):
     """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
+
+    # 최종 안전장치:
+    # 미국 기업 실적이 장중(특히 09:30 ET = 한국시간 22:30)으로
+    # 들어온 경우에는 장마감 후 실적 발표 관행에 맞춰 16:00 ET로 정규화합니다.
+    # 이 검사는 Finnhub/Yahoo 어느 경로로 들어왔는지와 무관하게 마지막에 한 번 더 적용됩니다.
+    try:
+        if ZoneInfo is not None:
+            et_zone = ZoneInfo("America/New_York")
+            et_dt = dt_utc.astimezone(et_zone)
+            et_minutes = et_dt.hour * 60 + et_dt.minute
+            if 9 * 60 + 30 <= et_minutes < 16 * 60:
+                et_dt = et_dt.replace(
+                    hour=16, minute=0, second=0, microsecond=0
+                )
+                dt_utc = et_dt.astimezone(timezone.utc)
+                hour = "amc"
+    except Exception:
+        pass
+
     kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
 
     date_key = kst_dt.strftime("%Y.%m.%d")

@@ -1695,6 +1695,16 @@ HTML_PAGE = """<!DOCTYPE html>
             letter-spacing: -0.02em;
         }
         .cal-detail-col { flex: 1; min-width: 0; }
+        .cal-alarm-icon {
+            width: 17px;
+            height: 17px;
+            display: block;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 1.65;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
         .cal-alarm-btn {
             flex: 0 0 28px;
             width: 28px;
@@ -2889,7 +2899,9 @@ HTML_PAGE = """<!DOCTYPE html>
                         <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
                                 onclick="event.stopPropagation(); toggleCalendarAlarm(${JSON.stringify(ev).replace(/`/g, '\\`')})"
                                 title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
-                                aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">${alarmActive ? '🔔' : '🔔'}</button>
+                                aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">${alarmActive
+    ? '<svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>'
+    : '<svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>'}</button>
                     </div>
 
 

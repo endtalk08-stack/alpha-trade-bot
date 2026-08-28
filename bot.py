@@ -2029,24 +2029,25 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         /* 1행: 차트(좌) & 증시(우) - 높이 100% 동기화 */
-        #rowChart { grid-column: 1; grid-row: 1; height: 100%; }
-        #rowWorld { grid-column: 2; grid-row: 1; height: 100%; }
+        #rowCause { grid-column: 1; grid-row: 1; }
+        #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
+        #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* 2행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 1:1 대칭 */
-        #rowNews { grid-column: 1; grid-row: 2; height: 100%; }
-        #rowGlobalNews { grid-column: 2; grid-row: 2; height: 100%; }
+        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 1:1 대칭 */
+        #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
+        #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
 
-        /* 3행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
-        #rowQuant { grid-column: 1; grid-row: 3; height: 100%; }
-        #rowCalendar { grid-column: 2; grid-row: 3; height: 100%; }
+        /* 4행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
+        #rowQuant { grid-column: 1; grid-row: 4; height: 100%; }
+        #rowCalendar { grid-column: 2; grid-row: 4; height: 100%; }
 
         /* 좌측 832px 단독 배치 행들 */
-        #rowConsensus { grid-column: 1; grid-row: 4; }
-        #rowVote { grid-column: 1; grid-row: 5; }
-        #rowComment { grid-column: 1; grid-row: 6; }
-        #rowDart { grid-column: 1; grid-row: 7; }
-        #rowSignal { grid-column: 1; grid-row: 8; }
-        #rowTelegram { grid-column: 1; grid-row: 9; }
+        #rowConsensus { grid-column: 1; grid-row: 5; }
+        #rowVote { grid-column: 1; grid-row: 6; }
+        #rowComment { grid-column: 1; grid-row: 7; }
+        #rowDart { grid-column: 1; grid-row: 8; }
+        #rowSignal { grid-column: 1; grid-row: 9; }
+        #rowTelegram { grid-column: 1; grid-row: 10; }
 
         .card {
             background: var(--bg-card);
@@ -2626,7 +2627,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
 
-                        <!-- 2행 좌측: 퀀트 분석 (832px) -->
+                        <!-- 4행 좌측: 퀀트 분석 (832px) -->
                         <div class="card" id="rowQuant">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
@@ -2683,10 +2684,17 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div id="quantDetailList"></div>
                             </div>
 
-                            <div id="movementReasonCard" style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border-line);"></div>
                         </div>
 
-                        <!-- 2행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
+                        <!-- 차트 바로 위: 독립된 개미들아! 카드 -->
+                        <div class="card" id="rowCause" style="justify-content:flex-start;">
+                            <div class="board-header" style="margin-bottom:10px;">
+                                <span class="board-header-title">개미들아! 이 종목 왜 움직였을까?</span>
+                            </div>
+                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;"></div>
+                        </div>
+
+                        <!-- 4행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
                         <div class="card" id="rowCalendar">
                             <div>
                                 <div class="cal-top-title-area">

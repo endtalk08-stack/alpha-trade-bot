@@ -1,4 +1,4 @@
-import os
+# 3단계: 레이아웃 + 제목 + 가격기준 코멘트 + 샘플 데이터 (오픈 전 UI 검증용)\nimport os
 import re
 import io
 import gc
@@ -2077,10 +2077,10 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
 
-                        <!-- 2행 우측: 개미들아! 왜 움직였을까? (현재는 퀀트 모멘텀 점수 기반 임시 코멘트) -->
+                        <!-- 2행 우측: 개미들아! 이 종목 왜 움직였을까? (현재는 주가 등락 점수 기반 임시 코멘트) -->
                         <div class="card" id="rowCause">
                             <div class="board-header" style="margin-bottom:14px;">
-                                <span class="board-header-title">개미들아! 왜 움직였을까?</span>
+                                <span class="board-header-title">개미들아! 이 종목 왜 움직였을까?</span>
                             </div>
                             <div id="movementCauseComment" style="font-size:0.92rem; line-height:1.75; color:var(--text-sub); white-space:pre-line; word-break:keep-all;"></div>
                         </div>
@@ -3031,8 +3031,8 @@ HTML_PAGE = """<!DOCTYPE html>
                     setTxt('rGuideText', q.guide_text);
                 }
 
-                // 4. 개미들아! 왜 움직였을까?
-                // 현재는 실제 원인 데이터가 연결되기 전 단계이므로 퀀트 모멘텀 점수에 따라
+                // 4. 개미들아! 이 종목 왜 움직였을까?
+                // 현재는 실제 원인 데이터가 연결되기 전 단계이므로 퀀트 현재 주가의 등락 상태에 따라
                 // 4개 중 하나의 임시 코멘트를 보여준다. 실제 뉴스/재료 데이터가 연결되면 교체한다.
                 const causeEl = document.getElementById('movementCauseComment');
                 if (causeEl) {

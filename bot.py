@@ -1795,7 +1795,48 @@ HTML_PAGE = """<!DOCTYPE html>
         .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
 
         /* 캘린더 위젯 스타일 */
-        .cal-top-title-area { margin-bottom: 8px; }
+        .cal-top-title-area { margin-bottom: 10px; }
+        .cal-view-tabs {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            height: 30px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid transparent;
+        }
+        .cal-view-tab {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            height: 30px;
+            padding: 0 1px;
+            border: 0;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: -0.2px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .cal-view-tab:hover { color: var(--text-title); }
+        .cal-view-tab.active { color: var(--text-title); }
+        .cal-view-tab.active::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: -1px;
+            height: 2px;
+            background: var(--text-title);
+            border-radius: 2px;
+        }
+        .cal-view-custom-icon {
+            width: 14px;
+            height: 14px;
+            flex: 0 0 14px;
+        }
         .cal-top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
         .cal-date-ctrl { display: flex; align-items: center; gap: 8px; }
         .cal-arrow-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.75rem; transition: all 0.2s; }
@@ -2347,6 +2388,21 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div>
                                 <div class="cal-top-title-area">
                                     <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">캘린더</span>
+                                </div>
+
+                                <!-- 날짜 상단 영역: 확정 디자인 -->
+                                <div class="cal-view-tabs" aria-label="캘린더 보기 방식">
+                                    <button class="cal-view-tab active" type="button">전체</button>
+                                    <button class="cal-view-tab" type="button">주별</button>
+                                    <button class="cal-view-tab" type="button">월별</button>
+                                    <button class="cal-view-tab" type="button">
+                                        <svg class="cal-view-custom-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                                            <rect x="3.5" y="4.5" width="17" height="16" rx="2.5" stroke="currentColor" stroke-width="1.8"/>
+                                            <path d="M7.5 2.8v3.4M16.5 2.8v3.4M3.8 9h16.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                                            <path d="M7.5 13h.01M11.5 13h.01M15.5 13h.01M7.5 17h.01M11.5 17h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+                                        </svg>
+                                        사용자 지정
+                                    </button>
                                 </div>
 
                                 <div class="cal-top-nav">

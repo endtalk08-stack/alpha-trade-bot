@@ -110,6 +110,103 @@ CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
 
+# ===== Theme co-movement engine =====
+THEME_KEYWORDS = {
+    "AI·데이터센터": ["ai", "인공지능", "데이터센터", "gpu", "hbm", "서버", "네트워크"],
+    "전력인프라": ["전력", "변압기", "배전", "전선", "전력망", "데이터센터"],
+    "반도체": ["반도체", "hbm", "dram", "nand", "파운드리", "장비"],
+    "로봇": ["로봇", "협동로봇", "휴머노이드", "자동화"],
+    "바이오": ["바이오", "신약", "제약", "임상", "의약"],
+    "2차전지": ["2차전지", "배터리", "리튬", "양극재", "음극재"],
+}
+
+def _theme_match_score(theme, text_blob):
+    blob = (text_blob or "").lower()
+    kws = THEME_KEYWORDS.get(theme, [])
+    hits = sum(1 for kw in kws if kw.lower() in blob)
+    return hits / max(1, len(kws))
+
+def analyze_theme_comovement(query, news_items=None, price_items=None):
+    """
+    Conservative theme signal:
+    - infer candidate themes from the target's news/title text;
+    - require at least 2 theme keywords;
+    - if peer price data is supplied, measure breadth (up peers / valid peers).
+    - never claim causality; returns 'theme_related' evidence only.
+    """
+    news_items = news_items or []
+    price_items = price_items or []
+
+    blobs = []
+    for item in news_items:
+        if isinstance(item, dict):
+            blobs.append(" ".join(str(item.get(k, "")) for k in ("title", "description", "summary", "content")))
+        else:
+            blobs.append(str(item))
+    target_blob = " ".join(blobs)
+
+    candidates = []
+    for theme in THEME_KEYWORDS:
+        s = _theme_match_score(theme, target_blob)
+        if s >= 0.15:
+            candidates.append((theme, s))
+    candidates.sort(key=lambda x: x[1], reverse=True)
+
+    if not candidates:
+        return {"theme": None, "breadth": None, "score": 0, "reason": "관련 테마 근거 부족"}
+
+    theme, text_score = candidates[0]
+    breadth = None
+    up = down = valid = 0
+
+    for item in price_items:
+        if not isinstance(item, dict):
+            continue
+        chg = item.get("change_pct")
+        try:
+            chg = float(chg)
+        except (TypeError, ValueError):
+            continue
+        valid += 1
+        if chg > 0:
+            up += 1
+        elif chg < 0:
+            down += 1
+
+    if valid:
+        breadth = up / valid
+        breadth_score = min(1.0, max(0.0, (breadth - 0.5) * 2))
+    else:
+        breadth_score = 0.0
+
+    # Text evidence is required; breadth only strengthens it.
+    score = round(100 * (0.65 * min(1.0, text_score / 0.4) + 0.35 * breadth_score))
+    reason = f"{theme} 관련 근거 확인"
+    if breadth is not None and valid >= 3:
+        reason += f" · 관련 종목 {valid}개 중 {up}개 상승"
+
+    return {
+        "theme": theme,
+        "breadth": breadth,
+        "score": score,
+        "reason": reason,
+        "up": up,
+        "down": down,
+        "valid": valid,
+    }
+
+def make_theme_comment(theme_result):
+    if not theme_result or not theme_result.get("theme"):
+        return ""
+    theme = theme_result["theme"]
+    breadth = theme_result.get("breadth")
+    if breadth is not None and theme_result.get("valid", 0) >= 3 and breadth >= 0.67:
+        return f"🐜 개미들아! 오늘은 {theme} 쪽 움직임이 같이 보여 👀 관련 종목들도 함께 움직이고 있어서 테마 흐름을 같이 볼 필요가 있어."
+    if breadth is not None and theme_result.get("valid", 0) >= 3 and breadth <= 0.33:
+        return f"🐜 개미들아! {theme} 이야기는 보이는데 관련 종목 전체가 같이 움직이는 건 아니야. 테마 영향이라고 단정하긴 아직 이르겠어."
+    return f"🐜 개미들아! 오늘은 {theme} 관련 재료가 눈에 들어와 👀 관련 뉴스와 움직임을 같이 확인해볼 만해."
+
+
 def clean_for_json(obj):
     if isinstance(obj, dict):
         return {str(k): clean_for_json(v) for k, v in obj.items()}

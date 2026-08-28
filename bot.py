@@ -1361,6 +1361,112 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     }
 
 
+
+# ----------------------------------------------------
+# 5.5.0 🐜 gaemiGTP 대화 엔진
+# ----------------------------------------------------
+# 원칙:
+# 1) 숫자/데이터는 그대로 표시
+# 2) 친근한 문장만 상황에 따라 자동 선택
+# 3) 확정적 인과관계나 매매 보장은 하지 않음
+# ----------------------------------------------------
+
+def generate_gaemigtp_message(
+    direction="혼조",
+    confidence="낮음",
+    total_score=0,
+    reasons=None,
+    news_evidence=None,
+):
+    reasons = reasons or []
+    news_evidence = news_evidence or []
+
+    positive = [r for r in reasons if int(r.get("score", 0)) > 0]
+    negative = [r for r in reasons if int(r.get("score", 0)) < 0]
+
+    labels = [r.get("label", "") for r in sorted(
+        reasons,
+        key=lambda x: abs(int(x.get("score", 0))),
+        reverse=True
+    ) if int(r.get("score", 0)) != 0]
+
+    main = labels[0] if labels else "데이터"
+
+    # 강한 상승 + 여러 근거
+    if direction == "상승" and confidence == "높음":
+        if len(positive) >= 3:
+            return (
+                "🐜 개미들아! 오늘은 좀 수상한데? 👀\n"
+                "시장, 업종, 재료, 거래량 같은 신호가 여러 곳에서 같이 붙었어.\n"
+                f"특히 {main} 쪽이 눈에 들어와. 과거에도 이런 조합이 있었는지 한번 확인해보자."
+            )
+        return (
+            "🐜 개미들아! 오늘은 상승 쪽 근거가 꽤 모였어 👀\n"
+            f"{main} 쪽 움직임이 눈에 들어오네. 그래도 과거 결과까지 확인해보자."
+        )
+
+    # 상승이지만 근거가 중간
+    if direction == "상승" and confidence == "중간":
+        return (
+            "🐜 개미들아, 오늘은 올라왔네 👀\n"
+            f"그런데 아직 모든 근거가 한 방향으로 모인 건 아니야. "
+            f"지금은 {main}을 먼저 확인하고 과거 사례까지 보자."
+        )
+
+    # 상승했지만 근거 부족
+    if direction == "상승":
+        return (
+            "🐜 개미들아, 잠깐만 🤔\n"
+            "주가는 올랐는데 아직 뚜렷한 근거가 충분하지 않아.\n"
+            "괜히 아는 척하지 말고 확인되는 데이터부터 보자."
+        )
+
+    # 강한 하락
+    if direction == "하락" and confidence == "높음":
+        return (
+            "🐜 개미들아… 오늘 분위기가 좀 싸늘하네 🥶\n"
+            "하락 쪽으로 여러 근거가 같이 나타났어.\n"
+            f"특히 {main} 쪽이 눈에 들어와. 과거에도 비슷했는지 확인해보자."
+        )
+
+    # 하락이지만 근거 중간
+    if direction == "하락" and confidence == "중간":
+        return (
+            "🐜 개미들아, 오늘은 좀 조심해서 보자 👀\n"
+            f"하락 근거가 보이긴 하는데 아직 한쪽으로 완전히 모인 건 아니야. "
+            f"{main}부터 차근차근 확인해보자."
+        )
+
+    # 하락 + 근거 부족
+    if direction == "하락":
+        return (
+            "🐜 어… 오늘은 약하긴 한데 🤔\n"
+            "지금 데이터만으로는 하락 원인을 확실하게 하나로 꼽기 어려워.\n"
+            "조금 더 확인해보자."
+        )
+
+    # 혼조
+    if len(positive) and len(negative):
+        return (
+            "🐜 음… 오늘은 좀 복잡한데? 🤔\n"
+            "좋은 신호와 약한 신호가 서로 엇갈리고 있어.\n"
+            f"가장 눈에 띄는 건 {main}이야. 섣불리 결론 내리지 말고 과거 사례를 확인해보자."
+        )
+
+    if news_evidence:
+        return (
+            "🐜 어? 오늘은 뉴스가 눈에 들어오네 👀\n"
+            "관련 재료가 확인됐어. 그런데 진짜 중요한 건 주가가 실제로 어떻게 반응했는지야.\n"
+            "과거 사례까지 같이 보자."
+        )
+
+    return (
+        "🐜 개미들아, 아직은 판단하기 좀 애매해 🤔\n"
+        "확인되는 근거가 충분하지 않아. 모를 때는 모른다고 하는 게 맞아.\n"
+        "조금 더 데이터를 확인해보자."
+    )
+
+
 # ----------------------------------------------------
 # 5.5 "왜 움직였을까?" 원인 분석 엔진
 # ----------------------------------------------------

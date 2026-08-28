@@ -2384,7 +2384,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .movement-reason-meter-track { flex:1; height:5px; border-radius:4px; background:rgba(148,163,184,0.12); overflow:hidden; }
         .movement-reason-meter-fill { height:100%; border-radius:4px; }
         .movement-reason-meter-value { width:52px; text-align:right; font-size:0.64rem; font-weight:800; color:var(--text-muted); }
-        .movement-mini-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:2px; }
+        
+        .movement-relative-chart { margin: 4px 0 14px; padding:10px 10px 9px; border:1px solid var(--border-line); border-radius:9px; background:var(--bg-subcard); }
+        .movement-relative-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+        .movement-relative-title { font-size:0.76rem; font-weight:800; color:var(--text-title); }
+        .movement-relative-diff { font-size:0.68rem; font-weight:800; color:var(--text-muted); }
+        .movement-relative-chartbox { position:relative; height:92px; overflow:hidden; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
+        .movement-relative-gridline { position:absolute; left:0; right:0; height:1px; background:var(--border-line); opacity:.55; }
+        .movement-relative-svg { width:100%; height:100%; display:block; }
+        .movement-relative-legend { display:flex; gap:14px; align-items:center; margin-top:7px; font-size:0.62rem; color:var(--text-sub); }
+        .movement-relative-dot { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:4px; }
+        .movement-relative-note { margin-top:5px; font-size:0.62rem; line-height:1.35; color:var(--text-muted); word-break:keep-all; }
+
+.movement-mini-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:2px; }
         .movement-mini-card { min-width:0; background:var(--bg-subcard); border:1px solid var(--border-line); border-radius:9px; padding:9px 8px 8px; }
         .movement-mini-head { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-bottom:7px; }
         .movement-mini-head .movement-reason-title { gap:5px; }
@@ -3954,12 +3966,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <span>${displayValue}</span><span class="movement-mini-unit">${displayUnit}</span>
                                 </div>
                                 <div class="movement-mini-detail">${detailText}</div>
-                                <div class="movement-reason-meter">
-                                    <div class="movement-reason-meter-track">
-                                        <div class="movement-reason-meter-fill" style="width:${chartMagnitude}%;background:${chartColor};"></div>
-                                    </div>
-                                    <div class="movement-reason-meter-value">${score > 0 ? '+' : ''}${score}</div>
-                                </div>
                             </div>
                         `;
                     }).join('');
@@ -3981,6 +3987,58 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
                             <div class="movement-evidence-track">${evidenceSegments}</div>
                         </div>
+
+                        ${(() => {
+                            // Primary graph: asset vs benchmark over the latest five sessions.
+                            // The backend can supply rs_chart_points and benchmark_name later.
+                            // Until then, do not fabricate a second time series: hide the graph
+                            // instead of showing invented values.
+                            const rs = data.relative_strength || null;
+                            if (!rs || !Array.isArray(rs.points) || rs.points.length < 2) return '';
+
+                            const pts = rs.points.slice(-5);
+                            const valuesA = pts.map(p => Number(p.asset));
+                            const valuesB = pts.map(p => Number(p.benchmark));
+                            if (valuesA.some(v => !Number.isFinite(v)) || valuesB.some(v => !Number.isFinite(v))) return '';
+
+                            const all = valuesA.concat(valuesB);
+                            const minV = Math.min(...all);
+                            const maxV = Math.max(...all);
+                            const span = Math.max(0.01, maxV - minV);
+                            const W = 520, H = 92, PX = 8, PY = 8;
+                            const x = i => PX + (i * (W - PX * 2) / Math.max(1, pts.length - 1));
+                            const y = v => PY + ((maxV - v) / span) * (H - PY * 2);
+                            const path = arr => arr.map((v,i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
+                            const diff = Number(rs.relative_return);
+                            const diffText = Number.isFinite(diff) ? `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%p` : '';
+                            const assetName = rs.asset_name || '종목';
+                            const benchmarkName = rs.benchmark_name || '시장';
+                            const latestAsset = valuesA[valuesA.length - 1];
+                            const latestBenchmark = valuesB[valuesB.length - 1];
+
+                            return `
+                                <div class="movement-relative-chart">
+                                    <div class="movement-relative-head">
+                                        <span class="movement-relative-title">시장 대비 상대강도</span>
+                                        <span class="movement-relative-diff">${diffText}</span>
+                                    </div>
+                                    <div class="movement-relative-chartbox">
+                                        <div class="movement-relative-gridline" style="top:25%;"></div>
+                                        <div class="movement-relative-gridline" style="top:50%;"></div>
+                                        <div class="movement-relative-gridline" style="top:75%;"></div>
+                                        <svg class="movement-relative-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="최근 5거래일 상대강도 비교">
+                                            <path d="${path(valuesB)}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.42"></path>
+                                            <path d="${path(valuesA)}" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"></path>
+                                        </svg>
+                                    </div>
+                                    <div class="movement-relative-legend">
+                                        <span><span class="movement-relative-dot" style="background:var(--text-title);"></span>${assetName} ${latestAsset >= 0 ? '+' : ''}${latestAsset.toFixed(2)}%</span>
+                                        <span><span class="movement-relative-dot" style="background:var(--text-muted);"></span>${benchmarkName} ${latestBenchmark >= 0 ? '+' : ''}${latestBenchmark.toFixed(2)}%</span>
+                                    </div>
+                                    <div class="movement-relative-note">최근 5거래일 동안 종목과 기준시장의 상대적인 움직임을 비교합니다.</div>
+                                </div>
+                            `;
+                        })()}
 
                         <div class="movement-mini-grid">${movementReasonCards}</div>
 

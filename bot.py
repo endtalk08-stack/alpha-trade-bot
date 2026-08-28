@@ -1,3 +1,120 @@
+
+def build_movement_confirmation_data(data, df=None):
+    """
+    '개미들아! 이 종목 왜 움직였을까?' 카드의 확인 데이터를
+    현재 분석 파이프라인에서 실제로 확보한 값으로 구성한다.
+
+    표시 항목은 퀀트 카드와 비슷한 '라벨 + 값 + 보조설명' 스타일을 사용한다.
+    고정 샘플 숫자를 사용하지 않는다.
+    """
+    price_change = data.get("change_pct")
+    if price_change is None:
+        try:
+            price_change = data.get("quant", {}).get("change_pct")
+        except Exception:
+            price_change = None
+
+    try:
+        if price_change is None and df is not None and len(df) >= 2:
+            prev_close = float(df["Close"].iloc[-2])
+            last_close = float(df["Close"].iloc[-1])
+            price_change = (
+                (last_close - prev_close) / prev_close * 100
+                if prev_close else None
+            )
+    except Exception:
+        pass
+
+    # 거래량: 당일 거래량 vs 최근 5일 평균.
+    volume_text = "-"
+    volume_sub = "거래량 데이터 확인 필요"
+    try:
+        if df is not None and len(df) >= 6:
+            vols = df["Volume"].astype(float)
+            current_volume = float(vols.iloc[-1])
+            avg_volume = float(vols.tail(6).iloc[:-1].mean())
+            if avg_volume > 0:
+                ratio = current_volume / avg_volume * 100
+                delta = ratio - 100
+                volume_text = f"평균 대비 {delta:+.0f}%"
+                volume_sub = f"최근 5일 평균 기준 · 현재 비율 {ratio:.0f}%"
+            else:
+                volume_text = "평균 산출 불가"
+        elif df is not None and "Volume" in df.columns and len(df):
+            current_volume = float(df["Volume"].iloc[-1])
+            volume_text = f"{current_volume:,.0f}"
+            volume_sub = "최근 평균 거래량 데이터 부족"
+    except Exception:
+        pass
+
+    # 뉴스/공시: 현재 파이프라인에서 받은 실제 건수.
+    stock_news = data.get("stock_news") or []
+    disclosures = data.get("dart_disclosures") or []
+
+    news_count = len(stock_news)
+    disclosure_count = len(disclosures)
+
+    news_text = f"{news_count}건"
+    news_sub = "현재 수집된 종목 관련 뉴스"
+    disclosure_text = f"{disclosure_count}건"
+    disclosure_sub = "현재 수집된 공시"
+
+    if isinstance(price_change, (int, float)):
+        price_text = f"{price_change:+.2f}%"
+    else:
+        try:
+            price_text = f"{float(price_change):+.2f}%"
+        except Exception:
+            price_text = "-"
+
+    # 데이터가 없을 때는 과장하지 않고 '-'로 표시.
+    rows = [
+        ("현재 등락", price_text, "직전 가격 대비"),
+        ("거래량", volume_text, volume_sub),
+        ("종목 뉴스", news_text, news_sub),
+        ("공시", disclosure_text, disclosure_sub),
+    ]
+
+    items = []
+    for label, value, sub in rows:
+        items.append(f"""
+        <div class="quant-row-item">
+            <div class="quant-row-left">
+                <span class="quant-row-name">{label}</span>
+            </div>
+            <div class="quant-row-right" style="min-width:0;">
+                <div class="quant-row-val">{value}</div>
+                <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;line-height:1.25;">
+                    {sub}
+                </div>
+            </div>
+        </div>
+        """)
+
+    return f"""
+    <div style="
+        margin-top:12px;
+        padding-top:12px;
+        border-top:1px solid var(--border-line);
+    ">
+        <div style="
+            font-size:.78rem;
+            color:var(--text-sub);
+            margin-bottom:7px;
+            font-weight:700;
+        ">확인 데이터</div>
+        <div>{''.join(items)}</div>
+        <div style="
+            margin-top:8px;
+            font-size:.66rem;
+            color:var(--text-muted);
+            line-height:1.35;
+        ">
+            현재 gaemiGTP 분석에서 실제로 확보한 데이터를 표시합니다.
+        </div>
+    </div>
+    """
+
 import os
 # 3단계: 레이아웃 + 제목 + 가격기준 코멘트 + 샘플 데이터 (오픈 전 UI 검증용)\nimport os
 import re
@@ -1425,8 +1542,43 @@ def run_full_pipeline(query):
         if 'BB_DN' in row and not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
 
+    # 실제 전일 대비 등락률을 결과에 함께 저장
+    movement_confirmation = {
+        "volume_text": "-",
+        "volume_sub": "거래량 데이터 확인 필요"
+    }
+    try:
+        if df is not None and len(df) >= 6 and "Volume" in df.columns:
+            vols = df["Volume"].astype(float)
+            current_volume = float(vols.iloc[-1])
+            avg_volume = float(vols.tail(6).iloc[:-1].mean())
+            if avg_volume > 0:
+                ratio = current_volume / avg_volume * 100
+                delta = ratio - 100
+                movement_confirmation = {
+                    "volume_text": f"평균 대비 {delta:+.0f}%",
+                    "volume_sub": f"최근 5일 평균 기준 · 현재 비율 {ratio:.0f}%"
+                }
+    except Exception:
+        pass
+
+    change_pct = None
+    try:
+        if df is not None and len(df) >= 2:
+            prev_close = float(df["Close"].iloc[-2])
+            last_close = float(df["Close"].iloc[-1])
+            if prev_close:
+                change_pct = (last_close - prev_close) / prev_close * 100
+    except Exception:
+        change_pct = None
+
     result_data = {
         "name": formal_name,
+        "change_pct": change_pct,
+        "movement_confirmation": {
+            "volume_text": movement_confirmation.get("volume_text", "-"),
+            "volume_sub": movement_confirmation.get("volume_sub", "거래량 데이터 확인 필요")
+        },
         "formal_name": formal_name,
         "symbol": symbol,
         "market": market_name,
@@ -2813,7 +2965,68 @@ HTML_PAGE = """<!DOCTYPE html>
             input.value = '';
         }
 
-        async function doSearch(query) {
+        async 
+function renderMovementConfirmationData(data) {
+    const card = document.getElementById('movementConfirmationData');
+    if (!card) return;
+
+    const pctRaw = Number(data?.change_pct);
+    const pct = Number.isFinite(pctRaw) ? `${pctRaw >= 0 ? '+' : ''}${pctRaw.toFixed(2)}%` : '-';
+
+    const newsCount = Array.isArray(data?.stock_news) ? data.stock_news.length : 0;
+    const dartCount = Array.isArray(data?.dart_disclosures) ? data.dart_disclosures.length : 0;
+
+    // 서버가 계산해 준 거래량 비교값이 없으면 현재 화면에서는 '-'로 표시한다.
+    // 임의의 숫자는 만들지 않는다.
+    const volumeText = data?.movement_confirmation?.volume_text || '-';
+    const volumeSub = data?.movement_confirmation?.volume_sub || '거래량 데이터 확인 필요';
+
+    card.innerHTML = `
+        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-line);">
+            <div style="font-size:.78rem;color:var(--text-sub);margin-bottom:7px;font-weight:700;">
+                확인 데이터
+            </div>
+
+            <div class="quant-row-item">
+                <div class="quant-row-left"><span class="quant-row-name">현재 등락</span></div>
+                <div class="quant-row-right" style="min-width:0;">
+                    <div class="quant-row-val">${pct}</div>
+                    <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">직전 가격 대비</div>
+                </div>
+            </div>
+
+            <div class="quant-row-item">
+                <div class="quant-row-left"><span class="quant-row-name">거래량</span></div>
+                <div class="quant-row-right" style="min-width:0;">
+                    <div class="quant-row-val">${volumeText}</div>
+                    <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">${volumeSub}</div>
+                </div>
+            </div>
+
+            <div class="quant-row-item">
+                <div class="quant-row-left"><span class="quant-row-name">종목 뉴스</span></div>
+                <div class="quant-row-right" style="min-width:0;">
+                    <div class="quant-row-val">${newsCount}건</div>
+                    <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">현재 수집된 종목 관련 뉴스</div>
+                </div>
+            </div>
+
+            <div class="quant-row-item">
+                <div class="quant-row-left"><span class="quant-row-name">공시</span></div>
+                <div class="quant-row-right" style="min-width:0;">
+                    <div class="quant-row-val">${dartCount}건</div>
+                    <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">현재 수집된 공시</div>
+                </div>
+            </div>
+
+            <div style="margin-top:8px;font-size:.66rem;color:var(--text-muted);line-height:1.35;">
+                현재 gaemiGTP 분석에서 실제로 확보한 데이터를 표시합니다.
+            </div>
+        </div>
+    `;
+}
+
+function doSearch(query) {
             const cleanQ = query.trim();
             if (!cleanQ) return;
 

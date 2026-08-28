@@ -1,122 +1,4 @@
-
-def build_movement_confirmation_data(data, df=None):
-    """
-    '개미들아! 이 종목 왜 움직였을까?' 카드의 확인 데이터를
-    현재 분석 파이프라인에서 실제로 확보한 값으로 구성한다.
-
-    표시 항목은 퀀트 카드와 비슷한 '라벨 + 값 + 보조설명' 스타일을 사용한다.
-    고정 샘플 숫자를 사용하지 않는다.
-    """
-    price_change = data.get("change_pct")
-    if price_change is None:
-        try:
-            price_change = data.get("quant", {}).get("change_pct")
-        except Exception:
-            price_change = None
-
-    try:
-        if price_change is None and df is not None and len(df) >= 2:
-            prev_close = float(df["Close"].iloc[-2])
-            last_close = float(df["Close"].iloc[-1])
-            price_change = (
-                (last_close - prev_close) / prev_close * 100
-                if prev_close else None
-            )
-    except Exception:
-        pass
-
-    # 거래량: 당일 거래량 vs 최근 5일 평균.
-    volume_text = "-"
-    volume_sub = "거래량 데이터 확인 필요"
-    try:
-        if df is not None and len(df) >= 6:
-            vols = df["Volume"].astype(float)
-            current_volume = float(vols.iloc[-1])
-            avg_volume = float(vols.tail(6).iloc[:-1].mean())
-            if avg_volume > 0:
-                ratio = current_volume / avg_volume * 100
-                delta = ratio - 100
-                volume_text = f"평균 대비 {delta:+.0f}%"
-                volume_sub = f"최근 5일 평균 기준 · 현재 비율 {ratio:.0f}%"
-            else:
-                volume_text = "평균 산출 불가"
-        elif df is not None and "Volume" in df.columns and len(df):
-            current_volume = float(df["Volume"].iloc[-1])
-            volume_text = f"{current_volume:,.0f}"
-            volume_sub = "최근 평균 거래량 데이터 부족"
-    except Exception:
-        pass
-
-    # 뉴스/공시: 현재 파이프라인에서 받은 실제 건수.
-    stock_news = data.get("stock_news") or []
-    disclosures = data.get("dart_disclosures") or []
-
-    news_count = len(stock_news)
-    disclosure_count = len(disclosures)
-
-    news_text = f"{news_count}건"
-    news_sub = "현재 수집된 종목 관련 뉴스"
-    disclosure_text = f"{disclosure_count}건"
-    disclosure_sub = "현재 수집된 공시"
-
-    if isinstance(price_change, (int, float)):
-        price_text = f"{price_change:+.2f}%"
-    else:
-        try:
-            price_text = f"{float(price_change):+.2f}%"
-        except Exception:
-            price_text = "-"
-
-    # 데이터가 없을 때는 과장하지 않고 '-'로 표시.
-    rows = [
-        ("현재 등락", price_text, "직전 가격 대비"),
-        ("거래량", volume_text, volume_sub),
-        ("종목 뉴스", news_text, news_sub),
-        ("공시", disclosure_text, disclosure_sub),
-    ]
-
-    items = []
-    for label, value, sub in rows:
-        items.append(f"""
-        <div class="quant-row-item">
-            <div class="quant-row-left">
-                <span class="quant-row-name">{label}</span>
-            </div>
-            <div class="quant-row-right" style="min-width:0;">
-                <div class="quant-row-val">{value}</div>
-                <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;line-height:1.25;">
-                    {sub}
-                </div>
-            </div>
-        </div>
-        """)
-
-    return f"""
-    <div style="
-        margin-top:12px;
-        padding-top:12px;
-        border-top:1px solid var(--border-line);
-    ">
-        <div style="
-            font-size:.78rem;
-            color:var(--text-sub);
-            margin-bottom:7px;
-            font-weight:700;
-        ">확인 데이터</div>
-        <div>{''.join(items)}</div>
-        <div style="
-            margin-top:8px;
-            font-size:.66rem;
-            color:var(--text-muted);
-            line-height:1.35;
-        ">
-            현재 gaemiGTP 분석에서 실제로 확보한 데이터를 표시합니다.
-        </div>
-    </div>
-    """
-
 import os
-# 3단계: 레이아웃 + 제목 + 가격기준 코멘트 + 샘플 데이터 (오픈 전 UI 검증용)\nimport os
 import re
 import io
 import gc
@@ -1412,6 +1294,88 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}"
     }
 
+
+# ----------------------------------------------------
+# 🐜 움직임 원인 카드 - 가격 기준 코멘트
+# ----------------------------------------------------
+def get_movement_comment(change_pct):
+    """
+    퀀트 점수와 무관하게 현재 주가 등락 상태만으로
+    친근한 코멘트를 선택한다.
+    """
+    try:
+        change = float(change_pct)
+    except (TypeError, ValueError):
+        return (
+            "🐜 개미들아, 잠깐만 🤔\n\n"
+            "지금은 주가의 등락을 정확하게 확인하기 어려워.\n"
+            "괜히 아는 척하지 말고 확인되는 데이터부터 보자."
+        )
+
+    if change > 0.5:
+        return (
+            "🐜 개미들아! 오늘은 좀 수상한데? 👀\n\n"
+            "오늘 주가가 상승하고 있어.\n"
+            "주가가 올랐다고 해서 원인을 바로 단정할 수는 없어.\n"
+            "종목 뉴스와 실제 재료를 같이 확인해보자."
+        )
+
+    if change < -0.5:
+        return (
+            "🐜 개미들아… 오늘 분위기가 좀 싸늘하네 🥶\n\n"
+            "오늘 주가가 하락하고 있어.\n"
+            "왜 빠졌는지는 주가만 보고 판단할 수 없어.\n"
+            "관련 뉴스와 재료를 한번 확인해보자."
+        )
+
+    return (
+        "🐜 음… 오늘은 좀 복잡한데? 🤔\n\n"
+        "오늘 주가가 크게 움직이지 않고 있어.\n"
+        "지금은 뚜렷한 방향이 보이지 않네. 조금 더 확인해보자."
+    )
+
+
+def build_movement_confirmation(raw_price, df, stock_news, dart_disclosures):
+    """
+    실제 파이프라인 데이터만 사용한다.
+    고정 샘플 숫자를 만들지 않는다.
+    """
+    change_pct = None
+    prev_close = None
+
+    try:
+        if df is not None and len(df) >= 2:
+            prev_close = float(df["Close"].iloc[-2])
+            if raw_price is not None and prev_close:
+                # 현재가는 현재가 API, 기준가는 직전 일봉 종가.
+                change_pct = (float(raw_price) - prev_close) / prev_close * 100
+    except Exception:
+        pass
+
+    # 거래량은 일봉 데이터 기준 최근 5일 평균과 비교
+    volume_text = "-"
+    volume_sub = "거래량 데이터를 확인할 수 없습니다."
+    try:
+        if df is not None and len(df) >= 6 and "Volume" in df.columns:
+            vols = df["Volume"].astype(float)
+            current_volume = float(vols.iloc[-1])
+            avg_volume = float(vols.tail(6).iloc[:-1].mean())
+            if avg_volume > 0:
+                ratio = current_volume / avg_volume * 100
+                volume_text = f"평균 대비 {ratio - 100:+.0f}%"
+                volume_sub = f"최근 5거래일 평균 대비 · 현재 비율 {ratio:.0f}%"
+    except Exception:
+        pass
+
+    return {
+        "change_pct": change_pct,
+        "volume_text": volume_text,
+        "volume_sub": volume_sub,
+        "news_count": len(stock_news or []),
+        "disclosure_count": len(dart_disclosures or []),
+        "comment": get_movement_comment(change_pct),
+    }
+
 # ----------------------------------------------------
 # 5. 전체 통합 파이프라인
 # ----------------------------------------------------
@@ -1504,6 +1468,7 @@ def run_full_pipeline(query):
     market_calendar = CACHED_MARKET_CALENDAR if CACHED_MARKET_CALENDAR else fetch_real_market_calendar_live()
     
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
+    movement_confirmation = build_movement_confirmation(raw_price, df, stock_news, dart_disclosures)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -1542,43 +1507,8 @@ def run_full_pipeline(query):
         if 'BB_DN' in row and not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
 
-    # 실제 전일 대비 등락률을 결과에 함께 저장
-    movement_confirmation = {
-        "volume_text": "-",
-        "volume_sub": "거래량 데이터 확인 필요"
-    }
-    try:
-        if df is not None and len(df) >= 6 and "Volume" in df.columns:
-            vols = df["Volume"].astype(float)
-            current_volume = float(vols.iloc[-1])
-            avg_volume = float(vols.tail(6).iloc[:-1].mean())
-            if avg_volume > 0:
-                ratio = current_volume / avg_volume * 100
-                delta = ratio - 100
-                movement_confirmation = {
-                    "volume_text": f"평균 대비 {delta:+.0f}%",
-                    "volume_sub": f"최근 5일 평균 기준 · 현재 비율 {ratio:.0f}%"
-                }
-    except Exception:
-        pass
-
-    change_pct = None
-    try:
-        if df is not None and len(df) >= 2:
-            prev_close = float(df["Close"].iloc[-2])
-            last_close = float(df["Close"].iloc[-1])
-            if prev_close:
-                change_pct = (last_close - prev_close) / prev_close * 100
-    except Exception:
-        change_pct = None
-
     result_data = {
         "name": formal_name,
-        "change_pct": change_pct,
-        "movement_confirmation": {
-            "volume_text": movement_confirmation.get("volume_text", "-"),
-            "volume_sub": movement_confirmation.get("volume_sub", "거래량 데이터 확인 필요")
-        },
         "formal_name": formal_name,
         "symbol": symbol,
         "market": market_name,
@@ -1587,6 +1517,7 @@ def run_full_pipeline(query):
         "time": now_str,
         "now_str": now_str,
         "quant": quant,
+        "movement_confirmation": movement_confirmation,
         "consensus": consensus,
         "stock_news": stock_news,
         "global_news": global_news,
@@ -1814,23 +1745,20 @@ HTML_PAGE = """<!DOCTYPE html>
             align-items: stretch;
         }
 
-        /* 1행: 차트(좌) & 증시는 지금(우) */
+        /* 1행: 차트(좌) & 증시(우) - 높이 100% 동기화 */
         #rowChart { grid-column: 1; grid-row: 1; height: 100%; }
         #rowWorld { grid-column: 2; grid-row: 1; height: 100%; }
 
-        /* 2행: 종목 뉴스(좌) & 움직임의 원인(우) */
-        #rowNews { grid-column: 1; grid-row: 2; height: 100%; }
-        #rowCause { grid-column: 2; grid-row: 2; height: 100%; }
+        /* 2행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
+        #rowQuant { grid-column: 1; grid-row: 2; height: 100%; }
+        #rowCalendar { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* 3행: 퀀트 분석(좌) & 캘린더(우) */
-        #rowQuant { grid-column: 1; grid-row: 3; height: 100%; }
-        #rowCalendar { grid-column: 2; grid-row: 3; height: 100%; }
+        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 동기화 */
+        #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
+        #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
 
-        /* 4행: 컨센서스(좌) & 해외 뉴스(우) */
+        /* 좌측 832px 단독 배치 행들 */
         #rowConsensus { grid-column: 1; grid-row: 4; }
-        #rowGlobalNews { grid-column: 2; grid-row: 4; height: 100%; }
-
-        /* 이후 좌측 단독 영역 */
         #rowVote { grid-column: 1; grid-row: 5; }
         #rowComment { grid-column: 1; grid-row: 6; }
         #rowDart { grid-column: 1; grid-row: 7; }
@@ -2097,17 +2025,18 @@ HTML_PAGE = """<!DOCTYPE html>
             }
             
             #rowChart { order: 1; }
-            #rowQuant { order: 2; }
+            #rowWorld { order: 2; width: 100%; max-width: 832px; }
             #rowNews { order: 3; }
-            #rowConsensus { order: 4; }
-            #rowVote { order: 5; }
-            #rowComment { order: 6; }
-            #rowDart { order: 7; }
-            #rowSignal { order: 8; }
-            #rowTelegram { order: 9; }
-            #rowWorld { order: 10; width: 100%; max-width: 832px; }
-            #rowCalendar { order: 11; width: 100%; max-width: 832px; }
-            #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
+            #rowCause { order: 4; width: 100%; max-width: 832px; }
+            #rowQuant { order: 5; }
+            #rowCalendar { order: 6; width: 100%; max-width: 832px; }
+            #rowConsensus { order: 7; }
+            #rowGlobalNews { order: 8; width: 100%; max-width: 832px; }
+            #rowVote { order: 9; }
+            #rowComment { order: 10; }
+            #rowDart { order: 11; }
+            #rowSignal { order: 12; }
+            #rowTelegram { order: 13; }
 
             .bottom-bar-grid-wrapper {
                 display: flex;
@@ -2230,15 +2159,17 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
 
-                        <!-- 2행 우측: 개미들아! 이 종목 왜 움직였을까? (현재는 주가 등락 점수 기반 임시 코멘트) -->
+
+                        <!-- 2행 우측: 개미들아! 이 종목 왜 움직였을까? -->
                         <div class="card" id="rowCause">
-                            <div class="board-header" style="margin-bottom:14px;">
+                            <div class="board-header" style="margin-bottom:10px;">
                                 <span class="board-header-title">개미들아! 이 종목 왜 움직였을까?</span>
                             </div>
-                            <div id="movementCauseComment" style="font-size:0.92rem; line-height:1.75; color:var(--text-sub); white-space:pre-line; word-break:keep-all;"></div>
+                            <div id="movementCauseComment" class="movement-comment"></div>
+                            <div id="movementConfirmationData"></div>
                         </div>
 
-                        <!-- 3행 좌측: 퀀트 분석 (832px) -->
+                        <!-- 2행 좌측: 퀀트 분석 (832px) -->
                         <div class="card" id="rowQuant">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
@@ -2296,7 +2227,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 3행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
+                        <!-- 2행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
                         <div class="card" id="rowCalendar">
                             <div>
                                 <div class="cal-top-title-area">
@@ -2334,13 +2265,13 @@ HTML_PAGE = """<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 2행 좌측: 종목 뉴스 (832px) -->
+                        <!-- 3행 좌측: 종목 뉴스 (832px) -->
                         <div class="card" id="rowNews">
                             <div class="board-header-title" style="margin-bottom:12px;">종목 뉴스</div>
                             <div id="stockNewsList" style="flex:1;"></div>
                         </div>
 
-                        <!-- 4행 우측: 해외 뉴스 (348px) -->
+                        <!-- 3행 우측: 해외 뉴스 (348px, 종목 뉴스와 높이 100% 일치) -->
                         <div class="card" id="rowGlobalNews">
                             <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
                             <div id="globalNewsList" style="flex:1;"></div>
@@ -2965,62 +2896,72 @@ HTML_PAGE = """<!DOCTYPE html>
             input.value = '';
         }
 
-        function renderMovementConfirmationData(data) {
-            const card = document.getElementById('movementConfirmationData');
-            if (!card) return;
 
-            const pctRaw = Number(data?.change_pct);
-            const pct = Number.isFinite(pctRaw)
-                ? `${pctRaw >= 0 ? '+' : ''}${pctRaw.toFixed(2)}%`
+        function renderMovementConfirmation(data) {
+            const commentEl = document.getElementById('movementCauseComment');
+            const dataEl = document.getElementById('movementConfirmationData');
+            const m = data && data.movement_confirmation ? data.movement_confirmation : null;
+
+            if (commentEl) {
+                commentEl.innerText = m && m.comment ? m.comment : "🐜 개미들아, 잠깐만 🤔\n\n확인되는 데이터가 부족해. 조금 더 살펴보자.";
+            }
+
+            if (!dataEl) return;
+
+            const pct = m && m.change_pct !== null && m.change_pct !== undefined
+                ? `${Number(m.change_pct) >= 0 ? '+' : ''}${Number(m.change_pct).toFixed(2)}%`
                 : '-';
 
-            const newsCount = Array.isArray(data?.stock_news) ? data.stock_news.length : 0;
-            const dartCount = Array.isArray(data?.dart_disclosures) ? data.dart_disclosures.length : 0;
+            const volumeText = m?.volume_text || '-';
+            const volumeSub = m?.volume_sub || '거래량 데이터 확인 필요';
+            const newsCount = Number.isFinite(Number(m?.news_count)) ? Number(m.news_count) : 0;
+            const disclosureCount = Number.isFinite(Number(m?.disclosure_count)) ? Number(m.disclosure_count) : 0;
 
-            const volumeText = data?.movement_confirmation?.volume_text || '-';
-            const volumeSub = data?.movement_confirmation?.volume_sub || '거래량 데이터 확인 필요';
+            dataEl.innerHTML = `
+                <div class="movement-data-title">확인 데이터</div>
 
-            card.innerHTML = `
-                <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-line);">
-                    <div style="font-size:.78rem;color:var(--text-sub);margin-bottom:7px;font-weight:700;">
-                        확인 데이터
+                <div class="quant-row-item">
+                    <div class="quant-row-left">
+                        <span class="quant-row-name">현재 등락</span>
                     </div>
-
-                    <div class="quant-row-item">
-                        <div class="quant-row-left"><span class="quant-row-name">현재 등락</span></div>
-                        <div class="quant-row-right" style="min-width:0;">
-                            <div class="quant-row-val">${pct}</div>
-                            <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">직전 가격 대비</div>
-                        </div>
+                    <div class="quant-row-right">
+                        <div class="quant-row-val">${pct}</div>
+                        <div class="quant-row-subval">현재가 기준 비교</div>
                     </div>
+                </div>
 
-                    <div class="quant-row-item">
-                        <div class="quant-row-left"><span class="quant-row-name">거래량</span></div>
-                        <div class="quant-row-right" style="min-width:0;">
-                            <div class="quant-row-val">${volumeText}</div>
-                            <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">${volumeSub}</div>
-                        </div>
+                <div class="quant-row-item">
+                    <div class="quant-row-left">
+                        <span class="quant-row-name">거래량</span>
                     </div>
+                    <div class="quant-row-right">
+                        <div class="quant-row-val">${volumeText}</div>
+                        <div class="quant-row-subval">${volumeSub}</div>
+                    </div>
+                </div>
 
-                    <div class="quant-row-item">
-                        <div class="quant-row-left"><span class="quant-row-name">종목 뉴스</span></div>
-                        <div class="quant-row-right" style="min-width:0;">
-                            <div class="quant-row-val">${newsCount}건</div>
-                            <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">현재 수집된 종목 관련 뉴스</div>
-                        </div>
+                <div class="quant-row-item">
+                    <div class="quant-row-left">
+                        <span class="quant-row-name">종목 뉴스</span>
                     </div>
+                    <div class="quant-row-right">
+                        <div class="quant-row-val">${newsCount}건</div>
+                        <div class="quant-row-subval">현재 수집된 종목 관련 뉴스</div>
+                    </div>
+                </div>
 
-                    <div class="quant-row-item">
-                        <div class="quant-row-left"><span class="quant-row-name">공시</span></div>
-                        <div class="quant-row-right" style="min-width:0;">
-                            <div class="quant-row-val">${dartCount}건</div>
-                            <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">현재 수집된 공시</div>
-                        </div>
+                <div class="quant-row-item">
+                    <div class="quant-row-left">
+                        <span class="quant-row-name">공시</span>
                     </div>
+                    <div class="quant-row-right">
+                        <div class="quant-row-val">${disclosureCount}건</div>
+                        <div class="quant-row-subval">현재 수집된 공시</div>
+                    </div>
+                </div>
 
-                    <div style="margin-top:8px;font-size:.66rem;color:var(--text-muted);line-height:1.35;">
-                        현재 gaemiGTP 분석에서 실제로 확보한 데이터를 표시합니다.
-                    </div>
+                <div style="margin-top:8px;font-size:.66rem;color:var(--text-muted);line-height:1.35;">
+                    현재 gaemiGTP 분석에서 실제로 확보한 데이터를 표시합니다.
                 </div>
             `;
         }
@@ -3244,26 +3185,10 @@ HTML_PAGE = """<!DOCTYPE html>
                     setTxt('rGuideText', q.guide_text);
                 }
 
-                // 4. 개미들아! 이 종목 왜 움직였을까?
-                // 현재는 실제 원인 데이터가 연결되기 전 단계이므로 퀀트 현재 주가의 등락 상태에 따라
-                // 4개 중 하나의 임시 코멘트를 보여준다. 실제 뉴스/재료 데이터가 연결되면 교체한다.
-                const causeEl = document.getElementById('movementCauseComment');
-                if (causeEl) {
-                    const score = Number(q.quant_score);
-                    let causeText = '';
-                    if (score >= 70) {
-                        causeText = `🐜 개미들아! 오늘은 좀 수상한데? 👀\n\n시장, 업종, 재료, 거래량 같은 신호가 여러 곳에서 같이 붙었어.\n특히 업종·테마 쪽이 눈에 들어와. 과거에도 이런 조합이 있었는지 한번 확인해보자.`;
-                    } else if (score >= 55) {
-                        causeText = `🐜 개미들아, 잠깐만 🤔\n주가는 올랐는데 아직 뚜렷한 근거가 충분하지 않아.\n괜히 아는 척하지 말고 확인되는 데이터부터 보자.`;
-                    } else if (score < 40) {
-                        causeText = `🐜 개미들아… 오늘 분위기가 좀 싸늘하네 🥶\n\n하락 쪽으로 여러 근거가 같이 나타났어.\n특히 시장 쪽이 눈에 들어와. 과거에도 비슷했는지 확인해보자.`;
-                    } else {
-                        causeText = `🐜 음… 오늘은 좀 복잡한데? 🤔\n\n좋은 신호와 약한 신호가 서로 엇갈리고 있어.\n섣불리 결론 내리지 말고 과거 사례를 확인해보자.`;
-                    }
-                    causeEl.textContent = causeText;
-                }
+                // 🐜 움직임 원인 + 실제 확인 데이터
+                renderMovementConfirmation(data);
 
-                // 5. 종목 뉴스 & 해외 뉴스 렌더링
+                // 4. 종목 뉴스 & 해외 뉴스 렌더링
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {
                     sNews.innerHTML = '';

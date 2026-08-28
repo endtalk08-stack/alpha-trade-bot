@@ -291,6 +291,35 @@ def _classify_earnings_hour(dt_utc):
         return "amc"
 
 
+def _normalize_earnings_timestamp(sym, dt_utc):
+    """미국 기업 실적 발표시간을 공통 규칙으로 정규화합니다."""
+    if dt_utc is None:
+        return dt_utc, "amc"
+
+    try:
+        hour = _classify_earnings_hour(dt_utc)
+
+        if ZoneInfo is None:
+            return dt_utc, hour
+
+        et_zone = ZoneInfo("America/New_York")
+        et_dt = dt_utc.astimezone(et_zone)
+
+        # 장중으로 잡힌 실적시간은 임의의 09:30 ET를 그대로 노출하지 않고
+        # 장마감(16:00 ET) 기준으로 정규화합니다.
+        if hour == "dmh":
+            normalized_et = et_dt.replace(
+                hour=16, minute=0, second=0, microsecond=0
+            )
+            return normalized_et.astimezone(timezone.utc), "amc"
+
+        # 장 시작 전(BMO) / 장 마감 후(AMC)는 원래 timestamp를 유지합니다.
+        return dt_utc, hour
+
+    except Exception:
+        return dt_utc, _classify_earnings_hour(dt_utc)
+
+
 def _fetch_yahoo_earnings_timestamps(symbols):
     """주요 종목의 Yahoo earnings timestamp를 가져옵니다."""
     result = {}
@@ -372,33 +401,7 @@ def fetch_all_real_earnings():
                 if yahoo_dt is not None:
                     day_gap = abs((yahoo_dt.date() - us_dt.date()).days)
                     if day_gap <= 1:
-                        dt_utc = yahoo_dt
-                        hour = _classify_earnings_hour(yahoo_dt)
-
-                        # MSFT는 현재 Yahoo가 장중(22:30 KST) 시각을 반환하는
-                        # 경우가 있어, 실적 발표의 장마감 후 기준과 충돌하지 않도록
-                        # 미국 동부시간 16:00(장마감) 기준으로 보정합니다.
-                        # 2026년 Q1 발표일 자체는 Microsoft 공식 IR에서 아직
-                        # 확정 발표하지 않았으므로, 날짜를 '확정'으로 취급하지 않습니다.
-                        if sym == "MSFT" and hour == "dmh":
-                            if ZoneInfo is not None:
-                                try:
-                                    et_zone = ZoneInfo("America/New_York")
-                                    # Yahoo가 제공한 현지 날짜를 기준으로
-                                    # 장마감 후(16:00 ET) 시각을 사용합니다.
-                                    et_date = yahoo_dt.astimezone(et_zone).date()
-                                    local_et = datetime.combine(
-                                        et_date,
-                                        datetime.min.time()
-                                    ).replace(
-                                        hour=16,
-                                        minute=0,
-                                        tzinfo=et_zone
-                                    )
-                                    dt_utc = local_et.astimezone(timezone.utc)
-                                    hour = "amc"
-                                except Exception:
-                                    pass
+                        dt_utc, hour = _normalize_earnings_timestamp(sym, yahoo_dt)
 
                 # Yahoo timestamp가 없거나 날짜가 맞지 않을 때만
                 # 미국 동부시간의 표준 발표 시각을 안전한 fallback으로 사용합니다.
@@ -452,7 +455,7 @@ def fetch_all_real_earnings():
                 raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
                 if sym in sym_to_ko and raw_ts:
                     dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
-                    hour = _classify_earnings_hour(dt_utc)
+                    dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
                     eps_f = it.get("epsForward")
                     eps_str = (
                         f"예상 EPS ${eps_f:.2f}"

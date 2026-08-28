@@ -3772,17 +3772,10 @@ HTML_PAGE = """<!DOCTYPE html>
                     setTxt('rStop', q.stop_p);
                     setTxt('rGuideText', q.guide_text);
                 }
-
-
                 // 3.5 "왜 움직였을까?" 원인 분석 렌더링
                 const mr = data.movement_reason;
                 const mrCard = document.getElementById('movementReasonCard');
                 if (mrCard && mr) {
-                    const directionText =
-                        mr.direction === '상승' ? '상승 원인' :
-                        mr.direction === '하락' ? '하락 원인' :
-                        '움직임 원인';
-
                     const confidenceStyle =
                         mr.confidence === '높음'
                             ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
@@ -3814,17 +3807,53 @@ HTML_PAGE = """<!DOCTYPE html>
 
                     const evidenceCount = (mr.reasons || []).filter(x => Number(x.score || 0) !== 0).length;
 
+                    // 사용자 확정 문구:
+                    // - 근거 0~1개: 근거 부족
+                    // - 근거 2개 이상 + 상승/하락/혼조: 방향별 코멘트
+                    let gaemiComment = '';
+                    if (evidenceCount <= 1) {
+                        gaemiComment =
+                            "🐜 개미들아, 잠깐만 🤔\n" +
+                            "주가는 올랐는데 아직 뚜렷한 근거가 충분하지 않아.\n" +
+                            "괜히 아는 척하지 말고 확인되는 데이터부터 보자.";
+                    } else if (mr.direction === '상승') {
+                        gaemiComment =
+                            "🐜 개미들아! 오늘은 좀 수상한데? 👀\n\n" +
+                            "시장, 업종, 재료, 거래량 같은 신호가 여러 곳에서 같이 붙었어.\n" +
+                            "특히 업종·테마 쪽이 눈에 들어와. 과거에도 이런 조합이 있었는지 한번 확인해보자.";
+                    } else if (mr.direction === '하락') {
+                        gaemiComment =
+                            "🐜 개미들아… 오늘 분위기가 좀 싸늘하네 🥶\n\n" +
+                            "하락 쪽으로 여러 근거가 같이 나타났어.\n" +
+                            "특히 시장 쪽이 눈에 들어와. 과거에도 비슷했는지 확인해보자.";
+                    } else {
+                        gaemiComment =
+                            "🐜 음… 오늘은 좀 복잡한데? 🤔\n\n" +
+                            "좋은 신호와 약한 신호가 서로 엇갈리고 있어.\n" +
+                            "섣불리 결론 내리지 말고 과거 사례를 확인해보자.";
+                    }
+
                     mrCard.innerHTML = `
-                        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
-                            <div style="font-size:1.02rem;font-weight:800;color:var(--text-title);">🔥 ${directionText} — 왜 움직였을까?</div>
+                        <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;">
                             <span style="font-size:0.66rem;font-weight:800;padding:3px 7px;border-radius:10px;white-space:nowrap;${confidenceStyle}">근거 ${mr.confidence}</span>
                         </div>
-                        <div style="font-size:0.82rem;color:var(--text-sub);line-height:1.55;margin-bottom:10px;">${mr.summary}</div>
-                        <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:5px;">확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}</div>
+
+                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:12px;">
+                            ${gaemiComment}
+                        </div>
+
+                        <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:5px;">
+                            확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}
+                        </div>
+
                         ${reasonRows}
-                        <div style="margin-top:8px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.</div>
+
+                        <div style="margin-top:8px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">
+                            ※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.
+                        </div>
                     `;
                 }
+
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링
                 const sNews = document.getElementById('stockNewsList');

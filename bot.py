@@ -340,70 +340,175 @@ def fetch_all_real_earnings():
     return sorted(unique.values(), key=lambda x: x.get("ts", 0))
 
 
-def fetch_real_market_calendar_live():
-    combined_events = []
-    days_map = ["일", "월", "화", "수", "목", "금", "토"]
-
-    # 1. 글로벌 경제 지표 API (헤더 및 예외처리 강화)
+def _normalize_economic_event(it, source="ff"):
+    """외부 경제 캘린더 1건을 우리 캘린더 형식으로 통일합니다."""
     try:
-        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-        res = HTTP_SESSION.get(url, timeout=3.5).json()
-        if isinstance(res, list):
-            for it in res:
-                date_str = it.get("date", "")
-                if not date_str:
-                    continue
-                
-                utc_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                kst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
-                date_key = kst_dt.strftime("%Y.%m.%d")
-                date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
-                date_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일"
-                time_str = kst_dt.strftime("%H:%M")
-                
-                country = it.get("country", "")
-                prefix = COUNTRY_PREFIX_MAP.get(country, "")
-                raw_title = it.get("title", "")
-                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
-                full_name = f"{prefix}{title_ko}"
-                
-                impact_raw = it.get("impact", "")
-                if impact_raw == "High":
-                    stars, star_str = 3, "★★★"
-                elif impact_raw == "Medium":
-                    stars, star_str = 2, "★★☆"
-                else:
-                    stars, star_str = 1, "★☆☆"
-                    
-                actual_raw = str(it.get("actual", "")).strip()
-                if actual_raw:
-                    actual = actual_raw
-                elif utc_dt <= datetime.now(timezone.utc):
-                    actual = "발표완료"
-                else:
-                    actual = "발표대기"
-                forecast = str(it.get("forecast", "")).strip() or "-"
-                previous = str(it.get("previous", "")).strip() or "-"
-                
-                combined_events.append({
-                    "ts": utc_dt.timestamp(),
-                    "date_key": date_key,
-                    "date_str": date_formatted,
-                    "date_header": date_header,
-                    "time": time_str,
-                    "stars": stars,
-                    "star_str": star_str,
-                    "type": "eco",
-                    "name": full_name,
-                    "ticker": "",
-                    "val": actual,
-                    "exp": forecast,
-                    "prev": previous
-                })
-    except Exception as exc:
-        print("[CALENDAR][ECO] 경제지표 파싱 에러:", exc)
+        raw_date = str(it.get("date") or it.get("time") or "").strip()
+        if not raw_date:
+            return None
 
-    # 2. 미국/국내 기업 실적 발표 결합
+        # ISO/Z 또는 Finnhub 계열 날짜 문자열 처리
+        raw_date = raw_date.replace("Z", "+00:00")
+        if "T" in raw_date or "+00:00" in raw_date:
+            utc_dt = datetime.fromisoformat(raw_date)
+            if utc_dt.tzinfo is None:
+                utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+        else:
+            # 시간대가 명시되지 않은 경우 공급처의 경제 캘린더는 UTC로 취급
+            utc_dt = datetime.fromisoformat(raw_date).replace(tzinfo=timezone.utc)
+
+        kst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
+        days_map = ["일", "월", "화", "수", "목", "금", "토"]
+        date_key = kst_dt.strftime("%Y.%m.%d")
+        date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
+        date_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일"
+        time_str = kst_dt.strftime("%H:%M")
+
+        country = str(it.get("country") or "").strip().upper()
+        # Finnhub은 US, JP 등의 국가코드를 사용하므로 기존 통화 매핑도 함께 지원
+        country_to_currency = {
+            "US": "USD", "USA": "USD", "JP": "JPY", "JPN": "JPY",
+            "DE": "EUR", "GER": "EUR", "EU": "EUR", "GB": "GBP",
+            "CN": "CNY", "KR": "KRW", "CA": "CAD", "AU": "AUD"
+        }
+        prefix = COUNTRY_PREFIX_MAP.get(country, COUNTRY_PREFIX_MAP.get(country_to_currency.get(country, ""), ""))
+
+        raw_title = str(it.get("title") or it.get("event") or "").strip()
+        title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
+        full_name = f"{prefix}{title_ko}".strip()
+
+        impact_raw = str(it.get("impact") or "").strip().lower()
+        if impact_raw in ("high", "3"):
+            stars, star_str = 3, "★★★"
+        elif impact_raw in ("medium", "moderate", "2"):
+            stars, star_str = 2, "★★☆"
+        else:
+            stars, star_str = 1, "★☆☆"
+
+        actual_raw = it.get("actual")
+        forecast_raw = it.get("forecast") if it.get("forecast") is not None else it.get("estimate")
+        previous_raw = it.get("previous") if it.get("previous") is not None else it.get("prev")
+
+        def clean_value(v):
+            if v is None or str(v).strip() == "":
+                return "-"
+            return str(v).strip()
+
+        actual = clean_value(actual_raw)
+        forecast = clean_value(forecast_raw)
+        previous = clean_value(previous_raw)
+
+        # 실제 발표값이 들어온 경우에만 발표완료.
+        # 예정 시간이 지났지만 actual이 비어 있으면 '발표확인중'으로 남겨
+        # 시간만 보고 발표완료로 오판하지 않도록 합니다.
+        if actual != "-":
+            status = actual
+        elif utc_dt <= datetime.now(timezone.utc):
+            status = "발표확인중"
+        else:
+            status = "발표대기"
+
+        return {
+            "ts": utc_dt.timestamp(),
+            "date_key": date_key,
+            "date_str": date_formatted,
+            "date_header": date_header,
+            "time": time_str,
+            "stars": stars,
+            "star_str": star_str,
+            "type": "eco",
+            "name": full_name or "경제지표",
+            "ticker": "",
+            "val": status,
+            "exp": forecast,
+            "prev": previous,
+            "source": source
+        }
+    except Exception as exc:
+        print("[CALENDAR][ECO] 이벤트 정규화 오류:", exc)
+        return None
+
+
+def fetch_real_market_calendar_live():
+    """경제 일정 수집기.
+
+    1순위: Finnhub 경제 캘린더(접근 가능한 경우)
+    2순위: FairEconomy 이번 주 + 다음 주 피드
+    두 소스를 함께 수집한 뒤 동일 이벤트를 날짜/시간/이름 기준으로 병합합니다.
+    """
+    combined_events = []
+    now_kst = datetime.now(timezone(timedelta(hours=9)))
+    from_date = (now_kst - timedelta(days=1)).strftime("%Y-%m-%d")
+    to_date = (now_kst + timedelta(days=30)).strftime("%Y-%m-%d")
+
+    # ----------------------------------------------------
+    # 1. Finnhub 경제 캘린더: 사용 가능한 계정에서만 자동 사용
+    #    (Economic Calendar는 Finnhub 문서상 Premium 기능이므로 실패 시 즉시 fallback)
+    # ----------------------------------------------------
+    if FINNHUB_API_KEY:
+        try:
+            url = (
+                "https://finnhub.io/api/v1/calendar/economic"
+                f"?from={from_date}&to={to_date}&token={urllib.parse.quote(FINNHUB_API_KEY)}"
+            )
+            res = HTTP_SESSION.get(url, timeout=4.0)
+            if res.ok:
+                payload = res.json()
+                items = payload.get("economicCalendar", []) if isinstance(payload, dict) else []
+                for it in items:
+                    ev = _normalize_economic_event(it, source="finnhub")
+                    if ev:
+                        combined_events.append(ev)
+        except Exception as exc:
+            print("[CALENDAR][ECO] Finnhub 경제일정 fallback:", exc)
+
+    # ----------------------------------------------------
+    # 2. FairEconomy broad fallback
+    #    현재 주 + 다음 주를 함께 시도해 '이번 주만' 의존하는 문제를 제거
+    # ----------------------------------------------------
+    # Finnhub가 일부 일정만 주더라도 FairEconomy를 함께 수집해 누락을 줄입니다.
+    ff_urls = [
+        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+        "https://nfs.faireconomy.media/ff_calendar_nextweek.json"
+    ]
+    for url in ff_urls:
+        try:
+            res = HTTP_SESSION.get(url, timeout=3.5)
+            if not res.ok:
+                continue
+            payload = res.json()
+            if not isinstance(payload, list):
+                continue
+            for it in payload:
+                ev = _normalize_economic_event(it, source="faireconomy")
+                if ev:
+                    combined_events.append(ev)
+        except Exception as exc:
+            print("[CALENDAR][ECO] FairEconomy 피드 오류:", exc)
+
+    # ----------------------------------------------------
+    # 3. 중복 제거
+    #    공급처가 바뀌거나 같은 이벤트가 두 피드에 동시에 있어도 1개만 표시
+    # ----------------------------------------------------
+    unique = {}
+    for ev in combined_events:
+        key = (
+            ev.get("date_key", ""),
+            ev.get("time", ""),
+            ev.get("name", "").strip().lower()
+        )
+        old = unique.get(key)
+        # 실제값이 있는 데이터가 우선, 그 다음 source 우선순위
+        if old is None:
+            unique[key] = ev
+        elif old.get("val") in ("발표대기", "발표확인중") and ev.get("val") not in ("발표대기", "발표확인중"):
+            unique[key] = ev
+
+    combined_events = list(unique.values())
+
+    # ----------------------------------------------------
+    # 4. 미국/국내 기업 실적 발표 결합
+    # ----------------------------------------------------
     try:
         earnings_events = fetch_all_real_earnings()
         combined_events.extend(earnings_events)

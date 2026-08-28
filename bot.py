@@ -930,6 +930,52 @@ def get_naver_realtime_price(code):
         pass
     return None, None
 
+def fetch_naver_domestic_flow_metrics(code):
+    """국내주식 실데이터: 당일 거래대금 + 최근 5거래일 외국인/기관 순매수."""
+    result={"trading_value":None,"foreigner_latest":None,"institution_latest":None,"foreigner_5d":None,"institution_5d":None,"trading_value_detail":"거래대금 데이터 확인 필요","foreigner_detail":"외국인 수급 데이터 확인 필요","institution_detail":"기관 수급 데이터 확인 필요"}
+    if not code: return result
+    def num(v):
+        if v is None: return None
+        if isinstance(v,(int,float)) and not isinstance(v,bool): return float(v)
+        x=str(v).strip().replace(',','').replace(' ','')
+        try:
+            if any(u in x for u in ('조','억','만')):
+                total=0.0; found=False
+                for u,mul in [('조',10**12),('억',10**8),('만',10**4)]:
+                    m=re.search(r'([+-]?\d+(?:\.\d+)?)'+u,x)
+                    if m: total+=float(m.group(1))*mul; found=True
+                return total if found else None
+            return float(x.replace('%',''))
+        except Exception: return None
+    try:
+        r=HTTP_SESSION.get(f"https://m.stock.naver.com/api/stock/{code}/integration",timeout=2.2)
+        if r.status_code!=200: return result
+        data=r.json()
+        for it in (data.get('totalInfos') or []):
+            if not isinstance(it,dict): continue
+            for k in ('accumulatedTradingValue','tradingValue','accumulatedTradingAmount'):
+                v=num(it.get(k))
+                if v is not None: result['trading_value']=v; break
+            if result['trading_value'] is not None: break
+        tv=result['trading_value']
+        if tv is not None:
+            result['trading_value_detail']=f"당일 거래대금 {tv/10**12:.2f}조원" if tv>=10**12 else (f"당일 거래대금 {tv/10**8:.0f}억원" if tv>=10**8 else f"당일 거래대금 {tv:,.0f}원")
+        fv=[]; iv=[]
+        for it in (data.get('dealTrendInfos') or [])[-5:]:
+            if not isinstance(it,dict): continue
+            for k in ('foreignerPureBuyQuant','foreignerNetBuyQuantity','foreignPureBuyQuant'):
+                v=num(it.get(k))
+                if v is not None: fv.append(v); break
+            for k in ('organPureBuyQuant','institutionPureBuyQuant','institutionNetBuyQuantity'):
+                v=num(it.get(k))
+                if v is not None: iv.append(v); break
+        if fv:
+            total=sum(fv); result['foreigner_latest']=fv[-1]; result['foreigner_5d']=total; result['foreigner_detail']=f"최근 5거래일 순매수 {'+' if total>=0 else '-'}{abs(total):,.0f}주"
+        if iv:
+            total=sum(iv); result['institution_latest']=iv[-1]; result['institution_5d']=total; result['institution_detail']=f"최근 5거래일 순매수 {'+' if total>=0 else '-'}{abs(total):,.0f}주"
+    except Exception as exc: print(f"[NAVER FLOW] {code} fetch failed: {exc}")
+    return result
+
 def fetch_domestic_candles(code, anchor_price=None):
     try:
         url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=1200&requestType=0"
@@ -1663,7 +1709,7 @@ def _detect_theme(formal_name, stock_news):
     return theme, theme_scores[theme]
 
 
-def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None):
+def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None):
     """현재 데이터에서 주가 움직임을 시장/테마/재료/거래량/최근 5거래일 시장흐름으로 분해한다."""
     reasons = []
 
@@ -1825,9 +1871,46 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     except Exception:
         pass
 
-    reasons.append({"key": "flow", "label": "거래량·수급", "score": flow_score, "detail": flow_detail})
+    reasons.append({"key": "volume", "label": "거래량", "score": flow_score, "detail": flow_detail})
 
-    # 5. 최근 5거래일 시장 흐름
+    tv_score = 0
+    tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
+    if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
+        try:
+            tv = float(domestic_flow["trading_value"])
+            close_s = df["Close"].astype(float)
+            vol_s = df["Volume"].astype(float)
+            proxy = close_s * vol_s
+            avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
+            ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
+            if ratio >= 2.0 and flow_score > 0:
+                tv_score = 2
+            elif ratio >= 1.2 and flow_score > 0:
+                tv_score = 1
+            elif ratio >= 2.0 and flow_score < 0:
+                tv_score = -2
+            elif ratio >= 1.2 and flow_score < 0:
+                tv_score = -1
+            tv_detail += f" · 평소 대비 약 {ratio*100:.0f}%" if ratio > 0 else ""
+        except Exception:
+            pass
+    reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
+
+    foreign_score = 0
+    foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
+    if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
+        v=float(domestic_flow["foreigner_5d"]); latest=domestic_flow.get("foreigner_latest")
+        foreign_score=2 if v>0 and latest is not None and latest>0 else (1 if v>0 else (-2 if v<0 and latest is not None and latest<0 else (-1 if v<0 else 0)))
+    reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
+
+    institution_score = 0
+    institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
+    if domestic_flow and domestic_flow.get("institution_5d") is not None:
+        v=float(domestic_flow["institution_5d"]); latest=domestic_flow.get("institution_latest")
+        institution_score=2 if v>0 and latest is not None and latest>0 else (1 if v>0 else (-2 if v<0 and latest is not None and latest<0 else (-1 if v<0 else 0)))
+    reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
+
+    # 8. 최근 5거래일 시장 흐름
     market5 = None
     if market_name in ("국내주식", "국내증시") and market_index_name in ("KOSPI", "KOSDAQ"):
         selected_index = market_index_name
@@ -1978,16 +2061,18 @@ def run_full_pipeline(query):
     if raw_price is None or df is None:
         return None
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=9) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 5)
         f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 4)
         f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
         f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 5)
+        f_domestic_flow = executor.submit(fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None
 
         stock_news = f_news.result()
         global_news = f_global_news.result()
         consensus = f_consensus.result()
         dart_disclosures = f_dart.result()
+        domestic_flow = f_domestic_flow.result() if f_domestic_flow else None
 
     world_board = CACHED_WORLD_BOARD if CACHED_WORLD_BOARD else fetch_all_world_board_parallel()
     market_calendar = CACHED_MARKET_CALENDAR if CACHED_MARKET_CALENDAR else fetch_real_market_calendar_live()
@@ -2002,7 +2087,8 @@ def run_full_pipeline(query):
         world_board=world_board,
         stock_news=stock_news,
         dart_disclosures=dart_disclosures,
-        market_index_name=market_index_name
+        market_index_name=market_index_name,
+        domestic_flow=domestic_flow
     )
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
@@ -2649,7 +2735,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .movement-relative-dot { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:4px; }
         .movement-relative-note { margin-top:5px; font-size:0.62rem; line-height:1.35; color:var(--text-muted); word-break:keep-all; }
 
-.movement-mini-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-top:2px; }
+.movement-mini-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:2px; }
         .movement-mini-card { min-width:0; background:var(--bg-subcard); border:1px solid var(--border-line); border-radius:9px; padding:9px 8px 8px; }
         .movement-mini-head { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-bottom:7px; }
         .movement-mini-head .movement-reason-title { gap:5px; }
@@ -4116,39 +4202,42 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
                                 : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
 
-                    const evidenceReasons = mr.reasons || [];
+                    const evidenceReasons = (mr.reasons || []).slice().sort((a,b) => { const a5=a.key==='market_5d'?1:0; const b5=b.key==='market_5d'?1:0; if(a5!==b5) return a5-b5; return Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)); });
                     const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
                     const evidenceDirection = Number(mr.total_score || 0) < 0 ? 'negative' : 'positive';
 
-                    // 사용자가 확정한 코멘트 문구는 그대로 유지합니다.
-                    let gaemiComment = '';
-                    if (evidenceCount <= 1) {
-                        gaemiComment =
-                            "🐜 개미들아, 잠깐만 🤔\n" +
-                            "주가는 올랐는데 아직 뚜렷한 근거가 충분하지 않아.\n" +
-                            "괜히 아는 척하지 말고 확인되는 데이터부터 보자.";
-                    } else if (mr.direction === '상승') {
-                        gaemiComment =
-                            "🐜 개미들아! 오늘은 좀 수상한데? 👀\n\n" +
-                            "시장, 업종, 재료, 거래량 같은 신호가 여러 곳에서 같이 붙었어.\n" +
-                            "특히 업종·테마 쪽이 눈에 들어와. 과거에도 이런 조합이 있었는지 한번 확인해보자.";
-                    } else if (mr.direction === '하락') {
-                        gaemiComment =
-                            "🐜 개미들아… 오늘 분위기가 좀 싸늘하네 🥶\n\n" +
-                            "하락 쪽으로 여러 근거가 같이 나타났어.\n" +
-                            "특히 시장 쪽이 눈에 들어와. 과거에도 비슷했는지 확인해보자.";
-                    } else {
-                        gaemiComment =
-                            "🐜 음… 오늘은 좀 복잡한데? 🤔\n\n" +
-                            "좋은 신호와 약한 신호가 서로 엇갈리고 있어.\n" +
-                            "섣불리 결론 내리지 말고 과거 사례를 확인해보자.";
+                    // 실제 근거에 따라 매번 다른 친근한 코멘트를 만든다.
+                    const scoreOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? Number(x.score||0) : 0; };
+                    const detailOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? String(x.detail||'') : ''; };
+                    const materialScore=scoreOf('material'), foreignScore=scoreOf('foreign'), institutionScore=scoreOf('institution');
+                    const tradingValueScore=scoreOf('trading_value'), volumeScore=scoreOf('volume'), themeScore=scoreOf('theme');
+                    const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
+                    let gaemiComment='';
+                    if(evidenceCount===0){
+                        gaemiComment=`🐜 개미들아, 오늘은 조금 천천히 보자 🤔\n\n지금 확인되는 데이터만으로는 한 가지 이유를 딱 집기 어려워.\n괜히 이유를 만들어내지 말고 확인된 근거부터 보자.`;
+                    }else if(materialScore>0){
+                        gaemiComment=`🐜 개미들아! 오늘은 재료가 눈에 들어와 👀\n\n${detailOf('material').includes('공시')?'공시와 관련 뉴스 쪽에서 긍정 신호가 같이 잡혔어.':'관련 뉴스에서 긍정적인 재료가 잡혔어.'} ${tradingValueScore>0?'여기에 거래대금도 붙었고':(foreignScore>0||institutionScore>0?'수급도 같이 확인돼서':'주가 반응도 같이 보여서')} 단순한 소문으로만 보긴 어려워.`;
+                    }else if(foreignScore>0 && institutionScore>0){
+                        gaemiComment=`🐜 개미들아! 오늘은 수급이 같이 붙었어 👀\n\n외국인과 기관이 함께 매수 쪽으로 움직였고, ${tradingValueScore>0?'거래대금도 같이 늘었어. ':''}오늘 움직임은 수급 쪽을 먼저 확인해볼 만해.`;
+                    }else if(foreignScore>0 || institutionScore>0){
+                        const who=foreignScore>0?'외국인':'기관';
+                        gaemiComment=`🐜 개미들아! 오늘은 ${who} 수급이 눈에 띄네 👀\n\n${detailOf(foreignScore>0?'foreign':'institution')} 쪽으로 매수 흐름이 확인돼. ${tradingValueScore>0?'거래대금까지 붙었는지 같이 보자.':'아직은 다른 근거도 같이 확인해보는 게 좋아.'}`;
+                    }else if(themeScore>0){
+                        gaemiComment=`🐜 개미들아! 오늘은 종목보다 테마 쪽을 봐야겠어 👀\n\n관련 업종·테마에서 같이 움직이는 신호가 잡혔어. ${volumeScore>0?'거래량도 붙어서 동반 움직임인지 확인해볼 만해.':'다른 관련 종목도 같이 움직이는지 확인해보자.'}`;
+                    }else if(topReason && Number(topReason.score||0)<0){
+                        gaemiComment=`🐜 개미들아… 오늘은 조금 조심해서 보자 🥶\n\n${topReason.label} 쪽에서 약한 신호가 먼저 보여. 다른 근거까지 같이 확인하고 성급하게 결론 내리진 말자.`;
+                    }else{
+                        gaemiComment=`🐜 개미들아! 오늘 움직임을 조금 더 들여다보자 👀\n\n${topReason?topReason.label:'시장'} 쪽에서 먼저 눈에 띄는 신호가 보여. 한 가지 데이터만 보지 말고 아래 근거들을 같이 확인해보자.`;
                     }
 
                     const movementIconMap = {
+                        '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',
+                        '외국인 수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="7" r="3"></circle><path d="M5 20c.8-4 2.8-6 7-6s6.2 2 7 6"></path></svg>',
+                        '기관 수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16M6 20V9l6-5 6 5v11"></path><path d="M9 13h6M9 16h6"></path></svg>',
                         '시장': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>',
                         '업종·테마': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><circle cx="16" cy="16" r="3"></circle><path d="M10.5 10.5l3 3"></path></svg>',
                         '기업 재료': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"></path><path d="M15 3v4h4M9 12h6M9 16h6"></path></svg>',
-                        '거래량·수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
+                        '거래량': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
                         '시장 5일 흐름': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18l5-6 4 3 7-8"></path><path d="M4 20h16"></path></svg>'
                     };
 
@@ -4156,8 +4245,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         '시장': { unit: '%', base: 0 },
                         '업종·테마': { unit: '%', base: 0 },
                         '기업 재료': { unit: '건', base: 0 },
-                        '거래량·수급': { unit: '%', base: 0 },
-                        '기술': { unit: '%', base: 0 }
+                        '거래량': { unit: '%', base: 0 },
+                        '거래대금': { unit: '원', base: 0 }, '외국인 수급': { unit: '주', base: 0 }, '기관 수급': { unit: '주', base: 0 }
                     };
 
                     const movementReasonCards = evidenceReasons.map(r => {
@@ -4203,7 +4292,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             '시장': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>',
                             '업종·테마': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><circle cx="16" cy="16" r="3"></circle><path d="M10.5 10.5l3 3"></path></svg>',
                             '기업 재료': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"></path><path d="M15 3v4h4M9 12h6M9 16h6"></path></svg>',
-                            '거래량·수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
+                            '거래량': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
                             '기술': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18l5-5 4 3 7-8"></path><path d="M4 4v16h16"></path></svg>'
                         };
                         const icon = iconMap[r.label] || '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v8M8 12h8"></path></svg>';
@@ -4285,12 +4374,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         `;
                     }).join('');
 
-                    const evidenceSegments = Array.from({ length: 5 }, (_, i) => {
+                    const evidenceSegments = Array.from({ length: 8 }, (_, i) => {
                         const active = i < evidenceCount ? ' active' + (evidenceDirection === 'negative' ? ' negative' : '') : '';
                         return `<span class="movement-evidence-seg${active}"></span>`;
                     }).join('');
 
                     mrCard.innerHTML = `
+<div style="font-size:0.72rem;font-weight:800;color:var(--text-title);margin-bottom:6px;">🐜 개미 코멘트</div>
 <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:12px;">
                             ${gaemiComment}
                         </div>
@@ -4298,7 +4388,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         <div class="movement-evidence-summary">
                             <div class="movement-evidence-head">
                                 <span class="movement-evidence-label">확인된 근거</span>
-                                <span class="movement-evidence-count">${evidenceCount} / 5</span>
+                                <span class="movement-evidence-count">${evidenceCount} / 8</span>
                             </div>
                             <div class="movement-evidence-track">${evidenceSegments}</div>
                         </div>
@@ -4358,7 +4448,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         <div class="movement-mini-grid">${movementReasonCards}</div>
 
                         <div style="margin-top:9px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">
-                            ※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.
+                            ※ 현재 확보된 시장·뉴스·공시·거래량·거래대금·외국인·기관 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.
                         </div>
                     `;
                 }

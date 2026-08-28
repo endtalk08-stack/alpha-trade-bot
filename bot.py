@@ -9,6 +9,10 @@ import xml.etree.ElementTree as ET
 import html
 import threading
 from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
@@ -233,7 +237,7 @@ MAJOR_KR_EARNINGS = {
 # ----------------------------------------------------
 # 3. 3단계 하이브리드 실적 일정 수집기 (한국/미국 완벽 대응)
 # ----------------------------------------------------
-def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc"):
+def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None):
     """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
     kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
@@ -244,7 +248,14 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
     date_header = f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일"
     time_str = kst_dt.strftime("%H:%M")
 
-    val_str = "발표완료" if dt_utc <= datetime.now(timezone.utc) else "발표예정"
+    now_utc = datetime.now(timezone.utc)
+    has_actual = actual_eps is not None or actual_rev is not None
+    if has_actual:
+        val_str = "발표완료"
+    elif dt_utc <= now_utc:
+        val_str = "발표확인중"
+    else:
+        val_str = "발표예정"
     hour_code = str(hour).lower().strip()
     hour_label = "(美장마감후)" if hour_code == "amc" else ("(美장시작전)" if hour_code == "bmo" else "")
 
@@ -264,6 +275,46 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         "prev": rev_str
     }]
 
+def _classify_earnings_hour(dt_utc):
+    """Yahoo의 실제/예정 타임스탬프를 미국 동부시간 기준으로 분류합니다."""
+    if ZoneInfo is None:
+        return "amc"
+    try:
+        et = dt_utc.astimezone(ZoneInfo("America/New_York"))
+        minutes = et.hour * 60 + et.minute
+        if minutes < 9 * 60 + 30:
+            return "bmo"
+        if minutes >= 16 * 60:
+            return "amc"
+        return "dmh"
+    except Exception:
+        return "amc"
+
+
+def _fetch_yahoo_earnings_timestamps(symbols):
+    """주요 종목의 Yahoo earnings timestamp를 가져옵니다."""
+    result = {}
+    if not symbols:
+        return result
+
+    try:
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(symbols)}"
+        res = HTTP_SESSION.get(url, timeout=2.5).json()
+        items = res.get("quoteResponse", {}).get("result", [])
+        for it in items:
+            sym = str(it.get("symbol", "")).upper()
+            raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
+            if sym and raw_ts:
+                try:
+                    result[sym] = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                except Exception:
+                    pass
+    except Exception as exc:
+        print("[CALENDAR][EARN] Yahoo 시간 보정 오류:", exc)
+
+    return result
+
+
 def fetch_all_real_earnings():
     events = []
     sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
@@ -273,7 +324,12 @@ def fetch_all_real_earnings():
     captured_syms = set()
     now_kst = datetime.now(timezone(timedelta(hours=9)))
 
-    # Tier 1: Finnhub API 연동
+    # 주요 미국 종목은 Yahoo의 실제 earnings timestamp를 별도로 확보해
+    # Finnhub의 amc/bmo 같은 범주형 시간보다 우선 사용합니다.
+    us_symbols = [item[0] for item in MAJOR_US_TECH_TICKERS]
+    yahoo_times = _fetch_yahoo_earnings_timestamps(us_symbols)
+
+    # Tier 1: Finnhub API
     if FINNHUB_API_KEY:
         try:
             from_d = (now_kst - timedelta(days=7)).strftime("%Y-%m-%d")
@@ -281,234 +337,195 @@ def fetch_all_real_earnings():
             url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
             res = HTTP_SESSION.get(url, timeout=3.0).json()
             items = res.get("earningsCalendar", [])
+
             for it in items:
                 sym = str(it.get("symbol", "")).upper()
                 if sym not in sym_to_ko:
                     continue
+
                 raw_date = str(it.get("date", "")).strip()
                 if not raw_date:
                     continue
+
                 hour = str(it.get("hour", "amc")).lower().strip()
+
                 eps_est = it.get("epsEstimate")
                 rev_est = it.get("revenueEstimate")
-                eps_str = f"예상 EPS ${eps_est:.2f}" if eps_est is not None else "예상치 집계중"
-                rev_str = f"예상 매출 ${rev_est/1e9:.1f}B" if rev_est is not None else "-"
+                eps_actual = it.get("epsActual")
+                rev_actual = it.get("revenueActual")
 
-                # Finnhub의 date는 미국 현지 날짜. AMC는 미국 장마감 후이므로
-                # UTC 21:00(미 동부 서머타임 기준) → KST 다음 날 06:00으로 변환.
-                us_dt = datetime.strptime(raw_date, "%Y-%m-%d")
-                if hour == "amc":
-                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=21)
-                elif hour == "bmo":
-                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=12)
-                else:
-                    dt_utc = us_dt.replace(tzinfo=timezone.utc) + timedelta(hours=16)
+                eps_str = (
+                    f"예상 EPS ${eps_est:.2f}"
+                    if eps_est is not None else "예상치 집계중"
+                )
+                rev_str = (
+                    f"예상 매출 ${rev_est/1e9:.1f}B"
+                    if rev_est is not None else "-"
+                )
 
-                events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc, eps_str, rev_str, hour))
+                us_dt = datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+                # Finnhub은 날짜 + amc/bmo/dmh만 제공하므로,
+                # 우선 실제 Yahoo timestamp가 같은 발표일 근처에 있으면 사용합니다.
+                dt_utc = None
+                yahoo_dt = yahoo_times.get(sym)
+                if yahoo_dt is not None:
+                    day_gap = abs((yahoo_dt.date() - us_dt.date()).days)
+                    if day_gap <= 1:
+                        dt_utc = yahoo_dt
+                        hour = _classify_earnings_hour(yahoo_dt)
+
+                # Yahoo timestamp가 없거나 날짜가 맞지 않을 때만
+                # 미국 동부시간의 표준 발표 시각을 안전한 fallback으로 사용합니다.
+                if dt_utc is None:
+                    if ZoneInfo is not None:
+                        try:
+                            et_zone = ZoneInfo("America/New_York")
+                            if hour == "amc":
+                                local_time = datetime.strptime(raw_date + " 16:00", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            elif hour == "bmo":
+                                local_time = datetime.strptime(raw_date + " 06:00", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            else:
+                                local_time = datetime.strptime(raw_date + " 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            dt_utc = local_time.astimezone(timezone.utc)
+                        except Exception:
+                            dt_utc = None
+
+                    if dt_utc is None:
+                        # 최종 fallback: 기존보다 DST 오차가 적은 UTC 기준값
+                        if hour == "amc":
+                            dt_utc = us_dt + timedelta(hours=20)
+                        elif hour == "bmo":
+                            dt_utc = us_dt + timedelta(hours=10)
+                        else:
+                            dt_utc = us_dt + timedelta(hours=13, minutes=30)
+
+                events.extend(
+                    build_earnings_event(
+                        sym, sym_to_ko[sym], dt_utc,
+                        eps_str, rev_str, hour,
+                        actual_eps=eps_actual,
+                        actual_rev=rev_actual
+                    )
+                )
                 captured_syms.add(sym)
+
         except Exception as exc:
             print("[CALENDAR][EARN] Finnhub 오류:", exc)
 
-    # Tier 2: Yahoo Finance API 배치 백업
-    missing = [s for s in [item[0] for item in MAJOR_US_TECH_TICKERS] if s not in captured_syms]
+    # Tier 2: Yahoo Finance
+    # Finnhub에서 못 받은 종목은 Yahoo timestamp를 직접 사용합니다.
+    missing = [s for s in us_symbols if s not in captured_syms]
     if missing:
         try:
             url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing)}"
             res = HTTP_SESSION.get(url, timeout=2.5).json()
             items = res.get("quoteResponse", {}).get("result", [])
+
             for it in items:
-                sym = it.get("symbol", "").upper()
+                sym = str(it.get("symbol", "")).upper()
                 raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
                 if sym in sym_to_ko and raw_ts:
                     dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                    hour = _classify_earnings_hour(dt_utc)
                     eps_f = it.get("epsForward")
-                    eps_str = f"예상 EPS ${eps_f:.2f}" if eps_f is not None else "예상치 집계중"
-                    events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc, eps_str, "-", "amc"))
+                    eps_str = (
+                        f"예상 EPS ${eps_f:.2f}"
+                        if eps_f is not None else "예상치 집계중"
+                    )
+
+                    events.extend(
+                        build_earnings_event(
+                            sym, sym_to_ko[sym], dt_utc,
+                            eps_str, "-", hour
+                        )
+                    )
                     captured_syms.add(sym)
+
         except Exception as exc:
             print("[CALENDAR][EARN] Yahoo 오류:", exc)
 
-    # 국내 실적은 Finnhub/Yahoo의 해외 실적 API에 의존하지 않고 별도 데이터가
-    # 들어오는 경우에만 표시합니다. 잘못된 가상 날짜를 생성하지 않습니다.
+    # 국내 실적은 현재 가상 날짜를 만들지 않고,
+    # 실제 데이터가 들어오는 경우에만 표시합니다.
 
-    # 최종 안전장치: 같은 종목이 같은 한국 날짜/시간에 여러 번 들어오면 1건만 유지.
+    # 동일 종목 + 동일 KST 날짜 + 동일 시간이면 1건만 유지
     unique = {}
     for ev in events:
-        key = (ev.get("ticker", ""), ev.get("date_key", ""), ev.get("time", ""))
+        key = (
+            ev.get("ticker", ""),
+            ev.get("date_key", ""),
+            ev.get("time", "")
+        )
         if key not in unique:
             unique[key] = ev
+
     return sorted(unique.values(), key=lambda x: x.get("ts", 0))
 
 
-def _normalize_economic_event(it, source="ff"):
-    """외부 경제 캘린더 1건을 우리 캘린더 형식으로 통일합니다."""
-    try:
-        raw_date = str(it.get("date") or it.get("time") or "").strip()
-        if not raw_date:
-            return None
-
-        # ISO/Z 또는 Finnhub 계열 날짜 문자열 처리
-        raw_date = raw_date.replace("Z", "+00:00")
-        if "T" in raw_date or "+00:00" in raw_date:
-            utc_dt = datetime.fromisoformat(raw_date)
-            if utc_dt.tzinfo is None:
-                utc_dt = utc_dt.replace(tzinfo=timezone.utc)
-        else:
-            # 시간대가 명시되지 않은 경우 공급처의 경제 캘린더는 UTC로 취급
-            utc_dt = datetime.fromisoformat(raw_date).replace(tzinfo=timezone.utc)
-
-        kst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
-        days_map = ["일", "월", "화", "수", "목", "금", "토"]
-        date_key = kst_dt.strftime("%Y.%m.%d")
-        date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
-        date_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일"
-        time_str = kst_dt.strftime("%H:%M")
-
-        country = str(it.get("country") or "").strip().upper()
-        # Finnhub은 US, JP 등의 국가코드를 사용하므로 기존 통화 매핑도 함께 지원
-        country_to_currency = {
-            "US": "USD", "USA": "USD", "JP": "JPY", "JPN": "JPY",
-            "DE": "EUR", "GER": "EUR", "EU": "EUR", "GB": "GBP",
-            "CN": "CNY", "KR": "KRW", "CA": "CAD", "AU": "AUD"
-        }
-        prefix = COUNTRY_PREFIX_MAP.get(country, COUNTRY_PREFIX_MAP.get(country_to_currency.get(country, ""), ""))
-
-        raw_title = str(it.get("title") or it.get("event") or "").strip()
-        title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
-        full_name = f"{prefix}{title_ko}".strip()
-
-        impact_raw = str(it.get("impact") or "").strip().lower()
-        if impact_raw in ("high", "3"):
-            stars, star_str = 3, "★★★"
-        elif impact_raw in ("medium", "moderate", "2"):
-            stars, star_str = 2, "★★☆"
-        else:
-            stars, star_str = 1, "★☆☆"
-
-        actual_raw = it.get("actual")
-        forecast_raw = it.get("forecast") if it.get("forecast") is not None else it.get("estimate")
-        previous_raw = it.get("previous") if it.get("previous") is not None else it.get("prev")
-
-        def clean_value(v):
-            if v is None or str(v).strip() == "":
-                return "-"
-            return str(v).strip()
-
-        actual = clean_value(actual_raw)
-        forecast = clean_value(forecast_raw)
-        previous = clean_value(previous_raw)
-
-        # 실제 발표값이 들어온 경우에만 발표완료.
-        # 예정 시간이 지났지만 actual이 비어 있으면 '발표확인중'으로 남겨
-        # 시간만 보고 발표완료로 오판하지 않도록 합니다.
-        if actual != "-":
-            status = actual
-        elif utc_dt <= datetime.now(timezone.utc):
-            status = "발표확인중"
-        else:
-            status = "발표대기"
-
-        return {
-            "ts": utc_dt.timestamp(),
-            "date_key": date_key,
-            "date_str": date_formatted,
-            "date_header": date_header,
-            "time": time_str,
-            "stars": stars,
-            "star_str": star_str,
-            "type": "eco",
-            "name": full_name or "경제지표",
-            "ticker": "",
-            "val": status,
-            "exp": forecast,
-            "prev": previous,
-            "source": source
-        }
-    except Exception as exc:
-        print("[CALENDAR][ECO] 이벤트 정규화 오류:", exc)
-        return None
-
-
 def fetch_real_market_calendar_live():
-    """경제 일정 수집기.
-
-    1순위: Finnhub 경제 캘린더(접근 가능한 경우)
-    2순위: FairEconomy 이번 주 + 다음 주 피드
-    두 소스를 함께 수집한 뒤 동일 이벤트를 날짜/시간/이름 기준으로 병합합니다.
-    """
     combined_events = []
-    now_kst = datetime.now(timezone(timedelta(hours=9)))
-    from_date = (now_kst - timedelta(days=1)).strftime("%Y-%m-%d")
-    to_date = (now_kst + timedelta(days=30)).strftime("%Y-%m-%d")
+    days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
-    # ----------------------------------------------------
-    # 1. Finnhub 경제 캘린더: 사용 가능한 계정에서만 자동 사용
-    #    (Economic Calendar는 Finnhub 문서상 Premium 기능이므로 실패 시 즉시 fallback)
-    # ----------------------------------------------------
-    if FINNHUB_API_KEY:
-        try:
-            url = (
-                "https://finnhub.io/api/v1/calendar/economic"
-                f"?from={from_date}&to={to_date}&token={urllib.parse.quote(FINNHUB_API_KEY)}"
-            )
-            res = HTTP_SESSION.get(url, timeout=4.0)
-            if res.ok:
-                payload = res.json()
-                items = payload.get("economicCalendar", []) if isinstance(payload, dict) else []
-                for it in items:
-                    ev = _normalize_economic_event(it, source="finnhub")
-                    if ev:
-                        combined_events.append(ev)
-        except Exception as exc:
-            print("[CALENDAR][ECO] Finnhub 경제일정 fallback:", exc)
+    # 1. 글로벌 경제 지표 API (헤더 및 예외처리 강화)
+    try:
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        res = HTTP_SESSION.get(url, timeout=3.5).json()
+        if isinstance(res, list):
+            for it in res:
+                date_str = it.get("date", "")
+                if not date_str:
+                    continue
+                
+                utc_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                kst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
+                date_key = kst_dt.strftime("%Y.%m.%d")
+                date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
+                date_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일"
+                time_str = kst_dt.strftime("%H:%M")
+                
+                country = it.get("country", "")
+                prefix = COUNTRY_PREFIX_MAP.get(country, "")
+                raw_title = it.get("title", "")
+                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
+                full_name = f"{prefix}{title_ko}"
+                
+                impact_raw = it.get("impact", "")
+                if impact_raw == "High":
+                    stars, star_str = 3, "★★★"
+                elif impact_raw == "Medium":
+                    stars, star_str = 2, "★★☆"
+                else:
+                    stars, star_str = 1, "★☆☆"
+                    
+                actual_raw = str(it.get("actual", "")).strip()
+                if actual_raw:
+                    actual = actual_raw
+                elif utc_dt <= datetime.now(timezone.utc):
+                    actual = "발표완료"
+                else:
+                    actual = "발표대기"
+                forecast = str(it.get("forecast", "")).strip() or "-"
+                previous = str(it.get("previous", "")).strip() or "-"
+                
+                combined_events.append({
+                    "ts": utc_dt.timestamp(),
+                    "date_key": date_key,
+                    "date_str": date_formatted,
+                    "date_header": date_header,
+                    "time": time_str,
+                    "stars": stars,
+                    "star_str": star_str,
+                    "type": "eco",
+                    "name": full_name,
+                    "ticker": "",
+                    "val": actual,
+                    "exp": forecast,
+                    "prev": previous
+                })
+    except Exception as exc:
+        print("[CALENDAR][ECO] 경제지표 파싱 에러:", exc)
 
-    # ----------------------------------------------------
-    # 2. FairEconomy broad fallback
-    #    현재 주 + 다음 주를 함께 시도해 '이번 주만' 의존하는 문제를 제거
-    # ----------------------------------------------------
-    # Finnhub가 일부 일정만 주더라도 FairEconomy를 함께 수집해 누락을 줄입니다.
-    ff_urls = [
-        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-        "https://nfs.faireconomy.media/ff_calendar_nextweek.json"
-    ]
-    for url in ff_urls:
-        try:
-            res = HTTP_SESSION.get(url, timeout=3.5)
-            if not res.ok:
-                continue
-            payload = res.json()
-            if not isinstance(payload, list):
-                continue
-            for it in payload:
-                ev = _normalize_economic_event(it, source="faireconomy")
-                if ev:
-                    combined_events.append(ev)
-        except Exception as exc:
-            print("[CALENDAR][ECO] FairEconomy 피드 오류:", exc)
-
-    # ----------------------------------------------------
-    # 3. 중복 제거
-    #    공급처가 바뀌거나 같은 이벤트가 두 피드에 동시에 있어도 1개만 표시
-    # ----------------------------------------------------
-    unique = {}
-    for ev in combined_events:
-        key = (
-            ev.get("date_key", ""),
-            ev.get("time", ""),
-            ev.get("name", "").strip().lower()
-        )
-        old = unique.get(key)
-        # 실제값이 있는 데이터가 우선, 그 다음 source 우선순위
-        if old is None:
-            unique[key] = ev
-        elif old.get("val") in ("발표대기", "발표확인중") and ev.get("val") not in ("발표대기", "발표확인중"):
-            unique[key] = ev
-
-    combined_events = list(unique.values())
-
-    # ----------------------------------------------------
-    # 4. 미국/국내 기업 실적 발표 결합
-    # ----------------------------------------------------
+    # 2. 미국/국내 기업 실적 발표 결합
     try:
         earnings_events = fetch_all_real_earnings()
         combined_events.extend(earnings_events)

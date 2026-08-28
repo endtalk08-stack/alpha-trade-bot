@@ -1829,8 +1829,8 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
 
     # 5. 최근 5거래일 시장 흐름
     market5 = None
-    if market_name in ("국내주식", "국내증시"):
-        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else "KOSPI"
+    if market_name in ("국내주식", "국내증시") and market_index_name in ("KOSPI", "KOSDAQ"):
+        selected_index = market_index_name
         ref5 = _find_world_item(world_board, ["코스피" if selected_index == "KOSPI" else "코스닥"])
         market5 = fetch_naver_index_5day_returns(selected_index, ref5)
     elif market_name == "미국주식":
@@ -1913,22 +1913,32 @@ def run_full_pipeline(query):
     if clean_q in GLOBAL_INDEX_MAP:
         symbol = GLOBAL_INDEX_MAP[clean_q]
         formal_name = query.strip()
-        curr_p, price_str, df = fetch_overseas_candles(symbol)
-        
+
+        # 환율/글로벌 지수 조회 실패가 전체 검색을 멈추게 하지 않는다.
+        try:
+            curr_p, price_str, df = fetch_overseas_candles(symbol)
+        except Exception as exc:
+            print(f"[GLOBAL INDEX] {symbol} fetch failed: {exc}")
+            curr_p, price_str, df = None, "-", None
+
         if symbol in ["^KS11", "^KQ11"]:
             market_name = "국내증시"
+            market_index_name = "KOSPI" if symbol == "^KS11" else "KOSDAQ"
             is_krw = True
             price_str = f"{curr_p:,.2f} pt" if curr_p else "-"
         elif symbol == "KRW=X":
             market_name = "외환"
+            market_index_name = None
             is_krw = False
             price_str = f"{curr_p:,.1f} 원" if curr_p else "-"
         elif symbol in ["CL=F", "GC=F"]:
             market_name = "원자재"
+            market_index_name = None
             is_krw = False
             price_str = f"${curr_p:,.2f}" if curr_p else "-"
         else:
             market_name = "글로벌증시"
+            market_index_name = None
             is_krw = False
             price_str = f"${curr_p:,.2f}" if curr_p else "-"
         raw_price = curr_p

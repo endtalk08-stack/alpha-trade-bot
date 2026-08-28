@@ -1695,6 +1695,35 @@ HTML_PAGE = """<!DOCTYPE html>
             letter-spacing: -0.02em;
         }
         .cal-detail-col { flex: 1; min-width: 0; }
+        .cal-alarm-btn {
+            flex: 0 0 28px;
+            width: 28px;
+            height: 28px;
+            margin-left: 2px;
+            border: 1px solid transparent;
+            border-radius: 7px;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 1rem;
+            line-height: 1;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.78;
+            transition: all 0.18s ease;
+        }
+        .cal-alarm-btn:hover {
+            border-color: var(--border-line);
+            background: var(--btn-hover);
+            opacity: 1;
+        }
+        .cal-alarm-btn.active {
+            color: #10b981;
+            border-color: rgba(16,185,129,0.28);
+            background: rgba(16,185,129,0.08);
+            opacity: 1;
+        }
         .cal-event-title {
             font-size: 0.8rem;
             font-weight: 750;
@@ -2609,6 +2638,113 @@ HTML_PAGE = """<!DOCTYPE html>
             renderMarketCalendarView();
         }
 
+
+        // 캘린더 알람: 브라우저 알림 권한 + localStorage 저장
+        const CAL_ALARM_STORAGE_KEY = 'calendar_alarm_events_v1';
+        const CAL_ALARM_MINUTES_BEFORE = 10;
+
+        function getCalendarAlarms() {
+            try {
+                return JSON.parse(localStorage.getItem(CAL_ALARM_STORAGE_KEY) || '{}');
+            } catch (e) {
+                return {};
+            }
+        }
+
+        function saveCalendarAlarms(data) {
+            localStorage.setItem(CAL_ALARM_STORAGE_KEY, JSON.stringify(data));
+        }
+
+        function getCalendarEventKey(ev) {
+            return [
+                ev.type || '',
+                ev.date_key || '',
+                ev.time || '',
+                ev.ticker || '',
+                ev.name || ''
+            ].join('|');
+        }
+
+        async function toggleCalendarAlarm(ev) {
+            const key = getCalendarEventKey(ev);
+            const alarms = getCalendarAlarms();
+
+            if (alarms[key]) {
+                delete alarms[key];
+                saveCalendarAlarms(alarms);
+                renderMarketCalendarView();
+                return;
+            }
+
+            if (!('Notification' in window)) {
+                alert('이 브라우저는 알림 기능을 지원하지 않습니다.');
+                return;
+            }
+
+            if (Notification.permission === 'default') {
+                const permission = await Notification.requestPermission();
+                if (permission !== 'granted') return;
+            } else if (Notification.permission !== 'granted') {
+                alert('브라우저 알림 권한이 꺼져 있습니다. 브라우저 설정에서 알림을 허용해주세요.');
+                return;
+            }
+
+            alarms[key] = {
+                event: ev,
+                createdAt: Date.now(),
+                notified: false
+            };
+            saveCalendarAlarms(alarms);
+            renderMarketCalendarView();
+        }
+
+        function parseCalendarEventTime(ev) {
+            if (!ev || !ev.date_key || !ev.time) return null;
+            const m = String(ev.date_key).match(/^(\\d{4})[.\\-/](\\d{1,2})[.\\-/](\\d{1,2})$/);
+            const t = String(ev.time).match(/^(\\d{1,2}):(\\d{2})$/);
+            if (!m || !t) return null;
+
+            // 캘린더의 날짜/시간은 기존 화면 기준 한국시간(KST)으로 처리합니다.
+            const utcMs = Date.UTC(
+                Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+                Number(t[1]), Number(t[2])
+            );
+            return utcMs - (9 * 60 * 60 * 1000);
+        }
+
+        function checkCalendarAlarms() {
+            const alarms = getCalendarAlarms();
+            const now = Date.now();
+            let changed = false;
+
+            Object.keys(alarms).forEach(key => {
+                const item = alarms[key];
+                if (!item || item.notified) return;
+
+                const eventMs = parseCalendarEventTime(item.event);
+                if (!eventMs) return;
+
+                const alarmMs = eventMs - (CAL_ALARM_MINUTES_BEFORE * 60 * 1000);
+
+                if (now >= alarmMs && now < eventMs + (60 * 60 * 1000)) {
+                    if ('Notification' in window && Notification.permission === 'granted') {
+                        new Notification('📅 일정 알림', {
+                            body: `${item.event.name || '일정'}\n10분 후 발표 예정 (${item.event.time})`,
+                            tag: 'calendar-' + key
+                        });
+                    }
+                    item.notified = true;
+                    changed = true;
+                }
+            });
+
+            if (changed) saveCalendarAlarms(alarms);
+        }
+
+        // 15초마다 확인하여 10분 전 알림을 놓치지 않도록 합니다.
+        setInterval(checkCalendarAlarms, 15000);
+        setTimeout(checkCalendarAlarms, 1000);
+
         function renderMarketCalendarView() {
             const dateStr = getTargetDateStr(currentCalOffset);
             setTxt('calDisplayDate', dateStr);
@@ -2689,6 +2825,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
                 const importanceWidth = Math.max(0, Math.min(100, importanceScore));
+                const alarmKey = getCalendarEventKey(ev).replace(/'/g, "\\'");
+                const alarmActive = !!getCalendarAlarms()[getCalendarEventKey(ev)];
 
 
 
@@ -2748,8 +2886,10 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
                         </div>
-
-
+                        <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
+                                onclick="event.stopPropagation(); toggleCalendarAlarm(${JSON.stringify(ev).replace(/`/g, '\\`')})"
+                                title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
+                                aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">${alarmActive ? '🔔' : '♧'}</button>
                     </div>
 
 

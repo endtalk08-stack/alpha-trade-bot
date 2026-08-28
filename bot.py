@@ -3783,58 +3783,64 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
 
 
-                // 3.5 "왜 움직였을까?" 원인 분석 렌더링
-                const mr = data.movement_reason;
-                const mrCard = document.getElementById('movementReasonCard');
-                if (mrCard && mr) {
-                    const directionText =
-                        mr.direction === '상승' ? '상승 원인' :
-                        mr.direction === '하락' ? '하락 원인' :
-                        '움직임 원인';
+                try {
+                    // 3.5 "왜 움직였을까?" 원인 분석 렌더링
+                    const mr = data.movement_reason;
+                    const mrCard = document.getElementById('movementReasonCard');
+                    if (mrCard && mr) {
+                        const directionText =
+                            mr.direction === '상승' ? '상승 원인' :
+                            mr.direction === '하락' ? '하락 원인' :
+                            '움직임 원인';
 
-                    const confidenceStyle =
-                        mr.confidence === '높음'
-                            ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
-                            : mr.confidence === '중간'
-                                ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
-                                : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+                        const confidenceStyle =
+                            mr.confidence === '높음'
+                                ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+                                : mr.confidence === '중간'
+                                    ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+                                    : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
 
-                    const reasonRows = (mr.reasons || []).map(r => {
-                        const score = Number(r.score || 0);
-                        const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
-                        const statusStyle = score > 0
-                            ? 'background:rgba(16,185,129,0.12);color:#10b981;'
-                            : score < 0
-                                ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
-                                : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
+                        const reasonRows = (mr.reasons || []).map(r => {
+                            const score = Number(r.score || 0);
+                            const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
+                            const statusStyle = score > 0
+                                ? 'background:rgba(16,185,129,0.12);color:#10b981;'
+                                : score < 0
+                                    ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
+                                    : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
 
-                        return `
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">${r.label}</span>
-                                    <span style="font-size:0.66rem;font-weight:700;padding:2px 6px;border-radius:8px;${statusStyle}">${status}</span>
+                            return `
+                                <div class="quant-row-item">
+                                    <div class="quant-row-left">
+                                        <span class="quant-row-name">${r.label}</span>
+                                        <span style="font-size:0.66rem;font-weight:700;padding:2px 6px;border-radius:8px;${statusStyle}">${status}</span>
+                                    </div>
+                                    <div class="quant-row-right" style="max-width:65%;">
+                                        <div class="quant-row-val" style="font-size:0.74rem;white-space:normal;line-height:1.35;">${r.detail}</div>
+                                    </div>
                                 </div>
-                                <div class="quant-row-right" style="max-width:65%;">
-                                    <div class="quant-row-val" style="font-size:0.74rem;white-space:normal;line-height:1.35;">${r.detail}</div>
-                                </div>
+                            `;
+                        }).join('');
+
+                        const evidenceCount = (mr.reasons || []).filter(x => Number(x.score || 0) !== 0).length;
+
+                        mrCard.innerHTML = `
+                            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+                                <div style="font-size:1.02rem;font-weight:800;color:var(--text-title);">🔥 ${directionText} — 왜 움직였을까?</div>
+                                <span style="font-size:0.66rem;font-weight:800;padding:3px 7px;border-radius:10px;white-space:nowrap;${confidenceStyle}">근거 ${mr.confidence}</span>
                             </div>
+                            <div style="font-size:0.82rem;color:var(--text-sub);line-height:1.55;margin-bottom:10px;">${mr.summary}</div>
+                            <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:5px;">확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}</div>
+                            ${reasonRows}
+                            <div style="margin-top:8px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.</div>
                         `;
-                    }).join('');
+                    }
 
-                    const evidenceCount = (mr.reasons || []).filter(x => Number(x.score || 0) !== 0).length;
-
-                    mrCard.innerHTML = `
-                        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
-                            <div style="font-size:1.02rem;font-weight:800;color:var(--text-title);">🔥 ${directionText} — 왜 움직였을까?</div>
-                            <span style="font-size:0.66rem;font-weight:800;padding:3px 7px;border-radius:10px;white-space:nowrap;${confidenceStyle}">근거 ${mr.confidence}</span>
-                        </div>
-                        <div style="font-size:0.82rem;color:var(--text-sub);line-height:1.55;margin-bottom:10px;">${mr.summary}</div>
-                        <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:5px;">확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}</div>
-                        ${reasonRows}
-                        <div style="margin-top:8px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.</div>
-                    `;
+                } catch (movementRenderError) {
+                    console.error('[movement_reason] 렌더링 오류:', movementRenderError);
+                    const safeCard = document.getElementById('movementReasonCard');
+                    if (safeCard) safeCard.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;">움직임 원인 데이터를 확인하는 중입니다.</div>';
                 }
-
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {

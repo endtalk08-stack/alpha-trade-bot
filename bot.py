@@ -144,6 +144,108 @@ US_KR_RELATIONS = {
     },
 }
 
+# ===== Dynamic gaemi comment engine =====
+def make_dynamic_gaemi_comment(evidence=None, theme_result=None, us_kr_result=None):
+    """
+    Build a friendly comment from the strongest *available* evidence.
+    No evidence => no fabricated cause.
+    """
+    evidence = evidence or {}
+    candidates = []
+
+    def add(key, label, value, strength, text):
+        try:
+            s = float(strength)
+        except (TypeError, ValueError):
+            return
+        if value not in (None, "", "-", "데이터 확인 필요"):
+            candidates.append((s, key, label, value, text))
+
+    add("material", "재료", evidence.get("material"), evidence.get("material_score", 0),
+        "관련 뉴스나 공시 쪽에서 재료가 확인돼.")
+    add("foreign", "외국인 수급", evidence.get("foreign"), evidence.get("foreign_score", 0),
+        "외국인 수급이 눈에 들어와.")
+    add("institution", "기관 수급", evidence.get("institution"), evidence.get("institution_score", 0),
+        "기관 수급이 눈에 들어와.")
+    add("program", "프로그램", evidence.get("program"), evidence.get("program_score", 0),
+        "프로그램 매매 흐름이 눈에 들어와.")
+    add("turnover", "거래대금", evidence.get("turnover"), evidence.get("turnover_score", 0),
+        "거래대금도 꽤 붙고 있어.")
+    add("volume", "거래량", evidence.get("volume"), evidence.get("volume_score", 0),
+        "거래량이 평소보다 눈에 띄게 움직이고 있어.")
+    add("sector", "업종·테마", evidence.get("sector"), evidence.get("sector_score", 0),
+        "같은 업종이나 테마 종목들도 같이 움직이고 있어.")
+
+    if theme_result and theme_result.get("matched"):
+        candidates.append((
+            float(theme_result.get("score", 0)), "theme", "테마 동조화",
+            theme_result.get("theme"), 
+            f'{theme_result.get("theme")} 관련 종목들의 동반 움직임이 확인돼.'
+        ))
+
+    if us_kr_result and us_kr_result.get("matched"):
+        candidates.append((
+            float(us_kr_result.get("score", 0)), "us_kr", "해외→국내",
+            us_kr_result.get("company"),
+            f'{us_kr_result.get("company")} 관련 해외 흐름과 국내 {us_kr_result.get("theme")} 연결고리가 보여.'
+        ))
+
+    candidates.sort(reverse=True, key=lambda x: x[0])
+
+    if not candidates:
+        return "🐜 개미들아! 오늘은 딱 하나로 설명하기 어렵네 👀 확인된 데이터만 보면 뚜렷한 단일 재료는 아직 안 보여."
+
+    top = candidates[0]
+    second = candidates[1] if len(candidates) > 1 else None
+
+    templates = {
+        "material": [
+            "🐜 개미들아! 오늘은 재료가 눈에 들어와 👀",
+            "🐜 개미들아! 오늘은 뉴스·공시 쪽을 먼저 볼 만해 👀",
+        ],
+        "foreign": [
+            "🐜 개미들아! 오늘은 외국인 수급이 눈에 들어와 👀",
+            "🐜 개미들아! 외국인 쪽 매수 흐름이 꽤 눈에 띄네.",
+        ],
+        "institution": [
+            "🐜 개미들아! 오늘은 기관 수급이 눈에 들어와 👀",
+            "🐜 개미들아! 기관 쪽 움직임을 같이 볼 필요가 있어.",
+        ],
+        "program": [
+            "🐜 개미들아! 오늘은 프로그램 흐름이 눈에 들어와 👀",
+            "🐜 개미들아! 프로그램 매매가 움직임에 같이 붙고 있어.",
+        ],
+        "turnover": [
+            "🐜 개미들아! 오늘은 거래대금이 확 눈에 들어와 👀",
+            "🐜 개미들아! 돈이 들어오는 속도가 꽤 눈에 띄네.",
+        ],
+        "volume": [
+            "🐜 개미들아! 오늘은 거래량이 심상치 않아 👀",
+            "🐜 개미들아! 거래량이 평소보다 확실히 달라졌어.",
+        ],
+        "sector": [
+            "🐜 개미들아! 오늘은 업종·테마 분위기가 눈에 들어와 👀",
+            "🐜 개미들아! 이 종목만 움직이는 건 아닌 것 같아.",
+        ],
+        "theme": [
+            "🐜 개미들아! 오늘은 테마 흐름이 눈에 들어와 👀",
+            "🐜 개미들아! 관련 종목들이 같이 움직이는 게 보여.",
+        ],
+        "us_kr": [
+            "🐜 개미들아! 해외 흐름이 국내로 번지는 게 보여 👀",
+            "🐜 개미들아! 미국 쪽 움직임과 국내 테마가 같이 연결돼 보여.",
+        ],
+    }
+
+    lead = templates.get(top[1], ["🐜 개미들아! 오늘은 이 흐름이 눈에 들어와 👀"])[0]
+    detail = top[4]
+
+    if second:
+        detail += " " + second[4]
+
+    return lead + "\n\n" + detail
+
+
 def analyze_us_kr_relation(news_items=None, us_items=None, kr_items=None):
     """
     Detect a candidate US -> KR theme relationship.

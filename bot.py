@@ -173,84 +173,41 @@ def fetch_naver_realtime_index(index_code):
 
 
 
-def fetch_naver_index_5day_returns(index_code="KOSPI"):
-    """최근 5거래일 KOSPI/KOSDAQ 수익률 흐름.
-    기존 국내 주가 차트에서 이미 사용하는 Naver 공개 fchart endpoint를 사용한다.
-    별도 API 인증키가 필요하지 않다.
+def fetch_naver_index_5day_returns(index_code="KOSPI", world_item=None):
+    """실제 시장 지수의 최근 5거래일 흐름을 계산한다.
+    우선 이미 /api/analyze에서 정상 수집된 world_board의 실제 종가 history를 사용하고,
+    부족하면 동일한 Yahoo 지수 차트 경로를 보조로 사용한다. 별도 API 키는 필요 없다.
     """
+    index_name = "KOSPI" if str(index_code).upper() == "KOSPI" else "KOSDAQ"
     try:
-        # Naver fchart: KOSPI=1001, KOSDAQ=2001
-        code = "1001" if str(index_code).upper() == "KOSPI" else "2001"
-        index_name = "KOSPI" if code == "1001" else "KOSDAQ"
+        closes = []
+        if isinstance(world_item, dict):
+            closes = [float(x) for x in (world_item.get("sparkline") or []) if x is not None]
 
-        url = (
-            f"https://fchart.stock.naver.com/sise.nhn"
-            f"?symbol={code}&timeframe=day&count=15&requestType=0"
-        )
-        res = HTTP_SESSION.get(
-            url,
-            timeout=3.0,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/xml,text/xml,*/*",
-                "Accept-Language": "ko-KR,ko;q=0.9",
-            },
-        )
-        res.raise_for_status()
+        if len(closes) < 6:
+            symbol = "^KS11" if index_name == "KOSPI" else "^KQ11"
+            _, _, df = fetch_overseas_candles(symbol)
+            if df is not None and not df.empty and "Close" in df.columns:
+                closes = [float(x) for x in df["Close"].dropna().tail(7).tolist()]
 
-        root = ET.fromstring(res.content)
-        rows = []
-
-        for it in root.findall(".//item"):
-            raw = str(it.get("data", ""))
-            parts = raw.split("|")
-            if len(parts) < 6:
-                continue
-
-            try:
-                date_str = parts[0].strip()
-                close = float(parts[4].replace(",", "").strip())
-            except Exception:
-                continue
-
-            if close > 0:
-                rows.append({
-                    "date": date_str,
-                    "close": close,
-                })
-
-        rows.sort(key=lambda x: x["date"])
-
-        if len(rows) < 6:
-            print(f"[MARKET 5D] {index_name}: insufficient rows={len(rows)}")
+        if len(closes) < 6:
             return None
 
-        last6 = rows[-6:]
-        base = last6[0]["close"]
+        closes = closes[-6:]
         points = []
-
-        for i in range(1, len(last6)):
-            prev_close = last6[i - 1]["close"]
-            close = last6[i]["close"]
-
-            daily_return = (
-                ((close / prev_close) - 1.0) * 100.0
-                if prev_close else 0.0
-            )
-            cumulative_return = (
-                ((close / base) - 1.0) * 100.0
-                if base else 0.0
-            )
-
+        for i in range(1, len(closes)):
+            prev_close = closes[i - 1]
+            close = closes[i]
+            daily_return = ((close / prev_close) - 1.0) * 100.0 if prev_close else 0.0
+            cumulative_return = ((close / closes[0]) - 1.0) * 100.0 if closes[0] else 0.0
             points.append({
-                "date": last6[i]["date"],
+                "date": f"D-{6-i}",
                 "close": round(close, 2),
                 "daily_return": round(daily_return, 2),
                 "cumulative_return": round(cumulative_return, 2),
             })
 
         total_return = points[-1]["cumulative_return"]
-
         if total_return >= 1.0:
             score = 2
         elif total_return >= 0.3:
@@ -268,10 +225,10 @@ def fetch_naver_index_5day_returns(index_code="KOSPI"):
             "detail": f"{index_name} 최근 5거래일 {total_return:+.2f}%",
             "total_return": round(total_return, 2),
             "points": points,
-            "source": "Naver Finance fchart",
+            "source": "Naver/KRX 현재값 + 실제 지수 일봉 흐름",
         }
     except Exception as exc:
-        print(f"[MARKET 5D] {index_name if 'index_name' in locals() else index_code} failed: {exc}")
+        print(f"[MARKET 5D] {index_name} failed: {exc}")
         return None
 
 def fetch_single_world_item(item):
@@ -294,7 +251,7 @@ def fetch_single_world_item(item):
             # 현재값/등락률의 기준은 위 Naver/KRX 데이터로 고정한다.
             try:
                 encoded_sym = urllib.parse.quote(sym)
-                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=7d&interval=1d"
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=14d&interval=1d"
                 yres = HTTP_SESSION.get(url, timeout=2.0).json()
                 yresult = yres.get("chart", {}).get("result", [])
                 if yresult:
@@ -897,6 +854,19 @@ def find_stock_code(query):
     except Exception:
         pass
     return None, query.strip()
+
+def get_naver_stock_market_type(code):
+    """Naver basic 정보에서 종목의 실제 KOSPI/KOSDAQ 구분을 읽는다."""
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+        res = HTTP_SESSION.get(url, timeout=1.8).json()
+        exchange = res.get("stockExchangeType") or {}
+        name = exchange.get("name") if isinstance(exchange, dict) else None
+        if name in {"KOSPI", "KOSDAQ"}:
+            return name
+    except Exception:
+        pass
+    return None
 
 def get_naver_realtime_price(code):
     try:
@@ -1644,7 +1614,7 @@ def _detect_theme(formal_name, stock_news):
     return theme, theme_scores[theme]
 
 
-def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures):
+def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None):
     """현재 데이터에서 주가 움직임을 시장/테마/재료/거래량/최근 5거래일 시장흐름으로 분해한다."""
     reasons = []
 
@@ -1788,7 +1758,9 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     # 5. 최근 5거래일 시장 흐름
     market5 = None
     if market_name in ("국내주식", "국내증시"):
-        market5 = fetch_naver_index_5day_returns("KOSPI")
+        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else "KOSPI"
+        ref5 = _find_world_item(world_board, ["코스피" if selected_index == "KOSPI" else "코스닥"])
+        market5 = fetch_naver_index_5day_returns(selected_index, ref5)
 
     if market5:
         market5_score = int(market5["score"])
@@ -1796,7 +1768,8 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         market5_points = market5["points"]
     else:
         market5_score = 0
-        market5_detail = "KOSPI 최근 5거래일 데이터 확인 필요"
+        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else "KOSPI"
+        market5_detail = f"{selected_index} 최근 5거래일 데이터 확인 필요"
         market5_points = []
 
     reasons.append({
@@ -1807,6 +1780,7 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         "chart_points": market5_points,
         "total_return": market5.get("total_return") if market5 else None,
         "source": market5.get("source") if market5 else None,
+        "index_name": market5.get("index_name") if market5 else selected_index,
     })
 
     total_score = sum(int(x["score"]) for x in reasons)
@@ -1854,6 +1828,7 @@ def run_full_pipeline(query):
             return cached_data
 
     market_name = "국내주식"
+    market_index_name = None
     is_krw = True
 
     if clean_q in GLOBAL_INDEX_MAP:
@@ -1904,6 +1879,7 @@ def run_full_pipeline(query):
         if not code:
             return None
         symbol, formal_name = code, name
+        market_index_name = get_naver_stock_market_type(symbol)
         raw_price, price_str = get_naver_realtime_price(symbol)
         df = fetch_domestic_candles(symbol, anchor_price=raw_price)
         if raw_price is None and df is not None and not df.empty:
@@ -1936,7 +1912,8 @@ def run_full_pipeline(query):
         market_name=market_name,
         world_board=world_board,
         stock_news=stock_news,
-        dart_disclosures=dart_disclosures
+        dart_disclosures=dart_disclosures,
+        market_index_name=market_index_name
     )
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
@@ -4173,7 +4150,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 lineHtml = `
                                     <div class="market5-line-chart">
                                         <div class="market5-zero" style="top:${zeroY}px;"></div>
-                                        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="최근 5거래일 KOSPI 누적 수익률">
+                                        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="최근 5거래일 시장 누적 수익률">
                                             <path d="${path}" fill="none" stroke="${total5 >= 0 ? '#10b981' : '#ef4444'}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"></path>
                                         </svg>
                                     </div>`;
@@ -4194,7 +4171,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                         <span>${Number.isFinite(total5) ? `${total5 >= 0 ? '+' : ''}${total5.toFixed(2)}` : '-'}</span>
                                         <span class="movement-mini-unit">%</span>
                                     </div>
-                                    <div class="movement-mini-detail">KOSPI 최근 5거래일 누적 수익률</div>
+                                    <div class="movement-mini-detail">${r.index_name || 'KOSPI'} 최근 5거래일 누적 수익률</div>
                                 </div>
                             `;
                         }

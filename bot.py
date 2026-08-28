@@ -2364,6 +2364,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .quant-row-status { font-size: 0.7rem; font-weight: 700; }
         .quant-row-right { text-align: right; flex-shrink: 0; }
         .quant-row-val { font-weight: 800; color: var(--text-title); }
+        .movement-evidence-summary { margin: 2px 0 14px; }
+        .movement-evidence-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
+        .movement-evidence-label { font-size:0.72rem; font-weight:700; color:var(--text-main); }
+        .movement-evidence-count { font-size:0.72rem; font-weight:800; color:var(--text-muted); }
+        .movement-evidence-track { width:100%; height:7px; display:flex; gap:4px; }
+        .movement-evidence-seg { flex:1; height:7px; border-radius:4px; background:rgba(148,163,184,0.15); }
+        .movement-evidence-seg.active { background:#10b981; }
+        .movement-evidence-seg.active.negative { background:#ef4444; }
+        .movement-reason-row { padding:10px 0; border-bottom:1px solid var(--border-line); }
+        .movement-reason-row:last-child { border-bottom:none; }
+        .movement-reason-top { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+        .movement-reason-title { display:flex; align-items:center; gap:7px; min-width:0; }
+        .movement-reason-icon { width:18px; height:18px; flex:0 0 18px; color:var(--text-muted); }
+        .movement-reason-name { font-size:0.82rem; font-weight:800; color:var(--text-title); }
+        .movement-reason-status { font-size:0.66rem; font-weight:800; padding:2px 7px; border-radius:9px; white-space:nowrap; }
+        .movement-reason-detail { margin:6px 0 7px 25px; font-size:0.72rem; line-height:1.45; color:var(--text-sub); word-break:keep-all; }
+        .movement-reason-meter { margin-left:25px; display:flex; align-items:center; gap:8px; }
+        .movement-reason-meter-track { flex:1; height:5px; border-radius:4px; background:rgba(148,163,184,0.12); overflow:hidden; }
+        .movement-reason-meter-fill { height:100%; border-radius:4px; }
+        .movement-reason-meter-value { width:52px; text-align:right; font-size:0.64rem; font-weight:800; color:var(--text-muted); }
+
         .quant-row-subval { font-size: 0.7rem; color: var(--text-muted); margin-top: 1px; }
 
         .status-pill-positive { color: #10b981; }
@@ -3799,33 +3820,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
                                 : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
 
-                    const reasonRows = (mr.reasons || []).map(r => {
-                        const score = Number(r.score || 0);
-                        const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
-                        const statusStyle = score > 0
-                            ? 'background:rgba(16,185,129,0.12);color:#10b981;'
-                            : score < 0
-                                ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
-                                : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
+                    const evidenceReasons = mr.reasons || [];
+                    const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
+                    const evidenceDirection = Number(mr.total_score || 0) < 0 ? 'negative' : 'positive';
 
-                        return `
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">${r.label}</span>
-                                    <span style="font-size:0.66rem;font-weight:700;padding:2px 6px;border-radius:8px;${statusStyle}">${status}</span>
-                                </div>
-                                <div class="quant-row-right" style="max-width:65%;">
-                                    <div class="quant-row-val" style="font-size:0.74rem;white-space:normal;line-height:1.35;">${r.detail}</div>
-                                </div>
-                            </div>
-                        `;
-                    }).join('');
-
-                    const evidenceCount = (mr.reasons || []).filter(x => Number(x.score || 0) !== 0).length;
-
-                    // 사용자 확정 문구:
-                    // - 근거 0~1개: 근거 부족
-                    // - 근거 2개 이상 + 상승/하락/혼조: 방향별 코멘트
+                    // 사용자가 확정한 코멘트 문구는 그대로 유지합니다.
                     let gaemiComment = '';
                     if (evidenceCount <= 1) {
                         gaemiComment =
@@ -3849,27 +3848,75 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             "섣불리 결론 내리지 말고 과거 사례를 확인해보자.";
                     }
 
+                    const movementIconMap = {
+                        '시장': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>',
+                        '업종·테마': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><circle cx="16" cy="16" r="3"></circle><path d="M10.5 10.5l3 3"></path></svg>',
+                        '기업 재료': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"></path><path d="M15 3v4h4M9 12h6M9 16h6"></path></svg>',
+                        '거래량·수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
+                        '기술': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18l5-5 4 3 7-8"></path><path d="M4 4v16h16"></path></svg>'
+                    };
+
+                    const reasonRows = evidenceReasons.map(r => {
+                        const score = Number(r.score || 0);
+                        const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
+                        const fillPct = score === 0 ? 0 : Math.min(100, 50 + Math.abs(score) * 25);
+                        const statusStyle = score > 0
+                            ? 'background:rgba(16,185,129,0.12);color:#10b981;'
+                            : score < 0
+                                ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
+                                : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
+                        const meterColor = score > 0 ? '#10b981' : (score < 0 ? '#ef4444' : '#94a3b8');
+                        const icon = movementIconMap[r.label] || '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v8M8 12h8"></path></svg>';
+
+                        return `
+                            <div class="movement-reason-row">
+                                <div class="movement-reason-top">
+                                    <div class="movement-reason-title">
+                                        ${icon}
+                                        <span class="movement-reason-name">${r.label}</span>
+                                    </div>
+                                    <span class="movement-reason-status" style="${statusStyle}">${status}</span>
+                                </div>
+                                <div class="movement-reason-detail">${r.detail}</div>
+                                <div class="movement-reason-meter">
+                                    <div class="movement-reason-meter-track">
+                                        <div class="movement-reason-meter-fill" style="width:${fillPct}%;background:${meterColor};"></div>
+                                    </div>
+                                    <div class="movement-reason-meter-value">${score > 0 ? '+' : ''}${score}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+
+                    const evidenceSegments = Array.from({ length: 5 }, (_, i) => {
+                        const active = i < evidenceCount ? ' active' + (evidenceDirection === 'negative' ? ' negative' : '') : '';
+                        return `<span class="movement-evidence-seg${active}"></span>`;
+                    }).join('');
+
                     mrCard.innerHTML = `
-                        <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;">
+                        <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:10px;">
                             <span style="font-size:0.66rem;font-weight:800;padding:3px 7px;border-radius:10px;white-space:nowrap;${confidenceStyle}">근거 ${mr.confidence}</span>
                         </div>
 
-                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:12px;">
+                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:14px;">
                             ${gaemiComment}
                         </div>
 
-                        <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:5px;">
-                            확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}
+                        <div class="movement-evidence-summary">
+                            <div class="movement-evidence-head">
+                                <span class="movement-evidence-label">확인된 근거</span>
+                                <span class="movement-evidence-count">${evidenceCount} / 5</span>
+                            </div>
+                            <div class="movement-evidence-track">${evidenceSegments}</div>
                         </div>
 
                         ${reasonRows}
 
-                        <div style="margin-top:8px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">
+                        <div style="margin-top:9px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">
                             ※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.
                         </div>
                     `;
                 }
-
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링
                 const sNews = document.getElementById('stockNewsList');

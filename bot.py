@@ -120,6 +120,137 @@ THEME_KEYWORDS = {
     "2차전지": ["2차전지", "배터리", "리튬", "양극재", "음극재"],
 }
 
+# ===== US-to-KR relationship engine =====
+US_KR_RELATIONS = {
+    "NVIDIA": {
+        "keywords": ["nvidia", "엔비디아", "gpu", "ai", "데이터센터", "hbm"],
+        "themes": ["AI·데이터센터", "반도체", "전력인프라"],
+    },
+    "AMD": {
+        "keywords": ["amd", "gpu", "ai", "데이터센터"],
+        "themes": ["AI·데이터센터", "반도체", "전력인프라"],
+    },
+    "MICRON": {
+        "keywords": ["micron", "마이크론", "hbm", "dram", "메모리"],
+        "themes": ["반도체"],
+    },
+    "TSMC": {
+        "keywords": ["tsmc", "파운드리", "반도체"],
+        "themes": ["반도체"],
+    },
+    "BROADCOM": {
+        "keywords": ["broadcom", "브로드컴", "ai", "네트워크", "데이터센터"],
+        "themes": ["AI·데이터센터", "반도체"],
+    },
+}
+
+def analyze_us_kr_relation(news_items=None, us_items=None, kr_items=None):
+    """
+    Detect a candidate US -> KR theme relationship.
+    Evidence requires US event/news text plus matching KR theme text.
+    If price data is supplied, co-movement breadth strengthens the score.
+    It never states that the US event caused the KR move.
+    """
+    news_items = news_items or []
+    us_items = us_items or []
+    kr_items = kr_items or []
+
+    def blob(items):
+        vals = []
+        for x in items:
+            if isinstance(x, dict):
+                vals.append(" ".join(str(x.get(k, "")) for k in
+                                    ("title", "description", "summary", "content", "name")))
+            else:
+                vals.append(str(x))
+        return " ".join(vals).lower()
+
+    us_blob = blob(us_items + news_items)
+    kr_blob = blob(kr_items + news_items)
+
+    best = None
+    for company, rule in US_KR_RELATIONS.items():
+        hits = [kw for kw in rule["keywords"] if kw.lower() in us_blob]
+        if not hits:
+            continue
+        for theme in rule["themes"]:
+            theme_hits = [kw for kw in THEME_KEYWORDS.get(theme, []) if kw.lower() in kr_blob]
+            score = len(hits) + len(theme_hits)
+            if theme_hits and (best is None or score > best["raw_score"]):
+                best = {
+                    "company": company,
+                    "theme": theme,
+                    "us_hits": hits,
+                    "kr_hits": theme_hits,
+                    "raw_score": score,
+                }
+
+    if not best:
+        return {"matched": False, "score": 0, "reason": "미국→국내 연결 근거 부족"}
+
+    # Optional peer breadth.
+    up = valid = 0
+    for x in kr_items:
+        if not isinstance(x, dict):
+            continue
+        try:
+            chg = float(x.get("change_pct"))
+        except (TypeError, ValueError):
+            continue
+        valid += 1
+        if chg > 0:
+            up += 1
+
+    breadth = (up / valid) if valid else None
+    score = min(100, 45 + 10 * min(3, len(best["us_hits"])) +
+                10 * min(3, len(best["kr_hits"])))
+    if breadth is not None and valid >= 3:
+        score = round(min(100, score + 25 * max(0, breadth - 0.5) * 2))
+
+    best.update({
+        "matched": True,
+        "score": score,
+        "breadth": breadth,
+        "up": up,
+        "valid": valid,
+        "reason": f'{best["company"]} 관련 해외 이벤트와 국내 {best["theme"]} 연결 근거 확인',
+    })
+    return best
+
+def make_us_kr_comment(result):
+    if not result or not result.get("matched"):
+        return ""
+    if result.get("breadth") is not None and result.get("valid", 0) >= 3 and result["breadth"] >= 0.67:
+        return (f'🐜 개미들아! {result["company"]} 쪽 움직임이 국내 {result["theme"]}로 '
+                f'번지는 흐름이 보여 👀 관련 종목들도 같이 움직이고 있어.')
+    return (f'🐜 개미들아! {result["company"]} 관련 해외 재료와 국내 '
+            f'{result["theme"]} 쪽 연결고리가 보여 👀 아직 원인이라고 단정하진 말고 '
+            f'관련 종목 움직임을 같이 확인해보자.')
+
+# ===== Real-time program-flow evidence helper =====
+def normalize_program_evidence(program_value, previous_value=None):
+    """Normalize a broker's program net-buy figure for display."""
+    try:
+        current = float(program_value)
+    except (TypeError, ValueError):
+        return {"available": False, "label": "프로그램 데이터 확인 필요"}
+
+    delta = None
+    if previous_value is not None:
+        try:
+            delta = current - float(previous_value)
+        except (TypeError, ValueError):
+            pass
+
+    return {
+        "available": True,
+        "net": current,
+        "delta": delta,
+        "label": "프로그램 매매",
+        "realtime": True,
+    }
+
+
 def _theme_match_score(theme, text_blob):
     blob = (text_blob or "").lower()
     kws = THEME_KEYWORDS.get(theme, [])

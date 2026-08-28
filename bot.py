@@ -1895,7 +1895,7 @@ if TELEGRAM_TOKEN:
 # ----------------------------------------------------
 # 8. 웹 프론트엔드 UI
 # ----------------------------------------------------
-HTML_PAGE = """<!DOCTYPE html>
+HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
@@ -2029,24 +2029,25 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         /* 1행: 차트(좌) & 증시(우) - 높이 100% 동기화 */
-        #rowChart { grid-column: 1; grid-row: 1; height: 100%; }
-        #rowWorld { grid-column: 2; grid-row: 1; height: 100%; }
+        #rowCause { grid-column: 1; grid-row: 1; }
+        #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
+        #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* 2행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
-        #rowQuant { grid-column: 1; grid-row: 2; height: 100%; }
-        #rowCalendar { grid-column: 2; grid-row: 2; height: 100%; }
-
-        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 동기화 */
+        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 1:1 대칭 */
         #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
         #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
 
+        /* 4행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
+        #rowQuant { grid-column: 1; grid-row: 4; height: 100%; }
+        #rowCalendar { grid-column: 2; grid-row: 4; height: 100%; }
+
         /* 좌측 832px 단독 배치 행들 */
-        #rowConsensus { grid-column: 1; grid-row: 4; }
-        #rowVote { grid-column: 1; grid-row: 5; }
-        #rowComment { grid-column: 1; grid-row: 6; }
-        #rowDart { grid-column: 1; grid-row: 7; }
-        #rowSignal { grid-column: 1; grid-row: 8; }
-        #rowTelegram { grid-column: 1; grid-row: 9; }
+        #rowConsensus { grid-column: 1; grid-row: 5; }
+        #rowVote { grid-column: 1; grid-row: 6; }
+        #rowComment { grid-column: 1; grid-row: 7; }
+        #rowDart { grid-column: 1; grid-row: 8; }
+        #rowSignal { grid-column: 1; grid-row: 9; }
+        #rowTelegram { grid-column: 1; grid-row: 10; }
 
         .card {
             background: var(--bg-card);
@@ -2363,6 +2364,27 @@ HTML_PAGE = """<!DOCTYPE html>
         .quant-row-status { font-size: 0.7rem; font-weight: 700; }
         .quant-row-right { text-align: right; flex-shrink: 0; }
         .quant-row-val { font-weight: 800; color: var(--text-title); }
+        .movement-evidence-summary { margin: 2px 0 14px; }
+        .movement-evidence-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
+        .movement-evidence-label { font-size:0.72rem; font-weight:700; color:var(--text-main); }
+        .movement-evidence-count { font-size:0.72rem; font-weight:800; color:var(--text-muted); }
+        .movement-evidence-track { width:100%; height:7px; display:flex; gap:4px; }
+        .movement-evidence-seg { flex:1; height:7px; border-radius:4px; background:rgba(148,163,184,0.15); }
+        .movement-evidence-seg.active { background:#10b981; }
+        .movement-evidence-seg.active.negative { background:#ef4444; }
+        .movement-reason-row { padding:10px 0; border-bottom:1px solid var(--border-line); }
+        .movement-reason-row:last-child { border-bottom:none; }
+        .movement-reason-top { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+        .movement-reason-title { display:flex; align-items:center; gap:7px; min-width:0; }
+        .movement-reason-icon { width:18px; height:18px; flex:0 0 18px; color:var(--text-muted); }
+        .movement-reason-name { font-size:0.82rem; font-weight:800; color:var(--text-title); }
+        .movement-reason-status { font-size:0.66rem; font-weight:800; padding:2px 7px; border-radius:9px; white-space:nowrap; }
+        .movement-reason-detail { margin:6px 0 7px 25px; font-size:0.72rem; line-height:1.45; color:var(--text-sub); word-break:keep-all; }
+        .movement-reason-meter { margin-left:25px; display:flex; align-items:center; gap:8px; }
+        .movement-reason-meter-track { flex:1; height:5px; border-radius:4px; background:rgba(148,163,184,0.12); overflow:hidden; }
+        .movement-reason-meter-fill { height:100%; border-radius:4px; }
+        .movement-reason-meter-value { width:52px; text-align:right; font-size:0.64rem; font-weight:800; color:var(--text-muted); }
+
         .quant-row-subval { font-size: 0.7rem; color: var(--text-muted); margin-top: 1px; }
 
         .status-pill-positive { color: #10b981; }
@@ -2626,7 +2648,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
 
-                        <!-- 2행 좌측: 퀀트 분석 (832px) -->
+                        <!-- 4행 좌측: 퀀트 분석 (832px) -->
                         <div class="card" id="rowQuant">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
@@ -2683,10 +2705,17 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div id="quantDetailList"></div>
                             </div>
 
-                            <div id="movementReasonCard" style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border-line);"></div>
                         </div>
 
-                        <!-- 2행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
+                        <!-- 차트 바로 위: 독립된 개미들아! 카드 -->
+                        <div class="card" id="rowCause" style="justify-content:flex-start;">
+                            <div class="board-header" style="margin-bottom:14px; padding-bottom:0; border-bottom:none;">
+                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">개미들아! 이 종목 왜 움직였을까?</span>
+                            </div>
+                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
+                        </div>
+
+                        <!-- 4행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
                         <div class="card" id="rowCalendar">
                             <div>
                                 <div class="cal-top-title-area">
@@ -3204,6 +3233,22 @@ HTML_PAGE = """<!DOCTYPE html>
             ].join('|');
         }
 
+        async function toggleCalendarAlarmByKey(encodedKey) {
+            let key;
+            try {
+                key = decodeURIComponent(encodedKey);
+            } catch (e) {
+                console.error('[calendar] invalid alarm key:', e);
+                return;
+            }
+            const alarms = getCalendarAlarms();
+            const entries = Object.values(alarms || {});
+            const target = entries.find(item => item && getCalendarEventKey(item.event) === key);
+            if (target && target.event) {
+                await toggleCalendarAlarm(target.event);
+            }
+        }
+
         async function toggleCalendarAlarm(ev) {
             const key = getCalendarEventKey(ev);
             const alarms = getCalendarAlarms();
@@ -3239,8 +3284,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function parseCalendarEventTime(ev) {
             if (!ev || !ev.date_key || !ev.time) return null;
-            const m = String(ev.date_key).match(/^(\\d{4})[.\\-/](\\d{1,2})[.\\-/](\\d{1,2})$/);
-            const t = String(ev.time).match(/^(\\d{1,2}):(\\d{2})$/);
+            const m = String(ev.date_key).match(/^(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);
+            const t = String(ev.time).match(/^(\d{1,2}):(\d{2})$/);
             if (!m || !t) return null;
 
             // 캘린더의 날짜/시간은 기존 화면 기준 한국시간(KST)으로 처리합니다.
@@ -3364,7 +3409,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
                 const importanceWidth = Math.max(0, Math.min(100, importanceScore));
-                const alarmKey = getCalendarEventKey(ev).replace(/'/g, "\\'");
+                const alarmKey = getCalendarEventKey(ev);
                 const alarmActive = !!getCalendarAlarms()[getCalendarEventKey(ev)];
 
 
@@ -3426,7 +3471,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                         </div>
                         <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
-                                onclick="event.stopPropagation(); toggleCalendarAlarm(${JSON.stringify(ev).replace(/`/g, '\\`')})"
+                                onclick="event.stopPropagation(); toggleCalendarAlarmByKey(encodeURIComponent('${alarmKey}'))"
                                 title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
                                 aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">${alarmActive
     ? '<svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>'
@@ -3764,266 +3809,284 @@ HTML_PAGE = """<!DOCTYPE html>
                     setTxt('rStop', q.stop_p);
                     setTxt('rGuideText', q.guide_text);
                 }
-
-
                 // 3.5 "왜 움직였을까?" 원인 분석 렌더링
-                // 기존 데이터만 사용하고, 초보자가 이해하기 쉬운 설명형 코멘트를 생성합니다.
                 const mr = data.movement_reason;
                 const mrCard = document.getElementById('movementReasonCard');
-
                 if (mrCard && mr) {
-                    const reasons = Array.isArray(mr.reasons) ? mr.reasons : [];
-                    const getReason = (key) => reasons.find(r => r.key === key) || null;
-                    const market = getReason('market');
-                    const theme = getReason('theme');
-                    const material = getReason('material');
-                    const flow = getReason('flow');
-                    const technical = getReason('technical');
+                    const confidenceStyle =
+                        mr.confidence === '높음'
+                            ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+                            : mr.confidence === '중간'
+                                ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+                                : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
 
-                    const positiveReasons = reasons.filter(r => Number(r.score || 0) > 0);
-                    const negativeReasons = reasons.filter(r => Number(r.score || 0) < 0);
-                    const evidenceCount = reasons.filter(r => Number(r.score || 0) !== 0).length;
+                    const evidenceReasons = mr.reasons || [];
+                    const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
+                    const evidenceDirection = Number(mr.total_score || 0) < 0 ? 'negative' : 'positive';
 
-                    const safe = (value) => String(value ?? '')
-                        .replace(/&/g, '&amp;')
-                        .replace(/</g, '&lt;')
-                        .replace(/>/g, '&gt;')
-                        .replace(/"/g, '&quot;')
-                        .replace(/'/g, '&#039;');
+                    // --------------------------------------------------------
+                    // 개미들아 코멘트
+                    // 기존 movement_reason 데이터만 사용합니다.
+                    // 데이터 카드/수급/퀀트/차트 데이터는 건드리지 않습니다.
+                    // --------------------------------------------------------
+                    const reasonByKey = {};
+                    evidenceReasons.forEach(r => { reasonByKey[r.key] = r; });
 
-                    const newsList = Array.isArray(data.stock_news) ? data.stock_news : [];
-                    const firstNews = newsList.find(n => n && n.title);
-                    const newsTitle = firstNews ? String(firstNews.title) : '';
+                    const marketReason = reasonByKey['market'];
+                    const themeReason = reasonByKey['theme'];
+                    const materialReason = reasonByKey['material'];
+                    const flowReason = reasonByKey['flow'];
+                    const technicalReason = reasonByKey['technical'];
 
-                    const candles = Array.isArray(data.candles) ? data.candles : [];
-                    let priceChange = null;
-                    let volumeRatio = null;
+                    const positiveReasons = evidenceReasons.filter(r => Number(r.score || 0) > 0);
+                    const negativeReasons = evidenceReasons.filter(r => Number(r.score || 0) < 0);
 
-                    if (candles.length >= 2) {
-                        const todayClose = Number(candles[candles.length - 1].close);
-                        const previousClose = Number(candles[candles.length - 2].close);
-                        if (Number.isFinite(todayClose) && Number.isFinite(previousClose) && previousClose !== 0) {
-                            priceChange = ((todayClose - previousClose) / previousClose) * 100;
+                    const detailText = (r) => String(r && r.detail ? r.detail : '').trim();
+
+                    const explainTheme = (detail) => {
+                        const d = String(detail || '');
+                        if (/AI|인공지능/i.test(d)) {
+                            return 'AI 테마는 인공지능 서비스를 만드는 데 필요한 반도체·서버·장비·소프트웨어 같은 산업을 말해. AI 투자가 늘면 관련 제품과 서비스의 수요가 커질 수 있어서 관련 기업들이 함께 움직일 수 있어.';
                         }
-                    }
-
-                    if (candles.length >= 6) {
-                        const todayVolume = Number(candles[candles.length - 1].volume || 0);
-                        const previousVolumes = candles.slice(-6, -1)
-                            .map(c => Number(c.volume || 0))
-                            .filter(v => Number.isFinite(v) && v > 0);
-                        if (todayVolume > 0 && previousVolumes.length > 0) {
-                            const avgVolume = previousVolumes.reduce((a, b) => a + b, 0) / previousVolumes.length;
-                            if (avgVolume > 0) volumeRatio = (todayVolume / avgVolume) * 100;
+                        if (/반도체/i.test(d)) {
+                            return '반도체 테마는 컴퓨터·스마트폰·자동차·데이터센터 등에 들어가는 반도체와 관련 장비·부품 산업을 말해. AI와 데이터센터 투자가 늘면 고성능 반도체 수요가 커질 수 있어 관련 기업들이 함께 주목받을 수 있어.';
                         }
-                    }
+                        if (/로봇/i.test(d)) {
+                            return '로봇 테마는 산업용 로봇·협동로봇·서비스 로봇·휴머노이드와 관련 부품·장비 산업을 말해. 자동화 투자가 늘거나 로봇 시장 성장 기대가 커지면 관련 기업들이 함께 움직일 수 있어.';
+                        }
+                        if (/바이오|제약/i.test(d)) {
+                            return '바이오·제약 테마는 신약 개발·임상·의약품과 관련된 산업을 말해. 임상 결과나 신약 승인, 기술이전 같은 재료가 나오면 기업가치에 대한 기대가 크게 달라질 수 있어.';
+                        }
+                        if (/2차전지|배터리/i.test(d)) {
+                            return '2차전지 테마는 전기차와 에너지저장장치 등에 쓰이는 충전식 배터리와 소재·장비 산업을 말해. 전기차 판매나 배터리 투자, 신규 수주가 늘면 관련 기업들의 성장 기대가 커질 수 있어.';
+                        }
+                        if (/원전|원자력/i.test(d)) {
+                            return '원전 테마는 원자력발전소와 원자로, 관련 부품·장비 산업을 말해. 원전 건설 확대나 해외 수주, 정책 변화가 나오면 관련 기업들이 함께 주목받을 수 있어.';
+                        }
+                        if (/방산|국방/i.test(d)) {
+                            return '방산 테마는 전투기·함정·레이더 등 군사 장비를 개발하고 생산하는 산업을 말해. 국방비 증가나 해외 수주가 나오면 관련 기업의 매출 기대가 커질 수 있어.';
+                        }
+                        if (/우주|위성/i.test(d)) {
+                            return '우주 테마는 위성·발사체·우주통신 등 우주산업과 관련된 기업을 말해. 정부와 민간의 투자가 늘거나 관련 계약이 나오면 관련 기업들이 함께 관심을 받을 수 있어.';
+                        }
+                        return '테마는 같은 산업이나 비슷한 재료를 공유하는 종목들이 함께 움직이는 흐름을 말해. 그래서 관련 뉴스나 투자 기대가 커지면 여러 종목이 동시에 움직일 수 있어.';
+                    };
 
-                    const comments = [];
+                    let commentParts = [];
 
-                    // 첫 문장: 관심을 끌되 과장하지 않음
+                    // 첫 문장
                     if (mr.direction === '상승') {
-                        comments.push('<strong>개미들아, 오늘은 그냥 오른 게 아니야.</strong>');
+                        commentParts.push('<strong>개미들아, 오늘은 그냥 오른 게 아니야.</strong>');
                     } else if (mr.direction === '하락') {
-                        comments.push('<strong>개미들아, 오늘은 그냥 빠진 게 아니야.</strong>');
+                        commentParts.push('<strong>개미들아, 오늘은 그냥 빠진 게 아니야.</strong>');
                     } else {
-                        comments.push('<strong>개미들아, 오늘 움직임은 여러 신호가 섞여 있어.</strong>');
-                    }
-
-                    // 주가 변화
-                    if (priceChange !== null) {
-                        if (priceChange > 0.5) {
-                            comments.push(
-                                `오늘 주가는 <strong>${priceChange >= 0 ? '+' : ''}${priceChange.toFixed(2)}%</strong> 움직였어. ` +
-                                `이제 시장, 테마, 재료, 거래량, 기술적 흐름을 차례대로 보면 왜 움직였는지 훨씬 쉽게 이해할 수 있어.`
-                            );
-                        } else if (priceChange < -0.5) {
-                            comments.push(
-                                `오늘 주가는 <strong>${priceChange.toFixed(2)}%</strong> 하락했어. ` +
-                                `지금 확인되는 데이터에서 하락에 영향을 줄 만한 부분을 하나씩 볼게.`
-                            );
-                        }
+                        commentParts.push('<strong>개미들아, 오늘 움직임을 하나씩 풀어볼게.</strong>');
                     }
 
                     // 시장
-                    if (market && Number(market.score || 0) !== 0) {
-                        const score = Number(market.score || 0);
-                        const detail = safe(market.detail || '');
-                        if (score > 0) {
-                            comments.push(
-                                `<strong>시장 분위기도 좋았어.</strong> ${detail}. ` +
-                                `시장 전체가 올라가면 투자자들의 위험 선호가 커지면서 개별 종목에도 매수세가 들어오는 영향을 줄 수 있어.`
+                    if (marketReason && Number(marketReason.score || 0) !== 0) {
+                        const md = detailText(marketReason);
+                        if (Number(marketReason.score || 0) > 0) {
+                            commentParts.push(
+                                `시장이 좋았어. ${md || '시장 전체가 상승 흐름을 보였어.'} ` +
+                                '시장이 강하게 올라가면 투자자들의 위험선호가 커지면서 개별 종목에도 매수세가 들어오는 영향을 줄 수 있어.'
                             );
                         } else {
-                            comments.push(
-                                `<strong>반대로 시장 분위기는 부담스러웠어.</strong> ${detail}. ` +
-                                `이런 상황에서도 종목이 버티거나 오른다면 시장 전체 흐름보다 개별 재료가 더 강하게 작용했는지 볼 필요가 있어.`
+                            commentParts.push(
+                                `시장은 반대로 부담스러운 분위기였어. ${md || '시장 전체가 약한 흐름을 보였어.'} ` +
+                                '이런 상황에서도 종목이 버티거나 오른다면 시장 전체보다 개별 재료가 더 강하게 작용했는지 확인할 필요가 있어.'
                             );
                         }
                     }
 
                     // 테마
-                    if (theme && Number(theme.score || 0) !== 0) {
-                        const themeDetail = String(theme.detail || '');
-                        const detectedTheme =
-                            /AI|인공지능/i.test(themeDetail) ? 'AI' :
-                            /반도체/i.test(themeDetail) ? '반도체' :
-                            /로봇/i.test(themeDetail) ? '로봇' :
-                            /바이오|제약/i.test(themeDetail) ? '바이오·제약' :
-                            /2차전지|배터리/i.test(themeDetail) ? '2차전지' :
-                            /원전|원자력/i.test(themeDetail) ? '원전' :
-                            /방산|방위산업/i.test(themeDetail) ? '방산' :
-                            /우주|위성/i.test(themeDetail) ? '우주' : '관련 업종';
-
-                        const themeExplain = {
-                            'AI': 'AI 테마는 인공지능 서비스를 만드는 데 필요한 반도체·서버·장비·소프트웨어 등을 말해. AI 투자가 늘어나면 관련 제품과 서비스를 필요로 하는 곳도 많아질 수 있어서 관련 기업들이 함께 주목받는 경우가 있어.',
-                            '반도체': '반도체는 컴퓨터와 스마트폰, 자동차, 데이터센터 등에 들어가는 핵심 부품이야. 특히 AI와 데이터센터 투자가 늘어나면 고성능 반도체 수요가 커질 수 있어서 관련 기업들이 함께 움직일 수 있어.',
-                            '로봇': '로봇 테마는 산업용 로봇, 협동로봇, 서비스 로봇, 휴머노이드와 관련 부품·장비 등을 말해. 자동화 투자가 늘거나 로봇 시장이 커질 것이라는 기대가 생기면 관련 기업들이 함께 주목받을 수 있어.',
-                            '바이오·제약': '바이오·제약은 신약 개발과 임상시험, 의약품 생산 등을 다루는 산업이야. 임상 결과나 신약 승인, 기술이전 같은 소식 하나가 기업의 미래 가치에 큰 영향을 줄 수 있어.',
-                            '2차전지': '2차전지는 전기차와 에너지저장장치 등에 사용하는 충전식 배터리야. 전기차 판매와 배터리 투자, 신규 수주 같은 재료가 나오면 관련 기업들의 성장 기대가 커질 수 있어.',
-                            '원전': '원전 테마는 원자력발전소와 원자로, 관련 부품과 장비를 만드는 산업이야. 원전 건설 확대나 해외 수주, 정책 변화가 나오면 관련 기업들이 함께 주목받을 수 있어.',
-                            '방산': '방산은 전투기와 함정, 레이더 등 군사 장비를 개발하고 생산하는 산업이야. 국방비 증가나 해외 수주가 나오면 관련 기업의 매출 증가 기대가 커질 수 있어.',
-                            '우주': '우주 테마는 위성, 발사체, 우주통신 등 우주산업과 관련된 기업들이야. 정부와 민간의 우주 투자가 늘거나 관련 계약이 나오면 관련 기업에 대한 관심이 커질 수 있어.'
-                        };
-
-                        comments.push(
-                            `<strong>관련 업종도 같이 움직였어.</strong> ` +
-                            `${themeExplain[detectedTheme] || `${detectedTheme}와 관련된 종목들이 함께 주목받는 흐름이야.`} ` +
-                            `이 종목은 <strong>${safe(data.name || '이 종목')}</strong>으로, 현재 잡힌 ${detectedTheme} 관련 키워드와 연결돼 있어. ` +
-                            `그래서 이번 움직임이 이 종목만의 움직임인지, 관련 업종 전체가 같이 움직이는지 확인하는 게 중요해.`
-                        );
-                    }
-
-                    // 기업 재료 + 실제 뉴스 제목
-                    if (material && Number(material.score || 0) !== 0) {
-                        const score = Number(material.score || 0);
-                        if (score > 0) {
-                            comments.push(
-                                `<strong>여기에 기업 재료까지 확인됐어.</strong> ` +
-                                (newsTitle
-                                    ? `오늘 확인된 주요 내용은 <strong>'${safe(newsTitle)}'</strong>이야. `
-                                    : `기업과 관련된 긍정적인 재료가 확인됐어. `) +
-                                `이런 뉴스가 중요한 이유는 단순히 기사가 나왔기 때문이 아니야. ` +
-                                `실적, 수주, 신규 사업처럼 실제 사업과 연결되는 내용이라면 앞으로 벌어들일 돈에 대한 기대가 달라질 수 있어.`
+                    if (themeReason && Number(themeReason.score || 0) !== 0) {
+                        const td = detailText(themeReason);
+                        if (Number(themeReason.score || 0) > 0) {
+                            commentParts.push(
+                                `관련 업종·테마도 같이 움직였어. ${td ? `현재 확인된 내용은 ${td}야. ` : ''}` +
+                                explainTheme(td) + ' 이 종목도 이 산업과 연결돼 있기 때문에 테마 전체의 움직임이 주가에 영향을 주고 있는지 확인할 필요가 있어.'
                             );
                         } else {
-                            comments.push(
-                                `<strong>기업 쪽에는 부담이 될 수 있는 재료도 확인됐어.</strong> ` +
-                                (newsTitle ? `'${safe(newsTitle)}'라는 내용이 확인됐어. ` : '') +
-                                `뉴스 제목만 보기보다는 이 내용이 실제 매출이나 실적에 얼마나 영향을 주는지 확인해야 해.`
-                            );
-                        }
-                    } else if (newsTitle) {
-                        comments.push(
-                            `<strong>기업 관련 뉴스도 하나 확인됐어.</strong> '${safe(newsTitle)}'이라는 내용이야. ` +
-                            `다만 이 뉴스가 오늘 주가의 직접적인 원인이라고 단정하지는 말고 거래량과 다른 흐름도 같이 봐야 해.`
-                        );
-                    }
-
-                    // 거래량
-                    if (volumeRatio !== null) {
-                        if (volumeRatio >= 200) {
-                            comments.push(
-                                `<strong>그리고 오늘 거래량이 확 달라졌어.</strong> ` +
-                                `최근 5거래일 평균을 100으로 보면 오늘 거래량은 약 <strong>${volumeRatio.toFixed(0)}%</strong> 수준이야. ` +
-                                `쉽게 말하면 평소보다 훨씬 많은 돈과 사람들이 이 종목의 매매에 참여했다는 뜻이야. ` +
-                                `특히 주가가 오르면서 거래량도 같이 늘었다면 가격만 올라간 게 아니라 실제 매매 참여도 커졌다는 점이 중요해.`
-                            );
-                        } else if (volumeRatio >= 120) {
-                            comments.push(
-                                `<strong>거래량도 평소보다 늘었어.</strong> ` +
-                                `최근 5거래일 평균 대비 약 <strong>${volumeRatio.toFixed(0)}%</strong> 수준이야. ` +
-                                `쉽게 말하면 평소보다 많은 투자자가 이 종목을 사고팔고 있다는 뜻이야. ` +
-                                `특히 주가가 오르면서 거래량까지 증가했다면 상승에 실제 매수 참여가 붙고 있는지 확인해볼 필요가 있어.`
-                            );
-                        } else if (volumeRatio <= 70) {
-                            comments.push(
-                                `<strong>그런데 거래량은 오히려 줄었어.</strong> ` +
-                                `최근 5거래일 평균 대비 약 <strong>${volumeRatio.toFixed(0)}%</strong> 수준이야. ` +
-                                `가격은 움직이고 있지만 거래 참여가 평소보다 적다는 뜻이라서 현재 움직임이 얼마나 강한지는 조금 더 확인해야 해.`
+                            commentParts.push(
+                                `관련 업종·테마에서는 부담스러운 흐름이 보여. ${td ? `현재 확인된 내용은 ${td}야. ` : ''}` +
+                                explainTheme(td) + ' 그런데도 이 종목이 움직인다면 개별 종목 재료가 업종 흐름보다 강한지 같이 봐야 해.'
                             );
                         }
                     }
 
-                    // 기존 수급/거래 흐름
-                    if (flow && Number(flow.score || 0) !== 0) {
-                        const score = Number(flow.score || 0);
-                        const detail = safe(flow.detail || '');
-                        if (score > 0) {
-                            comments.push(
-                                `<strong>거래 흐름도 같은 방향이야.</strong> ${detail}. ` +
-                                `주가가 움직이는 것과 거래 흐름이 함께 좋아졌다는 점이 오늘 상승을 이해하는 데 도움이 돼.`
+                    // 기업 재료 / 뉴스
+                    if (materialReason && Number(materialReason.score || 0) !== 0) {
+                        const newsList = Array.isArray(data.stock_news) ? data.stock_news : [];
+                        const newsTitle = newsList.length && newsList[0] && newsList[0].title ? String(newsList[0].title).trim() : '';
+                        const rd = detailText(materialReason);
+
+                        if (Number(materialReason.score || 0) > 0) {
+                            commentParts.push(
+                                '<strong>여기에 기업 재료도 확인돼.</strong> ' +
+                                (newsTitle ? `오늘 확인된 주요 뉴스는 '${newsTitle}'이야. ` : '') +
+                                (rd ? `${rd}. ` : '') +
+                                '이런 재료가 중요한 이유는 회사의 매출이나 실적, 신규 사업과 연결될 가능성이 있다면 투자자들의 미래 기대를 바꿀 수 있기 때문이야.'
                             );
                         } else {
-                            comments.push(
-                                `<strong>다만 거래 흐름에서는 조심할 부분도 보여.</strong> ${detail}. ` +
-                                `주가가 오르더라도 거래 흐름이 따라오지 않는다면 상승이 얼마나 이어질지는 조금 더 확인해야 해.`
+                            commentParts.push(
+                                '<strong>다만 기업 쪽에는 부담이 될 수 있는 재료도 있어.</strong> ' +
+                                (newsTitle ? `오늘 확인된 주요 뉴스는 '${newsTitle}'이야. ` : '') +
+                                (rd ? `${rd}. ` : '') +
+                                '뉴스 제목만 볼 게 아니라 실제 회사의 실적이나 사업에 어떤 영향을 주는지 확인해야 해.'
                             );
                         }
                     }
 
-                    // 기술적 흐름
-                    if (technical && Number(technical.score || 0) !== 0) {
-                        const score = Number(technical.score || 0);
-                        const detail = safe(technical.detail || '');
-                        if (score > 0) {
-                            comments.push(
-                                `<strong>가격 흐름도 상승 쪽이야.</strong> ${detail}. ` +
-                                `20일선은 최근 약 한 달 동안의 평균 가격을 보는 기준이라고 생각하면 쉬워. ` +
-                                `현재 가격이 20일선 위에 있다면 최근 평균 가격보다 높은 곳에서 움직이고 있다는 뜻이야.`
+                    // 거래량·수급
+                    if (flowReason && Number(flowReason.score || 0) !== 0) {
+                        const fd = detailText(flowReason);
+                        if (Number(flowReason.score || 0) > 0) {
+                            commentParts.push(
+                                '<strong>거래량도 같이 봐야 해.</strong> ' +
+                                (fd ? `${fd}. ` : '') +
+                                '쉽게 말하면 가격만 움직인 게 아니라 실제로 매매에 참여한 투자자와 돈의 움직임도 커졌다는 뜻이야. 특히 주가가 오르면서 거래량이 함께 증가했다면 상승에 실제 매수 참여가 붙었는지 확인하는 데 중요한 자료가 될 수 있어.'
                             );
                         } else {
-                            comments.push(
-                                `<strong>가격 흐름에서는 조심할 부분이 있어.</strong> ${detail}. ` +
-                                `20일선 아래에서 움직인다면 단기 상승 흐름이 약해졌는지 확인할 필요가 있어.`
+                            commentParts.push(
+                                '<strong>그런데 거래량·수급에서는 조심할 부분도 보여.</strong> ' +
+                                (fd ? `${fd}. ` : '') +
+                                '주가가 움직이더라도 거래 참여가 같은 방향으로 따라오는지 확인해야 현재 움직임의 힘을 판단할 수 있어.'
                             );
                         }
                     }
 
-                    // 최종 종합
+                    // 기술적 흐름: 20일선과 최근 5거래일을 따로 해석
+                    if (technicalReason && Number(technicalReason.score || 0) !== 0) {
+                        const xd = detailText(technicalReason);
+                        const isAbove = /20일선\s*상회/.test(xd);
+                        const recentMatch = xd.match(/최근\s*5거래일\s*([+-]?[0-9.]+)%/);
+                        const recent = recentMatch ? Number(recentMatch[1]) : null;
+
+                        if (isAbove) {
+                            let text = '<strong>가격 흐름은 20일선 위에 있어.</strong> ';
+                            text += '20일선은 최근 약 한 달 동안의 평균 가격을 보는 기준이야. 현재 가격이 그 위에 있다는 건 최근 평균보다 높은 위치에서 움직이고 있다는 뜻이야. ';
+                            if (recent !== null && recent < 0) {
+                                text += `다만 최근 5거래일 수익률은 ${recent.toFixed(2)}%라서 최근 며칠 동안은 주가가 밀렸다는 뜻이야. `;
+                                text += '그래서 지금은 단순히 상승 추세라고 보기보다, 20일선 위에서 나온 반등이 실제 추세 전환인지 확인하는 단계로 보는 게 더 정확해.';
+                            } else if (recent !== null) {
+                                text += `최근 5거래일 수익률도 ${recent >= 0 ? '+' : ''}${recent.toFixed(2)}%라서 단기 흐름도 같은 방향인지 함께 확인할 수 있어.`;
+                            }
+                            commentParts.push(text);
+                        } else {
+                            let text = '<strong>가격 흐름에서는 조심할 부분이 있어.</strong> ';
+                            text += '현재 주가가 20일선 아래라면 최근 한 달 평균 가격보다 낮은 위치에서 움직이고 있다는 뜻이야. ';
+                            if (recent !== null) text += `최근 5거래일 수익률은 ${recent >= 0 ? '+' : ''}${recent.toFixed(2)}%야. `;
+                            text += '그래서 단기 반등이 나오더라도 20일선을 다시 회복하는지 확인하는 게 중요해.';
+                            commentParts.push(text);
+                        }
+                    }
+
+                    // 최종 종합: 실제 근거 수와 방향을 사용
                     if (mr.direction === '상승') {
-                        if (positiveReasons.length >= 4) {
-                            comments.push(
-                                `<strong>정리하면 오늘은 시장 + 테마 + 재료 + 거래량 + 기술적 흐름이 같은 방향으로 겹친 날이야.</strong> ` +
-                                `여러 데이터가 동시에 좋아졌다는 점에서 오늘 상승을 설명할 수 있는 근거가 비교적 많은 상황이야. ` +
-                                `다만 이것만으로 앞으로 계속 오른다고 단정할 수는 없어. 다음 거래에서도 거래량과 수급, 가격 흐름이 이어지는지 확인하는 게 중요해.`
+                        if (positiveReasons.length >= 3) {
+                            commentParts.push(
+                                '<strong>정리하면 오늘은 시장 + 테마 + 재료 + 거래량 + 기술적 흐름 가운데 여러 신호가 같은 방향으로 겹친 날이야.</strong> ' +
+                                '그래서 오늘 움직임을 설명할 수 있는 근거가 비교적 많은 상황이야. 다만 이것만으로 앞으로 계속 오른다고 단정할 수는 없어. 다음 거래에서 거래량과 수급, 가격 흐름이 계속 이어지는지 확인하는 게 중요해.'
                             );
                         } else if (positiveReasons.length >= 2) {
-                            comments.push(
-                                `<strong>정리하면 오늘 상승을 설명할 수 있는 근거가 몇 가지 겹쳤어.</strong> ` +
-                                `하지만 모든 데이터가 같은 방향으로 움직이는 건 아니야. ` +
-                                `내일도 거래량과 수급이 이어지는지 확인하면서 봐야 해.`
+                            commentParts.push(
+                                '<strong>정리하면 상승을 뒷받침하는 근거가 몇 가지 확인돼.</strong> ' +
+                                '하지만 모든 신호가 같은 방향으로 움직이는 건 아니기 때문에 지금 확인된 재료가 다음 거래에서도 이어지는지 확인하는 게 좋아.'
                             );
                         } else {
-                            comments.push(
-                                `<strong>정리하면 주가는 올랐지만 뚜렷한 원인을 하나로 정하기는 어려워.</strong> ` +
-                                `확인되지 않은 재료를 억지로 연결하기보다는 추가 뉴스와 거래량, 수급이 어떻게 이어지는지 확인하는 게 좋아.`
+                            commentParts.push(
+                                '<strong>정리하면 아직 상승 원인을 하나로 확정하기는 어려워.</strong> ' +
+                                '확인되지 않은 이유를 억지로 붙이기보다 추가 뉴스와 거래량, 수급, 가격 흐름이 이어지는지 확인하는 게 좋아.'
                             );
                         }
                     } else if (mr.direction === '하락') {
                         if (negativeReasons.length >= 3) {
-                            comments.push(
-                                `<strong>정리하면 오늘 하락과 연결되는 신호가 여러 곳에서 확인되고 있어.</strong> ` +
-                                `뉴스와 거래량, 시장 분위기, 가격 흐름을 함께 보면서 이번 하락이 일시적인 움직임인지 계속 이어지는 흐름인지 확인할 필요가 있어.`
+                            commentParts.push(
+                                '<strong>정리하면 오늘 하락과 연결되는 신호가 여러 곳에서 같이 나타났어.</strong> ' +
+                                '기업 재료와 시장, 거래량, 가격 흐름이 같은 방향인지 보면서 이번 하락이 일시적인 움직임인지 계속 이어지는지 확인할 필요가 있어.'
                             );
                         } else {
-                            comments.push(
-                                `<strong>정리하면 오늘 하락을 설명할 수 있는 근거가 일부 확인돼.</strong> ` +
-                                `하지만 하나의 데이터만 보고 원인을 정하기보다는 다음 거래에서 거래량과 수급, 가격 흐름이 어떻게 이어지는지 보는 게 중요해.`
+                            commentParts.push(
+                                '<strong>정리하면 하락을 설명할 수 있는 근거는 일부 확인돼.</strong> ' +
+                                '하지만 하나의 이유만으로 단정하지 말고 다음 거래에서 뉴스와 거래량, 수급, 가격 흐름이 어떻게 이어지는지 확인하는 게 좋아.'
                             );
                         }
                     } else {
-                        comments.push(
-                            `<strong>정리하면 오늘은 좋은 신호와 부담스러운 신호가 섞여 있어.</strong> ` +
-                            `지금 데이터만으로 한 방향을 단정하기보다는 새로운 뉴스가 나오는지, 거래량과 수급이 어느 방향으로 움직이는지 확인하는 게 좋아.`
+                        commentParts.push(
+                            '<strong>정리하면 오늘은 좋은 신호와 부담스러운 신호가 섞여 있어.</strong> ' +
+                            '지금 데이터만으로 한 방향을 단정하기보다는 어떤 신호가 다음 거래에서도 계속 이어지는지 확인하는 게 좋아.'
                         );
                     }
 
+                    const gaemiComment = commentParts.join('\n\n');
+
+                    const movementIconMap = {
+                        '시장': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>',
+                        '업종·테마': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><circle cx="16" cy="16" r="3"></circle><path d="M10.5 10.5l3 3"></path></svg>',
+                        '기업 재료': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"></path><path d="M15 3v4h4M9 12h6M9 16h6"></path></svg>',
+                        '거래량·수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
+                        '기술': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18l5-5 4 3 7-8"></path><path d="M4 4v16h16"></path></svg>'
+                    };
+
+                    const reasonRows = evidenceReasons.map(r => {
+                        const score = Number(r.score || 0);
+                        const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
+                        const fillPct = score === 0 ? 0 : Math.min(100, 50 + Math.abs(score) * 25);
+                        const statusStyle = score > 0
+                            ? 'background:rgba(16,185,129,0.12);color:#10b981;'
+                            : score < 0
+                                ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
+                                : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
+                        const meterColor = score > 0 ? '#10b981' : (score < 0 ? '#ef4444' : '#94a3b8');
+                        const icon = movementIconMap[r.label] || '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v8M8 12h8"></path></svg>';
+
+                        return `
+                            <div class="movement-reason-row">
+                                <div class="movement-reason-top">
+                                    <div class="movement-reason-title">
+                                        ${icon}
+                                        <span class="movement-reason-name">${r.label}</span>
+                                    </div>
+                                    <span class="movement-reason-status" style="${statusStyle}">${status}</span>
+                                </div>
+                                <div class="movement-reason-detail">${r.detail}</div>
+                                <div class="movement-reason-meter">
+                                    <div class="movement-reason-meter-track">
+                                        <div class="movement-reason-meter-fill" style="width:${fillPct}%;background:${meterColor};"></div>
+                                    </div>
+                                    <div class="movement-reason-meter-value">${score > 0 ? '+' : ''}${score}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+
+                    const evidenceSegments = Array.from({ length: 5 }, (_, i) => {
+                        const active = i < evidenceCount ? ' active' + (evidenceDirection === 'negative' ? ' negative' : '') : '';
+                        return `<span class="movement-evidence-seg${active}"></span>`;
+                    }).join('');
+
                     mrCard.innerHTML = `
-                        <div style="font-size:0.88rem;color:var(--text-sub);line-height:1.82;letter-spacing:-0.02em;word-break:keep-all;">
-                            ${comments.map(text => `<div style="margin-bottom:13px;">${text}</div>`).join('')}
+                        <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:10px;">
+                            <span style="font-size:0.66rem;font-weight:800;padding:3px 7px;border-radius:10px;white-space:nowrap;${confidenceStyle}">근거 ${mr.confidence}</span>
                         </div>
-                        <div style="margin-top:4px;padding-top:9px;border-top:1px solid var(--border-line);font-size:0.66rem;color:var(--text-muted);">
-                            확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}
+
+                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:14px;">
+                            ${gaemiComment}
+                        </div>
+
+                        <div class="movement-evidence-summary">
+                            <div class="movement-evidence-head">
+                                <span class="movement-evidence-label">확인된 근거</span>
+                                <span class="movement-evidence-count">${evidenceCount} / 5</span>
+                            </div>
+                            <div class="movement-evidence-track">${evidenceSegments}</div>
+                        </div>
+
+                        ${reasonRows}
+
+                        <div style="margin-top:9px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">
+                            ※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.
                         </div>
                     `;
                 }

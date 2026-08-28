@@ -204,19 +204,19 @@ def make_dynamic_gaemi_comment(evidence=None, theme_result=None, us_kr_result=No
             "🐜 개미들아! 오늘은 뉴스·공시 쪽을 먼저 볼 만해 👀",
         ],
         "foreign": [
-            "🐜 개미들아! 오늘은 외국인 수급이 눈에 들어와 👀",
+            "오늘은 외국인 수급이 눈에 들어와.",
             "🐜 개미들아! 외국인 쪽 매수 흐름이 꽤 눈에 띄네.",
         ],
         "institution": [
-            "🐜 개미들아! 오늘은 기관 수급이 눈에 들어와 👀",
+            "오늘은 기관 수급이 눈에 들어와.",
             "🐜 개미들아! 기관 쪽 움직임을 같이 볼 필요가 있어.",
         ],
         "program": [
-            "🐜 개미들아! 오늘은 프로그램 흐름이 눈에 들어와 👀",
+            "오늘은 프로그램 흐름이 눈에 들어와.",
             "🐜 개미들아! 프로그램 매매가 움직임에 같이 붙고 있어.",
         ],
         "turnover": [
-            "🐜 개미들아! 오늘은 거래대금이 확 눈에 들어와 👀",
+            "오늘은 거래대금이 확 눈에 들어와.",
             "🐜 개미들아! 돈이 들어오는 속도가 꽤 눈에 띄네.",
         ],
         "volume": [
@@ -314,7 +314,7 @@ def make_strong_gaemi_comment(evidence=None, news_items=None, us_kr_result=None,
 
         source_line = f"\n출처: {source}" if source else ""
         return (
-            "🐜 개미들아! 오늘은 이 재료부터 보자 👀\n\n"
+            "오늘은 이 재료부터 보자.\n\n"
             + detail
             + source_line
             + "\n\n"
@@ -324,12 +324,12 @@ def make_strong_gaemi_comment(evidence=None, news_items=None, us_kr_result=None,
 
     # No concrete news: use the strongest non-material signal.
     fallback = [
-        ("program", "프로그램", "🐜 개미들아! 오늘은 프로그램 흐름이 눈에 들어와 👀"),
-        ("foreign", "외국인 수급", "🐜 개미들아! 오늘은 외국인 수급이 눈에 들어와 👀"),
-        ("institution", "기관 수급", "🐜 개미들아! 오늘은 기관 수급이 눈에 들어와 👀"),
-        ("turnover", "거래대금", "🐜 개미들아! 오늘은 거래대금이 확 눈에 들어와 👀"),
-        ("volume", "거래량", "🐜 개미들아! 오늘은 거래량이 눈에 띄네 👀"),
-        ("sector", "업종·테마", "🐜 개미들아! 오늘은 업종·테마 흐름이 눈에 들어와 👀"),
+        ("program", "프로그램", "오늘은 프로그램 흐름이 눈에 들어와."),
+        ("foreign", "외국인 수급", "오늘은 외국인 수급이 눈에 들어와."),
+        ("institution", "기관 수급", "오늘은 기관 수급이 눈에 들어와."),
+        ("turnover", "거래대금", "오늘은 거래대금이 확 눈에 들어와."),
+        ("volume", "거래량", "오늘은 거래량이 눈에 띄네."),
+        ("sector", "업종·테마", "오늘은 업종·테마 흐름이 눈에 들어와."),
     ]
     scored = []
     for key, label, sentence in fallback:
@@ -345,7 +345,7 @@ def make_strong_gaemi_comment(evidence=None, news_items=None, us_kr_result=None,
         _, sentence, label = scored[0]
         return sentence + f"\n\n{label} 흐름을 중심으로 오늘 움직임을 확인해보자."
 
-    return "🐜 개미들아! 오늘은 딱 하나의 이유로 설명하기 어렵네 👀 확인된 데이터부터 차근차근 보자."
+    return "오늘은 딱 하나의 이유로 설명하기 어렵네. 확인된 데이터부터 차근차근 보자."
 
 
 def analyze_us_kr_relation(news_items=None, us_items=None, kr_items=None):
@@ -4812,7 +4812,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     }).join('');
 
                     mrCard.innerHTML = `
-<div style="font-size:0.72rem;font-weight:800;color:var(--text-title);margin-bottom:6px;">🐜 개미 코멘트</div>
+
 <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:12px;">
                             ${gaemiComment}
                         </div>

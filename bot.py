@@ -2029,24 +2029,25 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         /* 1행: 차트(좌) & 증시(우) - 높이 100% 동기화 */
-        #rowChart { grid-column: 1; grid-row: 1; height: 100%; }
-        #rowWorld { grid-column: 2; grid-row: 1; height: 100%; }
+        #rowCause { grid-column: 1; grid-row: 1; }
+        #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
+        #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* 2행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
-        #rowQuant { grid-column: 1; grid-row: 2; height: 100%; }
-        #rowCalendar { grid-column: 2; grid-row: 2; height: 100%; }
-
-        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 동기화 */
+        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 1:1 대칭 */
         #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
         #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
 
+        /* 4행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
+        #rowQuant { grid-column: 1; grid-row: 4; height: 100%; }
+        #rowCalendar { grid-column: 2; grid-row: 4; height: 100%; }
+
         /* 좌측 832px 단독 배치 행들 */
-        #rowConsensus { grid-column: 1; grid-row: 4; }
-        #rowVote { grid-column: 1; grid-row: 5; }
-        #rowComment { grid-column: 1; grid-row: 6; }
-        #rowDart { grid-column: 1; grid-row: 7; }
-        #rowSignal { grid-column: 1; grid-row: 8; }
-        #rowTelegram { grid-column: 1; grid-row: 9; }
+        #rowConsensus { grid-column: 1; grid-row: 5; }
+        #rowVote { grid-column: 1; grid-row: 6; }
+        #rowComment { grid-column: 1; grid-row: 7; }
+        #rowDart { grid-column: 1; grid-row: 8; }
+        #rowSignal { grid-column: 1; grid-row: 9; }
+        #rowTelegram { grid-column: 1; grid-row: 10; }
 
         .card {
             background: var(--bg-card);
@@ -2626,7 +2627,7 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
 
-                        <!-- 2행 좌측: 퀀트 분석 (832px) -->
+                        <!-- 4행 좌측: 퀀트 분석 (832px) -->
                         <div class="card" id="rowQuant">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
@@ -2683,10 +2684,17 @@ HTML_PAGE = """<!DOCTYPE html>
                                 <div id="quantDetailList"></div>
                             </div>
 
-                            <div id="movementReasonCard" style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border-line);"></div>
                         </div>
 
-                        <!-- 2행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
+                        <!-- 차트 바로 위: 독립된 개미들아! 카드 -->
+                        <div class="card" id="rowCause" style="justify-content:flex-start;">
+                            <div class="board-header" style="margin-bottom:10px;">
+                                <span class="board-header-title">개미들아! 이 종목 왜 움직였을까?</span>
+                            </div>
+                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;"></div>
+                        </div>
+
+                        <!-- 4행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
                         <div class="card" id="rowCalendar">
                             <div>
                                 <div class="cal-top-title-area">
@@ -3204,24 +3212,6 @@ HTML_PAGE = """<!DOCTYPE html>
             ].join('|');
         }
 
-        const CALENDAR_EVENT_REGISTRY = new Map();
-
-        function registerCalendarEvent(ev) {
-            const key = getCalendarEventKey(ev);
-            CALENDAR_EVENT_REGISTRY.set(key, ev);
-            return encodeURIComponent(key);
-        }
-
-        async function toggleCalendarAlarmByKey(encodedKey) {
-            const key = decodeURIComponent(encodedKey);
-            const ev = CALENDAR_EVENT_REGISTRY.get(key);
-            if (!ev) {
-                alert('캘린더 데이터를 다시 불러와주세요.');
-                return;
-            }
-            await toggleCalendarAlarm(ev);
-        }
-
         async function toggleCalendarAlarm(ev) {
             const key = getCalendarEventKey(ev);
             const alarms = getCalendarAlarms();
@@ -3257,8 +3247,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function parseCalendarEventTime(ev) {
             if (!ev || !ev.date_key || !ev.time) return null;
-            const m = String(ev.date_key).match(/^(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);
-            const t = String(ev.time).match(/^(\\d{1,2}):(\\d{2})$/);
+            const m = String(ev.date_key).match(/^([0-9]{4})[./-]([0-9]{1,2})[./-]([0-9]{1,2})$/);
+            const t = String(ev.time).match(/^([0-9]{1,2}):([0-9]{2})$/);
             if (!m || !t) return null;
 
             // 캘린더의 날짜/시간은 기존 화면 기준 한국시간(KST)으로 처리합니다.
@@ -3382,7 +3372,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
                 const importanceWidth = Math.max(0, Math.min(100, importanceScore));
-                const alarmKey = registerCalendarEvent(ev);
+                const alarmKey = getCalendarEventKey(ev).replace(/'/g, "\\'");
                 const alarmActive = !!getCalendarAlarms()[getCalendarEventKey(ev)];
 
 
@@ -3444,7 +3434,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                         </div>
                         <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
-                                onclick="event.stopPropagation(); toggleCalendarAlarmByKey('${alarmKey}')"
+                                onclick="event.stopPropagation(); toggleCalendarAlarm(${JSON.stringify(ev).replace(/`/g, '\\`')})"
                                 title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
                                 aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">${alarmActive
     ? '<svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>'
@@ -3782,66 +3772,89 @@ HTML_PAGE = """<!DOCTYPE html>
                     setTxt('rStop', q.stop_p);
                     setTxt('rGuideText', q.guide_text);
                 }
+                // 3.5 "왜 움직였을까?" 원인 분석 렌더링
+                const mr = data.movement_reason;
+                const mrCard = document.getElementById('movementReasonCard');
+                if (mrCard && mr) {
+                    const confidenceStyle =
+                        mr.confidence === '높음'
+                            ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+                            : mr.confidence === '중간'
+                                ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+                                : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
 
+                    const reasonRows = (mr.reasons || []).map(r => {
+                        const score = Number(r.score || 0);
+                        const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
+                        const statusStyle = score > 0
+                            ? 'background:rgba(16,185,129,0.12);color:#10b981;'
+                            : score < 0
+                                ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
+                                : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
 
-                try {
-                    // 3.5 "왜 움직였을까?" 원인 분석 렌더링
-                    const mr = data.movement_reason;
-                    const mrCard = document.getElementById('movementReasonCard');
-                    if (mrCard && mr) {
-                        const directionText =
-                            mr.direction === '상승' ? '상승 원인' :
-                            mr.direction === '하락' ? '하락 원인' :
-                            '움직임 원인';
-
-                        const confidenceStyle =
-                            mr.confidence === '높음'
-                                ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
-                                : mr.confidence === '중간'
-                                    ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
-                                    : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
-
-                        const reasonRows = (mr.reasons || []).map(r => {
-                            const score = Number(r.score || 0);
-                            const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
-                            const statusStyle = score > 0
-                                ? 'background:rgba(16,185,129,0.12);color:#10b981;'
-                                : score < 0
-                                    ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
-                                    : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
-
-                            return `
-                                <div class="quant-row-item">
-                                    <div class="quant-row-left">
-                                        <span class="quant-row-name">${r.label}</span>
-                                        <span style="font-size:0.66rem;font-weight:700;padding:2px 6px;border-radius:8px;${statusStyle}">${status}</span>
-                                    </div>
-                                    <div class="quant-row-right" style="max-width:65%;">
-                                        <div class="quant-row-val" style="font-size:0.74rem;white-space:normal;line-height:1.35;">${r.detail}</div>
-                                    </div>
+                        return `
+                            <div class="quant-row-item">
+                                <div class="quant-row-left">
+                                    <span class="quant-row-name">${r.label}</span>
+                                    <span style="font-size:0.66rem;font-weight:700;padding:2px 6px;border-radius:8px;${statusStyle}">${status}</span>
                                 </div>
-                            `;
-                        }).join('');
-
-                        const evidenceCount = (mr.reasons || []).filter(x => Number(x.score || 0) !== 0).length;
-
-                        mrCard.innerHTML = `
-                            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
-                                <div style="font-size:1.02rem;font-weight:800;color:var(--text-title);">🔥 ${directionText} — 왜 움직였을까?</div>
-                                <span style="font-size:0.66rem;font-weight:800;padding:3px 7px;border-radius:10px;white-space:nowrap;${confidenceStyle}">근거 ${mr.confidence}</span>
+                                <div class="quant-row-right" style="max-width:65%;">
+                                    <div class="quant-row-val" style="font-size:0.74rem;white-space:normal;line-height:1.35;">${r.detail}</div>
+                                </div>
                             </div>
-                            <div style="font-size:0.82rem;color:var(--text-sub);line-height:1.55;margin-bottom:10px;">${mr.summary}</div>
-                            <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:5px;">확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}</div>
-                            ${reasonRows}
-                            <div style="margin-top:8px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.</div>
                         `;
+                    }).join('');
+
+                    const evidenceCount = (mr.reasons || []).filter(x => Number(x.score || 0) !== 0).length;
+
+                    // 사용자 확정 문구:
+                    // - 근거 0~1개: 근거 부족
+                    // - 근거 2개 이상 + 상승/하락/혼조: 방향별 코멘트
+                    let gaemiComment = '';
+                    if (evidenceCount <= 1) {
+                        gaemiComment =
+                            "🐜 개미들아, 잠깐만 🤔\n" +
+                            "주가는 올랐는데 아직 뚜렷한 근거가 충분하지 않아.\n" +
+                            "괜히 아는 척하지 말고 확인되는 데이터부터 보자.";
+                    } else if (mr.direction === '상승') {
+                        gaemiComment =
+                            "🐜 개미들아! 오늘은 좀 수상한데? 👀\n\n" +
+                            "시장, 업종, 재료, 거래량 같은 신호가 여러 곳에서 같이 붙었어.\n" +
+                            "특히 업종·테마 쪽이 눈에 들어와. 과거에도 이런 조합이 있었는지 한번 확인해보자.";
+                    } else if (mr.direction === '하락') {
+                        gaemiComment =
+                            "🐜 개미들아… 오늘 분위기가 좀 싸늘하네 🥶\n\n" +
+                            "하락 쪽으로 여러 근거가 같이 나타났어.\n" +
+                            "특히 시장 쪽이 눈에 들어와. 과거에도 비슷했는지 확인해보자.";
+                    } else {
+                        gaemiComment =
+                            "🐜 음… 오늘은 좀 복잡한데? 🤔\n\n" +
+                            "좋은 신호와 약한 신호가 서로 엇갈리고 있어.\n" +
+                            "섣불리 결론 내리지 말고 과거 사례를 확인해보자.";
                     }
 
-                } catch (movementRenderError) {
-                    console.error('[movement_reason] 렌더링 오류:', movementRenderError);
-                    const safeCard = document.getElementById('movementReasonCard');
-                    if (safeCard) safeCard.innerHTML = '<div style="color:var(--text-muted);font-size:.82rem;">움직임 원인 데이터를 확인하는 중입니다.</div>';
+                    mrCard.innerHTML = `
+                        <div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:8px;">
+                            <span style="font-size:0.66rem;font-weight:800;padding:3px 7px;border-radius:10px;white-space:nowrap;${confidenceStyle}">근거 ${mr.confidence}</span>
+                        </div>
+
+                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:12px;">
+                            ${gaemiComment}
+                        </div>
+
+                        <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:5px;">
+                            확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}
+                        </div>
+
+                        ${reasonRows}
+
+                        <div style="margin-top:8px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">
+                            ※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.
+                        </div>
+                    `;
                 }
+
+
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {

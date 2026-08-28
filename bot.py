@@ -174,67 +174,79 @@ def fetch_naver_realtime_index(index_code):
 
 
 def fetch_naver_index_5day_returns(index_code="KOSPI"):
-    """최근 5거래일 시장 수익률 흐름.
-    실시간 현재값은 기존 KRX/Naver 경로를 유지하고,
-    과거 5거래일은 기존 사이트에서 이미 사용하는 Yahoo Chart API로 조회한다.
-    별도 웹 API 인증키가 필요하지 않다.
+    """최근 5거래일 KOSPI/KOSDAQ 수익률 흐름.
+    기존 국내 주가 차트에서 이미 사용하는 Naver 공개 fchart endpoint를 사용한다.
+    별도 API 인증키가 필요하지 않다.
     """
     try:
-        symbol = "^KS11" if str(index_code).upper() == "KOSPI" else "^KQ11"
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(symbol)}?range=10d&interval=1d"
-        res = HTTP_SESSION.get(url, timeout=3.0)
+        # Naver fchart: KOSPI=1001, KOSDAQ=2001
+        code = "1001" if str(index_code).upper() == "KOSPI" else "2001"
+        index_name = "KOSPI" if code == "1001" else "KOSDAQ"
+
+        url = (
+            f"https://fchart.stock.naver.com/sise.nhn"
+            f"?symbol={code}&timeframe=day&count=15&requestType=0"
+        )
+        res = HTTP_SESSION.get(
+            url,
+            timeout=3.0,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/xml,text/xml,*/*",
+                "Accept-Language": "ko-KR,ko;q=0.9",
+            },
+        )
         res.raise_for_status()
-        payload = res.json()
 
-        result = (payload.get("chart") or {}).get("result") or []
-        if not result:
-            return None
-
-        item = result[0]
-        timestamps = item.get("timestamp") or []
-        quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
-        closes = quote.get("close") or []
-
+        root = ET.fromstring(res.content)
         rows = []
-        for ts, close in zip(timestamps, closes):
-            if close is None:
+
+        for it in root.findall(".//item"):
+            raw = str(it.get("data", ""))
+            parts = raw.split("|")
+            if len(parts) < 6:
                 continue
+
             try:
-                close_f = float(close)
+                date_str = parts[0].strip()
+                close = float(parts[4].replace(",", "").strip())
             except Exception:
                 continue
-            if close_f <= 0:
-                continue
-            dt = datetime.fromtimestamp(int(ts), tz=timezone.utc).astimezone(KST)
-            rows.append({
-                "date": dt.strftime("%Y-%m-%d"),
-                "close": close_f,
-            })
 
-        # 중복 제거 후 오래된 날짜 -> 최신 날짜
-        dedup = {}
-        for row in rows:
-            dedup[row["date"]] = row
-        rows = [dedup[k] for k in sorted(dedup)]
+            if close > 0:
+                rows.append({
+                    "date": date_str,
+                    "close": close,
+                })
+
+        rows.sort(key=lambda x: x["date"])
 
         if len(rows) < 6:
+            print(f"[MARKET 5D] {index_name}: insufficient rows={len(rows)}")
             return None
 
         last6 = rows[-6:]
-        points = []
         base = last6[0]["close"]
+        points = []
 
         for i in range(1, len(last6)):
             prev_close = last6[i - 1]["close"]
             close = last6[i]["close"]
-            daily_return = ((close / prev_close) - 1.0) * 100.0 if prev_close else 0.0
-            cumulative = ((close / base) - 1.0) * 100.0 if base else 0.0
+
+            daily_return = (
+                ((close / prev_close) - 1.0) * 100.0
+                if prev_close else 0.0
+            )
+            cumulative_return = (
+                ((close / base) - 1.0) * 100.0
+                if base else 0.0
+            )
 
             points.append({
                 "date": last6[i]["date"],
                 "close": round(close, 2),
                 "daily_return": round(daily_return, 2),
-                "cumulative_return": round(cumulative, 2),
+                "cumulative_return": round(cumulative_return, 2),
             })
 
         total_return = points[-1]["cumulative_return"]
@@ -251,15 +263,15 @@ def fetch_naver_index_5day_returns(index_code="KOSPI"):
             score = 0
 
         return {
-            "index_name": "KOSPI" if symbol == "^KS11" else "KOSDAQ",
+            "index_name": index_name,
             "score": score,
-            "detail": f"{'KOSPI' if symbol == '^KS11' else 'KOSDAQ'} 최근 5거래일 {total_return:+.2f}%",
+            "detail": f"{index_name} 최근 5거래일 {total_return:+.2f}%",
             "total_return": round(total_return, 2),
             "points": points,
-            "source": "Yahoo Finance historical",
+            "source": "Naver Finance fchart",
         }
     except Exception as exc:
-        print(f"[MARKET 5D] failed: {exc}")
+        print(f"[MARKET 5D] {index_name if 'index_name' in locals() else index_code} failed: {exc}")
         return None
 
 def fetch_single_world_item(item):

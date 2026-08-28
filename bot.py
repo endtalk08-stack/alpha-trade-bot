@@ -1895,7 +1895,7 @@ if TELEGRAM_TOKEN:
 # ----------------------------------------------------
 # 8. 웹 프론트엔드 UI
 # ----------------------------------------------------
-HTML_PAGE = """<!DOCTYPE html>
+HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
@@ -3212,6 +3212,22 @@ HTML_PAGE = """<!DOCTYPE html>
             ].join('|');
         }
 
+        async function toggleCalendarAlarmByKey(encodedKey) {
+            let key;
+            try {
+                key = decodeURIComponent(encodedKey);
+            } catch (e) {
+                console.error('[calendar] invalid alarm key:', e);
+                return;
+            }
+            const alarms = getCalendarAlarms();
+            const entries = Object.values(alarms || {});
+            const target = entries.find(item => item && getCalendarEventKey(item.event) === key);
+            if (target && target.event) {
+                await toggleCalendarAlarm(target.event);
+            }
+        }
+
         async function toggleCalendarAlarm(ev) {
             const key = getCalendarEventKey(ev);
             const alarms = getCalendarAlarms();
@@ -3247,8 +3263,8 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function parseCalendarEventTime(ev) {
             if (!ev || !ev.date_key || !ev.time) return null;
-            const m = String(ev.date_key).match(/^([0-9]{4})[./-]([0-9]{1,2})[./-]([0-9]{1,2})$/);
-            const t = String(ev.time).match(/^([0-9]{1,2}):([0-9]{2})$/);
+            const m = String(ev.date_key).match(/^(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);
+            const t = String(ev.time).match(/^(\d{1,2}):(\d{2})$/);
             if (!m || !t) return null;
 
             // 캘린더의 날짜/시간은 기존 화면 기준 한국시간(KST)으로 처리합니다.
@@ -3372,7 +3388,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
 
                 const importanceWidth = Math.max(0, Math.min(100, importanceScore));
-                const alarmKey = getCalendarEventKey(ev).replace(/'/g, "\\'");
+                const alarmKey = getCalendarEventKey(ev);
                 const alarmActive = !!getCalendarAlarms()[getCalendarEventKey(ev)];
 
 
@@ -3434,7 +3450,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
                         </div>
                         <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
-                                onclick="event.stopPropagation(); toggleCalendarAlarm(${JSON.stringify(ev).replace(/`/g, '\\`')})"
+                                onclick="event.stopPropagation(); toggleCalendarAlarmByKey(encodeURIComponent('${alarmKey}'))"
                                 title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
                                 aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">${alarmActive
     ? '<svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>'

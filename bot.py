@@ -2032,13 +2032,13 @@ HTML_PAGE = """<!DOCTYPE html>
         #rowChart { grid-column: 1; grid-row: 1; height: 100%; }
         #rowWorld { grid-column: 2; grid-row: 1; height: 100%; }
 
-        /* 2행: 종목 뉴스(좌) & 캘린더(우) - 높이 100% 동기화 */
+        /* 2행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 1:1 대칭 */
         #rowNews { grid-column: 1; grid-row: 2; height: 100%; }
-        #rowCalendar { grid-column: 2; grid-row: 2; height: 100%; }
+        #rowGlobalNews { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* 3행: 퀀트 분석(좌) & 해외 뉴스(우) - 높이 100% 동기화 */
+        /* 3행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
         #rowQuant { grid-column: 1; grid-row: 3; height: 100%; }
-        #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
+        #rowCalendar { grid-column: 2; grid-row: 3; height: 100%; }
 
         /* 좌측 832px 단독 배치 행들 */
         #rowConsensus { grid-column: 1; grid-row: 4; }

@@ -1360,6 +1360,295 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}"
     }
 
+
+# ----------------------------------------------------
+# 5.5 "왜 움직였을까?" 원인 분석 엔진
+# ----------------------------------------------------
+# 주의: 이 엔진은 현재 확보된 데이터의 근거 강도를 계산합니다.
+# 실제 인과관계를 100% 증명하는 예측기가 아닙니다.
+
+MOVEMENT_THEME_KEYWORDS = {
+    "반도체": ["삼성전자", "sk하이닉스", "하이닉스", "마이크론", "엔비디아", "nvidia", "amd", "asml", "tsmc", "반도체", "hbm", "dram", "nand", "ai"],
+    "AI": ["ai", "인공지능", "엔비디아", "nvidia", "데이터센터", "gpu", "hbm", "클라우드"],
+    "로봇": ["로봇", "robot", "robotics", "휴머노이드", "자동화", "협동로봇"],
+    "바이오": ["바이오", "제약", "신약", "임상", "hlb", "셀트리온", "리가켐"],
+    "2차전지": ["배터리", "2차전지", "이차전지", "전기차", "리튬", "양극재", "음극재", "에코프로", "lg에너지"],
+    "원전": ["원전", "원자력", "두산에너빌리티", "smr", "원자로", "nuclear"],
+    "방산": ["방산", "방위산업", "미사일", "전투기", "한화에어로", "lignex1", "l3harris"],
+    "우주": ["우주", "위성", "스페이스x", "spacex", "로켓", "satellite"]
+}
+
+POSITIVE_NEWS_KEYWORDS = [
+    "수주", "계약", "공급", "실적 개선", "어닝 서프라이즈", "호실적", "흑자전환",
+    "증가", "확대", "돌파", "신제품", "개발", "투자", "증설", "승인", "특허",
+    "협력", "파트너십", "수혜", "목표가 상향", "상향", "강세", "급등", "사상 최대", "최대 실적"
+]
+
+NEGATIVE_NEWS_KEYWORDS = [
+    "적자", "감소", "하락", "급락", "손실", "부진", "하향", "목표가 하향", "유상증자",
+    "전환사채", "소송", "리콜", "취소", "철회", "지연", "악재", "우려", "규제", "횡령", "배임"
+]
+
+
+def _movement_rate_to_float(value):
+    try:
+        if value is None:
+            return None
+        s = str(value).replace("%", "").replace(",", "").strip()
+        if s in ("", "-", "--"):
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def _find_world_item(world_board, names):
+    if not world_board:
+        return None
+    name_set = {str(x).upper() for x in names}
+    for item in world_board:
+        if str(item.get("name", "")).upper() in name_set:
+            return item
+    return None
+
+
+def _news_sentiment_score(news_list):
+    positive = 0
+    negative = 0
+    evidence = []
+    if not news_list:
+        return positive, negative, evidence
+
+    for news in news_list:
+        title = str(news.get("title", "")).lower()
+        pos_hits = [k for k in POSITIVE_NEWS_KEYWORDS if k.lower() in title]
+        neg_hits = [k for k in NEGATIVE_NEWS_KEYWORDS if k.lower() in title]
+
+        if pos_hits:
+            positive += min(2, len(pos_hits))
+            evidence.append({
+                "title": str(news.get("title", "")),
+                "type": "positive",
+                "keywords": pos_hits[:3]
+            })
+        if neg_hits:
+            negative += min(2, len(neg_hits))
+            evidence.append({
+                "title": str(news.get("title", "")),
+                "type": "negative",
+                "keywords": neg_hits[:3]
+            })
+
+    return positive, negative, evidence
+
+
+def _detect_theme(formal_name, stock_news):
+    text_parts = [str(formal_name)]
+    for news in (stock_news or []):
+        text_parts.append(str(news.get("title", "")))
+    text = " ".join(text_parts).lower()
+
+    theme_scores = {}
+    for theme, keywords in MOVEMENT_THEME_KEYWORDS.items():
+        score = sum(1 for keyword in keywords if keyword.lower() in text)
+        if score > 0:
+            theme_scores[theme] = score
+
+    if not theme_scores:
+        return None, 0
+    theme = max(theme_scores, key=theme_scores.get)
+    return theme, theme_scores[theme]
+
+
+def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures):
+    """현재 데이터에서 주가 움직임을 시장/테마/재료/거래량/기술로 분해한다."""
+    reasons = []
+
+    try:
+        raw_price = float(raw_price)
+    except Exception:
+        raw_price = None
+
+    # 1. 시장
+    market_score = 0
+    market_detail = "시장 영향 확인 필요"
+
+    kospi = _find_world_item(world_board, ["코스피"])
+    kosdaq = _find_world_item(world_board, ["코스닥"])
+    qqq = _find_world_item(world_board, ["QQQ"])
+    spy = _find_world_item(world_board, ["SPY"])
+
+    if market_name in ("국내주식", "국내증시"):
+        ref = kospi if kospi and kospi.get("rate") != "-" else kosdaq
+        if ref:
+            rate = _movement_rate_to_float(ref.get("rate"))
+            if rate is not None:
+                if rate >= 1.0:
+                    market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
+                elif rate >= 0.3:
+                    market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
+                elif rate <= -1.0:
+                    market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
+                elif rate <= -0.3:
+                    market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
+                else:
+                    market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
+    elif market_name == "미국주식":
+        ref = qqq if qqq and qqq.get("rate") != "-" else spy
+        if ref:
+            rate = _movement_rate_to_float(ref.get("rate"))
+            if rate is not None:
+                if rate >= 1.0:
+                    market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
+                elif rate >= 0.3:
+                    market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
+                elif rate <= -1.0:
+                    market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
+                elif rate <= -0.3:
+                    market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
+                else:
+                    market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
+    else:
+        market_detail = "시장 공통 요인 영향 낮음"
+
+    reasons.append({"key": "market", "label": "시장", "score": market_score, "detail": market_detail})
+
+    # 2. 업종/테마
+    theme, theme_hits = _detect_theme(formal_name, stock_news)
+    theme_score = 0
+    theme_detail = "뚜렷한 테마 근거 없음"
+
+    if theme:
+        sector_rate = None
+        if theme in ("반도체", "AI"):
+            soxx = _find_world_item(world_board, ["SOXX"])
+            if soxx:
+                sector_rate = _movement_rate_to_float(soxx.get("rate"))
+
+        if sector_rate is not None:
+            if sector_rate >= 1.0:
+                theme_score, theme_detail = 2, f"{theme} 업종 강세 · SOXX {sector_rate:+.2f}%"
+            elif sector_rate >= 0.3:
+                theme_score, theme_detail = 1, f"{theme} 업종 동반 상승 · SOXX {sector_rate:+.2f}%"
+            elif sector_rate <= -1.0:
+                theme_score, theme_detail = -2, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
+            elif sector_rate <= -0.3:
+                theme_score, theme_detail = -1, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
+            else:
+                theme_detail = f"{theme} 테마 감지 · 업종 움직임 제한적"
+        else:
+            theme_score = min(1, theme_hits)
+            theme_detail = f"{theme} 관련 키워드 {theme_hits}건 감지"
+
+    reasons.append({"key": "theme", "label": "업종·테마", "score": theme_score, "detail": theme_detail})
+
+    # 3. 기업 재료
+    news_positive, news_negative, news_evidence = _news_sentiment_score(stock_news)
+    disclosure_positive = 0
+    disclosure_negative = 0
+    for item in (dart_disclosures or []):
+        tag_type = str(item.get("tag_type", ""))
+        if tag_type == "positive":
+            disclosure_positive += 1
+        elif tag_type == "negative":
+            disclosure_negative += 1
+
+    net_material = news_positive + disclosure_positive * 2 - news_negative - disclosure_negative * 2
+    if net_material >= 3:
+        material_score = 2
+        material_detail = f"긍정 재료 다수 · 뉴스 +{news_positive}, 공시 +{disclosure_positive}"
+    elif net_material > 0:
+        material_score = 1
+        material_detail = f"긍정 재료 존재 · 뉴스 +{news_positive}, 공시 +{disclosure_positive}"
+    elif net_material <= -3:
+        material_score = -2
+        material_detail = f"부정 재료 우세 · 뉴스 -{news_negative}, 공시 -{disclosure_negative}"
+    elif net_material < 0:
+        material_score = -1
+        material_detail = f"부정 재료 존재 · 뉴스 -{news_negative}, 공시 -{disclosure_negative}"
+    else:
+        material_score = 0
+        material_detail = "최근 강한 기업 재료 확인 안 됨"
+
+    reasons.append({"key": "material", "label": "기업 재료", "score": material_score, "detail": material_detail})
+
+    # 4. 거래량/수급
+    flow_score = 0
+    flow_detail = "거래량 변화 제한적"
+    try:
+        if df is not None and len(df) >= 6:
+            close = df["Close"].astype(float)
+            volume = df["Volume"].astype(float)
+            current_close = float(close.iloc[-1])
+            previous_close = float(close.iloc[-2])
+            current_volume = float(volume.iloc[-1])
+            avg_volume = float(volume.tail(6).iloc[:-1].mean())
+            price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
+            volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
+
+            if price_change >= 1.0 and volume_ratio >= 150:
+                flow_score, flow_detail = 2, f"상승 +{price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
+            elif price_change >= 0.3 and volume_ratio >= 120:
+                flow_score, flow_detail = 1, f"상승 +{price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
+            elif price_change <= -1.0 and volume_ratio >= 150:
+                flow_score, flow_detail = -2, f"하락 {price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
+            elif price_change <= -0.3 and volume_ratio >= 120:
+                flow_score, flow_detail = -1, f"하락 {price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
+            else:
+                flow_detail = f"거래량 {volume_ratio:.0f}%"
+    except Exception:
+        pass
+
+    reasons.append({"key": "flow", "label": "거래량·수급", "score": flow_score, "detail": flow_detail})
+
+    # 5. 기술
+    technical_score = 0
+    technical_detail = "기술적 방향성 중립"
+    try:
+        if df is not None and len(df) >= 20 and raw_price is not None:
+            close = df["Close"].astype(float)
+            ma20 = float(close.tail(20).mean())
+            recent_return = ((float(close.iloc[-1]) / float(close.iloc[-6]) - 1) * 100) if float(close.iloc[-6]) else 0
+            if raw_price >= ma20 and recent_return >= 2.0:
+                technical_score, technical_detail = 2, f"20일선 상회 + 최근 5거래일 {recent_return:+.2f}%"
+            elif raw_price >= ma20:
+                technical_score, technical_detail = 1, f"20일선 상회 · 최근 5거래일 {recent_return:+.2f}%"
+            elif raw_price < ma20 and recent_return <= -2.0:
+                technical_score, technical_detail = -2, f"20일선 하회 + 최근 5거래일 {recent_return:.2f}%"
+            elif raw_price < ma20:
+                technical_score, technical_detail = -1, f"20일선 하회 · 최근 5거래일 {recent_return:+.2f}%"
+    except Exception:
+        pass
+
+    reasons.append({"key": "technical", "label": "기술", "score": technical_score, "detail": technical_detail})
+
+    total_score = sum(int(x["score"]) for x in reasons)
+    positive_count = sum(1 for x in reasons if x["score"] > 0)
+    negative_count = sum(1 for x in reasons if x["score"] < 0)
+    evidence_count = sum(1 for x in reasons if x["score"] != 0)
+
+    confidence = "높음" if evidence_count >= 4 else ("중간" if evidence_count >= 2 else "낮음")
+    direction = "상승" if total_score >= 4 else ("하락" if total_score <= -4 else "혼조")
+    sorted_reasons = sorted(reasons, key=lambda x: abs(int(x["score"])), reverse=True)
+    main_reason = sorted_reasons[0]["label"] if sorted_reasons else "-"
+
+    if direction == "상승":
+        summary = f"{main_reason} 요인이 가장 강하게 나타났고, 전체적으로 상승에 우호적인 근거가 {positive_count}개 확인됩니다."
+    elif direction == "하락":
+        summary = f"{main_reason} 요인이 가장 강하게 나타났고, 전체적으로 하락에 우호적인 근거가 {negative_count}개 확인됩니다."
+    else:
+        summary = "시장·재료·수급·기술 요인이 서로 엇갈려 단일 원인으로 설명하기 어려운 상태입니다."
+
+    return {
+        "direction": direction,
+        "confidence": confidence,
+        "total_score": total_score,
+        "main_reason": main_reason,
+        "summary": summary,
+        "reasons": reasons,
+        "news_evidence": news_evidence[:5]
+    }
+
 # ----------------------------------------------------
 # 6. 전체 통합 파이프라인
 # ----------------------------------------------------
@@ -1452,6 +1741,17 @@ def run_full_pipeline(query):
     market_calendar = CACHED_MARKET_CALENDAR if CACHED_MARKET_CALENDAR else fetch_real_market_calendar_live()
     
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
+
+    movement_reason = analyze_movement_reason(
+        raw_price=raw_price,
+        df=df,
+        formal_name=formal_name,
+        market_name=market_name,
+        world_board=world_board,
+        stock_news=stock_news,
+        dart_disclosures=dart_disclosures
+    )
+
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -1500,6 +1800,7 @@ def run_full_pipeline(query):
         "time": now_str,
         "now_str": now_str,
         "quant": quant,
+        "movement_reason": movement_reason,
         "consensus": consensus,
         "stock_news": stock_news,
         "global_news": global_news,
@@ -2381,6 +2682,8 @@ HTML_PAGE = """<!DOCTYPE html>
                             <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
                                 <div id="quantDetailList"></div>
                             </div>
+
+                            <div id="movementReasonCard" style="margin-top:14px; padding-top:14px; border-top:1px solid var(--border-line);"></div>
                         </div>
 
                         <!-- 2행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
@@ -3460,6 +3763,59 @@ HTML_PAGE = """<!DOCTYPE html>
                     setTxt('rTarget2', q.target2);
                     setTxt('rStop', q.stop_p);
                     setTxt('rGuideText', q.guide_text);
+                }
+
+
+                // 3.5 "왜 움직였을까?" 원인 분석 렌더링
+                const mr = data.movement_reason;
+                const mrCard = document.getElementById('movementReasonCard');
+                if (mrCard && mr) {
+                    const directionText =
+                        mr.direction === '상승' ? '상승 원인' :
+                        mr.direction === '하락' ? '하락 원인' :
+                        '움직임 원인';
+
+                    const confidenceStyle =
+                        mr.confidence === '높음'
+                            ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+                            : mr.confidence === '중간'
+                                ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+                                : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+
+                    const reasonRows = (mr.reasons || []).map(r => {
+                        const score = Number(r.score || 0);
+                        const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
+                        const statusStyle = score > 0
+                            ? 'background:rgba(16,185,129,0.12);color:#10b981;'
+                            : score < 0
+                                ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
+                                : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
+
+                        return `
+                            <div class="quant-row-item">
+                                <div class="quant-row-left">
+                                    <span class="quant-row-name">${r.label}</span>
+                                    <span style="font-size:0.66rem;font-weight:700;padding:2px 6px;border-radius:8px;${statusStyle}">${status}</span>
+                                </div>
+                                <div class="quant-row-right" style="max-width:65%;">
+                                    <div class="quant-row-val" style="font-size:0.74rem;white-space:normal;line-height:1.35;">${r.detail}</div>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+
+                    const evidenceCount = (mr.reasons || []).filter(x => Number(x.score || 0) !== 0).length;
+
+                    mrCard.innerHTML = `
+                        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+                            <div style="font-size:1.02rem;font-weight:800;color:var(--text-title);">🔥 ${directionText} — 왜 움직였을까?</div>
+                            <span style="font-size:0.66rem;font-weight:800;padding:3px 7px;border-radius:10px;white-space:nowrap;${confidenceStyle}">근거 ${mr.confidence}</span>
+                        </div>
+                        <div style="font-size:0.82rem;color:var(--text-sub);line-height:1.55;margin-bottom:10px;">${mr.summary}</div>
+                        <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:5px;">확인된 근거 ${evidenceCount}/5 · 종합점수 ${mr.total_score > 0 ? '+' : ''}${mr.total_score}</div>
+                        ${reasonRows}
+                        <div style="margin-top:8px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">※ 현재 확보된 시장·뉴스·공시·거래량·기술 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.</div>
+                    `;
                 }
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링

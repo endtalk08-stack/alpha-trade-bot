@@ -1,546 +1,418 @@
-// ============================================================
-// 개미들아 코멘트
-// 기존 데이터만 사용
-// 말투: 쉽고 자연스럽게 / 초보자용 / 센스 있게
-// ============================================================
+# ----------------------------------------------------
+# 움직임 원인 카드 - 초보자용 설명 코멘트
+# 기존 데이터만 사용
+# ----------------------------------------------------
 
-function buildGaemiComment(mr, data) {
+def get_movement_comment(
+    change_pct,
+    volume_ratio=None,
+    stock_news=None,
+    dart_disclosures=None
+):
+    """
+    기존에 수집된 데이터만 이용해서
+    초보자가 이해하기 쉬운 설명형 코멘트를 만든다.
 
-    if (!mr) {
-        return "아직 확인할 수 있는 데이터가 충분하지 않아.";
-    }
+    새로운 데이터 수집 없음.
+    고정된 가짜 숫자 없음.
+    """
 
-    const reasons = Array.isArray(mr.reasons)
-        ? mr.reasons
-        : [];
+    comments = []
 
-    const getReason = (key) => {
-        return reasons.find(r => r.key === key) || null;
-    };
+    # ------------------------------------------------
+    # 1. 주가
+    # ------------------------------------------------
 
-    const market = getReason("market");
-    const theme = getReason("theme");
-    const material = getReason("material");
-    const flow = getReason("flow");
-    const technical = getReason("technical");
+    try:
+        change = float(change_pct)
+    except (TypeError, ValueError):
+        change = None
 
-    const positiveReasons = reasons.filter(
-        r => Number(r.score || 0) > 0
-    );
+    if change is None:
 
-    const negativeReasons = reasons.filter(
-        r => Number(r.score || 0) < 0
-    );
+        comments.append(
+            "오늘 주가 움직임을 정확하게 확인하기는 어려워."
+        )
 
-    const comments = [];
+    elif change > 0.5:
 
-    // --------------------------------------------------------
-    // 숫자 변환
-    // --------------------------------------------------------
+        comments.append(
+            f"개미들아, 오늘은 그냥 오른 게 아니야.\n\n"
+            f"오늘 주가가 {change:+.2f}% 상승하고 있어. "
+            f"이제부터 왜 올랐는지 확인되는 데이터 하나씩 볼게."
+        )
 
-    function num(value) {
+    elif change < -0.5:
+
+        comments.append(
+            f"개미들아, 오늘은 그냥 빠진 게 아니야.\n\n"
+            f"오늘 주가가 {change:+.2f}% 하락하고 있어. "
+            f"현재 확인되는 데이터를 기준으로 왜 움직였는지 볼게."
+        )
+
+    else:
+
+        comments.append(
+            "개미들아, 오늘은 주가 움직임이 크지 않아.\n\n"
+            "지금 확인되는 데이터에서 특별한 변화가 있는지 하나씩 볼게."
+        )
+
+
+    # ------------------------------------------------
+    # 2. 뉴스 / 기업 재료
+    # ------------------------------------------------
+
+    news_list = stock_news or []
+
+    valid_news = []
+
+    for item in news_list:
+
+        if not isinstance(item, dict):
+            continue
+
+        title = str(
+            item.get("title")
+            or item.get("headline")
+            or ""
+        ).strip()
+
+        if title:
+            valid_news.append(title)
+
+    if valid_news:
+
+        news_title = valid_news[0]
+
+        if change is not None and change > 0.5:
+
+            comments.append(
+                "여기에 기업 관련 뉴스도 확인됐어.\n\n"
+                f"오늘 확인된 주요 내용은 '{news_title}'이야.\n\n"
+                "뉴스가 중요한 이유는 단순히 기사 하나가 나왔다는 게 아니야. "
+                "회사의 매출이나 실적, 신규 사업, 수주 같은 실제 사업과 연결되는 "
+                "내용이라면 투자자들이 앞으로 벌어들일 돈에 대한 기대를 바꿀 수 있어.\n\n"
+                "다만 뉴스가 좋다고 무조건 주가가 계속 오르는 건 아니야. "
+                "이미 시장에 알려진 내용인지, 실제 거래량과 주가가 어떻게 반응했는지도 "
+                "같이 봐야 해."
+            )
+
+        elif change is not None and change < -0.5:
+
+            comments.append(
+                "기업 쪽에서도 오늘 주가에 영향을 줄 수 있는 뉴스가 확인됐어.\n\n"
+                f"확인된 주요 내용은 '{news_title}'이야.\n\n"
+                "중요한 건 뉴스 제목만 보고 판단하는 게 아니야. "
+                "이 내용이 실제 매출이나 실적, 사업에 어떤 영향을 줄 수 있는지 "
+                "확인해야 오늘 하락과 연결해서 볼 수 있어."
+            )
+
+        else:
+
+            comments.append(
+                "기업 관련 뉴스도 확인됐어.\n\n"
+                f"주요 내용은 '{news_title}'이야.\n\n"
+                "다만 현재 주가 움직임과 이 뉴스가 직접 연결됐다고 "
+                "단정하기보다는 거래량과 다른 데이터도 함께 확인해야 해."
+            )
+
+    else:
+
+        comments.append(
+            "그런데 현재 확인되는 종목 뉴스에서는 "
+            "오늘 움직임을 바로 설명할 만한 뚜렷한 내용이 충분하지 않아.\n\n"
+            "확인되지 않은 재료를 억지로 연결하기보다는 "
+            "실제로 확인되는 데이터만 가지고 보는 게 좋아."
+        )
+
+
+    # ------------------------------------------------
+    # 3. 거래량
+    # ------------------------------------------------
+
+    if volume_ratio is not None:
+
+        try:
+            ratio = float(volume_ratio)
+        except (TypeError, ValueError):
+            ratio = None
+
+        if ratio is not None:
+
+            if ratio >= 200:
+
+                comments.append(
+                    "그리고 오늘 거래량이 확 달라졌어.\n\n"
+                    f"최근 5거래일 평균을 100으로 보면 "
+                    f"오늘 거래량은 약 {ratio:.0f}% 수준이야.\n\n"
+                    "쉽게 말하면 평소보다 훨씬 많은 사람들이 "
+                    "이 종목을 사고팔고 있다는 뜻이야.\n\n"
+                    "특히 주가가 오르면서 거래량까지 크게 늘었다면 "
+                    "가격만 올라간 게 아니라 실제 매매 참여도 함께 늘어난 거라서 "
+                    "상승세가 얼마나 강한지 확인하는 데 중요한 자료가 될 수 있어."
+
+                )
+
+            elif ratio >= 120:
+
+                comments.append(
+                    "거래량도 평소보다 늘었어.\n\n"
+                    f"최근 5거래일 평균 대비 약 {ratio:.0f}% 수준이야.\n\n"
+                    "쉽게 말하면 평소보다 많은 투자자가 "
+                    "이 종목의 매매에 참여하고 있다는 뜻이야.\n\n"
+                    "특히 주가가 상승하면서 거래량도 같이 증가했다면 "
+                    "실제 매수 참여가 커지고 있는지 확인해볼 필요가 있어."
+                )
+
+            elif ratio <= 70:
+
+                comments.append(
+                    "그런데 거래량은 오히려 줄었어.\n\n"
+                    f"최근 5거래일 평균 대비 약 {ratio:.0f}% 수준이야.\n\n"
+                    "가격은 움직이고 있지만 거래에 참여하는 사람이 "
+                    "평소보다 적다는 뜻이야.\n\n"
+                    "따라서 현재 움직임이 강하게 이어질지는 "
+                    "추가 거래량이 붙는지 확인할 필요가 있어."
+                )
+
+            else:
+
+                comments.append(
+                    f"거래량은 최근 5거래일 평균 대비 "
+                    f"약 {ratio:.0f}% 수준이야.\n\n"
+                    "평소와 비교해 거래 참여가 크게 달라진 상황은 아니어서 "
+                    "현재 주가 움직임이 거래량을 동반하고 있는지는 "
+                    "조금 더 지켜볼 필요가 있어."
+                )
+
+
+    # ------------------------------------------------
+    # 4. 공시
+    # ------------------------------------------------
+
+    disclosure_list = dart_disclosures or []
+
+    valid_disclosures = []
+
+    for item in disclosure_list:
+
+        if not isinstance(item, dict):
+            continue
+
+        title = str(
+            item.get("title")
+            or item.get("reportTitle")
+            or ""
+        ).strip()
+
+        if title:
+            valid_disclosures.append(title)
+
+    if valid_disclosures:
+
+        disclosure_title = valid_disclosures[0]
+
+        comments.append(
+            "공시에서도 확인할 내용이 있어.\n\n"
+            f"최근 확인된 공시는 '{disclosure_title}'이야.\n\n"
+            "공시는 회사가 투자자에게 공식적으로 알리는 내용이기 때문에 "
+            "단순한 소문보다 실제 사업이나 재무 상황을 확인하는 데 도움이 돼.\n\n"
+            "다만 공시가 있다는 사실만으로 주가가 오르거나 내린다고 "
+            "판단하면 안 되고 내용이 실제 기업가치에 어떤 영향을 주는지 봐야 해."
+        )
+
+
+    # ------------------------------------------------
+    # 5. 최종 종합
+    # ------------------------------------------------
+
+    if change is not None and change > 0.5:
+
+        if ratio is not None and ratio >= 120 and valid_news:
+
+            comments.append(
+                "정리하면 오늘은 그냥 가격만 오른 게 아니야.\n\n"
+                "기업 관련 뉴스가 확인되고 거래량도 평소보다 크게 늘면서 "
+                "실제 시장 참여가 함께 증가한 모습이야.\n\n"
+                "즉, 오늘 상승을 설명할 수 있는 재료와 거래 움직임이 "
+                "같은 방향으로 겹쳤다는 점이 중요해.\n\n"
+                "다만 여기서 바로 '계속 오른다'고 생각하면 안 돼. "
+                "다음 거래에서도 거래량과 가격 흐름이 이어지는지 확인하는 게 중요해."
+            )
+
+        elif ratio is not None and ratio >= 120:
+
+            comments.append(
+                "정리하면 오늘은 주가 상승과 거래량 증가가 함께 나타났어.\n\n"
+                "가격이 오르면서 거래 참여까지 늘었다는 점은 긍정적으로 볼 수 있지만 "
+                "기업 재료가 뚜렷하게 확인되는지는 별도로 확인해야 해.\n\n"
+                "내일도 거래량이 유지되면서 가격이 같은 방향으로 움직이는지 "
+                "확인하는 게 중요해."
+            )
+
+        elif valid_news:
+
+            comments.append(
+                "정리하면 오늘 상승에는 기업 관련 뉴스가 눈에 들어와.\n\n"
+                "다만 거래량이 강하게 증가한 상황까지 확인되는 것은 아니기 때문에 "
+                "뉴스 하나만 가지고 상승이 계속될 거라고 판단하면 안 돼.\n\n"
+                "다음 거래에서 거래량과 가격 흐름이 어떻게 이어지는지 확인해보자."
+            )
+
+        else:
+
+            comments.append(
+                "정리하면 오늘 주가는 상승했지만 "
+                "현재 확인된 데이터만으로 확실한 상승 원인을 하나로 정하기는 어려워.\n\n"
+                "괜히 이유를 만들어내기보다는 "
+                "추가 뉴스가 나오는지와 거래량이 붙는지를 확인하는 게 좋아."
+            )
+
+
+    elif change is not None and change < -0.5:
+
+        if ratio is not None and ratio >= 120:
+
+            comments.append(
+                "정리하면 오늘은 주가가 하락하는 가운데 거래량도 크게 늘었어.\n\n"
+                "쉽게 말하면 가격이 내려가는 과정에서 매매 참여까지 많아졌다는 뜻이야.\n\n"
+                "이 경우에는 단순한 조정인지 실제 매도세가 강해진 건지 "
+                "다음 거래에서도 거래량과 가격 흐름이 이어지는지 확인하는 게 중요해."
+            )
+
+        else:
+
+            comments.append(
+                "정리하면 오늘 하락은 확인되는 뉴스와 거래 흐름을 함께 봐야 해.\n\n"
+                "현재 데이터만으로 하나의 원인을 확정하기보다는 "
+                "추가 뉴스와 거래량 변화가 어떻게 이어지는지 확인하는 게 좋아."
+            )
+
+
+    else:
+
+        comments.append(
+            "정리하면 오늘은 주가 움직임이 크지 않은 만큼 "
+            "지금 당장 하나의 방향을 정하기는 어려워.\n\n"
+            "새로운 뉴스가 나오는지, 거래량이 갑자기 늘어나는지 "
+            "확인하면서 다음 움직임을 보는 게 좋아."
+        )
+
+
+    return "\n\n".join(
+        comment.strip()
+        for comment in comments
+        if comment and comment.strip()
+    )
+
+
+def build_movement_confirmation(
+    raw_price,
+    df,
+    stock_news,
+    dart_disclosures
+):
+    """
+    기존 데이터만 사용한다.
+    기존 데이터 수집 로직은 변경하지 않는다.
+    """
+
+    change_pct = None
+    prev_close = None
+
+    # ------------------------------------------------
+    # 현재가 대비 전일 종가
+    # ------------------------------------------------
+
+    try:
+
+        if df is not None and len(df) >= 2:
+
+            prev_close = float(
+                df["Close"].iloc[-2]
+            )
+
+            if raw_price is not None and prev_close:
+
+                change_pct = (
+                    (float(raw_price) - prev_close)
+                    / prev_close
+                ) * 100
+
+    except Exception:
+        pass
+
+
+    # ------------------------------------------------
+    # 거래량
+    # 기존 방식 그대로
+    # ------------------------------------------------
+
+    volume_text = "-"
+    volume_sub = "거래량 데이터를 확인할 수 없습니다."
+
+    volume_ratio = None
+
+    try:
 
         if (
-            value === null ||
-            value === undefined ||
-            value === ""
-        ) {
-            return null;
-        }
+            df is not None
+            and len(df) >= 6
+            and "Volume" in df.columns
+        ):
 
-        const n = Number(
-            String(value)
-                .replace(/,/g, "")
-                .replace(/%/g, "")
-                .replace(/원/g, "")
-                .trim()
-        );
+            vols = df["Volume"].astype(float)
 
-        return Number.isFinite(n) ? n : null;
+            current_volume = float(
+                vols.iloc[-1]
+            )
+
+            avg_volume = float(
+                vols.tail(6).iloc[:-1].mean()
+            )
+
+            if avg_volume > 0:
+
+                volume_ratio = (
+                    current_volume
+                    / avg_volume
+                ) * 100
+
+                volume_text = (
+                    f"평균 대비 "
+                    f"{volume_ratio - 100:+.0f}%"
+                )
+
+                volume_sub = (
+                    f"최근 5거래일 평균 대비 · "
+                    f"현재 비율 {volume_ratio:.0f}%"
+                )
+
+    except Exception:
+        pass
+
+
+    # ------------------------------------------------
+    # 설명형 코멘트
+    # ------------------------------------------------
+
+    comment = get_movement_comment(
+        change_pct=change_pct,
+        volume_ratio=volume_ratio,
+        stock_news=stock_news,
+        dart_disclosures=dart_disclosures
+    )
+
+
+    # ------------------------------------------------
+    # 기존 화면 데이터는 그대로 반환
+    # ------------------------------------------------
+
+    return {
+        "change_pct": change_pct,
+        "volume_text": volume_text,
+        "volume_sub": volume_sub,
+        "news_count": len(stock_news or []),
+        "disclosure_count": len(dart_disclosures or []),
+        "comment": comment,
     }
-
-
-    // --------------------------------------------------------
-    // 뉴스
-    // --------------------------------------------------------
-
-    function getNewsTitle() {
-
-        const news = Array.isArray(data.stock_news)
-            ? data.stock_news
-            : [];
-
-        for (const item of news) {
-
-            if (item && item.title) {
-                return String(item.title).trim();
-            }
-        }
-
-        return "";
-    }
-
-
-    // --------------------------------------------------------
-    // 주가 변화
-    // --------------------------------------------------------
-
-    let priceChange = null;
-
-    try {
-
-        const candles = Array.isArray(data.candles)
-            ? data.candles
-            : [];
-
-        if (candles.length >= 2) {
-
-            const today = num(
-                candles[candles.length - 1].close
-            );
-
-            const yesterday = num(
-                candles[candles.length - 2].close
-            );
-
-            if (
-                today !== null &&
-                yesterday !== null &&
-                yesterday !== 0
-            ) {
-
-                priceChange =
-                    ((today - yesterday) / yesterday) * 100;
-            }
-        }
-
-    } catch (e) {
-        priceChange = null;
-    }
-
-
-    // --------------------------------------------------------
-    // 1. 첫 문장
-    // 관심을 끄는 방식
-    // --------------------------------------------------------
-
-    if (mr.direction === "상승") {
-
-        if (positiveReasons.length >= 3) {
-
-            comments.push(
-                `<strong>개미들아, 오늘은 그냥 오른 게 아니야.</strong>`
-            );
-
-        } else {
-
-            comments.push(
-                `<strong>개미들아, 오늘 왜 올랐는지 하나씩 볼게.</strong>`
-            );
-        }
-
-    } else if (mr.direction === "하락") {
-
-        comments.push(
-            `<strong>개미들아, 오늘은 그냥 빠진 게 아니야.</strong>`
-        );
-
-    } else {
-
-        comments.push(
-            `<strong>개미들아, 오늘 움직임은 조금 복잡해.</strong>`
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // 2. 시장
-    // --------------------------------------------------------
-
-    if (market) {
-
-        const score = Number(market.score || 0);
-        const detail = String(
-            market.detail || ""
-        ).trim();
-
-        if (score > 0) {
-
-            comments.push(
-                `시장 분위기가 좋았고, ${detail || "전체 시장도 상승 흐름을 보였어"}. ` +
-                `시장이 좋으면 투자자들의 분위기도 함께 좋아지면서 ` +
-                `개별 종목에도 매수세가 들어오는 영향을 줄 수 있어.`
-            );
-
-        } else if (score < 0) {
-
-            comments.push(
-                `오늘 시장 분위기는 좋지 않았어. ` +
-                `${detail || "전체 시장도 약한 모습을 보였어"}. ` +
-                `이런 상황에서도 이 종목이 움직였다면 ` +
-                `시장 전체보다 개별 종목의 재료가 더 강했는지 확인해볼 필요가 있어.`
-            );
-        }
-    }
-
-
-    // --------------------------------------------------------
-    // 3. 테마
-    // --------------------------------------------------------
-
-    if (theme) {
-
-        const detail = String(
-            theme.detail || ""
-        ).trim();
-
-        let themeName = "";
-
-        if (/반도체/i.test(detail)) {
-            themeName = "반도체";
-        } else if (/AI|인공지능/i.test(detail)) {
-            themeName = "AI";
-        } else if (/로봇/i.test(detail)) {
-            themeName = "로봇";
-        } else if (/바이오|제약/i.test(detail)) {
-            themeName = "바이오";
-        } else if (/2차전지|배터리/i.test(detail)) {
-            themeName = "2차전지";
-        } else if (/원전|원자력/i.test(detail)) {
-            themeName = "원전";
-        } else if (/방산|국방/i.test(detail)) {
-            themeName = "방산";
-        } else if (/우주|위성/i.test(detail)) {
-            themeName = "우주";
-        }
-
-
-        if (themeName === "AI") {
-
-            comments.push(
-                `<strong>관련 업종도 같이 올라왔어.</strong><br>` +
-                `지금 잡힌 테마는 AI야. ` +
-                `AI 테마는 인공지능 서비스를 만드는 데 필요한 ` +
-                `반도체·서버·장비·소프트웨어 등을 말해. ` +
-                `AI 투자가 늘어나면 이런 제품과 서비스를 필요로 하는 곳도 많아질 수 있어. ` +
-                `그래서 AI 관련 투자 기대가 커지면 관련 기업들이 함께 움직이는 경우가 있어. ` +
-                `이 종목도 그중 <strong>실제 사업과 연결된 분야</strong>가 있어서 ` +
-                `관련 움직임의 영향을 받고 있는지 확인해볼 필요가 있어.`
-            );
-
-        } else if (themeName === "반도체") {
-
-            comments.push(
-                `<strong>관련 반도체 업종도 같이 움직이고 있어.</strong><br>` +
-                `반도체는 컴퓨터와 스마트폰, 자동차, 데이터센터 등에 들어가는 핵심 부품이야. ` +
-                `특히 AI와 데이터센터 투자가 늘어나면 고성능 반도체 수요가 커질 수 있어. ` +
-                `그래서 반도체 업황이 좋아질 것이라는 기대가 생기면 ` +
-                `관련 기업들이 함께 주목받을 수 있어. ` +
-                `이 종목도 반도체 산업과 연결된 사업을 하고 있기 때문에 ` +
-                `이런 업종 흐름이 주가에 영향을 주고 있는지 확인해볼 필요가 있어.`
-            );
-
-        } else if (themeName === "로봇") {
-
-            comments.push(
-                `<strong>로봇 관련 종목들도 같이 움직이고 있어.</strong><br>` +
-                `로봇 테마는 산업용 로봇부터 협동로봇, 서비스 로봇, 휴머노이드까지 ` +
-                `로봇과 관련된 산업을 말해. ` +
-                `기업들이 자동화에 돈을 많이 투자하거나 로봇 시장이 커질 것이라는 기대가 생기면 ` +
-                `관련 기업들이 함께 주목받을 수 있어. ` +
-                `이 종목도 로봇 산업과 연결된 사업이 있기 때문에 ` +
-                `이번 움직임이 테마 전체의 흐름과 연결되는지 확인할 필요가 있어.`
-            );
-
-        } else if (themeName === "2차전지") {
-
-            comments.push(
-                `<strong>2차전지 관련 종목들도 같이 움직이고 있어.</strong><br>` +
-                `2차전지는 전기차와 에너지저장장치 등에 사용하는 충전식 배터리야. ` +
-                `전기차 판매가 늘거나 배터리 투자가 확대되고 신규 수주가 나오면 ` +
-                `관련 기업들의 성장 기대가 커질 수 있어. ` +
-                `이 종목도 배터리 산업과 연결된 사업이 있기 때문에 ` +
-                `업종 전체의 움직임이 주가에 영향을 주고 있는지 확인해볼 필요가 있어.`
-            );
-
-        } else if (themeName === "바이오") {
-
-            comments.push(
-                `<strong>바이오 관련 종목들도 같이 움직이고 있어.</strong><br>` +
-                `바이오는 신약 개발과 의약품, 임상시험 같은 생명과학 산업을 말해. ` +
-                `임상 결과나 신약 승인, 기술이전 같은 소식 하나가 ` +
-                `기업의 미래 가치에 큰 영향을 줄 수 있는 분야야. ` +
-                `이 종목도 바이오 산업과 연결돼 있기 때문에 ` +
-                `관련 재료가 실제 주가에 영향을 주고 있는지 살펴볼 필요가 있어.`
-            );
-
-        } else if (themeName === "원전") {
-
-            comments.push(
-                `<strong>원전 관련 종목들도 같이 움직이고 있어.</strong><br>` +
-                `원전 테마는 원자력발전소와 원자로, 관련 부품과 장비를 만드는 산업이야. ` +
-                `원전 건설 확대나 해외 수주, 정책 변화가 나오면 ` +
-                `관련 기업들의 신규 매출 기대가 커질 수 있어. ` +
-                `이 종목도 원전 사업과 연결돼 있다면 이런 기대가 주가에 반영되는지 확인할 필요가 있어.`
-            );
-
-        } else if (themeName === "방산") {
-
-            comments.push(
-                `<strong>방산 관련 종목들도 같이 움직이고 있어.</strong><br>` +
-                `방산은 전투기와 함정, 레이더 등 군사 장비를 개발하고 생산하는 산업이야. ` +
-                `국방비 증가나 해외 무기 수출, 대형 수주가 나오면 ` +
-                `관련 기업의 매출 증가 기대가 커질 수 있어. ` +
-                `이 종목도 방산 사업과 연결돼 있다면 이런 재료가 주가에 영향을 주는지 확인해볼 필요가 있어.`
-            );
-
-        } else if (detail) {
-
-            comments.push(
-                `<strong>관련 업종도 같이 움직이고 있어.</strong><br>` +
-                `${detail}. ` +
-                `이런 테마는 관련 산업에 새로운 재료가 생기면 ` +
-                `여러 종목이 함께 움직일 수 있어.`
-            );
-        }
-    }
-
-
-    // --------------------------------------------------------
-    // 4. 기업 재료
-    // --------------------------------------------------------
-
-    if (material) {
-
-        const score =
-            Number(material.score || 0);
-
-        const newsTitle =
-            getNewsTitle();
-
-        if (score > 0) {
-
-            if (newsTitle) {
-
-                comments.push(
-                    `<strong>여기에 기업 재료까지 확인됐어.</strong><br>` +
-                    `오늘 확인된 주요 뉴스는 <strong>'${newsTitle}'</strong>이야.`
-                );
-
-            } else {
-
-                comments.push(
-                    `<strong>여기에 기업과 관련된 긍정적인 재료도 확인됐어.</strong>`
-                );
-            }
-
-            comments.push(
-                `이게 중요한 이유는 단순히 뉴스가 나왔다는 게 아니야. ` +
-                `실제 매출이나 실적, 신규 사업과 연결될 가능성이 있는 재료라면 ` +
-                `회사의 미래에 대한 투자자들의 기대가 달라질 수 있기 때문이야.`
-            );
-
-        } else if (score < 0) {
-
-            if (newsTitle) {
-
-                comments.push(
-                    `<strong>반대로 주가에 부담이 될 수 있는 소식도 있어.</strong><br>` +
-                    `'${newsTitle}'`
-                );
-
-            } else {
-
-                comments.push(
-                    `<strong>기업 쪽에서는 주가에 부담이 될 수 있는 재료가 확인됐어.</strong>`
-                );
-            }
-
-            comments.push(
-                `중요한 건 뉴스 제목만 보고 판단하지 않는 거야. ` +
-                `실제로 회사의 매출이나 실적에 얼마나 영향을 줄 수 있는지 봐야 해.`
-            );
-        }
-    }
-
-
-    // --------------------------------------------------------
-    // 5. 거래량
-    // --------------------------------------------------------
-
-    if (volumeRatio !== null) {
-
-        if (volumeRatio >= 200) {
-
-            comments.push(
-                `<strong>그리고 오늘 거래량이 확 달라졌어.</strong> ` +
-                `최근 5거래일 평균보다 약 ${volumeRatio.toFixed(0)}% 수준이야. ` +
-                `쉽게 말하면 평소보다 훨씬 많은 사람들이 이 종목을 사고팔고 있다는 뜻이야. ` +
-                `특히 주가가 오르면서 거래량까지 크게 늘었다면 ` +
-                `가격만 오른 게 아니라 실제 매매 참여도 크게 늘었다는 의미라서 ` +
-                `상승세가 얼마나 강한지 확인하는 데 중요한 자료가 될 수 있어.`
-            );
-
-        } else if (volumeRatio >= 120) {
-
-            comments.push(
-                `<strong>거래량도 평소보다 늘었어.</strong> ` +
-                `최근 5거래일 평균의 약 ${volumeRatio.toFixed(0)}% 수준이야. ` +
-                `쉽게 말하면 평소보다 많은 투자자가 이 종목의 매매에 참여하고 있다는 뜻이야. ` +
-                `특히 주가가 오르면서 거래량도 같이 늘었다면 ` +
-                `상승에 실제 매수세가 붙고 있는지 확인해볼 필요가 있어.`
-            );
-
-        } else if (volumeRatio <= 70) {
-
-            comments.push(
-                `<strong>그런데 거래량은 오히려 줄었어.</strong> ` +
-                `최근 5거래일 평균의 약 ${volumeRatio.toFixed(0)}% 수준이야. ` +
-                `가격은 움직이고 있지만 실제 매매 참여가 충분히 따라오고 있는지는 ` +
-                `조금 더 확인해볼 필요가 있어.`
-            );
-
-        } else {
-
-            comments.push(
-                `거래량은 최근 5거래일 평균의 약 ${volumeRatio.toFixed(0)}% 수준이야. ` +
-                `현재 가격 움직임에 거래 참여가 충분히 따라오고 있는지도 같이 봐야 해.`
-            );
-        }
-    }
-
-
-    // --------------------------------------------------------
-    // 6. 기존 수급/거래 흐름
-    // --------------------------------------------------------
-
-    if (flow) {
-
-        const score =
-            Number(flow.score || 0);
-
-        const detail =
-            String(flow.detail || "").trim();
-
-        if (score > 0) {
-
-            comments.push(
-                `<strong>거래 흐름도 같은 방향을 보여주고 있어.</strong> ` +
-                `${detail}. ` +
-                `가격이 움직이는 것과 실제 거래 흐름이 같이 움직이고 있다는 점이 중요해.`
-            );
-
-        } else if (score < 0) {
-
-            comments.push(
-                `<strong>다만 거래 흐름에서는 조금 다른 모습이 보여.</strong> ` +
-                `${detail}. ` +
-                `주가가 오르더라도 거래 흐름이 따라오지 않는다면 ` +
-                `현재 상승이 얼마나 이어질지는 조금 더 확인해야 해.`
-            );
-        }
-    }
-
-
-    // --------------------------------------------------------
-    // 7. 기술적 흐름
-    // --------------------------------------------------------
-
-    if (technical) {
-
-        const score =
-            Number(technical.score || 0);
-
-        const detail =
-            String(technical.detail || "").trim();
-
-        if (score > 0) {
-
-            comments.push(
-                `<strong>가격 흐름도 상승 쪽이야.</strong> ` +
-                `${detail}. ` +
-                `20일선은 최근 약 한 달 동안의 평균 가격을 보는 기준이라고 생각하면 쉬워. ` +
-                `현재 가격이 이 선 위에 있다는 건 최근 평균 가격보다 높은 수준에서 ` +
-                `거래되고 있다는 뜻이야.`
-            );
-
-        } else if (score < 0) {
-
-            comments.push(
-                `<strong>그런데 가격 흐름에서는 조심할 부분도 있어.</strong> ` +
-                `${detail}. ` +
-                `주요 평균선 아래에서 움직인다면 단기적인 상승 흐름이 약해졌는지 ` +
-                `확인할 필요가 있어.`
-            );
-        }
-    }
-
-
-    // --------------------------------------------------------
-    // 8. 마지막 종합
-    // --------------------------------------------------------
-
-    if (mr.direction === "상승") {
-
-        if (positiveReasons.length >= 3) {
-
-            comments.push(
-                `<strong>정리하면 오늘은 시장 + 테마 + 재료 + 거래량 + 기술적 흐름이 ` +
-                `같은 방향으로 겹친 날이야.</strong> ` +
-                `여러 데이터가 동시에 좋아지고 있다는 점에서 오늘 상승을 설명할 수 있는 ` +
-                `근거가 비교적 많은 상황이야. ` +
-                `다만 이것만으로 앞으로 계속 오른다고 단정할 수는 없어. ` +
-                `다음 거래에서도 거래량과 수급, 가격 흐름이 계속 이어지는지 확인하는 게 중요해.`
-            );
-
-        } else {
-
-            comments.push(
-                `<strong>정리하면 오늘 상승을 설명할 수 있는 근거는 일부 확인돼.</strong> ` +
-                `하지만 모든 데이터가 같은 방향으로 움직이는 건 아니야. ` +
-                `그래서 지금 당장 상승이 계속된다고 단정하기보다는 ` +
-                `다음 거래에서 거래량과 수급이 이어지는지 확인하는 게 좋아.`
-            );
-        }
-
-    } else if (mr.direction === "하락") {
-
-        comments.push(
-            `<strong>정리하면 오늘 하락과 연결되는 신호가 확인되고 있어.</strong> ` +
-            `하지만 하나의 데이터만 보고 이유를 정하기보다는 ` +
-            `뉴스와 거래량, 시장 분위기, 가격 흐름을 함께 확인하는 게 중요해.`
-        );
-
-    } else {
-
-        comments.push(
-            `<strong>정리하면 오늘은 좋은 신호와 부담스러운 신호가 섞여 있어.</strong> ` +
-            `지금 데이터만으로 주가가 어느 방향으로 계속 움직일지 단정하기는 어려워. ` +
-            `새로운 뉴스가 나오는지, 거래량과 수급이 어느 방향으로 움직이는지를 ` +
-            `계속 확인하는 게 좋아.`
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // 출력
-    // --------------------------------------------------------
-
-    mrCard.innerHTML = `
-        <div style="
-            font-size:0.88rem;
-            color:var(--text-sub);
-            line-height:1.85;
-            letter-spacing:-0.02em;
-            word-break:keep-all;
-        ">
-            ${comments.map(text => `
-                <div style="
-                    margin-bottom:13px;
-                ">
-                    ${text}
-                </div>
-            `).join("")}
-        </div>
-    `;
-}

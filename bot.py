@@ -1947,7 +1947,7 @@ HTML_PAGE = """<!DOCTYPE html>
             inset: 0;
             width: var(--importance-width, 50%);
             border-radius: inherit;
-            background: linear-gradient(90deg, #38bdf8 0%, #10b981 100%);
+            background: #6b7075;
             opacity: 0.9;
         }
         .cal-importance-marker {

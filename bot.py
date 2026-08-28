@@ -4924,48 +4924,11 @@ class WebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(html_bytes)
 
-class ReusableThreadingHTTPServer(ThreadingHTTPServer):
-    # Render 재시작/배포 직후에도 이전 소켓이 남아 있을 때
-    # 주소 재사용이 가능하도록 설정합니다.
-    allow_reuse_address = True
-    daemon_threads = True
-
-
 def run_web_server():
-    # Render가 주입하는 PORT를 반드시 사용합니다.
-    # 로컬 실행에서는 10000을 기본값으로 사용합니다.
-    port_raw = os.environ.get("PORT", "10000").strip()
-    try:
-        port = int(port_raw)
-    except (TypeError, ValueError):
-        port = 10000
-        print(f"[STARTUP] 잘못된 PORT={port_raw!r} → 10000 사용", flush=True)
-
-    host = "0.0.0.0"
-    print(f"[STARTUP] gaemiGTP 시작 준비: {host}:{port}", flush=True)
-    print(f"[STARTUP] TELEGRAM_TOKEN: {'설정됨' if TELEGRAM_TOKEN else '미설정'}", flush=True)
-    print(f"[STARTUP] DART_API_KEY: {'설정됨' if DART_API_KEY else '미설정'}", flush=True)
-    print(f"[STARTUP] FINNHUB_API_KEY: {'설정됨' if FINNHUB_API_KEY else '미설정'}", flush=True)
-
-    server = None
-    try:
-        server = ReusableThreadingHTTPServer((host, port), WebHandler)
-        print(f"[STARTUP] gaemiGTP listening on {host}:{port}", flush=True)
-        server.serve_forever(poll_interval=0.5)
-    except KeyboardInterrupt:
-        print("[SHUTDOWN] KeyboardInterrupt", flush=True)
-    except Exception as exc:
-        # Render 로그에 실제 원인을 남겨 다음 재시작 때 바로 확인할 수 있게 합니다.
-        print(f"[FATAL] 웹 서버 시작/실행 실패: {type(exc).__name__}: {exc}", flush=True)
-        raise
-    finally:
-        if server is not None:
-            try:
-                server.server_close()
-            except Exception:
-                pass
-        print("[SHUTDOWN] gaemiGTP 서버 종료", flush=True)
-
+    port = int(os.environ.get("PORT", 10000))
+    server = ThreadingHTTPServer(("0.0.0.0", port), WebHandler)
+    print(f"gaemiGTP listening on :{port}")
+    server.serve_forever()
 
 if __name__ == "__main__":
     run_web_server()

@@ -133,11 +133,91 @@ def clean_for_json(obj):
         return obj
     return str(obj)
 
+def fetch_naver_realtime_index(index_code):
+    """국내 지수 전용 실시간/최신 시세. Yahoo의 regularMarketPrice를 사용하지 않는다."""
+    try:
+        url = f"https://polling.finance.naver.com/api/realtime/domestic/index/{index_code}"
+        res = HTTP_SESSION.get(
+            url,
+            timeout=2.0,
+            headers={"Accept-Language": "ko-KR,ko;q=0.9", "User-Agent": "Mozilla/5.0"}
+        )
+        res.raise_for_status()
+        payload = res.json()
+        datas = payload.get("datas") or []
+        if not datas:
+            return None
+
+        d = datas[0]
+        price_raw = str(d.get("closePrice", "")).replace(",", "").strip()
+        rate_raw = str(d.get("fluctuationsRatio", "")).replace(",", "").strip()
+        change_raw = str(d.get("compareToPreviousClosePrice", "")).replace(",", "").strip()
+
+        if not price_raw or not rate_raw:
+            return None
+
+        price = float(price_raw)
+        rate = float(rate_raw)
+        change = float(change_raw) if change_raw not in {"", "-", "None"} else None
+
+        return {
+            "price": price,
+            "rate": rate,
+            "change": change,
+            "market_status": d.get("marketStatus"),
+            "traded_at": d.get("localTradedAt"),
+        }
+    except Exception as exc:
+        print(f"[NAVER INDEX] {index_code} failed: {exc}")
+        return None
+
+
 def fetch_single_world_item(item):
     name = item["name"]
     sym = item["sym"]
     tag = item["tag"]
     sparkline = []
+
+    # 국내 지수는 Naver/KRX 계열 endpoint를 사용한다.
+    # Yahoo의 regularMarketPrice/chartPreviousClose는 국내 장중/마감 시점과
+    # 데이터 갱신 시점이 어긋날 수 있어 KOSPI/KOSDAQ의 현재 등락률 계산에 쓰지 않는다.
+    if sym in {"^KS11", "^KQ11"}:
+        index_code = "KOSPI" if sym == "^KS11" else "KOSDAQ"
+        live = fetch_naver_realtime_index(index_code)
+        if live:
+            curr_p = live["price"]
+            change_rate = live["rate"]
+
+            # 보조 미니차트는 기존 Yahoo historical close를 사용한다.
+            # 현재값/등락률의 기준은 위 Naver/KRX 데이터로 고정한다.
+            try:
+                encoded_sym = urllib.parse.quote(sym)
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=7d&interval=1d"
+                yres = HTTP_SESSION.get(url, timeout=2.0).json()
+                yresult = yres.get("chart", {}).get("result", [])
+                if yresult:
+                    raw_closes = yresult[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
+                    sparkline = [
+                        round(float(c), 2)
+                        for c in raw_closes
+                        if c is not None and not np.isnan(float(c))
+                    ][-7:]
+            except Exception:
+                sparkline = []
+
+            return {
+                "name": name,
+                "tag": tag,
+                "price": f"{curr_p:,.2f}",
+                "rate": f"{change_rate:+.2f}%",
+                "up": bool(change_rate >= 0),
+                "sparkline": sparkline,
+                "source": "Naver/KRX",
+                "market_status": live.get("market_status"),
+                "traded_at": live.get("traded_at"),
+            }
+
+    # 해외 지수/원자재/환율은 기존 Yahoo 흐름을 유지한다.
     try:
         encoded_sym = urllib.parse.quote(sym)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=7d&interval=1d"
@@ -148,16 +228,15 @@ def fetch_single_world_item(item):
             curr_p = meta.get("regularMarketPrice", 0.0)
             prev_close = meta.get("chartPreviousClose", meta.get("previousClose", curr_p))
             change_rate = ((curr_p - prev_close) / prev_close) * 100 if prev_close > 0 else 0.0
-            
+
             raw_closes = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-            sparkline = [round(float(c), 2) for c in raw_closes if c is not None and not np.isnan(float(c))][-7:]
-            
-            if "KRW" in sym:
-                price_str = f"{curr_p:,.1f}원"
-            elif curr_p > 1000:
-                price_str = f"{curr_p:,.2f}"
-            else:
-                price_str = f"{curr_p:,.2f}"
+            sparkline = [
+                round(float(c), 2)
+                for c in raw_closes
+                if c is not None and not np.isnan(float(c))
+            ][-7:]
+
+            price_str = f"{curr_p:,.1f}원" if "KRW" in sym else f"{curr_p:,.2f}"
 
             return {
                 "name": name,
@@ -165,11 +244,14 @@ def fetch_single_world_item(item):
                 "price": price_str,
                 "rate": f"{change_rate:+.2f}%",
                 "up": bool(change_rate >= 0),
-                "sparkline": sparkline
+                "sparkline": sparkline,
+                "source": "Yahoo Finance",
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[WORLD BOARD] {sym} failed: {exc}")
+
     return {"name": name, "tag": tag, "price": "-", "rate": "-", "up": True, "sparkline": []}
+
 
 ECO_TITLE_KO_MAP = {
     "Non-Farm Employment Change": "비농업 고용보고서 (NFP)",
@@ -687,7 +769,7 @@ def get_realtime_usdkrw():
             return float(rate)
     except Exception:
         pass
-    return 1380.0
+    return None
 
 def find_stock_code(query):
     clean_q = query.strip().replace(" ", "").upper()

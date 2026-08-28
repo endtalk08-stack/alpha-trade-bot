@@ -3209,10 +3209,11 @@ HTML_PAGE = """<!DOCTYPE html>
         function registerCalendarEvent(ev) {
             const key = getCalendarEventKey(ev);
             CALENDAR_EVENT_REGISTRY.set(key, ev);
-            return key.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+            return encodeURIComponent(key);
         }
 
-        async function toggleCalendarAlarmByKey(key) {
+        async function toggleCalendarAlarmByKey(encodedKey) {
+            const key = decodeURIComponent(encodedKey);
             const ev = CALENDAR_EVENT_REGISTRY.get(key);
             if (!ev) {
                 alert('캘린더 데이터를 다시 불러와주세요.');

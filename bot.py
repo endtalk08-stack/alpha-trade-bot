@@ -3247,7 +3247,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function parseCalendarEventTime(ev) {
             if (!ev || !ev.date_key || !ev.time) return null;
-            const m = String(ev.date_key).match(/^(\\d{4})[.\\-/](\\d{1,2})[.\\-/](\\d{1,2})$/);
+            const m = String(ev.date_key).match(/^(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);
             const t = String(ev.time).match(/^(\\d{1,2}):(\\d{2})$/);
             if (!m || !t) return null;
 

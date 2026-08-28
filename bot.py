@@ -2965,68 +2965,67 @@ HTML_PAGE = """<!DOCTYPE html>
             input.value = '';
         }
 
-        async 
-function renderMovementConfirmationData(data) {
-    const card = document.getElementById('movementConfirmationData');
-    if (!card) return;
+        function renderMovementConfirmationData(data) {
+            const card = document.getElementById('movementConfirmationData');
+            if (!card) return;
 
-    const pctRaw = Number(data?.change_pct);
-    const pct = Number.isFinite(pctRaw) ? `${pctRaw >= 0 ? '+' : ''}${pctRaw.toFixed(2)}%` : '-';
+            const pctRaw = Number(data?.change_pct);
+            const pct = Number.isFinite(pctRaw)
+                ? `${pctRaw >= 0 ? '+' : ''}${pctRaw.toFixed(2)}%`
+                : '-';
 
-    const newsCount = Array.isArray(data?.stock_news) ? data.stock_news.length : 0;
-    const dartCount = Array.isArray(data?.dart_disclosures) ? data.dart_disclosures.length : 0;
+            const newsCount = Array.isArray(data?.stock_news) ? data.stock_news.length : 0;
+            const dartCount = Array.isArray(data?.dart_disclosures) ? data.dart_disclosures.length : 0;
 
-    // 서버가 계산해 준 거래량 비교값이 없으면 현재 화면에서는 '-'로 표시한다.
-    // 임의의 숫자는 만들지 않는다.
-    const volumeText = data?.movement_confirmation?.volume_text || '-';
-    const volumeSub = data?.movement_confirmation?.volume_sub || '거래량 데이터 확인 필요';
+            const volumeText = data?.movement_confirmation?.volume_text || '-';
+            const volumeSub = data?.movement_confirmation?.volume_sub || '거래량 데이터 확인 필요';
 
-    card.innerHTML = `
-        <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-line);">
-            <div style="font-size:.78rem;color:var(--text-sub);margin-bottom:7px;font-weight:700;">
-                확인 데이터
-            </div>
+            card.innerHTML = `
+                <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-line);">
+                    <div style="font-size:.78rem;color:var(--text-sub);margin-bottom:7px;font-weight:700;">
+                        확인 데이터
+                    </div>
 
-            <div class="quant-row-item">
-                <div class="quant-row-left"><span class="quant-row-name">현재 등락</span></div>
-                <div class="quant-row-right" style="min-width:0;">
-                    <div class="quant-row-val">${pct}</div>
-                    <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">직전 가격 대비</div>
+                    <div class="quant-row-item">
+                        <div class="quant-row-left"><span class="quant-row-name">현재 등락</span></div>
+                        <div class="quant-row-right" style="min-width:0;">
+                            <div class="quant-row-val">${pct}</div>
+                            <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">직전 가격 대비</div>
+                        </div>
+                    </div>
+
+                    <div class="quant-row-item">
+                        <div class="quant-row-left"><span class="quant-row-name">거래량</span></div>
+                        <div class="quant-row-right" style="min-width:0;">
+                            <div class="quant-row-val">${volumeText}</div>
+                            <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">${volumeSub}</div>
+                        </div>
+                    </div>
+
+                    <div class="quant-row-item">
+                        <div class="quant-row-left"><span class="quant-row-name">종목 뉴스</span></div>
+                        <div class="quant-row-right" style="min-width:0;">
+                            <div class="quant-row-val">${newsCount}건</div>
+                            <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">현재 수집된 종목 관련 뉴스</div>
+                        </div>
+                    </div>
+
+                    <div class="quant-row-item">
+                        <div class="quant-row-left"><span class="quant-row-name">공시</span></div>
+                        <div class="quant-row-right" style="min-width:0;">
+                            <div class="quant-row-val">${dartCount}건</div>
+                            <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">현재 수집된 공시</div>
+                        </div>
+                    </div>
+
+                    <div style="margin-top:8px;font-size:.66rem;color:var(--text-muted);line-height:1.35;">
+                        현재 gaemiGTP 분석에서 실제로 확보한 데이터를 표시합니다.
+                    </div>
                 </div>
-            </div>
+            `;
+        }
 
-            <div class="quant-row-item">
-                <div class="quant-row-left"><span class="quant-row-name">거래량</span></div>
-                <div class="quant-row-right" style="min-width:0;">
-                    <div class="quant-row-val">${volumeText}</div>
-                    <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">${volumeSub}</div>
-                </div>
-            </div>
-
-            <div class="quant-row-item">
-                <div class="quant-row-left"><span class="quant-row-name">종목 뉴스</span></div>
-                <div class="quant-row-right" style="min-width:0;">
-                    <div class="quant-row-val">${newsCount}건</div>
-                    <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">현재 수집된 종목 관련 뉴스</div>
-                </div>
-            </div>
-
-            <div class="quant-row-item">
-                <div class="quant-row-left"><span class="quant-row-name">공시</span></div>
-                <div class="quant-row-right" style="min-width:0;">
-                    <div class="quant-row-val">${dartCount}건</div>
-                    <div style="font-size:.66rem;color:var(--text-muted);margin-top:2px;">현재 수집된 공시</div>
-                </div>
-            </div>
-
-            <div style="margin-top:8px;font-size:.66rem;color:var(--text-muted);line-height:1.35;">
-                현재 gaemiGTP 분석에서 실제로 확보한 데이터를 표시합니다.
-            </div>
-        </div>
-    `;
-}
-
-function doSearch(query) {
+        async function doSearch(query) {
             const cleanQ = query.trim();
             if (!cleanQ) return;
 

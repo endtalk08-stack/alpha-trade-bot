@@ -537,14 +537,12 @@ def fetch_real_market_calendar_live():
                 full_name = f"{prefix}{title_ko}"
                 
                 impact_raw = it.get("impact", "")
-                # 경제지표 원본 영향도(High/Medium/Low)를
-                # 캘린더 화면에서는 5단계 중요도로 확장합니다.
                 if impact_raw == "High":
-                    stars, star_str = 5, "★★★★★"
+                    stars, star_str = 3, "★★★"
                 elif impact_raw == "Medium":
-                    stars, star_str = 3, "★★★☆☆"
+                    stars, star_str = 2, "★★☆"
                 else:
-                    stars, star_str = 1, "★☆☆☆☆"
+                    stars, star_str = 1, "★☆☆"
                     
                 actual_raw = str(it.get("actual", "")).strip()
                 if actual_raw:
@@ -1806,7 +1804,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .cal-today-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); font-size: 0.72rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
         .cal-today-btn:hover { background: var(--btn-hover); color: var(--text-title); }
 
-        .cal-filter-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; overflow-x: auto; padding-bottom: 2px; }
+        .cal-filter-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; overflow-x: hidden; padding-bottom: 2px; }
         .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
         .cal-filter-pill.active { background: #ffffff; color: #121212; border-color: #ffffff; }
         .cal-filter-pill .star-gold { color: var(--star-gold); }
@@ -2362,11 +2360,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
                                 <div class="cal-filter-bar">
                                     <button class="cal-filter-pill active" id="filterAll" onclick="setCalendarFilter('all')">전체</button>
-                                    <button class="cal-filter-pill" id="filterStar5" onclick="setCalendarFilter('star5')"><span class="star-gold">★★★★★</span></button>
-                                    <button class="cal-filter-pill" id="filterStar4" onclick="setCalendarFilter('star4')"><span class="star-gold">★★★★☆</span></button>
-                                    <button class="cal-filter-pill" id="filterStar3" onclick="setCalendarFilter('star3')"><span class="star-gold">★★★☆☆</span></button>
-                                    <button class="cal-filter-pill" id="filterStar2" onclick="setCalendarFilter('star2')"><span class="star-gold">★★☆☆☆</span></button>
-                                    <button class="cal-filter-pill" id="filterStar1" onclick="setCalendarFilter('star1')"><span class="star-gold">★☆☆☆☆</span></button>
+                                    <button class="cal-filter-pill" id="filterStar3" onclick="setCalendarFilter('star3')"><span class="star-gold">★★★</span></button>
+                                    <button class="cal-filter-pill" id="filterStar2" onclick="setCalendarFilter('star2')"><span class="star-gold">★★☆</span></button>
+                                    <button class="cal-filter-pill" id="filterStar1" onclick="setCalendarFilter('star1')"><span class="star-gold">★☆☆</span></button>
                                     <button class="cal-filter-pill" id="filterEarn" onclick="setCalendarFilter('earn')">실적</button>
                                     <button class="cal-filter-pill" id="filterEco" onclick="setCalendarFilter('eco')">경제</button>
                                 </div>
@@ -2809,8 +2805,6 @@ HTML_PAGE = """<!DOCTYPE html>
             currentCalPage = 1;
             document.querySelectorAll('.cal-filter-pill').forEach(btn => btn.classList.remove('active'));
             if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
-            if (filterKey === 'star5') document.getElementById('filterStar5').classList.add('active');
-            if (filterKey === 'star4') document.getElementById('filterStar4').classList.add('active');
             if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
             if (filterKey === 'star2') document.getElementById('filterStar2').classList.add('active');
             if (filterKey === 'star1') document.getElementById('filterStar1').classList.add('active');
@@ -2963,8 +2957,6 @@ HTML_PAGE = """<!DOCTYPE html>
                     setTxt('calDayHeader', `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일 ${daysMap[d.getUTCDay()]}`);
                 }
 
-                if (currentCalFilter === 'star5') filtered = filtered.filter(ev => ev.stars === 5);
-                if (currentCalFilter === 'star4') filtered = filtered.filter(ev => ev.stars === 4);
                 if (currentCalFilter === 'star3') filtered = filtered.filter(ev => ev.stars === 3);
                 if (currentCalFilter === 'star2') filtered = filtered.filter(ev => ev.stars === 2);
                 if (currentCalFilter === 'star1') filtered = filtered.filter(ev => ev.stars === 1);
@@ -3009,14 +3001,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 // 기존 별표 등급은 데이터 기준으로만 사용하고 카드에서는 막대로 표시합니다.
 
 
-                const importanceScoreMap = {
-                    1: 20,
-                    2: 35,
-                    3: 50,
-                    4: 70,
-                    5: 90
-                };
-                const importanceScore = importanceScoreMap[Number(ev.stars)] || 20;
+                const importanceScore = ev.stars === 3 ? 90 : (ev.stars === 2 ? 65 : 35);
 
 
                 const importanceWidth = Math.max(0, Math.min(100, importanceScore));

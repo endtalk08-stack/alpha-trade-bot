@@ -5815,43 +5815,37 @@ if __name__ == "__main__":
     run_web_server()
 
 
+# ============================================================
+# 개미GTP 고정 코멘트 로직 - 재료 변수형 테스트
+# 경제 이벤트 문장은 추후 별도 규칙 확정 후 추가
+# ============================================================
 
-def _gaemi_final_comment(market_text="", industry_text="", stock_text="",
-                          flow_text="", stock_news_text="", market_event_text="",
-                          closing_text="🐜 오늘도 개미들 힘내자! 💪"):
-    """
-    최종 정보전달형 코멘트 구조
-    고정 순서: 시장 → 업종 → 종목 → 수급 → 종목 뉴스/재료 → 시장 이벤트/경제 뉴스 → 마무리
-    """
-    parts = []
+def gaemi_fixed_comment(market, industry, stock, flow, material=""):
+    """시장 → 업종 → 종목 → 수급 → 종목 재료"""
+    lines = [
+        f"🐜 개미들아! 오늘 시장 {market['name']}는 {market['change']}% "
+        f"{market['direction']} 중이고, {industry['name']} 업종 {industry['symbol']}는 "
+        f"{industry['change']}% {industry['direction']}!",
+        f"{stock['name']}는 현재 {stock['price']}, {stock['change']}% "
+        f"{stock['direction']} 중이야.",
+    ]
 
-    for text in (
-        market_text, industry_text, stock_text, flow_text,
-        stock_news_text, market_event_text
-    ):
-        if text:
-            text = re.sub(r"\s+", " ", str(text)).strip()
-            if text and text not in parts:
-                parts.append(text)
+    if flow and flow.get("actor") and flow.get("shares") is not None:
+        side = "순매수" if float(flow["shares"]) >= 0 else "순매도"
+        lines.append(
+            f"최근 5거래일 동안 {flow['actor']}이 "
+            f"{abs(int(float(flow['shares']))):,}주 {side}를 기록했어."
+        )
 
-    if closing_text:
-        parts.append(str(closing_text).strip())
+    if material:
+        lines.append(f"{stock['name']}는 {material} 소식이 있어!")
 
-    return "\n\n".join(parts)
+    return "\n\n".join(lines)
 
-
-def _gaemi_flow_sentence(actor, shares, direction=""):
-    """수급을 '주체 + 순매수/순매도 + 수량'으로 명확하게 표현."""
-    try:
-        n = int(abs(float(shares)))
-    except Exception:
-        return ""
-
-    if not actor:
-        actor = "외국인"
-
-    side = direction
-    if side not in ("순매수", "순매도"):
-        side = "순매수" if float(shares) >= 0 else "순매도"
-
-    return f"최근 5거래일 동안 {actor}이 {n:,}주 {side}를 기록했어."
+_test = gaemi_fixed_comment(
+    market={"name": "KOSPI", "change": "-1.79", "direction": "하락"},
+    industry={"name": "반도체", "symbol": "SOXX", "change": "-0.40", "direction": "하락"},
+    stock={"name": "SK하이닉스", "price": "1,653,000원", "change": "-4.45", "direction": "하락"},
+    flow={"actor": "외국인", "shares": "-2724956"},
+    material="HBM4 공급 확대",
+)

@@ -1430,6 +1430,82 @@ def fetch_overseas_candles(symbol):
     # 2차: Finnhub fallback (특히 NVDA/TSLA 등 미국주식)
     return _fetch_finnhub_daily_candles(symbol)
 
+def build_unified_price_snapshot(symbol, market_name, df=None):
+    """STEP 2: 화면/코멘트가 공유하는 단일 현재가 스냅샷.
+    미국은 Yahoo의 세션별 최신 가격, 국내는 기존 Naver 실시간 가격을 사용한다.
+    실패하면 None을 반환하며 기존 분석 데이터는 건드리지 않는다.
+    """
+    try:
+        if market_name == "미국주식":
+            sym = str(symbol or "").strip().upper()
+            if not sym:
+                return None
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=1d&interval=1m&includePrePost=true"
+            res = HTTP_SESSION.get(url, timeout=3.5)
+            res.raise_for_status()
+            payload = (res.json().get("chart", {}).get("result") or [None])[0]
+            if not payload:
+                return None
+            meta = payload.get("meta") or {}
+            state = str(meta.get("marketState") or "").upper()
+            regular = meta.get("regularMarketPrice")
+            prev = meta.get("previousClose") or meta.get("chartPreviousClose")
+            pre = meta.get("preMarketPrice")
+            post = meta.get("postMarketPrice")
+
+            if state in ("PRE", "PREPRE") and pre is not None:
+                price = float(pre)
+                session = "PRE_MARKET"
+            elif state in ("POST", "POSTPOST", "POST_MARKET") and post is not None:
+                price = float(post)
+                session = "AFTER_MARKET"
+            elif regular is not None:
+                price = float(regular)
+                session = "REGULAR" if state in ("REGULAR", "OPEN") else "CLOSED"
+            else:
+                return None
+
+            previous_close = float(prev) if prev is not None else None
+            change_pct = None
+            change = None
+            if previous_close is not None and previous_close != 0:
+                change = price - previous_close
+                change_pct = (change / previous_close) * 100.0
+            return {
+                "symbol": sym, "price": price, "price_str": f"{price:,.2f} 달러",
+                "previous_close": previous_close, "change": change, "change_pct": change_pct,
+                "session": session, "market_state": state, "source": "Yahoo Finance",
+                "is_realtime": session in ("PRE_MARKET", "REGULAR", "AFTER_MARKET"),
+            }
+
+        if market_name == "국내주식":
+            price, price_str = get_naver_realtime_price(symbol)
+            if price is None:
+                return None
+            previous_close = None
+            if df is not None and not df.empty and "Close" in df.columns:
+                try:
+                    idx = pd.to_datetime(df.index)
+                    today = pd.Timestamp.now().normalize()
+                    valid = df.loc[idx.normalize() < today]
+                    if not valid.empty:
+                        previous_close = float(valid["Close"].iloc[-1])
+                    else:
+                        previous_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else None
+                except Exception:
+                    previous_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else None
+            change = (price - previous_close) if previous_close is not None else None
+            change_pct = ((change / previous_close) * 100.0) if previous_close not in (None, 0) else None
+            return {
+                "symbol": str(symbol), "price": float(price), "price_str": price_str,
+                "previous_close": previous_close, "change": change, "change_pct": change_pct,
+                "session": "REGULAR", "market_state": "KR", "source": "Naver Finance",
+                "is_realtime": True,
+            }
+    except Exception as exc:
+        print(f"[UNIFIED PRICE SNAPSHOT] {symbol} failed: {type(exc).__name__}: {exc}")
+    return None
+
 def fetch_crypto_candles(symbol):
     clean_sym = symbol.upper().replace("-", "")
     if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
@@ -2855,6 +2931,12 @@ def run_full_pipeline(query):
             raw_price = float(df['Close'].iloc[-1])
             price_str = f"{int(raw_price):,} 원"
 
+    # STEP 2: 상단/코멘트가 동일한 현재가 스냅샷을 공유한다.
+    price_snapshot = build_unified_price_snapshot(symbol, market_name, df=df)
+    if price_snapshot:
+        raw_price = price_snapshot.get("price") or raw_price
+        price_str = price_snapshot.get("price_str") or price_str
+
     if raw_price is None or df is None:
         return None
 
@@ -2981,6 +3063,11 @@ def run_full_pipeline(query):
         "market": market_name,
         "price": price_str,
         "price_str": price_str,
+        "price_snapshot": price_snapshot or {
+            "price": raw_price, "price_str": price_str, "previous_close": None,
+            "change": None, "change_pct": None, "session": "UNKNOWN",
+            "source": "existing analysis data", "is_realtime": False
+        },
         "time": now_str,
         "now_str": now_str,
         "quant": quant,
@@ -3060,87 +3147,31 @@ def _why_moved_evidence_from_reason(movement_reason):
     ]
 
 
-def _why_moved_realtime_snapshot(symbol, formal_name, market_name, df=None, world_board=None, market_index_name=None):
-    """왜 움직였을까? 코멘트 전용 실시간 스냅샷.
-
-    화면/기존 분석 데이터는 건드리지 않고, 코멘트 첫 문장에 필요한
-    현재 가격·당일 등락률·대표 시장 등락률만 별도로 확인한다.
-    """
-    snapshot = {
-        "price": None,
-        "price_text": None,
-        "change_pct": None,
-        "market_name": None,
-        "market_change_pct": None,
-    }
-
-    # 국내주식: Naver 실시간 현재가 + 실제 전일 종가로 당일 등락률 계산
-    if market_name in ("국내주식", "국내증시"):
-        try:
-            code = str(symbol or "").strip()
-            live_price, _ = get_naver_realtime_price(code) if code else (None, None)
-            prev_close = None
-            if df is not None and len(df) >= 1:
-                prev_close = float(df["Close"].iloc[-1])
-            if live_price is not None:
-                snapshot["price"] = float(live_price)
-                snapshot["price_text"] = f"{int(round(live_price)):,}원"
-                if prev_close and prev_close > 0:
-                    snapshot["change_pct"] = ((live_price / prev_close) - 1.0) * 100.0
-        except Exception:
-            pass
-
-        # 국내 종목은 실제 상장 시장(KOSPI/KOSDAQ)에 맞춰 대표 지수를 사용한다.
-        if market_index_name == "KOSDAQ":
-            preferred = ["코스닥", "코스피"]
-        elif market_index_name == "KOSPI":
-            preferred = ["코스피", "코스닥"]
-        else:
-            preferred = ["코스피", "코스닥"]
-        item = _find_world_item(world_board or [], preferred)
-        if item:
-            snapshot["market_name"] = str(item.get("name") or preferred[0])
-            snapshot["market_change_pct"] = _movement_rate_to_float(item.get("rate") if item.get("rate") is not None else item.get("change_pct"))
-
-    # 미국주식: Yahoo 1분봉 meta의 regularMarketPrice + chartPreviousClose
-    elif market_name == "미국주식":
-        try:
-            sym = str(symbol or "").strip().upper()
-            if sym:
-                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=1d&interval=1m"
-                res = HTTP_SESSION.get(url, timeout=2.5)
-                res.raise_for_status()
-                result = (res.json().get("chart", {}).get("result") or [])
-                if result:
-                    meta = result[0].get("meta", {}) or {}
-                    live_price = meta.get("regularMarketPrice")
-                    prev_close = meta.get("chartPreviousClose", meta.get("previousClose"))
-                    if live_price is not None:
-                        snapshot["price"] = float(live_price)
-                        snapshot["price_text"] = f"{float(live_price):,.2f}달러"
-                    if live_price is not None and prev_close not in (None, 0):
-                        snapshot["change_pct"] = ((float(live_price) / float(prev_close)) - 1.0) * 100.0
-        except Exception:
-            pass
-
-        item = _find_world_item(world_board or [], ["QQQ", "SPY"])
-        if item:
-            snapshot["market_name"] = str(item.get("name") or "QQQ")
-            snapshot["market_change_pct"] = _movement_rate_to_float(item.get("rate") if item.get("rate") is not None else item.get("change_pct"))
-
-    return snapshot
-
-
-def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, world_board=None, realtime_snapshot=None, formal_name="종목"):
-    """STEP 5 + STEP 1 — 최종 코멘트 자연어 엔진 V2.
+def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, world_board=None, price_snapshot=None, formal_name=""):
+    """STEP 5 — 최종 코멘트 자연어 엔진 V2.
 
     V2 점수 결과만 최종 판단에 사용한다.
-    코멘트의 첫 부분에는 실시간 현재 상황(가격·당일 등락률·대표 시장 등락률)을
-    먼저 보여주고, 그 다음 원인 → 이벤트 → 가격 반응 → 확인 포인트 순으로 설명한다.
-    화면의 HTML/CSS/레이아웃은 이 함수에서 전혀 변경하지 않는다.
+    실제로 확인된 이벤트/가격/활동 데이터만 문장에 넣고,
+    초보자가 읽기 쉬운 '원인 → 반응 → 확인 포인트' 흐름으로 작성한다.
     """
     if not isinstance(movement_reason, dict):
-        return "🐜 개미들아! 현재 가격과 시장 흐름을 확인했지만 오늘 움직임의 한 가지 원인을 확정하긴 어려워. 확인된 근거부터 같이 봐보자!"
+        return "🐜 개미들아! 오늘 움직임은 한 가지 원인을 뚜렷하게 잡기 어려워. 확인된 근거부터 같이 봐보자!"
+
+    snapshot = price_snapshot if isinstance(price_snapshot, dict) else {}
+    live_price = _safe_float(snapshot.get("price"))
+    live_pct = _safe_float(snapshot.get("change_pct"))
+    live_price_str = str(snapshot.get("price_str") or "").strip()
+    session = str(snapshot.get("session") or "").strip()
+    if live_price is not None and live_pct is not None:
+        session_text = {
+            "PRE_MARKET": "프리마켓", "REGULAR": "정규장",
+            "AFTER_MARKET": "애프터마켓", "CLOSED": "장 마감 후"
+        }.get(session, "현재")
+        intro = f"🐜 개미들아! {formal_name or ''}은(는) 현재 {live_price_str}, {live_pct:+.2f}% 움직이고 있어. {session_text} 기준이야."
+    elif live_price is not None:
+        intro = f"🐜 개미들아! {movement_reason.get('formal_name') or ''}은(는) 현재 {live_price_str}야."
+    else:
+        intro = "🐜 개미들아! 현재 확인된 가격 데이터부터 살펴보자."
 
     cause = movement_reason.get("cause_analysis_v2") or {}
     key = str(cause.get("primary_key") or "").strip()
@@ -3149,52 +3180,7 @@ def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, w
     confidence = str(cause.get("confidence") or "낮음").strip()
     pct = _safe_float(cause.get("price_change_pct"))
 
-    rt = realtime_snapshot or {}
-    rt_price_text = str(rt.get("price_text") or "").strip()
-    rt_change = _safe_float(rt.get("change_pct"))
-    rt_market_name = str(rt.get("market_name") or "").strip()
-    rt_market_change = _safe_float(rt.get("market_change_pct"))
-
-    def _topic_particle(name):
-        """한글/영문 종목명 뒤의 자연스러운 은/는 선택."""
-        text = str(name or "종목").strip()
-        if not text:
-            return "종목은"
-        last = text[-1]
-        code = ord(last)
-        if 0xAC00 <= code <= 0xD7A3:
-            return text + ("은" if (code - 0xAC00) % 28 else "는")
-        # 영문/약어는 발음상 대부분 '는'으로 읽기 쉬운 표기를 사용한다.
-        return text + "는"
-
-    subject = _topic_particle(formal_name)
-
-    # ① 현재 상황 — 코멘트의 첫 문장은 항상 실시간 상황을 먼저 알려준다.
-    situation_parts = []
-    if rt_price_text:
-        if rt_change is not None:
-            situation_parts.append(f"{subject} 현재 {rt_price_text}, {rt_change:+.2f}% 움직이고 있어.")
-        else:
-            situation_parts.append(f"{subject} 현재 {rt_price_text}야.")
-    elif pct is not None:
-        situation_parts.append(f"{subject} 오늘 {pct:+.2f}% 움직이고 있어.")
-
-    if rt_market_name and rt_market_change is not None:
-        if abs(rt_market_change) < 0.30:
-            market_state = "큰 변화가 없어"
-        elif rt_market_change > 0:
-            market_state = "상승 중이야"
-        else:
-            market_state = "하락 중이야"
-        market_subject = _topic_particle(rt_market_name)
-        situation_parts.append(f"{market_subject} {rt_market_change:+.2f}%로 {market_state}.")
-
-    situation_sentence = " ".join(situation_parts).strip()
-
-    # 원인 점수가 약하면 억지로 특정 원인을 만들지 않는다.
     if not key or score < 35:
-        if situation_sentence:
-            return f"🐜 개미들아! {situation_sentence} 오늘은 한 가지 원인을 확정하기 어려워. 확인된 뉴스와 거래 흐름을 같이 봐보면 좋아!"
         if pct is not None:
             return f"🐜 개미들아! 오늘은 {pct:+.2f}% 움직였지만, 현재 확인된 외부 데이터만으로는 한 가지 원인을 확정하기 어려워. 여러 신호를 같이 확인해보면 좋아!"
         return "🐜 개미들아! 오늘 움직임은 한 가지 원인을 확정하기 어려워. 확인된 근거부터 같이 봐보자!"
@@ -3213,25 +3199,27 @@ def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, w
         if isinstance(x, dict) and (_safe_float(x.get("score")) or 0) >= 35
     ][:2]
 
+    # 같은 항목을 '보조원인'과 '증폭요인'에서 동시에 말하지 않는다.
     secondary_keys = {str(x.get("key")) for x in secondary}
     amplifiers = [x for x in amplifiers if str(x.get("key")) not in secondary_keys and str(x.get("key")) != key]
 
     opening_by_key = {
-        "earnings": "이번 움직임은 실적을 먼저 보는 게 좋아.",
-        "material": "이번 움직임은 기업 재료를 먼저 보는 게 좋아.",
-        "macro": "이번 움직임은 경제·금리 흐름을 먼저 보는 게 좋아.",
-        "global_impact": "이번 움직임은 해외 시장 흐름부터 보는 게 좋아.",
-        "theme": "이번 움직임은 업종·테마 흐름을 먼저 보는 게 좋아.",
-        "flow_pair": "이번 움직임은 외국인·기관 수급을 같이 보는 게 좋아.",
-        "foreign": "이번 움직임은 외국인 수급을 같이 보는 게 좋아.",
-        "institution": "이번 움직임은 기관 수급을 같이 보는 게 좋아.",
-        "trading_value": "이번 움직임은 거래대금 변화를 같이 보는 게 좋아.",
-        "volume": "이번 움직임은 거래량 변화를 같이 보는 게 좋아.",
-        "market": "이번 움직임은 시장 흐름부터 비교해보는 게 좋아.",
-        "market_5d": "이번 움직임은 최근 시장 흐름과 비교해보는 게 좋아.",
+        "earnings": "🐜 개미들아! 이번 움직임은 실적을 먼저 보는 게 좋아.",
+        "material": "🐜 개미들아! 이번 움직임은 기업 재료를 먼저 보는 게 좋아.",
+        "macro": "🐜 개미들아! 이번 움직임은 경제·금리 흐름을 먼저 보는 게 좋아.",
+        "global_impact": "🐜 개미들아! 이번 움직임은 해외 시장 흐름부터 보는 게 좋아.",
+        "theme": "🐜 개미들아! 이번 움직임은 업종·테마 흐름을 먼저 보는 게 좋아.",
+        "flow_pair": "🐜 개미들아! 이번 움직임은 외국인·기관 수급을 같이 보는 게 좋아.",
+        "foreign": "🐜 개미들아! 이번 움직임은 외국인 수급을 같이 보는 게 좋아.",
+        "institution": "🐜 개미들아! 이번 움직임은 기관 수급을 같이 보는 게 좋아.",
+        "trading_value": "🐜 개미들아! 이번 움직임은 거래대금 변화를 같이 보는 게 좋아.",
+        "volume": "🐜 개미들아! 이번 움직임은 거래량 변화를 같이 보는 게 좋아.",
+        "market": "🐜 개미들아! 이번 움직임은 시장 흐름부터 비교해보는 게 좋아.",
+        "market_5d": "🐜 개미들아! 이번 움직임은 최근 시장 흐름과 비교해보는 게 좋아.",
     }
-    opening = opening_by_key.get(key, f"이번 움직임은 {label}부터 보는 게 좋아.")
+    opening = opening_by_key.get(key, f"🐜 개미들아! 이번 움직임은 {label}부터 보는 게 좋아.")
 
+    # 분석에 사용된 외부 이벤트 중 하나만 짧게 인용한다. 실제 데이터가 없으면 만들지 않는다.
     area_map = {
         "material": "stock_news",
         "earnings": "earnings_news",
@@ -3250,60 +3238,39 @@ def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, w
                 event_text = title[:72].rstrip(" ,…") + ("…" if len(title) > 72 else "")
                 break
 
-    sentences = []
-    if situation_sentence:
-        sentences.append(f"🐜 개미들아! {situation_sentence}")
-    else:
-        sentences.append(f"🐜 개미들아! {opening}")
-
-    # ② 원인 + 이벤트 — 실제 외부 자료가 있을 때만 사건을 언급한다.
+    sentences = [intro, opening.replace("🐜 개미들아! ", "", 1)]
     if event_text:
         if temporal_pts > 0:
-            sentences.append(f"{opening} 관련 외부 이벤트가 확인됐고, 그 이후 가격도 같은 방향으로 움직였어. 관련 소식은 다음과 같아: {event_text}")
+            sentences.append(f"관련 외부 이벤트가 확인됐고, 그 이후 가격 반응도 같은 흐름으로 나타났어: {event_text}")
         else:
-            sentences.append(f"{opening} 관련 외부 이벤트가 확인됐어. 관련 소식은 다음과 같아: {event_text}")
+            sentences.append(f"관련 외부 이벤트가 확인됐어: {event_text}")
     else:
-        sentences.append(f"{opening} 현재 확인된 {label} 근거가 주가 움직임과 함께 나타났어.")
+        sentences.append(f"현재 확인된 {label} 근거가 주가 움직임과 함께 나타났어.")
 
-    # ③ 가격 반응 — 이벤트/원인과 실제 가격 변화가 연결됐는지 보여준다.
     if pct is not None:
-        if temporal_pts > 0 and rt_change is not None:
-            sentences.append(f"분석 기준 구간에서는 주가가 {pct:+.2f}% 움직였고, 이벤트 이후 가격 반응도 같은 방향으로 확인됐어.")
-        else:
-            sentences.append(f"분석 기준 구간의 주가는 {pct:+.2f}% 움직였어.")
+        sentences.append(f"분석 기준 구간의 주가는 {pct:+.2f}% 움직였어.")
 
-    # ④ 거래량/보조원인 확인 포인트.
+    # 보조원인과 증폭요인을 겹치지 않게 한 문장씩만 사용한다.
     sec_labels = list(dict.fromkeys(str(x.get("label") or "") for x in secondary if x.get("label")))
     amp_labels = list(dict.fromkeys(str(x.get("label") or "") for x in amplifiers if x.get("label")))
     if sec_labels:
         sentences.append(f"다만 {', '.join(sec_labels)}도 함께 움직여서 한 가지 요인만으로 보긴 어려워.")
     elif amp_labels:
-        sentences.append(f"{', '.join(amp_labels)}도 같은 방향인지 확인되면 이 재료의 영향이 더 뚜렷해질 수 있어.")
-    else:
-        sentences.append("거래량과 수급도 같은 방향으로 붙었는지 확인해보면 좋아!")
+        sentences.append(f"{', '.join(amp_labels)}도 같은 방향으로 확인돼서 실제 움직임을 뒷받침했는지 확인해보면 좋아!")
 
-    # 확신도에 따라 마지막 문장을 짧게 덧붙이되, 전체 길이를 과도하게 늘리지 않는다.
+    # 확신도에 따라 마지막 문장을 자연스럽게 바꾼다.
     if confidence == "높음":
-        final_hint = "현재 확인된 근거 가운데서는 이 요인의 영향이 가장 뚜렷해. 눈여겨볼 만해!"
+        sentences.append("현재 확인된 근거 가운데서는 이 요인의 영향이 가장 뚜렷해. 눈여겨볼 만해!")
     elif confidence == "중간":
-        final_hint = "현재 데이터에서는 이 요인이 가장 유력해. 다른 요인도 같이 확인해보면 좋아!"
+        sentences.append("현재 데이터에서는 이 요인이 가장 유력해. 다른 요인도 같이 확인해보면 좋아!")
     else:
-        final_hint = "이 요인이 유력해 보이지만 아직 단정하긴 어려워. 같이 확인해보면 좋아!"
+        sentences.append("이 요인이 유력해 보이지만 아직 단정하긴 어려워. 같이 확인해보면 좋아!")
 
-    # 최대 5문장. 첫 문장의 현재 상황과 가격 반응은 절대 제거하지 않는다.
-    if len(sentences) >= 5:
-        sentences = sentences[:4]
-        sentences.append(final_hint)
-    else:
-        sentences.append(final_hint)
-
-    # 같은 문장이 중복될 경우 마지막 문장을 제거한다.
-    cleaned = []
-    for sentence in sentences:
-        sentence = re.sub(r"\s+", " ", sentence).strip()
-        if sentence and sentence not in cleaned:
-            cleaned.append(sentence)
-    return " ".join(cleaned)
+    # 너무 길어지면 핵심 순서를 유지하며 4문장으로 압축한다.
+    if len(sentences) > 4:
+        # 이벤트가 있으면 이벤트/가격/확인포인트를 우선한다.
+        sentences = [sentences[0], sentences[1], sentences[2], sentences[-1]]
+    return " ".join(re.sub(r"\s+", " ", x).strip() for x in sentences if x.strip())
 
 
 # ----------------------------------------------------
@@ -4284,16 +4251,6 @@ def run_why_moved_pipeline(query):
     except Exception as exc:
         print(f"[WHY MOVED CAUSE V2] failed: {repr(exc)}")
 
-    # STEP 1: 코멘트 첫 문장용 실시간 가격/당일 등락률/시장 등락률을 별도 확인한다.
-    realtime_snapshot = _why_moved_realtime_snapshot(
-        symbol=symbol,
-        formal_name=formal_name,
-        market_name=market_name,
-        df=why_df,
-        world_board=world_board,
-        market_index_name=(base.get("track_analysis") or {}).get("market_index", ""),
-    )
-
     result = {
         "symbol": symbol,
         "name": formal_name,
@@ -4306,7 +4263,7 @@ def run_why_moved_pipeline(query):
             collected=collected,
             domestic_flow=domestic_flow,
             world_board=world_board,
-            realtime_snapshot=realtime_snapshot,
+            price_snapshot=base.get("price_snapshot"),
             formal_name=formal_name,
         ),
         "evidence": _why_moved_evidence_from_reason(movement_reason),
@@ -4337,7 +4294,6 @@ def run_why_moved_pipeline(query):
             "track_analysis": base.get("track_analysis") or {},
             "world_board": world_board,
         },
-        "comment_realtime": realtime_snapshot,
         # STEP 4 TEST MODE: V2가 실제로 무엇을 근거로 주원인을 선택했는지
         # 화면에서 검증할 수 있도록 원인 후보/구성점수/시간검증 요약을 별도로 제공한다.
         # 최종 사용자용 UI가 아니라 테스트 완료 후 제거할 수 있는 진단 데이터다.
@@ -4599,43 +4555,135 @@ HTML_PAGE = r"""<!DOCTYPE html>
         /* 1행: 왜 움직였을까? — 코멘트 전용 */
         #rowCause { grid-column: 1; grid-row: 1; }
 
-        /* STEP 7 — 코멘트 표현만 개선
-           카드 위치/크기/그리드 구조는 기존 그대로 유지한다. */
-        #rowCause .board-header-title {
-            font-size: 1.02rem !important;
-            font-weight: 850 !important;
-            letter-spacing: -0.35px;
-            color: var(--text-title) !important;
+        /* STEP 7 — 왜 움직였을까? 시각 강조 디자인
+           레이아웃/그리드 위치는 기존과 동일하게 유지한다. */
+        #rowCause {
+            position: relative;
+            overflow: hidden;
+            justify-content: flex-start !important;
+            padding: 18px 18px 20px !important;
+            background:
+                linear-gradient(180deg, rgba(30,41,59,0.22), rgba(17,24,39,0.06)),
+                var(--bg-card);
+            border: 1px solid rgba(56,189,248,0.20);
+            box-shadow: 0 4px 18px rgba(0,0,0,0.08);
         }
-        #rowCause #movementReasonCard {
-            margin-top: 2px !important;
-            font-size: 0.90rem !important;
-            line-height: 1.86 !important;
-            color: var(--text-main) !important;
-            word-break: keep-all;
-            overflow-wrap: break-word;
+        #rowCause::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: linear-gradient(180deg, #38bdf8, rgba(56,189,248,0.18));
         }
-        #rowCause .why-comment-paragraph {
-            margin: 0 0 10px;
+        .why-moved-header {
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:12px;
+            margin-bottom:12px;
+            padding-bottom:10px;
+            border-bottom:1px solid var(--border-line);
         }
-        #rowCause .why-comment-paragraph:last-child {
-            margin-bottom: 0;
+        .why-moved-title-wrap {
+            display:flex;
+            align-items:center;
+            gap:9px;
+            min-width:0;
         }
-        #rowCause .why-comment-greeting {
-            font-weight: 850;
-            color: var(--text-title);
+        .why-moved-title {
+            font-size:1.02rem;
+            font-weight:850;
+            color:var(--text-title);
+            letter-spacing:-0.35px;
         }
-        #rowCause .why-comment-number {
-            font-weight: 850;
-            color: #38bdf8;
+        .why-moved-live {
+            font-size:0.62rem;
+            font-weight:800;
+            color:#38bdf8;
+            background:rgba(56,189,248,0.10);
+            border:1px solid rgba(56,189,248,0.20);
+            padding:3px 7px;
+            border-radius:8px;
+            white-space:nowrap;
         }
-        #rowCause .why-comment-positive {
-            font-weight: 800;
-            color: #10b981;
+        .why-moved-snapshot {
+            display:grid;
+            grid-template-columns:1fr 1fr;
+            gap:8px;
+            margin-bottom:12px;
         }
-        #rowCause .why-comment-negative {
-            font-weight: 800;
-            color: #ef4444;
+        .why-moved-snapshot-item {
+            min-width:0;
+            background:rgba(15,23,42,0.28);
+            border:1px solid var(--border-line);
+            border-radius:10px;
+            padding:9px 10px;
+        }
+        .why-moved-snapshot-label {
+            font-size:0.62rem;
+            color:var(--text-muted);
+            margin-bottom:3px;
+        }
+        .why-moved-snapshot-value {
+            font-size:0.94rem;
+            font-weight:850;
+            color:var(--text-title);
+            white-space:nowrap;
+            overflow:hidden;
+            text-overflow:ellipsis;
+        }
+        .why-moved-snapshot-value.up { color:#10b981; }
+        .why-moved-snapshot-value.down { color:#ef4444; }
+        .why-moved-core {
+            display:flex;
+            align-items:center;
+            gap:8px;
+            margin:2px 0 9px;
+        }
+        .why-moved-core-label {
+            font-size:0.68rem;
+            font-weight:800;
+            color:#38bdf8;
+            background:rgba(56,189,248,0.10);
+            border:1px solid rgba(56,189,248,0.18);
+            border-radius:8px;
+            padding:3px 7px;
+            white-space:nowrap;
+        }
+        .why-moved-core-cause {
+            font-size:0.82rem;
+            font-weight:850;
+            color:var(--text-title);
+            overflow:hidden;
+            text-overflow:ellipsis;
+            white-space:nowrap;
+        }
+        .why-moved-comment-body {
+            font-size:0.84rem;
+            line-height:1.72;
+            color:var(--text-main);
+            word-break:keep-all;
+            white-space:pre-line;
+        }
+        .why-moved-comment-body strong {
+            color:var(--text-title);
+            font-weight:850;
+        }
+        .why-moved-foot {
+            margin-top:11px;
+            padding-top:9px;
+            border-top:1px dashed rgba(148,163,184,0.16);
+            font-size:0.63rem;
+            color:var(--text-muted);
+            line-height:1.45;
+            word-break:keep-all;
+        }
+        @media (max-width:560px) {
+            .why-moved-snapshot { grid-template-columns:1fr; }
+            .why-moved-title { font-size:0.98rem; }
+            .why-moved-comment-body { font-size:0.82rem; }
         }
 
         /* 2행: 차트(좌) & 증시(우) */
@@ -5365,12 +5413,37 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         </div>
 
-                        <!-- 1행 좌측: 왜 움직였을까? — 코멘트 전용 -->
-                        <div class="card" id="rowCause" style="justify-content:flex-start;">
-                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
-                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
+                        <!-- 1행 좌측: 왜 움직였을까? — STEP 7 시각 강조 -->
+                        <div class="card" id="rowCause">
+                            <div class="why-moved-header">
+                                <div class="why-moved-title-wrap">
+                                    <span class="why-moved-title">왜 움직였을까?</span>
+                                    <span class="why-moved-live">실시간 분석</span>
+                                </div>
+                                <span id="whyMovedConfidenceBadge" class="why-moved-live">-</span>
                             </div>
-                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
+
+                            <div class="why-moved-snapshot">
+                                <div class="why-moved-snapshot-item">
+                                    <div class="why-moved-snapshot-label">현재 종목</div>
+                                    <div id="whyMovedStockSnapshot" class="why-moved-snapshot-value">-</div>
+                                </div>
+                                <div class="why-moved-snapshot-item">
+                                    <div class="why-moved-snapshot-label">시장 흐름</div>
+                                    <div id="whyMovedMarketSnapshot" class="why-moved-snapshot-value">-</div>
+                                </div>
+                            </div>
+
+                            <div class="why-moved-core">
+                                <span class="why-moved-core-label">오늘의 핵심</span>
+                                <span id="whyMovedCoreCause" class="why-moved-core-cause">분석 중</span>
+                            </div>
+
+                            <div id="movementReasonCard" class="why-moved-comment-body"></div>
+
+                            <div id="whyMovedFoot" class="why-moved-foot">
+                                실제 확인된 가격·시장·외부 분석 데이터를 바탕으로 표시해.
+                            </div>
                         </div>
 
                         <!-- 2행 좌측: 트랙 분석 — 퀀트 분석과 동일한 카드 구조 -->
@@ -6590,6 +6663,64 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // 빈 값일 때도 클라이언트가 예전 방식으로 재작성하지 않는다.
                     const gaemiComment = String(data.comment || '현재 왜 움직였을까? 분석 결과를 불러오지 못했어. 잠시 후 다시 확인해줘.').trim();
 
+                    // STEP 7: 코멘트 카드의 시각 요약만 추가한다.
+                    // 분석 로직/점수/뉴스 선택에는 개입하지 않는다.
+                    const whyCauseV2 = mr.cause_analysis_v2 || {};
+                    const whyPrimaryLabel = String(whyCauseV2.primary_label || mr.main_reason || '원인 미확정').trim();
+                    const whyConfidence = String(whyCauseV2.confidence || mr.confidence || '낮음').trim();
+                    const whyPriceChange = Number(whyCauseV2.price_change_pct);
+                    const whyStockSnapshot = document.getElementById('whyMovedStockSnapshot');
+                    const whyMarketSnapshot = document.getElementById('whyMovedMarketSnapshot');
+                    const whyCoreCause = document.getElementById('whyMovedCoreCause');
+                    const whyConfidenceBadge = document.getElementById('whyMovedConfidenceBadge');
+
+                    if (whyStockSnapshot) {
+                        const stockText = Number.isFinite(whyPriceChange)
+                            ? `${displayName} · ${displayPrice} · ${whyPriceChange >= 0 ? '+' : ''}${whyPriceChange.toFixed(2)}%`
+                            : `${displayName} · ${displayPrice}`;
+                        whyStockSnapshot.textContent = stockText;
+                        whyStockSnapshot.classList.toggle('up', Number.isFinite(whyPriceChange) && whyPriceChange > 0);
+                        whyStockSnapshot.classList.toggle('down', Number.isFinite(whyPriceChange) && whyPriceChange < 0);
+                    }
+
+                    let whyMarketItem = null;
+                    if (Array.isArray(data.world_board)) {
+                        const marketNames = isKrw
+                            ? ['코스피', '코스닥']
+                            : ['QQQ', 'SPY'];
+                        whyMarketItem = data.world_board.find(w => marketNames.includes(String(w && w.name || '')));
+                    }
+                    if (whyMarketSnapshot) {
+                        if (whyMarketItem) {
+                            const mrk = Number(whyMarketItem.change_pct ?? whyMarketItem.rate);
+                            const mrkText = Number.isFinite(mrk)
+                                ? `${whyMarketItem.name} · ${mrk >= 0 ? '+' : ''}${mrk.toFixed(2)}%`
+                                : `${whyMarketItem.name} · 확인 필요`;
+                            whyMarketSnapshot.textContent = mrkText;
+                            whyMarketSnapshot.classList.toggle('up', Number.isFinite(mrk) && mrk > 0);
+                            whyMarketSnapshot.classList.toggle('down', Number.isFinite(mrk) && mrk < 0);
+                        } else {
+                            whyMarketSnapshot.textContent = `${isKrw ? '시장' : '나스닥100'} · 확인 필요`;
+                        }
+                    }
+                    if (whyCoreCause) whyCoreCause.textContent = whyPrimaryLabel;
+                    if (whyConfidenceBadge) {
+                        whyConfidenceBadge.textContent = `신뢰도 ${whyConfidence}`;
+                        if (whyConfidence === '높음') {
+                            whyConfidenceBadge.style.color = '#10b981';
+                            whyConfidenceBadge.style.background = 'rgba(16,185,129,0.10)';
+                            whyConfidenceBadge.style.borderColor = 'rgba(16,185,129,0.20)';
+                        } else if (whyConfidence === '중간') {
+                            whyConfidenceBadge.style.color = '#f59e0b';
+                            whyConfidenceBadge.style.background = 'rgba(245,158,11,0.10)';
+                            whyConfidenceBadge.style.borderColor = 'rgba(245,158,11,0.20)';
+                        } else {
+                            whyConfidenceBadge.style.color = 'var(--text-muted)';
+                            whyConfidenceBadge.style.background = 'rgba(148,163,184,0.08)';
+                            whyConfidenceBadge.style.borderColor = 'var(--border-line)';
+                        }
+                    }
+
                     const movementIconMap = {
                         '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',
                         '외국인 수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="7" r="3"></circle><path d="M5 20c.8-4 2.8-6 7-6s6.2 2 7 6"></path></svg>',
@@ -6739,23 +6870,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         return `<span class="movement-evidence-seg${active}"></span>`;
                     }).join('');
 
-                    // STEP 7: 문구는 서버 결과를 그대로 유지하고, 화면에서만 읽기 좋게 나눈다.
-                    // 내용/원인/점수는 변경하지 않는다.
-                    const escapeCommentHtml = value => String(value || '')
-                        .replace(/&/g, '&amp;')
-                        .replace(/</g, '&lt;')
-                        .replace(/>/g, '&gt;')
-                        .replace(/"/g, '&quot;')
-                        .replace(/'/g, '&#39;');
-                    const formatGaemiComment = value => {
-                        let html = escapeCommentHtml(value).replace(/\r\n?/g, '\n').trim();
-                        html = html.replace(/(^|\n)(개미들아!)/g, '$1<span class="why-comment-greeting">$2</span>');
-                        html = html.replace(/([+-]?\d+(?:\.\d+)?%)/g, '<span class="why-comment-number">$1</span>');
-                        html = html.replace(/([+-]?\d+(?:\.\d+)?\s*(?:달러|원))/g, '<span class="why-comment-number">$1</span>');
-                        html = html.replace(/(확인해볼 만해!?|확인해보면 좋아!?|같이 확인해보자!?)/g, '<span class="why-comment-positive">$1</span>');
-                        return html.split(/\n\s*\n/).map(part => `<div class="why-comment-paragraph">${part.replace(/\n/g, '<br>')}</div>`).join('');
-                    };
-                    mrCard.innerHTML = formatGaemiComment(gaemiComment);
+                    mrCard.innerHTML = `
+                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;">
+                            ${gaemiComment}
+                        </div>
+                    `;
 
                     // 트랙 분석 렌더링: 서버가 만든 track_analysis 실제 데이터만 사용한다.
                     const ta = data.track_analysis || {};

@@ -5279,10 +5279,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     };
                     const upDown = n => n > 0 ? '상승' : n < 0 ? '하락' : '보합';
 
-                    // 시장: 국내 종목이면 KOSPI/KOSDAQ를 반드시 우선 표시.
-                    const selectedMarketName =
-                        String(data.market_index_name || '').toUpperCase() === 'KOSDAQ' ? '코스닥' : '코스피';
-                    const marketItem = findBoard(selectedMarketName, selectedMarketName === '코스피' ? 'KOSPI' : 'KOSDAQ');
+                    // 시장: 종목 시장에 따라 국내/미국을 구분한다.
+                    // 국내주식 → KOSPI/KOSDAQ, 미국주식 → NASDAQ(실시간 대표값은 QQQ 사용),
+                    // 암호화폐 → 주식시장 지수 문장을 출력하지 않는다.
+                    const marketType = String(data.market_name || data.market_type || '').toLowerCase();
+                    const isUSMarket = marketType.includes('미국') || marketType.includes('us');
+                    const isCryptoMarket = marketType.includes('암호') || marketType.includes('crypto') || marketType.includes('코인');
+                    const selectedMarketName = isUSMarket
+                        ? '나스닥'
+                        : (String(data.market_index_name || '').toUpperCase() === 'KOSDAQ' ? '코스닥' : '코스피');
+                    const marketItem = isUSMarket
+                        ? findBoard('QQQ')
+                        : findBoard(selectedMarketName, selectedMarketName === '코스피' ? 'KOSPI' : 'KOSDAQ');
                     const marketRate = rateNumber(marketItem);
 
                     // 업종: 현재 구현에서 확인 가능한 대표 업종은 SOXX.
@@ -5297,19 +5305,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const soxxItem = findBoard('SOXX');
                     const soxxRate = rateNumber(soxxItem);
 
-                    // 시장 고정 문장
+                    // 시장/업종 고정 문장
                     const parts = [];
-                    if (marketRate !== null) {
-                        parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이고`);
-                    } else {
-                        parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 현재 흐름을 확인 중이고`);
-                    }
+                    if (!isCryptoMarket) {
+                        if (marketRate !== null) {
+                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이고`);
+                        } else {
+                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 현재 흐름을 확인 중이고`);
+                        }
 
-                    // 업종 고정 문장은 시장 문장에 이어 붙인다.
-                    if (isSemiconductor && soxxRate !== null) {
-                        parts[parts.length - 1] += ` 반도체 업종 SOXX는 ${soxxRate >= 0 ? '+' : ''}${soxxRate.toFixed(2)}% ${upDown(soxxRate)}!`;
-                    } else {
-                        parts[parts.length - 1] += ` 업종 데이터는 현재 확인되지 않았어.`;
+                        // 국내/미국 주식에서만 업종을 연결한다.
+                        if (isSemiconductor && soxxRate !== null) {
+                            parts[parts.length - 1] += ` 반도체 업종 SOXX는 ${soxxRate >= 0 ? '+' : ''}${soxxRate.toFixed(2)}% ${upDown(soxxRate)}!`;
+                        }
                     }
 
                     // 종목 고정
@@ -5389,8 +5397,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
                     }
 
-                    const closeSeed = (String(displayName).length + Math.abs(Math.round(Number.isFinite(pct) ? pct * 100 : 0))) % directionText.length;
-                    parts.push(`🐜 ${directionText[closeSeed]}`);
+                    // 마무리 문장은 고정한다. 방향값을 배열 인덱스로 잘못 사용하는 기존 로직을 제거.
+                    parts.push('🐜 오늘도 개미들 힘내자! 💪');
                     let gaemiComment = parts.join('\n\n');
 
                     const movementIconMap = {

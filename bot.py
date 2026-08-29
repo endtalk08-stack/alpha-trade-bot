@@ -5256,8 +5256,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             } catch (err) {
                 console.error("Analysis Error:", err);
                 const msg = err && err.message ? err.message : '알 수 없는 오류';
-                alert('데이터를 처리하는 중 오류가 발생했습니다.
-' + msg);
+                alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
                 document.getElementById('loading').style.display = 'none';
             }
         }

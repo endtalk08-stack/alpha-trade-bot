@@ -3172,6 +3172,519 @@ def collect_why_moved_data(symbol, formal_name, market_name, is_krw=False):
     return _why_data_cache_set(cache_key, data)
 
 
+
+
+def _why_parse_news_time(item):
+    """뉴스 published 값을 가능한 범위에서 실제 시각으로 변환한다.
+    Alpha Vantage는 YYYYMMDDTHHMMSS(UTC), RSS는 RFC/ISO 형식을 주로 사용한다.
+    파싱 실패는 None으로 처리하며 임의 시각을 만들지 않는다.
+    """
+    raw = str((item or {}).get("published_at") or (item or {}).get("published") or (item or {}).get("pubDate") or "").strip()
+    if not raw:
+        return None
+    try:
+        if re.fullmatch(r"\d{8}T\d{6}", raw):
+            return datetime.strptime(raw, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+        value = raw.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            # 시간대 정보가 없는 RSS는 한국 사이트 수집 결과를 우선 KST로 본다.
+            dt = dt.replace(tzinfo=ZoneInfo("Asia/Seoul") if ZoneInfo else timezone.utc)
+        return dt
+    except Exception:
+        try:
+            from email.utils import parsedate_to_datetime
+            dt = parsedate_to_datetime(raw)
+            if dt and dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo("Asia/Seoul") if ZoneInfo else timezone.utc)
+            return dt
+        except Exception:
+            return None
+
+
+def _why_market_timezone(market_name):
+    if market_name in ("국내주식", "국내증시"):
+        return ZoneInfo("Asia/Seoul") if ZoneInfo else timezone.utc
+    if market_name == "미국주식":
+        return ZoneInfo("America/New_York") if ZoneInfo else timezone.utc
+    return ZoneInfo("UTC") if ZoneInfo else timezone.utc
+
+
+def _why_temporal_status(dt, last_trade_dt, market_name):
+    """뉴스와 최근 거래일의 선후관계를 보수적으로 판정한다.
+    일봉 데이터만 있을 때는 같은 날의 장중 인과관계를 확정하지 않는다.
+    반환: score, status, explanation
+    """
+    if dt is None or last_trade_dt is None:
+        return 0, "검증불가", "뉴스 발표 시각 또는 거래일 시각을 확인할 수 없음"
+    tz = _why_market_timezone(market_name)
+    try:
+        local = dt.astimezone(tz)
+        trade = last_trade_dt.astimezone(tz)
+    except Exception:
+        local, trade = dt, last_trade_dt
+
+    d_days = (trade.date() - local.date()).days
+    if d_days < 0:
+        return -3, "미래뉴스", "최근 거래일 이후 발표된 뉴스"
+
+    # 장 마감 이후 발표된 같은 날짜 뉴스는 그날 가격의 원인이 될 수 없다.
+    close_hour, close_minute = (15, 30) if market_name in ("국내주식", "국내증시") else ((16, 0) if market_name == "미국주식" else (23, 59))
+    open_hour, open_minute = (9, 0) if market_name in ("국내주식", "국내증시") else ((9, 30) if market_name == "미국주식" else (0, 0))
+
+    if d_days == 0:
+        minutes = local.hour * 60 + local.minute
+        close_total = close_hour * 60 + close_minute
+        open_total = open_hour * 60 + open_minute
+        if minutes > close_total:
+            return -2, "장마감후", "최근 거래일 장 마감 후 발표된 뉴스"
+        if minutes < open_total:
+            return 2, "장시작전", "최근 거래일 장 시작 전에 발표된 뉴스"
+        return 1, "당일장중", "최근 거래일 장중 발표됐지만 일봉만으로 직접 반응 시점은 확정할 수 없음"
+    if d_days == 1:
+        return 2, "전거래일", "최근 거래일 직전 거래일에 발표된 뉴스"
+    if 2 <= d_days <= 3:
+        return 1, "최근뉴스", "최근 2~3일 내 발표된 뉴스"
+    if 4 <= d_days <= 7:
+        return 0, "과거뉴스", "최근 거래일 기준 4~7일 전 뉴스"
+    return -1, "오래된뉴스", "최근 거래일 기준 7일보다 오래된 뉴스"
+
+
+def _why_build_temporal_validation(collected, df, market_name):
+    """뉴스 → 최근 거래일의 시간 선후관계를 영역별로 검증한다.
+    점수는 원인 확정값이 아니라 다음 단계 원인 점수 엔진의 입력값이다.
+    """
+    if df is None or len(df) == 0:
+        return {"status": "검증불가", "reason": "가격 시계열 없음", "areas": {}}
+    try:
+        idx = pd.to_datetime(df.index)
+        last = idx[-1]
+        if getattr(last, "tzinfo", None) is None:
+            last = last.to_pydatetime().replace(tzinfo=_why_market_timezone(market_name))
+        else:
+            last = last.to_pydatetime()
+    except Exception:
+        return {"status": "검증불가", "reason": "최근 거래일 파싱 실패", "areas": {}}
+
+    area_map = {
+        "stock_news": "stock",
+        "industry_news": "industry",
+        "global_news": "global",
+        "macro_news": "macro",
+        "earnings_news": "earnings",
+    }
+    areas = {}
+    all_valid = 0
+    for key, area in area_map.items():
+        items = (collected or {}).get(key) or []
+        checks = []
+        for item in items:
+            dt = _why_parse_news_time(item)
+            score, status, explanation = _why_temporal_status(dt, last, market_name)
+            checks.append({
+                "title": str(item.get("title", ""))[:180],
+                "published_at": item.get("published_at") or item.get("published") or "",
+                "score": score, "status": status, "explanation": explanation,
+            })
+        checks.sort(key=lambda x: (x["score"], x["published_at"]), reverse=True)
+        positive = [x for x in checks if x["score"] > 0]
+        same_or_prior = [x for x in checks if x["score"] >= 1]
+        best = checks[0] if checks else None
+        areas[area] = {
+            "count": len(checks),
+            "valid_count": len([x for x in checks if x["status"] != "검증불가"]),
+            "positive_count": len(positive),
+            "same_or_prior_count": len(same_or_prior),
+            "best_score": best["score"] if best else 0,
+            "best_status": best["status"] if best else "데이터없음",
+            "best_explanation": best["explanation"] if best else "시간 정보가 있는 뉴스 없음",
+            "items": checks[:5],
+        }
+        all_valid += areas[area]["valid_count"]
+
+    return {
+        "status": "확인" if all_valid else "검증불가",
+        "last_trade_time": last.isoformat(),
+        "market_timezone": str(_why_market_timezone(market_name)),
+        "areas": areas,
+        "rule": "일봉만 있는 경우 당일 장중 뉴스는 인과관계를 확정하지 않고 약한 시간 선후 근거로만 사용",
+    }
+
+
+
+def _why_v2_direction_from_df(df):
+    """실제 가격 시계열에서 최근 방향을 계산한다. 데이터가 없으면 None."""
+    try:
+        if df is None or len(df) < 2 or "Close" not in df.columns:
+            return None, None
+        close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+        if len(close) < 2 or float(close.iloc[-2]) == 0:
+            return None, None
+        pct = (float(close.iloc[-1]) / float(close.iloc[-2]) - 1.0) * 100.0
+        return (1 if pct > 0 else (-1 if pct < 0 else 0)), pct
+    except Exception:
+        return None, None
+
+
+def _why_v2_temporal_to_points(score):
+    """STEP 2 시간검증 점수를 원인점수의 시간축(최대 +20, 강한 반대 -20)에 매핑."""
+    mapping = {2: 20, 1: 10, 0: 0, -1: -12, -2: -20, -3: -20}
+    try:
+        return mapping.get(int(score), 0)
+    except Exception:
+        return 0
+
+
+def _why_v2_sentiment_strength(items):
+    """실제 뉴스 제목의 긍/부정 키워드 강도. 단순 뉴스 개수보다 보수적으로 계산."""
+    pos, neg, _ = _news_sentiment_score(items)
+    return pos, neg, min(25, pos * 4), min(25, neg * 4)
+
+
+def _why_v2_price_alignment(df, expected_direction):
+    """뉴스 이후 직접적인 분봉 반응을 가장하지 않는다. 현재 확보된 일봉의 실제 방향 일치만 평가."""
+    actual_direction, pct = _why_v2_direction_from_df(df)
+    if actual_direction is None or expected_direction is None or expected_direction == 0:
+        return 0, "가격 방향 검증불가"
+    if actual_direction == expected_direction:
+        if abs(pct or 0) >= 3:
+            return 20, f"최근 종가 방향 일치 ({pct:+.2f}%)"
+        if abs(pct or 0) >= 1:
+            return 15, f"최근 종가 방향 일치 ({pct:+.2f}%)"
+        if abs(pct or 0) >= 0.3:
+            return 8, f"최근 종가 방향 일치 ({pct:+.2f}%)"
+        return 3, f"최근 종가 방향 일치 ({pct:+.2f}%)"
+    return -15, f"최근 종가 방향 불일치 ({pct:+.2f}%)"
+
+
+def _why_v2_activity_points(df, domestic_flow, expected_direction):
+    """거래량/거래대금은 원인이 아니라 '실제 반응이 있었는지'를 보강하는 점수."""
+    points = 0
+    details = []
+    try:
+        if df is not None and len(df) >= 6 and "Volume" in df.columns and "Close" in df.columns:
+            close = pd.to_numeric(df["Close"], errors="coerce")
+            vol = pd.to_numeric(df["Volume"], errors="coerce")
+            pct = ((close.iloc[-1] / close.iloc[-2]) - 1.0) * 100 if close.iloc[-2] else 0
+            avg = float(vol.tail(6).iloc[:-1].mean()) if len(vol.tail(6)) >= 2 else 0
+            vr = (float(vol.iloc[-1]) / avg) * 100 if avg > 0 else None
+            if expected_direction and ((pct > 0) == (expected_direction > 0)):
+                if vr is not None and vr >= 150:
+                    points += 5; details.append(f"거래량 {vr:.0f}%")
+                elif vr is not None and vr >= 120:
+                    points += 3; details.append(f"거래량 {vr:.0f}%")
+    except Exception:
+        pass
+    if domestic_flow:
+        for key, label in (("foreigner_5d", "외국인 5일"), ("institution_5d", "기관 5일")):
+            try:
+                v = float(domestic_flow.get(key))
+                if expected_direction and ((v > 0) == (expected_direction > 0)) and v != 0:
+                    points += 2
+                    details.append(f"{label} 같은 방향")
+            except Exception:
+                pass
+    return min(5, points), " · ".join(details)
+
+
+def _why_v2_candidate_score(key, label, items, temporal_area, expected_direction, df,
+                            domestic_flow, world_board, market_name, market_index_name,
+                            theme_info=None, earnings=None, macro_events=None,
+                            disclosures=None, global_impact=None):
+    """원인 후보별 0~100 점을 계산한다.
+
+    구성:
+      관련성/직접근거 0~25
+      시간 선후관계   -20~20
+      실제 가격 반응 -15~20
+      시장 전파      0~15
+      수급/거래 확인  0~10
+      반대 증거      -20
+    """
+    items = items or []
+    temporal_best = 0
+    if isinstance(temporal_area, dict):
+        temporal_best = int(temporal_area.get("best_score", 0) or 0)
+    temporal_pts = _why_v2_temporal_to_points(temporal_best)
+
+    pos, neg, pos_rel, neg_rel = _why_v2_sentiment_strength(items)
+    # 기본 직접근거: 실제 뉴스가 존재할수록 커지되, 키워드 개수만으로 과대평가하지 않는다.
+    if key == "earnings":
+        direct = 25 if earnings else min(15, len(items) * 3)
+    elif key == "macro":
+        direct = 25 if macro_events else min(12, len(items) * 3)
+    elif key == "material":
+        direct = min(25, pos_rel + min(8, len(disclosures or []) * 4)) if expected_direction > 0 else min(25, neg_rel + min(8, len(disclosures or []) * 4))
+    elif key == "theme":
+        direct = min(25, len(items) * 4 + (5 if (theme_info or {}).get("theme") else 0))
+    elif key == "global_impact":
+        direct = min(25, len(items) * 3 + (8 if global_impact and global_impact.get("transmission_score", 0) >= 2 else 0))
+    else:
+        direct = 0
+
+    # 가격 방향은 모든 후보의 공통 검증축이다. 글로벌/시장 후보는 같은 방향의 시장 데이터가 있어야 한다.
+    price_pts = 0
+    price_detail = ""
+    if key in ("material", "earnings", "macro", "theme", "global_impact"):
+        price_pts, price_detail = _why_v2_price_alignment(df, expected_direction)
+
+    transmission = 0
+    transmission_detail = ""
+    gi = global_impact or {}
+    if key == "global_impact":
+        transmission = min(15, int(gi.get("transmission_score", 0) or 0) * 4)
+        transmission_detail = gi.get("summary", "")
+    elif key == "theme":
+        # 실제 SOXX와 국내시장 방향이 확인되는 경우에만 보강.
+        soxx = _find_world_item(world_board, ["SOXX"])
+        if soxx:
+            sr = _movement_rate_to_float(soxx.get("rate"))
+            if sr is not None and expected_direction and ((sr > 0) == (expected_direction > 0)):
+                transmission = 10 if abs(sr) >= 1 else 6
+                transmission_detail = f"SOXX {sr:+.2f}%와 종목 방향 일치"
+    elif key in ("macro", "earnings"):
+        # 거시/실적은 별도의 actual/estimate 검증이 있으면 직접근거로 반영하고,
+        # 가격 방향은 위 price_pts에서 별도로 검증한다.
+        transmission = 0
+    elif key == "material":
+        # 공시는 직접기업 재료이므로 시장 전파 점수를 억지로 추가하지 않는다.
+        transmission = 0
+
+    activity, activity_detail = _why_v2_activity_points(df, domestic_flow, expected_direction)
+
+    # 수급 후보는 실제 5일/최신 수급이 같은 방향인지 별도로 평가.
+    if key in ("foreign", "institution", "flow_pair"):
+        v1 = _safe_float((domestic_flow or {}).get("foreigner_5d"))
+        v2 = _safe_float((domestic_flow or {}).get("institution_5d"))
+        latest1 = _safe_float((domestic_flow or {}).get("foreigner_latest"))
+        latest2 = _safe_float((domestic_flow or {}).get("institution_latest"))
+        if key == "foreign":
+            direct = 20 if v1 is not None and v1 * expected_direction > 0 and latest1 is not None and latest1 * expected_direction > 0 else (10 if v1 is not None and v1 * expected_direction > 0 else 0)
+        elif key == "institution":
+            direct = 20 if v2 is not None and v2 * expected_direction > 0 and latest2 is not None and latest2 * expected_direction > 0 else (10 if v2 is not None and v2 * expected_direction > 0 else 0)
+        else:
+            direct = 25 if all(x is not None and x * expected_direction > 0 for x in (v1, v2)) else 0
+        price_pts, price_detail = _why_v2_price_alignment(df, expected_direction)
+    elif key == "trading_value":
+        tv = _safe_float((domestic_flow or {}).get("trading_value"))
+        # 기존 엔진이 계산한 tv_ratio가 있으면 그 값을 사용하지 않고, 실제 데이터 존재만 보수적으로 반영.
+        direct = 15 if tv is not None and activity > 0 else (8 if tv is not None else 0)
+        price_pts, price_detail = _why_v2_price_alignment(df, expected_direction)
+    elif key == "volume":
+        direct = 15 if activity >= 3 else (8 if activity > 0 else 0)
+        price_pts, price_detail = _why_v2_price_alignment(df, expected_direction)
+    elif key == "market":
+        direct = 15
+        price_pts = 0
+    elif key == "market_5d":
+        direct = 12
+        price_pts = 0
+
+    # 반대 증거: 후보의 방향과 실제 가격/수급이 반대면 강하게 감점.
+    contradiction = 0
+    if key in ("foreign", "institution", "flow_pair"):
+        if direct == 0:
+            contradiction -= 15
+    elif key in ("material", "earnings", "macro", "theme", "global_impact"):
+        if price_pts < 0:
+            contradiction -= 20
+    elif key in ("market", "market_5d"):
+        # 시장 후보는 종목 방향과 반대인 경우 원인 가능성이 낮다.
+        try:
+            r = next((x for x in (world_board or []) if x.get("name") in (["코스피"] if market_index_name == "KOSPI" else ["코스닥"])), None)
+            rr = _movement_rate_to_float(r.get("rate")) if r else None
+            if rr is not None and expected_direction and rr * expected_direction < 0:
+                contradiction -= 15
+            elif rr is not None and expected_direction and rr * expected_direction > 0:
+                transmission = 8
+        except Exception:
+            pass
+
+    raw = direct + temporal_pts + price_pts + transmission + activity + contradiction
+    score = max(0, min(100, int(raw)))
+
+    return {
+        "key": key,
+        "label": label,
+        "score": score,
+        "components": {
+            "direct_evidence": int(direct),
+            "temporal": int(temporal_pts),
+            "price_reaction": int(price_pts),
+            "transmission": int(transmission),
+            "activity": int(activity),
+            "contradiction": int(contradiction),
+        },
+        "temporal_score": temporal_best,
+        "temporal_status": temporal_area.get("best_status") if isinstance(temporal_area, dict) else "검증불가",
+        "price_detail": price_detail,
+        "activity_detail": activity_detail,
+        "transmission_detail": transmission_detail,
+        "evidence_count": len(items),
+    }
+
+
+def analyze_why_moved_cause_v2(movement_reason, collected, temporal_validation, df,
+                               domestic_flow, world_board, market_name, market_index_name,
+                               formal_name, symbol=""):
+    """STEP 3: 원인별 점수 엔진 V2.
+
+    기존 8개 근거 카드는 그대로 유지하고, 별도의 `cause_analysis_v2`에서
+    원인 후보를 0~100으로 다시 평가한다. 따라서 현재 화면을 깨뜨리지 않는다.
+    """
+    base = dict(movement_reason or {})
+    collected = collected or {}
+    temporal = temporal_validation or {}
+    areas = temporal.get("areas") or {}
+
+    direction, pct = _why_v2_direction_from_df(df)
+    if direction is None:
+        old_direction = str(base.get("direction", "")).lower()
+        direction = -1 if "하락" in old_direction else (1 if "상승" in old_direction else 0)
+
+    theme_info = (base.get("global_impact") or {}).get("theme") if isinstance(base.get("global_impact"), dict) else None
+    if not theme_info:
+        theme_info = {"theme": (collected.get("theme") or {}).get("name")}
+
+    earnings = collected.get("earnings") or {}
+    earnings_rows = earnings.get("quarterly") if isinstance(earnings, dict) else []
+    earnings_rows = earnings_rows or []
+    macro_events = []
+    for ev in (collected.get("market_calendar") or []):
+        if isinstance(ev, dict) and ev.get("type") == "eco":
+            actual = _safe_float(ev.get("val")); expected = _safe_float(ev.get("exp"))
+            if actual is not None and expected is not None:
+                macro_events.append(ev)
+
+    labels = {
+        "material": "기업 재료", "earnings": "실적", "macro": "경제·거시",
+        "global_impact": "글로벌·국내 연결", "theme": "업종·테마",
+        "flow_pair": "외국인·기관 수급", "foreign": "외국인 수급",
+        "institution": "기관 수급", "trading_value": "거래대금",
+        "volume": "거래량", "market": "시장", "market_5d": "시장 5일 흐름",
+    }
+
+    candidates = []
+    for key in labels:
+        if key == "material": items = list(collected.get("stock_news") or []) + list(collected.get("earnings_news") or [])
+        elif key == "earnings": items = list(collected.get("earnings_news") or [])
+        elif key == "macro": items = list(collected.get("macro_news") or [])
+        elif key == "global_impact": items = list(collected.get("global_news") or [])
+        elif key == "theme": items = list(collected.get("industry_news") or [])
+        else: items = []
+        area = areas.get({
+            "material": "stock", "earnings": "earnings", "macro": "macro",
+            "global_impact": "global", "theme": "industry"
+        }.get(key, ""), {})
+        candidate = _why_v2_candidate_score(
+            key, labels[key], items, area, direction, df, domestic_flow,
+            world_board, market_name, market_index_name, theme_info=theme_info,
+            earnings=earnings_rows, macro_events=macro_events,
+            disclosures=collected.get("dart_disclosures") or [],
+            global_impact=base.get("global_impact") or {},
+        )
+        candidates.append(candidate)
+
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    primary = candidates[0] if candidates else None
+    secondary = candidates[1:4] if candidates else []
+
+    # 최소 신뢰 문턱. 점수가 낮으면 '원인 미확정'으로 둔다.
+    if not primary or primary["score"] < 35:
+        primary_key = None
+        confidence = "낮음"
+    else:
+        primary_key = primary["key"]
+        if primary["score"] >= 70:
+            confidence = "높음"
+        elif primary["score"] >= 50:
+            confidence = "중간"
+        else:
+            confidence = "낮음"
+
+    # 보조 원인은 주원인과 방향이 맞고 점수가 최소 35 이상인 것만.
+    secondary = [x for x in secondary if x["score"] >= 35][:2]
+
+    # 증폭 요인: 수급/거래가 주원인과 별도로 실제 방향을 강화할 때만 선택.
+    amplifier_keys = {"foreign", "institution", "flow_pair", "trading_value", "volume"}
+    amplifiers = [x for x in candidates if x["key"] in amplifier_keys and x["score"] >= 35]
+    amplifiers = amplifiers[:2]
+
+    return {
+        "version": "V2-cause-score",
+        "direction": "상승" if direction > 0 else ("하락" if direction < 0 else "혼조"),
+        "price_change_pct": pct,
+        "primary_key": primary_key,
+        "primary_label": labels.get(primary_key, "원인 미확정") if primary_key else "원인 미확정",
+        "primary_score": primary["score"] if primary_key else 0,
+        "confidence": confidence,
+        "candidates": candidates,
+        "secondary_reasons": secondary,
+        "amplifiers": amplifiers,
+        "rule": "직접근거 + 시간선후 + 실제가격반응 + 시장전파 + 거래확인 - 반대증거",
+    }
+
+def _why_apply_temporal_validation(movement_reason, temporal):
+    """시간 검증 결과를 원인 후보에 붙이고, 시간상 명백히 뒤늦은 재료는 주원인 선택에서 제외한다."""
+    if not isinstance(movement_reason, dict):
+        return movement_reason
+    out = dict(movement_reason)
+    reasons = [dict(r) for r in (movement_reason.get("reasons") or []) if isinstance(r, dict)]
+    areas = (temporal or {}).get("areas") or {}
+    reason_area = {
+        "material": ["stock", "earnings"],
+        "theme": ["industry"],
+    }
+    for r in reasons:
+        keys = reason_area.get(r.get("key"), [])
+        vals = [areas[a].get("best_score", 0) for a in keys if a in areas]
+        if vals:
+            ts = max(vals)
+            r["temporal_score"] = ts
+            r["temporal_status"] = next((areas[a].get("best_status") for a in keys if a in areas and areas[a].get("best_score", 0) == ts), "검증불가")
+        else:
+            r["temporal_score"] = None
+            r["temporal_status"] = "뉴스시간검증대상아님"
+    out["reasons"] = reasons
+
+    main_key = out.get("main_reason_key")
+    main_temporal = next((r.get("temporal_score") for r in reasons if r.get("key") == main_key), None)
+    out["temporal_validation"] = temporal
+    out["main_reason_temporal_score"] = main_temporal
+    if main_key in ("material", "theme") and main_temporal is not None and main_temporal < 0:
+        # 뉴스가 최근 거래일 이후에 나왔다면 해당 재료를 같은 날 원인으로 확정하지 않는다.
+        alternatives = [r for r in reasons if r.get("key") not in ("material", "theme") and int(r.get("score", 0) or 0) != 0]
+        if alternatives:
+            alt = max(alternatives, key=lambda r: int(r.get("score", 0) or 0))
+            out["main_reason_key"] = alt.get("key")
+            out["main_reason"] = {
+                "foreign": "외국인 수급", "institution": "기관 수급",
+                "trading_value": "거래대금", "volume": "거래량",
+                "market": "시장", "market_5d": "시장 5일 흐름",
+            }.get(alt.get("key"), out.get("main_reason", "-"))
+            out["temporal_override"] = {
+                "from": main_key, "to": alt.get("key"),
+                "reason": "주요 뉴스가 최근 거래일 장마감 후 또는 미래 시점에 발표되어 당일 원인으로 인정하지 않음"
+            }
+    return out
+
+
+def _why_fetch_price_frame(symbol, market_name):
+    """왜 움직였을까? 시간 검증용 실제 가격 시계열. 실패해도 분석 전체는 중단하지 않는다."""
+    try:
+        if market_name in ("국내주식", "국내증시"):
+            _, _, df = fetch_domestic_candles(symbol)
+        elif market_name == "미국주식":
+            _, _, df = fetch_overseas_candles(symbol)
+        elif market_name == "암호화폐":
+            _, _, df = fetch_crypto_candles(symbol)
+        else:
+            return None
+        return df
+    except Exception as exc:
+        print(f"[WHY MOVED PRICE FRAME] failed: {exc}")
+        return None
+
 def run_why_moved_pipeline(query):
     """독립 /api/why-moved 파이프라인.
     기존 사이트의 실제 가격·수급·시장 데이터는 '검증'에 사용하고,
@@ -3237,10 +3750,25 @@ def run_why_moved_pipeline(query):
         domestic_flow = None
 
     # 외부 뉴스 + 기존 실제 시장 반응으로 원인을 재평가한다.
+    # STEP 2: 실제 가격 시계열을 다시 확보해 뉴스 발표일과 최근 거래일의 선후관계를 검증한다.
+    why_df = _why_fetch_price_frame(symbol, market_name)
+    if why_df is None:
+        try:
+            candles = (base.get("candles") or [])
+            if candles:
+                why_df = pd.DataFrame(candles)
+                if "time" in why_df.columns:
+                    why_df["Date"] = pd.to_datetime(why_df["time"], errors="coerce")
+                    why_df = why_df.set_index("Date")
+        except Exception:
+            why_df = None
+
+    temporal_validation = _why_build_temporal_validation(collected, why_df, market_name)
+
     try:
         movement_reason = analyze_movement_reason(
             raw_price=None if not base.get("track_analysis") else (base.get("track_analysis") or {}).get("raw_price"),
-            df=None,
+            df=why_df,
             formal_name=formal_name,
             market_name=market_name,
             world_board=world_board,
@@ -3260,6 +3788,33 @@ def run_why_moved_pipeline(query):
             "direction": "-", "confidence": "낮음", "total_score": 0,
             "main_reason": "-", "main_reason_key": None, "reasons": [], "news_evidence": []
         }
+
+    # STEP 2: 시간 선후관계 결과를 원인 후보에 반영한다.
+    movement_reason = _why_apply_temporal_validation(movement_reason, temporal_validation)
+
+    # STEP 3: 원인별 점수 엔진 V2. 기존 8개 근거 카드와 화면용 score는 유지하고,
+    # V2 결과를 별도 객체로 붙여 다음 단계의 코멘트 엔진이 사용하도록 한다.
+    try:
+        cause_v2 = analyze_why_moved_cause_v2(
+            movement_reason=movement_reason,
+            collected=collected,
+            temporal_validation=temporal_validation,
+            df=why_df,
+            domestic_flow=domestic_flow,
+            world_board=world_board,
+            market_name=market_name,
+            market_index_name=(base.get("track_analysis") or {}).get("market_index", ""),
+            formal_name=formal_name,
+            symbol=symbol,
+        )
+        movement_reason = dict(movement_reason)
+        movement_reason["cause_analysis_v2"] = cause_v2
+        movement_reason["primary_reason_v2_key"] = cause_v2.get("primary_key")
+        movement_reason["primary_reason_v2_label"] = cause_v2.get("primary_label")
+        movement_reason["primary_reason_v2_score"] = cause_v2.get("primary_score", 0)
+        movement_reason["confidence_v2"] = cause_v2.get("confidence", "낮음")
+    except Exception as exc:
+        print(f"[WHY MOVED CAUSE V2] failed: {repr(exc)}")
 
     # 재평가가 df 없이 수급/가격을 충분히 반영하지 못할 수 있으므로,
     # 기존 분석 결과가 더 강한 근거를 가진 경우 기존 근거를 보조로 병합한다.
@@ -3291,6 +3846,7 @@ def run_why_moved_pipeline(query):
             "earnings": (collected.get("earnings_news") or [])[:12],
         },
         "data_collection": collected.get("collection_meta") or {},
+        "temporal_validation": temporal_validation,
         "macro": macro_snapshot,
         "earnings": collected.get("earnings") or (movement_reason.get("global_impact", {}).get("earnings") if isinstance(movement_reason.get("global_impact"), dict) else None),
         "sources": {

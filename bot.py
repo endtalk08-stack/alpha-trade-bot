@@ -5389,8 +5389,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
                     }
 
-                    const closeSeed = (String(displayName).length + Math.abs(Math.round(Number.isFinite(pct) ? pct * 100 : 0))) % closingByDirection.length;
-                    parts.push(`🐜 ${closingByDirection[closeSeed]}`);
+                    const closeSeed = (String(displayName).length + Math.abs(Math.round(Number.isFinite(pct) ? pct * 100 : 0))) % directionText.length;
+                    parts.push(`🐜 ${directionText[closeSeed]}`);
                     let gaemiComment = parts.join('\n\n');
 
                     const movementIconMap = {

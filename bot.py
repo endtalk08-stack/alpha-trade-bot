@@ -1937,6 +1937,114 @@ def _detect_theme(formal_name, stock_news):
     return theme, theme_scores[theme]
 
 
+
+def analyze_global_impact(formal_name, market_name, world_board, stock_news, dart_disclosures, df=None, domestic_flow=None, market_index_name=None):
+    """
+    글로벌 → 미국 → 국내 → 업종/테마 → 종목의 연결성을 계산한다.
+    실제 확보된 데이터가 없는 단계는 점수에 반영하지 않는다.
+    """
+    layers = []
+    text_blob = " ".join(
+        [str(formal_name or "")]
+        + [str(x.get("title", "")) for x in (stock_news or [])]
+        + [str(x.get("description", "")) for x in (stock_news or [])]
+    ).lower()
+
+    # 미국 시장
+    qqq = _find_world_item(world_board, ["QQQ"])
+    spy = _find_world_item(world_board, ["SPY"])
+    soxx = _find_world_item(world_board, ["SOXX"])
+    us_scores = []
+    for item in (qqq, spy, soxx):
+        if item:
+            r = _movement_rate_to_float(item.get("rate"))
+            if r is not None:
+                us_scores.append(r)
+    us_avg = sum(us_scores) / len(us_scores) if us_scores else None
+    us_score = 0
+    us_detail = "미국 시장 데이터 확인 필요"
+    if us_avg is not None:
+        us_score = 2 if us_avg >= 1.0 else (1 if us_avg >= 0.3 else (-2 if us_avg <= -1.0 else (-1 if us_avg <= -0.3 else 0)))
+        us_detail = f"미국 대표지수·반도체 평균 {us_avg:+.2f}%"
+
+    layers.append({"key":"us_market","label":"미국 시장","score":us_score,"detail":us_detail})
+
+    # 국내 시장
+    domestic = None
+    if market_name in ("국내주식","국내증시"):
+        ref = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
+        if ref:
+            r = _movement_rate_to_float(ref.get("rate"))
+            if r is not None:
+                domestic = r
+    domestic_score = 0
+    domestic_detail = "국내 시장 데이터 확인 필요"
+    if domestic is not None:
+        domestic_score = 2 if domestic >= 1.0 else (1 if domestic >= 0.3 else (-2 if domestic <= -1.0 else (-1 if domestic <= -0.3 else 0)))
+        domestic_detail = f"{market_index_name or '국내시장'} {domestic:+.2f}%"
+
+    layers.append({"key":"domestic_market","label":"국내 시장","score":domestic_score,"detail":domestic_detail})
+
+    # 원자재 / 환율 / 금리 관련 뉴스 연결
+    macro_keywords = {
+        "환율": ["원달러", "달러원", "usd/krw", "환율", "달러"],
+        "금리": ["금리", "fed", "fomc", "미국채", "국채", "10년물", "2년물"],
+        "물가": ["cpi", "ppi", "물가", "인플레이션"],
+        "고용": ["고용", "실업률", "비농업", "nfp", "job"],
+        "유가": ["wti", "유가", "원유", "brent"],
+        "중국": ["중국", "상하이", "홍콩", "위안화", "중국 경기"],
+        "정책·지정학": ["관세", "수출규제", "제재", "전쟁", "휴전", "정책", "opec"]
+    }
+    macro_hits = []
+    for label, kws in macro_keywords.items():
+        hits = [k for k in kws if k.lower() in text_blob]
+        if hits:
+            macro_hits.append((label, hits[:3]))
+
+    macro_score = 1 if macro_hits else 0
+    macro_detail = ", ".join(f"{x[0]}({', '.join(x[1])})" for x in macro_hits[:3]) if macro_hits else "직접 연결되는 거시경제 뉴스 제한적"
+    layers.append({"key":"macro","label":"세계경제·거시환경","score":macro_score,"detail":macro_detail})
+
+    # 실적 전/후 신호
+    earnings_keywords = ["실적", "영업이익", "매출", "어닝", "컨센서스", "가이던스", "잠정실적"]
+    earnings_hits = [k for k in earnings_keywords if k.lower() in text_blob]
+    earnings_score = 1 if earnings_hits else 0
+    earnings_detail = f"실적 관련 신호: {', '.join(earnings_hits[:5])}" if earnings_hits else "실적 관련 직접 신호 제한적"
+    layers.append({"key":"earnings","label":"실적","score":earnings_score,"detail":earnings_detail})
+
+    # 기업 직접 이벤트
+    event_keywords = ["수주", "계약", "공급", "mou", "인수", "합병", "신제품", "승인", "허가", "특허", "자사주", "배당"]
+    event_hits = [k for k in event_keywords if k.lower() in text_blob]
+    event_score = 2 if len(event_hits) >= 2 else (1 if event_hits else 0)
+    event_detail = f"직접 이벤트: {', '.join(event_hits[:6])}" if event_hits else "직접 이벤트 신호 제한적"
+    layers.append({"key":"event","label":"기업 이벤트","score":event_score,"detail":event_detail})
+
+    # 글로벌 → 국내 연결 점수
+    transmission_score = 0
+    transmission_detail = "글로벌→국내 연결 근거 제한적"
+    if us_score > 0 and domestic_score > 0:
+        transmission_score += 2
+        transmission_detail = "미국 시장 강세와 국내 시장 강세가 같은 방향"
+    if soxx and "반도체" in text_blob and us_score > 0:
+        transmission_score += 2
+        transmission_detail = "미국 반도체 흐름과 종목의 산업 연결 가능성 확인"
+    if macro_hits and domestic_score != 0:
+        transmission_score += 1
+        transmission_detail += " · 거시환경과 국내시장 방향도 확인"
+
+    layers.append({"key":"transmission","label":"글로벌→국내 연결","score":transmission_score,"detail":transmission_detail})
+
+    # 연결 강도: 직접 재료/이벤트 > 글로벌 전파 > 산업/테마 > 수급은 기존 분석에서 별도 판단.
+    available = [x for x in layers if x["score"] != 0]
+    total = sum(x["score"] for x in available)
+    return {
+        "layers": layers,
+        "total_score": total,
+        "main_global_key": max(available, key=lambda x: x["score"])["key"] if available else None,
+        "summary": " → ".join(x["detail"] for x in available[:3]) if available else "연결 근거 제한적"
+    }
+
+
 def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None):
     """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다."""
     reasons = []
@@ -2233,12 +2341,30 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     else:
         summary = "현재 확보된 데이터만으로는 특정 원인을 우선순위 높게 선택하기 어렵습니다."
 
+    global_impact = analyze_global_impact(
+        formal_name=formal_name,
+        market_name=market_name,
+        world_board=world_board,
+        stock_news=stock_news,
+        dart_disclosures=dart_disclosures,
+        df=df,
+        domestic_flow=domestic_flow,
+        market_index_name=market_index_name
+    )
+
+    # 글로벌/거시 연결이 강하면, 기존 주원인이 약할 때 글로벌 연결을 우선 보조 원인으로 사용한다.
+    if global_impact["total_score"] >= 3 and main_key in (None, "market", "market_5d", "theme"):
+        main_key = "global_impact"
+        main_reason = "글로벌·국내 연결"
+        summary = f"{global_impact['summary']} 흐름이 함께 확인됩니다."
+
     return {
         "direction": direction,
         "confidence": confidence,
         "total_score": total_score,
         "main_reason": main_reason,
         "main_reason_key": main_key,
+        "global_impact": global_impact,
         "summary": summary,
         "reasons": reasons,
         "news_evidence": news_evidence[:5]
@@ -4528,6 +4654,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         gaemiComment=`개미들아! 오늘은 거래대금이 눈에 띄네\n\n${tradingDetail} 데이터가 확인돼. 주가 움직임과 함께 자금 유입 강도를 먼저 확인해볼 만해.`;
                     }else if(mainReasonKey==='volume'){
                         gaemiComment=`개미들아! 오늘은 거래량이 확실히 달라졌어\n\n${volumeDetail} 데이터가 확인돼. 평소 대비 거래가 얼마나 늘었는지와 주가 방향을 같이 보는 게 좋아.`;
+                    }else if(mainReasonKey==='global_impact'){
+                        const gi = mr.global_impact || {};
+                        const gl = Array.isArray(gi.layers) ? gi.layers.filter(x=>Number(x.score||0)!==0) : [];
+                        const glText = gl.slice(0,3).map(x=>`${x.label}: ${x.detail}`).join(' · ');
+                        gaemiComment=`개미들아! 오늘은 글로벌 흐름도 같이 봐야겠어\n\n${glText || '미국·국내 시장의 연결 신호가 확인돼.'} 흐름이 함께 나타나서 글로벌 시장에서 국내 종목으로 이어진 영향을 확인해볼 만해.`;
                     }else if(mainReasonKey==='market' || mainReasonKey==='market_5d'){
                         gaemiComment=`개미들아! 오늘은 시장 흐름을 같이 봐야겠어\n\n${detailOf(mainReasonKey)} 데이터가 확인돼. 종목 자체의 움직임인지 시장 영향인지 같이 비교해보자.`;
                     }else if(topReason && Number(topReason.score||0)<0){

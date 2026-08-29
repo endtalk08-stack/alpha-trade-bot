@@ -3061,11 +3061,108 @@ def _why_moved_evidence_from_reason(movement_reason):
 
 
 def _why_moved_comment(movement_reason):
-    """초보자가 읽기 쉬운 독립 코멘트 생성.
-    원인 단정 대신 핵심 원인 → 연결 → 확인 순으로 설명한다.
+    """V2 최종 코멘트.
+    이벤트 영향점수까지 통합된 cause_analysis_v2를 우선 사용한다.
+    거래량/거래대금은 직접 원인보다 확인·증폭 신호로 설명하고,
+    실제 이벤트 제목/시간/가격반응이 있을 때만 구체적으로 언급한다.
     """
     if not isinstance(movement_reason, dict):
         return "오늘은 한 가지 원인을 뚜렷하게 잡기 어려워. 확인된 데이터부터 보는 게 좋아."
+
+    # ------------------------------------------------------------
+    # V2 최종 코멘트 경로
+    # ------------------------------------------------------------
+    cause_v2 = movement_reason.get("cause_analysis_v2")
+    if isinstance(cause_v2, dict) and cause_v2.get("primary_key"):
+        primary_key = str(cause_v2.get("primary_key"))
+        primary_label = str(cause_v2.get("primary_label") or "주요 원인")
+        primary_score = _safe_float(cause_v2.get("primary_score")) or 0
+        confidence = str(cause_v2.get("confidence") or "낮음")
+        direction = str(cause_v2.get("direction") or movement_reason.get("direction") or "움직임")
+        secondary = [x for x in (cause_v2.get("secondary_reasons") or []) if isinstance(x, dict)]
+        amplifiers = [x for x in (cause_v2.get("amplifiers") or []) if isinstance(x, dict)]
+
+        # 이벤트 근거는 통합된 후보에 들어 있다. 가장 영향도가 높은 실제 이벤트 1개만 코멘트에 사용한다.
+        candidates = [x for x in (cause_v2.get("candidates") or []) if isinstance(x, dict)]
+        primary_candidate = next((x for x in candidates if x.get("key") == primary_key), None)
+        event_evidence = (primary_candidate or {}).get("event_evidence") or []
+        best_event = event_evidence[0] if event_evidence and isinstance(event_evidence[0], dict) else None
+        event_title = str((best_event or {}).get("title") or "").strip()
+        event_type = str((best_event or {}).get("event_type") or "")
+        reaction = (best_event or {}).get("price_reaction") or {}
+
+        def fmt_pct(v):
+            n = _safe_float(v)
+            return f"{n:+.2f}%" if n is not None else ""
+
+        r1 = fmt_pct(reaction.get("d1_return"))
+        r3 = fmt_pct(reaction.get("d3_return"))
+        r5 = fmt_pct(reaction.get("d5_return"))
+        reaction_text = ""
+        if r1:
+            reaction_text = f"이벤트 이후 첫 거래일에는 주가가 {r1} 움직였어."
+            if r3:
+                reaction_text += f" 3거래일 기준으로는 {r3}였어."
+        elif r3:
+            reaction_text = f"이벤트 이후 3거래일 동안 주가는 {r3} 움직였어."
+        elif r5:
+            reaction_text = f"이벤트 이후 5거래일 기준 주가는 {r5} 움직였어."
+
+        event_text = ""
+        if event_title and event_type in ("earnings", "guidance", "fed", "macro", "corporate_news", "disclosure", "industry", "financial_market"):
+            short_title = event_title[:110].rstrip(" .")
+            label_map = {
+                "earnings": "실적", "guidance": "가이던스", "fed": "Fed·금리",
+                "macro": "경제지표", "corporate_news": "기업 재료", "disclosure": "공시",
+                "industry": "업종·테마", "financial_market": "글로벌 시장"
+            }
+            event_text = f"{label_map.get(event_type, primary_label)} 관련 실제 이벤트가 확인됐어: {short_title}."
+
+        amplifier_text = ""
+        amp_labels = []
+        for a in amplifiers[:2]:
+            label = str(a.get("label") or "").strip()
+            if label in ("거래량", "거래대금"):
+                detail = str(a.get("detail") or "").strip()
+                if detail:
+                    amp_labels.append(detail)
+        if amp_labels:
+            amplifier_text = " " + " ".join(amp_labels) + " 이런 거래 반응도 함께 나타났어."
+
+        secondary_text = ""
+        if secondary:
+            labels2 = [str(x.get("label") or "").strip() for x in secondary[:2] if x.get("label")]
+            labels2 = [x for x in labels2 if x and x != primary_label]
+            if labels2:
+                secondary_text = f" {', '.join(labels2)} 흐름도 함께 확인돼."
+
+        if primary_score < 35:
+            return f"오늘은 {direction} 움직임이 나왔지만, 현재 데이터만으로는 한 가지 원인을 확실하게 잡기 어려워. 여러 근거를 함께 확인하는 게 좋아."
+
+        intro = f"개미들아! 오늘은 {primary_label}을 먼저 봐야겠어."
+        if event_text:
+            body = event_text
+            if reaction_text:
+                body += " " + reaction_text
+            if secondary_text:
+                body += secondary_text
+            if amplifier_text:
+                body += amplifier_text
+        else:
+            body = f"현재 데이터에서는 {primary_label}의 영향이 가장 크게 나타났어."
+            if secondary_text:
+                body += secondary_text
+            if amplifier_text:
+                body += amplifier_text
+
+        if confidence == "높음":
+            ending = " 여러 데이터가 같은 방향을 가리켜 이 원인을 우선해서 보는 게 좋아."
+        elif confidence == "중간":
+            ending = " 다만 다른 요인도 함께 작용했을 가능성이 있어."
+        else:
+            ending = " 아직은 다른 가능성도 같이 열어두는 게 좋아."
+
+        return intro + "\n\n" + body + ending
 
     reasons = [r for r in movement_reason.get("reasons", []) if isinstance(r, dict)]
     nonzero = [r for r in reasons if _safe_float(r.get("score")) not in (None, 0)]
@@ -3252,10 +3349,826 @@ def collect_why_moved_data(symbol, formal_name, market_name, is_krw=False):
             "areas": ["stock", "industry", "global", "macro", "earnings", "disclosure"],
         },
     }
+    # STEP 1: 이벤트 영향 추적용 공통 타임라인을 생성한다.
+    # 이 단계에서는 점수/코멘트에 연결하지 않고 데이터 구조만 제공한다.
+    try:
+        data["event_timeline"] = build_why_event_timeline(
+            collected=data,
+            market_name=market_name,
+            symbol=symbol,
+            formal_name=formal_name,
+        )
+    except Exception as exc:
+        print(f"[WHY EVENT STRUCTURE] failed: {repr(exc)}")
+        data["event_timeline"] = {
+            "version": "V2-event-structure-1-fallback",
+            "events": [],
+            "event_count": 0,
+            "dated_event_count": 0,
+            "undated_event_count": 0,
+            "by_type": {},
+            "rules": {
+                "no_fabricated_event": True,
+                "no_fabricated_time": True,
+                "impact_window_is_tracking_only": True,
+                "actual_estimate_only_when_source_provided": True,
+            },
+        }
+
     return _why_data_cache_set(cache_key, data)
 
 
 
+
+
+# ----------------------------------------------------
+# STEP 1 EVENT IMPACT STRUCTURE
+# 이벤트 영향 추적의 "데이터 구조"만 추가한다.
+# 아직 원인 점수/코멘트에는 연결하지 않는다.
+# ----------------------------------------------------
+WHY_EVENT_IMPACT_WINDOWS = {
+    "earnings": {"before_days": 1, "after_days": 5, "label": "실적"},
+    "guidance": {"before_days": 1, "after_days": 5, "label": "가이던스"},
+    "fed": {"before_days": 1, "after_days": 3, "label": "Fed/금리"},
+    "macro": {"before_days": 1, "after_days": 3, "label": "경제지표"},
+    "financial_market": {"before_days": 0, "after_days": 2, "label": "금융시장"},
+    "industry": {"before_days": 0, "after_days": 3, "label": "업종·테마"},
+    "corporate_news": {"before_days": 0, "after_days": 2, "label": "기업 뉴스"},
+    "disclosure": {"before_days": 0, "after_days": 3, "label": "공시"},
+    "other": {"before_days": 0, "after_days": 1, "label": "기타"},
+}
+
+
+def _why_event_impact_window(event_type):
+    """이벤트 종류별 기본 영향 기간. 추정값을 가격 원인으로 확정하지 않는다."""
+    return dict(
+        WHY_EVENT_IMPACT_WINDOWS.get(
+            event_type,
+            WHY_EVENT_IMPACT_WINDOWS["other"]
+        )
+    )
+
+
+def _why_event_type(category, title="", source_type="", item=None):
+    """수집된 자료를 이벤트 종류로 표준화한다."""
+    cat = str(category or "").lower().strip()
+    title_text = str(title or "").lower()
+    item = item if isinstance(item, dict) else {}
+
+    if cat == "earnings":
+        return "earnings"
+
+    if cat == "macro":
+        # 실제 경제지표/Fed 관련 뉴스만 macro/fed로 구분한다.
+        fed_words = ("연준", "fed", "fomc", "금리", "파월", "의장")
+        return "fed" if any(w in title_text for w in fed_words) else "macro"
+
+    if cat == "global":
+        market_words = ("나스닥", "s&p", "s&p500", "다우", "soxx", "qqq",
+                        "미국증시", "뉴욕증시", "반도체", "financial")
+        return "financial_market" if any(w in title_text for w in market_words) else "other"
+
+    if cat == "industry":
+        return "industry"
+
+    if cat == "stock":
+        return "corporate_news"
+
+    if cat == "disclosure":
+        return "disclosure"
+
+    return "other"
+
+
+def _why_event_datetime_from_calendar(item, market_name):
+    """경제/실적 캘린더의 실제 날짜/시각을 가능한 범위에서 파싱한다.
+    정보가 없으면 임의의 시각을 만들지 않는다.
+    """
+    if not isinstance(item, dict):
+        return None
+
+    raw_ts = item.get("ts")
+    try:
+        if raw_ts is not None:
+            return datetime.fromtimestamp(float(raw_ts), tz=timezone.utc)
+    except Exception:
+        pass
+
+    date_raw = str(item.get("date_key") or item.get("date") or "").strip()
+    time_raw = str(item.get("time") or "").strip()
+    if not date_raw:
+        return None
+
+    # date_key는 YYYY.MM.DD, date는 YYYY-MM-DD 계열을 우선 지원한다.
+    date_match = re.search(r"(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})", date_raw)
+    if not date_match:
+        return None
+
+    y, m, d = map(int, date_match.groups())
+    hm = re.search(r"(\d{1,2}):(\d{2})", time_raw)
+    hour = int(hm.group(1)) if hm else 0
+    minute = int(hm.group(2)) if hm else 0
+
+    try:
+        tz = _why_market_timezone(market_name)
+        return datetime(y, m, d, hour, minute, tzinfo=tz)
+    except Exception:
+        return None
+
+
+def _why_normalize_event(category, item, market_name, symbol="", formal_name=""):
+    """이벤트를 공통 스키마로 변환한다. 실제 원문/수치가 없으면 빈 값으로 둔다."""
+    if not isinstance(item, dict):
+        return None
+
+    title = (
+        item.get("title")
+        or item.get("name")
+        or item.get("reportTitle")
+        or ""
+    )
+    source = item.get("source") or item.get("flr_nm") or ""
+    source_type = item.get("source_type") or ""
+    event_type = _why_event_type(category, title, source_type, item)
+    window = _why_event_impact_window(event_type)
+
+    published_at = (
+        item.get("published_at")
+        or item.get("published")
+        or item.get("pubDate")
+        or ""
+    )
+
+    event_dt = _why_parse_news_time({
+        "published_at": published_at
+    }) if published_at else None
+
+    if event_dt is None:
+        event_dt = _why_event_datetime_from_calendar(item, market_name)
+
+    actual = item.get("actual")
+    expected = item.get("expected")
+    if actual is None:
+        actual = item.get("actual_eps")
+    if expected is None:
+        expected = item.get("expected_eps")
+
+    # 실적 매출 actual/estimate도 원본이 있을 때만 보관한다.
+    actual_revenue = item.get("actual_revenue")
+    expected_revenue = item.get("expected_revenue")
+
+    return {
+        "event_id": "",
+        "category": str(category or "other"),
+        "event_type": event_type,
+        "event_label": window["label"],
+        "title": str(title).strip()[:240],
+        "symbol": symbol,
+        "name": formal_name,
+        "market": market_name,
+        "published_at": str(published_at),
+        "event_at": event_dt.isoformat() if event_dt else "",
+        "event_time_status": "확인" if event_dt else "시간정보없음",
+        "source": str(source),
+        "source_type": str(source_type),
+        "url": str(item.get("url") or item.get("link") or ""),
+        "actual": actual,
+        "expected": expected,
+        "actual_revenue": actual_revenue,
+        "expected_revenue": expected_revenue,
+        "previous": item.get("previous") or item.get("prev"),
+        "impact_window": {
+            "before_days": int(window["before_days"]),
+            "after_days": int(window["after_days"]),
+        },
+        "impact_status": "추적대상",
+    }
+
+
+def build_why_event_timeline(collected, market_name, symbol="", formal_name=""):
+    """
+    왜 움직였을까?용 통합 이벤트 타임라인.
+    - 기존 수집 데이터만 사용
+    - 가짜 이벤트/가짜 시각 생성 금지
+    - 원인 점수 계산은 하지 않음
+    """
+    collected = collected if isinstance(collected, dict) else {}
+    events = []
+
+    area_map = (
+        ("stock_news", "stock"),
+        ("industry_news", "industry"),
+        ("global_news", "global"),
+        ("macro_news", "macro"),
+        ("earnings_news", "earnings"),
+    )
+
+    for key, category in area_map:
+        for item in (collected.get(key) or []):
+            ev = _why_normalize_event(
+                category, item, market_name, symbol, formal_name
+            )
+            if ev:
+                events.append(ev)
+
+    # 실적 캘린더의 실제 이벤트도 별도로 추가한다.
+    for item in (collected.get("market_calendar") or []):
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").lower()
+        if item_type != "earn":
+            continue
+        ev = _why_normalize_event(
+            "earnings", item, market_name, symbol, formal_name
+        )
+        if ev:
+            events.append(ev)
+
+    # 국내 공시는 별도 이벤트 영역으로 추가한다.
+    for item in (collected.get("dart_disclosures") or []):
+        if not isinstance(item, dict):
+            continue
+        ev = _why_normalize_event(
+            "disclosure", item, market_name, symbol, formal_name
+        )
+        if ev:
+            events.append(ev)
+
+    # 중복 제거: 같은 종류/제목/시각은 하나만 유지한다.
+    dedup = {}
+    for ev in events:
+        key = (
+            ev.get("event_type"),
+            ev.get("title"),
+            ev.get("event_at") or ev.get("published_at"),
+            ev.get("source"),
+        )
+        dedup[key] = ev
+
+    events = list(dedup.values())
+
+    # 안정적인 ID를 만든다. 랜덤값이 아니라 내용 기반으로 재현 가능하게 한다.
+    for i, ev in enumerate(
+        sorted(
+            events,
+            key=lambda x: (
+                0 if x.get("event_at") else 1,
+                x.get("event_at") or x.get("published_at") or "",
+            ),
+            reverse=True,
+        ),
+        start=1,
+    ):
+        raw_id = "|".join([
+            str(ev.get("event_type", "")),
+            str(ev.get("title", "")),
+            str(ev.get("event_at", "")),
+            str(ev.get("source", "")),
+        ])
+        import hashlib
+        ev["event_id"] = "EV-" + hashlib.sha1(
+            raw_id.encode("utf-8", errors="ignore")
+        ).hexdigest()[:12]
+
+    dated = [e for e in events if e.get("event_at")]
+    undated = [e for e in events if not e.get("event_at")]
+    dated.sort(key=lambda x: x.get("event_at", ""), reverse=True)
+    undated.sort(key=lambda x: x.get("title", ""))
+
+    by_type = {}
+    for ev in events:
+        t = ev.get("event_type", "other")
+        by_type[t] = by_type.get(t, 0) + 1
+
+    return {
+        "version": "V2-event-structure-1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "symbol": symbol,
+        "name": formal_name,
+        "market": market_name,
+        "events": dated + undated,
+        "event_count": len(events),
+        "dated_event_count": len(dated),
+        "undated_event_count": len(undated),
+        "by_type": by_type,
+        "rules": {
+            "no_fabricated_event": True,
+            "no_fabricated_time": True,
+            "impact_window_is_tracking_only": True,
+            "actual_estimate_only_when_source_provided": True,
+        },
+    }
+
+
+# ----------------------------------------------------
+# STEP 2 EVENT -> PRICE REACTION
+# 이벤트 발생 시점과 실제 일봉 가격을 연결한다.
+# ----------------------------------------------------
+def _why_prepare_price_df(df, market_name):
+    """가격 시계열을 날짜순/숫자형 Close로 정규화한다."""
+    if df is None or len(df) == 0 or "Close" not in df.columns:
+        return None
+
+    try:
+        out = df.copy()
+        out["Close"] = pd.to_numeric(out["Close"], errors="coerce")
+        out = out.dropna(subset=["Close"])
+        if out.empty:
+            return None
+
+        idx = pd.to_datetime(out.index, errors="coerce")
+        out = out.loc[~idx.isna()].copy()
+        out.index = idx[~idx.isna()]
+        out = out[~out.index.duplicated(keep="last")].sort_index()
+        if out.empty:
+            return None
+        return out
+    except Exception as exc:
+        print(f"[WHY EVENT PRICE] prepare failed: {repr(exc)}")
+        return None
+
+
+def _why_localize_event_dt(dt, market_name):
+    if dt is None:
+        return None
+    try:
+        tz = _why_market_timezone(market_name)
+        if getattr(dt, "tzinfo", None) is None:
+            return dt.replace(tzinfo=tz)
+        return dt.astimezone(tz)
+    except Exception:
+        return dt
+
+
+def _why_price_index_dates(df, market_name):
+    """가격 데이터의 거래일 목록을 해당 시장 현지 날짜로 변환."""
+    dates = []
+    if df is None:
+        return dates
+
+    tz = _why_market_timezone(market_name)
+    for ts in df.index:
+        try:
+            dt = pd.Timestamp(ts)
+            if dt.tzinfo is None:
+                dt = dt.to_pydatetime().replace(tzinfo=tz)
+            else:
+                dt = dt.to_pydatetime().astimezone(tz)
+            dates.append(dt.date())
+        except Exception:
+            continue
+    return sorted(set(dates))
+
+
+def _why_find_reaction_day(df, event_dt, market_name):
+    """
+    이벤트가 실제 가격에 반영될 첫 일봉 거래일을 찾는다.
+
+    규칙:
+    - 장 마감 후 이벤트: 다음 거래일
+    - 장 시작 전 이벤트: 이벤트 당일 거래일
+    - 장중 이벤트: 당일 종가를 계산하되 '장중 일봉 직접확정불가'로 표시
+    - 주말/휴일: 다음 거래일
+    """
+    if event_dt is None or df is None or df.empty:
+        return None, "검증불가", "이벤트 시각 또는 가격 데이터 없음"
+
+    local = _why_localize_event_dt(event_dt, market_name)
+    if local is None:
+        return None, "검증불가", "이벤트 시각 파싱 실패"
+
+    trade_dates = _why_price_index_dates(df, market_name)
+    if not trade_dates:
+        return None, "검증불가", "거래일 데이터 없음"
+
+    close_hour, close_minute = (
+        (15, 30) if market_name in ("국내주식", "국내증시")
+        else ((16, 0) if market_name == "미국주식" else (23, 59))
+    )
+    open_hour, open_minute = (
+        (9, 0) if market_name in ("국내주식", "국내증시")
+        else ((9, 30) if market_name == "미국주식" else (0, 0))
+    )
+
+    event_date = local.date()
+    close_total = close_hour * 60 + close_minute
+    open_total = open_hour * 60 + open_minute
+    event_total = local.hour * 60 + local.minute
+
+    # 이벤트 당일이 거래일이면 장시간을 기준으로 반응일을 결정한다.
+    if event_date in trade_dates:
+        if event_total > close_total:
+            candidates = [d for d in trade_dates if d > event_date]
+            if not candidates:
+                return None, "미래반응데이터없음", "장마감 후 이벤트지만 이후 거래일 데이터가 없음"
+            return candidates[0], "장마감후_다음거래일", "장 마감 후 발표되어 다음 거래일 반응을 계산"
+        if event_total < open_total:
+            return event_date, "장시작전_당일", "장 시작 전 발표되어 당일 종가 반응을 계산"
+        return event_date, "장중_일봉제한", "장중 발표이므로 일봉만으로 발표 직후 반응은 직접 분리하지 않음"
+
+    # 휴장일 이벤트는 다음 거래일로 연결한다.
+    candidates = [d for d in trade_dates if d > event_date]
+    if not candidates:
+        return None, "미래반응데이터없음", "이벤트 이후 거래일 데이터가 없음"
+    return candidates[0], "휴장일_다음거래일", "휴장일 발표로 다음 거래일 반응을 계산"
+
+
+def _why_close_for_local_date(df, local_date, market_name):
+    """현지 날짜에 해당하는 실제 일봉 종가를 반환."""
+    if df is None or local_date is None:
+        return None
+
+    tz = _why_market_timezone(market_name)
+    for ts, row in df.iterrows():
+        try:
+            dt = pd.Timestamp(ts)
+            if dt.tzinfo is None:
+                dt = dt.to_pydatetime().replace(tzinfo=tz)
+            else:
+                dt = dt.to_pydatetime().astimezone(tz)
+            if dt.date() == local_date:
+                val = _safe_float(row.get("Close"))
+                if val is not None:
+                    return val
+        except Exception:
+            continue
+    return None
+
+
+def _why_next_trading_dates(trade_dates, start_date, count):
+    return [d for d in trade_dates if d >= start_date][:count]
+
+
+def _why_event_price_reaction(event, df, market_name):
+    """
+    이벤트 하나에 대해 실제 가격 반응을 계산한다.
+
+    기준 가격:
+      - 이벤트가 장 마감 후면 이벤트 당일 종가
+      - 장 시작 전/휴장일이면 이벤트 직전 거래일 종가
+      - 장중이면 직전 거래일 종가(당일 장중 인과관계는 확정하지 않음)
+
+    반응:
+      +1D / +3D / +5D 거래일 수익률
+    """
+    if not isinstance(event, dict):
+        return event
+
+    out = dict(event)
+    out["price_reaction"] = {
+        "status": "검증불가",
+        "base_date": "",
+        "base_close": None,
+        "reaction_date": "",
+        "reaction_close": None,
+        "return_1d_pct": None,
+        "return_3d_pct": None,
+        "return_5d_pct": None,
+        "reaction_status": "",
+        "explanation": "가격 반응 계산 불가",
+    }
+
+    event_at = str(event.get("event_at") or "").strip()
+    if not event_at:
+        out["price_reaction"]["explanation"] = "이벤트 시각이 없어 가격 반응을 시간순으로 연결하지 않음"
+        return out
+
+    try:
+        event_dt = datetime.fromisoformat(event_at.replace("Z", "+00:00"))
+    except Exception:
+        out["price_reaction"]["explanation"] = "이벤트 시각 파싱 실패"
+        return out
+
+    px = _why_prepare_price_df(df, market_name)
+    if px is None or px.empty:
+        out["price_reaction"]["explanation"] = "가격 시계열 없음"
+        return out
+
+    reaction_date, reaction_status, reaction_explanation = _why_find_reaction_day(
+        px, event_dt, market_name
+    )
+    if reaction_date is None:
+        out["price_reaction"]["reaction_status"] = reaction_status
+        out["price_reaction"]["explanation"] = reaction_explanation
+        return out
+
+    trade_dates = _why_price_index_dates(px, market_name)
+    if not trade_dates:
+        out["price_reaction"]["explanation"] = "거래일 목록 없음"
+        return out
+
+    # 이벤트 날짜의 실제 거래 여부와 이벤트 시점에 따라 기준일을 정한다.
+    local_event = _why_localize_event_dt(event_dt, market_name)
+    event_date = local_event.date() if local_event else None
+
+    close_hour, close_minute = (
+        (15, 30) if market_name in ("국내주식", "국내증시")
+        else ((16, 0) if market_name == "미국주식" else (23, 59))
+    )
+    event_after_close = bool(
+        local_event and (local_event.hour * 60 + local_event.minute > close_hour * 60 + close_minute)
+    )
+
+    # 장 마감 후: 이벤트 당일 종가가 이벤트 직전 기준 가격.
+    # 그 외: 이벤트 직전 거래일 종가가 보수적인 기준 가격.
+    if event_after_close and event_date in trade_dates:
+        base_date = event_date
+    else:
+        prior_dates = [d for d in trade_dates if event_date is not None and d < event_date]
+        if prior_dates:
+            base_date = prior_dates[-1]
+        else:
+            prior_or_same = [d for d in trade_dates if event_date is not None and d <= event_date]
+            base_date = prior_or_same[-1] if prior_or_same else None
+
+    base_close = _why_close_for_local_date(px, base_date, market_name) if base_date else None
+    if base_close is None or base_close == 0:
+        out["price_reaction"]["reaction_status"] = reaction_status
+        out["price_reaction"]["explanation"] = "이벤트 기준 가격을 확인할 수 없음"
+        return out
+
+    # reaction_date부터 1/3/5 거래일 종가를 찾는다.
+    reaction_dates = _why_next_trading_dates(trade_dates, reaction_date, 5)
+    if not reaction_dates:
+        out["price_reaction"]["reaction_status"] = "반응일데이터없음"
+        out["price_reaction"]["explanation"] = "이벤트 이후 반응 거래일이 없음"
+        return out
+
+    reaction_date_1d = reaction_dates[0]
+    reaction_date_3d = reaction_dates[2] if len(reaction_dates) >= 3 else None
+    reaction_date_5d = reaction_dates[4] if len(reaction_dates) >= 5 else None
+
+    c1 = _why_close_for_local_date(px, reaction_date_1d, market_name)
+    c3 = _why_close_for_local_date(px, reaction_date_3d, market_name) if reaction_date_3d else None
+    c5 = _why_close_for_local_date(px, reaction_date_5d, market_name) if reaction_date_5d else None
+
+    def pct(close):
+        if close is None or base_close == 0:
+            return None
+        return round((close / base_close - 1.0) * 100.0, 2)
+
+    out["price_reaction"] = {
+        "status": "확인" if c1 is not None else "부분확인",
+        "base_date": base_date.isoformat() if base_date else "",
+        "base_close": round(base_close, 8),
+        "reaction_date": reaction_date_1d.isoformat(),
+        "reaction_close": round(c1, 8) if c1 is not None else None,
+        "return_1d_pct": pct(c1),
+        "return_3d_pct": pct(c3),
+        "return_5d_pct": pct(c5),
+        "reaction_status": reaction_status,
+        "explanation": reaction_explanation,
+        "reaction_dates": {
+            "1d": reaction_date_1d.isoformat(),
+            "3d": reaction_date_3d.isoformat() if reaction_date_3d else "",
+            "5d": reaction_date_5d.isoformat() if reaction_date_5d else "",
+        },
+        "rule": (
+            "장마감 후 이벤트는 당일 종가 대비 다음 거래일 반응, "
+            "장시작 전/휴장일 이벤트는 직전 거래일 종가 대비 반응. "
+            "장중 이벤트는 일봉만으로 발표 직후 인과관계를 확정하지 않음."
+        ),
+    }
+    return out
+
+
+def attach_why_event_price_reactions(event_timeline, df, market_name):
+    """이벤트 타임라인 전체에 실제 가격 반응을 붙인다."""
+    timeline = dict(event_timeline or {})
+    events = []
+    for event in timeline.get("events") or []:
+        events.append(_why_event_price_reaction(event, df, market_name))
+
+    confirmed = 0
+    reaction_returns = []
+    for ev in events:
+        pr = ev.get("price_reaction") or {}
+        if pr.get("status") in ("확인", "부분확인"):
+            confirmed += 1
+        if isinstance(pr.get("return_1d_pct"), (int, float)):
+            reaction_returns.append(pr["return_1d_pct"])
+
+    timeline["events"] = events
+    timeline["price_reaction_summary"] = {
+        "version": "V2-event-price-reaction-1",
+        "confirmed_event_count": confirmed,
+        "event_count_with_1d_return": len(reaction_returns),
+        "average_1d_return_pct": (
+            round(sum(reaction_returns) / len(reaction_returns), 2)
+            if reaction_returns else None
+        ),
+        "rule": "실제 가격 시계열과 실제 이벤트 시각이 모두 확인된 경우에만 계산",
+    }
+    return timeline
+
+
+# ----------------------------------------------------
+# STEP 3 EVENT IMPACT SCORE
+# 이벤트별 영향 점수만 계산한다.
+# 아직 기존 원인 후보 점수/코멘트의 주원인 선택에는 연결하지 않는다.
+# ----------------------------------------------------
+
+def _why_event_reaction_magnitude_score(reaction):
+    """실제 가격 반응의 크기를 0~40으로 환산한다.
+    방향은 별도 계산하고, 여기서는 '얼마나 크게 움직였는가'를 본다.
+    """
+    if not isinstance(reaction, dict):
+        return 0, "가격반응 데이터 없음"
+    vals = []
+    for key, weight in (("return_1d_pct", 1.0), ("return_3d_pct", 0.65), ("return_5d_pct", 0.45)):
+        v = _safe_float(reaction.get(key))
+        if v is not None:
+            vals.append((abs(v), weight, key, v))
+    if not vals:
+        return 0, "실제 가격반응 수치 없음"
+
+    # 가장 가까운 1D 반응을 중심으로 하되, 3D/5D 지속성이 있으면 보강한다.
+    one = next((x for x in vals if x[2] == "return_1d_pct"), None)
+    three = next((x for x in vals if x[2] == "return_3d_pct"), None)
+    five = next((x for x in vals if x[2] == "return_5d_pct"), None)
+
+    score = 0.0
+    if one:
+        score += min(25.0, one[0] * 5.0)
+    if three:
+        score += min(10.0, three[0] * 2.5)
+    if five:
+        score += min(5.0, five[0] * 1.0)
+    score = int(min(40, round(score)))
+    detail = ", ".join(f"{k} {v:+.2f}%" for _, _, k, v in vals)
+    return score, detail
+
+
+def _why_event_persistence_score(reaction):
+    """이벤트 이후 반응이 유지되는지를 0~20으로 평가한다."""
+    if not isinstance(reaction, dict):
+        return 0, ""
+    r1 = _safe_float(reaction.get("return_1d_pct"))
+    r3 = _safe_float(reaction.get("return_3d_pct"))
+    r5 = _safe_float(reaction.get("return_5d_pct"))
+    if r1 is None:
+        return 0, "1D 반응 없음"
+
+    score = 0.0
+    if r3 is not None:
+        if r1 == 0:
+            score += 5
+        elif r1 * r3 > 0:
+            score += 10
+        elif abs(r3) >= abs(r1) * 0.5:
+            score += 5
+    if r5 is not None:
+        if r1 == 0:
+            score += 3
+        elif r1 * r5 > 0:
+            score += 7
+        elif abs(r5) >= abs(r1) * 0.5:
+            score += 3
+    return int(min(20, round(score))), f"1D→3D→5D 방향 지속성 평가"
+
+
+def _why_event_surprise_score(event):
+    """실제값-예상값이 모두 있을 때만 이벤트 서프라이즈를 0~20으로 계산한다.
+    단위/분모를 알 수 없는 값은 과도한 정규화를 하지 않고 존재 여부만 보수적으로 반영한다.
+    """
+    if not isinstance(event, dict):
+        return 0, ""
+    actual = _safe_float(event.get("actual"))
+    expected = _safe_float(event.get("expected"))
+    if actual is None or expected is None:
+        return 0, "실제값/예상값 미확인"
+
+    # 기대값이 0이면 % surprise를 계산하지 않는다.
+    if expected == 0:
+        return 8, "실제값과 예상값 확인(예상값 0으로 비율 계산 제외)"
+    surprise_pct = abs((actual - expected) / abs(expected)) * 100.0
+    score = int(min(20, round(surprise_pct * 2.0)))
+    direction = "예상 상회" if actual > expected else ("예상 하회" if actual < expected else "예상 일치")
+    return score, f"{direction} {surprise_pct:.2f}%"
+
+
+def _why_event_direction_alignment(event, expected_direction):
+    """이벤트 후 실제 가격 반응 방향이 현재 종목 방향과 맞는지 0~20/-20으로 평가."""
+    reaction = (event or {}).get("price_reaction") or {}
+    r1 = _safe_float(reaction.get("return_1d_pct"))
+    if r1 is None or not expected_direction:
+        return 0, "방향 일치 검증불가"
+    if r1 == 0:
+        return 4, "1D 가격 반응 보합"
+    if r1 * expected_direction > 0:
+        mag = abs(r1)
+        pts = 20 if mag >= 3 else (15 if mag >= 1.5 else 10)
+        return pts, f"이벤트 후 1D {r1:+.2f}%로 종목 방향과 일치"
+    mag = abs(r1)
+    pts = -20 if mag >= 3 else (-15 if mag >= 1.5 else -10)
+    return pts, f"이벤트 후 1D {r1:+.2f}%로 종목 방향과 반대"
+
+
+def _why_event_temporal_impact_score(event):
+    """이벤트가 가격 반응에 얼마나 가까운지를 0~20으로 평가."""
+    pr = (event or {}).get("price_reaction") or {}
+    status = str(pr.get("reaction_status") or "")
+    if status in ("장마감후", "장시작전", "전거래일"):
+        return 20, "가격 반응과 시간 선후관계가 명확한 편"
+    if status in ("최근뉴스", "당일장중"):
+        return 12, "최근 이벤트이나 일봉 기준 장중 인과관계는 제한"
+    if status == "과거뉴스":
+        return 5, "이벤트와 가격 반응 사이 간격이 큼"
+    if status in ("오래된뉴스", "미래뉴스"):
+        return 0, "시간상 직접 영향 근거 약함"
+    return 0, "시간 선후관계 확인 필요"
+
+
+def _why_score_event_impact(event, expected_direction):
+    """이벤트 1건의 영향 점수를 0~100으로 계산한다.
+    구성: 시간 20 + 가격반응 크기 40 + 지속성 20 + 방향일치 -20~20 + 실제/예상 보조 20.
+    데이터가 없는 항목은 0점으로 두며 임의의 값은 생성하지 않는다.
+    """
+    ev = dict(event or {})
+    reaction = ev.get("price_reaction") or {}
+    temporal_pts, temporal_detail = _why_event_temporal_impact_score(ev)
+    magnitude_pts, magnitude_detail = _why_event_reaction_magnitude_score(reaction)
+    persistence_pts, persistence_detail = _why_event_persistence_score(reaction)
+    direction_pts, direction_detail = _why_event_direction_alignment(ev, expected_direction)
+    surprise_pts, surprise_detail = _why_event_surprise_score(ev)
+
+    # surprise는 직접적인 시장반응 점수가 아니라 보조 증거다.
+    # 총점은 0~100으로 제한하고, 방향 불일치 이벤트는 강하게 낮춘다.
+    raw = temporal_pts + magnitude_pts + persistence_pts + direction_pts + surprise_pts
+    score = int(max(0, min(100, raw)))
+
+    available = sum([
+        temporal_pts > 0,
+        magnitude_pts > 0,
+        persistence_pts > 0,
+        direction_pts != 0,
+        surprise_pts > 0,
+    ])
+    if score >= 70:
+        confidence = "높음"
+    elif score >= 50:
+        confidence = "중간"
+    elif score >= 30:
+        confidence = "낮음"
+    else:
+        confidence = "매우 낮음"
+
+    ev["impact_score"] = {
+        "score": score,
+        "confidence": confidence,
+        "components": {
+            "temporal": int(temporal_pts),
+            "price_magnitude": int(magnitude_pts),
+            "persistence": int(persistence_pts),
+            "direction_alignment": int(direction_pts),
+            "actual_vs_expected": int(surprise_pts),
+        },
+        "available_components": int(available),
+        "details": {
+            "temporal": temporal_detail,
+            "price_magnitude": magnitude_detail,
+            "persistence": persistence_detail,
+            "direction_alignment": direction_detail,
+            "actual_vs_expected": surprise_detail,
+        },
+        "rule": "실제 이벤트 시각 + 실제 가격반응 + 가능한 경우 actual/expected만 사용; 데이터 없는 항목은 추정하지 않음",
+    }
+    return ev
+
+
+def attach_why_event_impact_scores(event_timeline, expected_direction):
+    """이벤트 타임라인 전체에 이벤트별 영향 점수를 붙인다."""
+    timeline = dict(event_timeline or {})
+    events = []
+    for event in timeline.get("events") or []:
+        events.append(_why_score_event_impact(event, expected_direction))
+
+    scored = [
+        e for e in events
+        if isinstance(e.get("impact_score"), dict)
+    ]
+    scores = [int(e["impact_score"].get("score", 0)) for e in scored]
+    high = [e for e in scored if int(e["impact_score"].get("score", 0)) >= 70]
+    medium = [e for e in scored if 50 <= int(e["impact_score"].get("score", 0)) < 70]
+
+    ranked = sorted(
+        scored,
+        key=lambda e: int((e.get("impact_score") or {}).get("score", 0)),
+        reverse=True,
+    )
+
+    timeline["events"] = events
+    timeline["event_impact_summary"] = {
+        "version": "V2-event-impact-score-1",
+        "scored_event_count": len(scored),
+        "high_impact_count": len(high),
+        "medium_impact_count": len(medium),
+        "max_score": max(scores) if scores else 0,
+        "average_score": round(sum(scores) / len(scores), 2) if scores else None,
+        "top_event_ids": [e.get("event_id") for e in ranked[:3]],
+        "rule": "이벤트별 영향 점수는 가격 원인 확정값이 아니라 다음 원인 통합 엔진의 입력값",
+    }
+    return timeline
 
 def _why_parse_news_time(item):
     """뉴스 published 값을 가능한 범위에서 실제 시각으로 변환한다.
@@ -3607,6 +4520,150 @@ def _why_v2_candidate_score(key, label, items, temporal_area, expected_direction
     }
 
 
+
+def _why_event_to_cause_key(event):
+    """이벤트 종류를 기존 V2 원인 후보 키로 연결한다."""
+    t = str((event or {}).get("event_type") or "").lower()
+    mapping = {
+        "earnings": "earnings",
+        "guidance": "earnings",
+        "fed": "macro",
+        "macro": "macro",
+        "financial_market": "global_impact",
+        "industry": "theme",
+        "corporate_news": "material",
+        "disclosure": "material",
+        "other": "material",
+    }
+    return mapping.get(t)
+
+
+def integrate_why_event_impact_into_cause_v2(cause_v2, event_timeline):
+    """
+    STEP 4: 이벤트 영향 점수를 기존 원인별 V2 점수에 통합한다.
+
+    원칙:
+    - 이벤트 점수는 기존 점수에 그대로 더하지 않고 '보정점수'로 제한한다.
+    - 같은 원인에 이벤트가 여러 개 있어도 최고점 중심으로 반영해 중복 가산을 막는다.
+    - 이벤트 데이터가 없으면 기존 V2 점수를 그대로 유지한다.
+    - 이벤트 영향 점수는 '원인 확정'이 아니라 기존 원인 판단을 보강한다.
+    """
+    result = dict(cause_v2 or {})
+    candidates = [dict(x) for x in (result.get("candidates") or []) if isinstance(x, dict)]
+    timeline = event_timeline if isinstance(event_timeline, dict) else {}
+    events = [e for e in (timeline.get("events") or []) if isinstance(e, dict)]
+
+    # 원인별 이벤트 최고 영향점수와 실제 이벤트 개수
+    grouped = {}
+    for ev in events:
+        impact = ev.get("impact_score") or {}
+        try:
+            score = int(impact.get("score", 0) or 0)
+        except Exception:
+            score = 0
+        if score <= 0:
+            continue
+        key = _why_event_to_cause_key(ev)
+        if not key:
+            continue
+        grouped.setdefault(key, []).append({
+            "event_id": ev.get("event_id"),
+            "title": ev.get("title", ""),
+            "event_type": ev.get("event_type", ""),
+            "score": score,
+            "confidence": impact.get("confidence", "낮음"),
+            "event_at": ev.get("event_at", ""),
+            "price_reaction": ev.get("price_reaction") or {},
+        })
+
+    def event_bonus(score):
+        # 이벤트 점수 70점 이상이어도 원인 전체를 뒤집지 않도록 최대 +18점으로 제한.
+        if score >= 85:
+            return 18
+        if score >= 70:
+            return 14
+        if score >= 55:
+            return 9
+        if score >= 40:
+            return 5
+        return 2
+
+    integrated = []
+    for cand in candidates:
+        key = cand.get("key")
+        evs = sorted(grouped.get(key, []), key=lambda x: x["score"], reverse=True)
+        best = evs[0] if evs else None
+        bonus = event_bonus(best["score"]) if best else 0
+
+        old_score = int(cand.get("score", 0) or 0)
+        new_score = max(0, min(100, old_score + bonus))
+
+        comp = dict(cand.get("components") or {})
+        comp["event_impact"] = int(bonus)
+        comp["pre_event_score"] = old_score
+        cand["score"] = new_score
+        cand["components"] = comp
+        cand["event_impact_score"] = int(best["score"]) if best else 0
+        cand["event_impact_bonus"] = int(bonus)
+        cand["event_count"] = len(evs)
+        cand["event_evidence"] = evs[:3]
+        cand["event_impact_detail"] = (
+            f"관련 이벤트 {len(evs)}건, 최고 영향점수 {best['score']}점"
+            if best else "직접 연결된 이벤트 영향점수 없음"
+        )
+        integrated.append(cand)
+
+    integrated.sort(key=lambda x: x.get("score", 0), reverse=True)
+
+    primary = integrated[0] if integrated else None
+    secondary = [x for x in integrated[1:4] if x.get("score", 0) >= 35][:2]
+
+    if not primary or primary.get("score", 0) < 35:
+        primary_key = None
+        confidence = "낮음"
+    else:
+        primary_key = primary.get("key")
+        if primary["score"] >= 70:
+            confidence = "높음"
+        elif primary["score"] >= 50:
+            confidence = "중간"
+        else:
+            confidence = "낮음"
+
+    amplifier_keys = {"foreign", "institution", "flow_pair", "trading_value", "volume"}
+    amplifiers = [
+        x for x in integrated
+        if x.get("key") in amplifier_keys and int(x.get("score", 0) or 0) >= 35
+    ][:2]
+
+    result.update({
+        "version": "V2-cause-score+event-impact",
+        "candidates": integrated,
+        "primary_key": primary_key,
+        "primary_label": primary.get("label", "원인 미확정") if primary else "원인 미확정",
+        "primary_score": int(primary.get("score", 0)) if primary else 0,
+        "confidence": confidence,
+        "secondary_reasons": secondary,
+        "amplifiers": amplifiers,
+        "event_integration": {
+            "enabled": True,
+            "event_count": len(events),
+            "mapped_event_count": sum(len(v) for v in grouped.values()),
+            "cause_groups": {
+                k: {
+                    "event_count": len(v),
+                    "max_event_impact_score": max(x["score"] for x in v),
+                    "top_event_ids": [x["event_id"] for x in v[:3]],
+                }
+                for k, v in grouped.items()
+            },
+            "rule": "이벤트 영향점수는 관련 원인에 최대 +18점의 보정으로 반영하며 중복 이벤트 과대가산을 방지",
+        },
+        "rule": "직접근거 + 시간선후 + 실제가격반응 + 시장전파 + 거래확인 + 이벤트영향보정 - 반대증거",
+    })
+    return result
+
+
 def analyze_why_moved_cause_v2(movement_reason, collected, temporal_validation, df,
                                domestic_flow, world_board, market_name, market_index_name,
                                formal_name, symbol=""):
@@ -3846,6 +4903,48 @@ def run_why_moved_pipeline(query):
         except Exception:
             why_df = None
 
+    # STEP 2: 이벤트 발생 시점과 실제 가격 반응을 연결한다.
+    # 이벤트 데이터가 없거나 가격 시계열이 없으면 기존 분석은 그대로 진행한다.
+    try:
+        collected["event_timeline"] = attach_why_event_price_reactions(
+            collected.get("event_timeline") or {},
+            why_df,
+            market_name,
+        )
+    except Exception as exc:
+        print(f"[WHY EVENT PRICE REACTION] failed: {repr(exc)}")
+        if not isinstance(collected.get("event_timeline"), dict):
+            collected["event_timeline"] = {"events": []}
+        collected["event_timeline"]["price_reaction_summary"] = {
+            "version": "V2-event-price-reaction-1-fallback",
+            "confirmed_event_count": 0,
+            "event_count_with_1d_return": 0,
+            "average_1d_return_pct": None,
+            "error": "가격 반응 계산 실패",
+        }
+
+    # STEP 3: 이벤트별 영향 점수 계산. 기존 원인 점수/코멘트에는 아직 직접 연결하지 않는다.
+    try:
+        _event_direction, _event_pct = _why_v2_direction_from_df(why_df)
+        collected["event_timeline"] = attach_why_event_impact_scores(
+            collected.get("event_timeline") or {},
+            _event_direction or 0,
+        )
+    except Exception as exc:
+        print(f"[WHY EVENT IMPACT SCORE] failed: {repr(exc)}")
+        if not isinstance(collected.get("event_timeline"), dict):
+            collected["event_timeline"] = {"events": []}
+        collected["event_timeline"]["event_impact_summary"] = {
+            "version": "V2-event-impact-score-1-fallback",
+            "scored_event_count": 0,
+            "high_impact_count": 0,
+            "medium_impact_count": 0,
+            "max_score": 0,
+            "average_score": None,
+            "top_event_ids": [],
+            "error": "이벤트 영향 점수 계산 실패",
+        }
+
     temporal_validation = _why_build_temporal_validation(collected, why_df, market_name)
 
     try:
@@ -3895,6 +4994,15 @@ def run_why_moved_pipeline(query):
         movement_reason["primary_reason_v2_key"] = cause_v2.get("primary_key")
         movement_reason["primary_reason_v2_label"] = cause_v2.get("primary_label")
         movement_reason["primary_reason_v2_score"] = cause_v2.get("primary_score", 0)
+        # STEP 4: 이벤트 영향점수를 기존 V2 원인별 점수에 통합한다.
+        cause_v2 = integrate_why_event_impact_into_cause_v2(
+            cause_v2,
+            collected.get("event_timeline") or {},
+        )
+        movement_reason["cause_analysis_v2"] = cause_v2
+        movement_reason["primary_reason_v2_key"] = cause_v2.get("primary_key")
+        movement_reason["primary_reason_v2_label"] = cause_v2.get("primary_label")
+        movement_reason["primary_reason_v2_score"] = cause_v2.get("primary_score", 0)
         movement_reason["confidence_v2"] = cause_v2.get("confidence", "낮음")
     except Exception as exc:
         print(f"[WHY MOVED CAUSE V2] failed: {repr(exc)}")
@@ -3918,6 +5026,7 @@ def run_why_moved_pipeline(query):
         "direction": movement_reason.get("direction", "-"),
         "movement_reason": movement_reason,
         "comment": _why_moved_comment(movement_reason),
+        "comment_source": "backend_v2",
         "evidence": _why_moved_evidence_from_reason(movement_reason),
         "news": stock_news[:12],
         "news_count": len(stock_news),
@@ -3929,6 +5038,14 @@ def run_why_moved_pipeline(query):
             "earnings": (collected.get("earnings_news") or [])[:12],
         },
         "data_collection": collected.get("collection_meta") or {},
+        "event_timeline": collected.get("event_timeline") or {
+            "version": "V2-event-structure-1-fallback",
+            "events": [],
+            "event_count": 0,
+            "dated_event_count": 0,
+            "undated_event_count": 0,
+            "by_type": {},
+        },
         "temporal_validation": temporal_validation,
         "macro": macro_snapshot,
         "earnings": collected.get("earnings") or (movement_reason.get("global_impact", {}).get("earnings") if isinstance(movement_reason.get("global_impact"), dict) else None),
@@ -3943,6 +5060,15 @@ def run_why_moved_pipeline(query):
             "world_board": world_board,
         },
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S KST"),
+        "engine_versions": {
+            "data_collection": "V2-data-separated",
+            "temporal_validation": "V2-step2",
+            "cause_scoring": "V2-step3",
+            "event_structure": "V2-step1",
+            "event_price_reaction": "V2-step2",
+            "event_impact_score": "V2-step3",
+            "event_cause_integration": "V2-step4",
+        },
     }
     return _why_cache_set(clean_q, result)
 
@@ -6077,55 +7203,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
                     const evidenceDirection = Number(mr.total_score || 0) < 0 ? 'negative' : 'positive';
 
-                    // 백엔드의 주원인과 실제 detail/evidence를 그대로 사용한다.
-                    const scoreOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? Number(x.score||0) : 0; };
-                    const detailOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? String(x.detail||'') : ''; };
-                    const materialScore=scoreOf('material'), foreignScore=scoreOf('foreign'), institutionScore=scoreOf('institution');
-                    const tradingValueScore=scoreOf('trading_value'), volumeScore=scoreOf('volume'), themeScore=scoreOf('theme');
-                    const mainReasonKey = mr.main_reason_key || '';
-                    const globalImpact = mr.global_impact || {};
-                    const globalLayers = Array.isArray(globalImpact.layers) ? globalImpact.layers : [];
-                    const globalDetail = key => {
-                        const x=globalLayers.find(r=>r.key===key);
-                        return x ? String(x.detail||'') : '';
-                    };
-                    const positiveNews = Array.isArray(mr.news_evidence)
-                        ? mr.news_evidence.filter(x=>String(x.type||'')==='positive')
-                        : [];
-                    const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
-                    let gaemiComment='';
-
-                    if(evidenceCount===0){
-                        gaemiComment=`개미들아, 오늘은 조금 천천히 보자\n\n지금 확보된 데이터만으로는 한 가지 원인을 우선순위 높게 잡기 어려워. 확인된 근거부터 보자.`;
-                    }else if(mainReasonKey==='material'){
-                        const md=detailOf('material');
-                        const newsText=positiveNews.length ? `긍정 뉴스 ${positiveNews.length}건이 확인됐고` : '관련 뉴스에서 긍정 신호가 확인됐고';
-                        gaemiComment=`개미들아! 오늘은 기업 재료를 먼저 봐야겠어\n\n${md.includes('공시')?'관련 공시에서 직접적인 신호가 확인됐어.':`${newsText} ${md}.`} ${tradingValueScore>0?detailOf('trading_value')+' 거래대금도 같이 늘었어.':(foreignScore>0||institutionScore>0?'외국인·기관 수급도 같은 방향인지 같이 확인해보자.':'주가 반응과 함께 확인해볼 만해.')}`;
-                    }else if(mainReasonKey==='flow_pair'){
-                        gaemiComment=`개미들아! 오늘은 외국인과 기관 수급이 같이 움직였어\n\n외국인과 기관의 실제 수급 데이터에서 같은 방향의 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 같이 확인돼.`:''}`;
-                    }else if(mainReasonKey==='foreign'){
-                        gaemiComment=`개미들아! 오늘은 외국인 수급이 눈에 띄네\n\n${detailOf('foreign')} 데이터에서 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 함께 확인돼.`:''}`;
-                    }else if(mainReasonKey==='institution'){
-                        gaemiComment=`개미들아! 오늘은 기관 수급이 눈에 띄네\n\n${detailOf('institution')} 데이터에서 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 함께 확인돼.`:''}`;
-                    }else if(mainReasonKey==='theme'){
-                        const th = globalImpact.theme && globalImpact.theme.theme ? globalImpact.theme.theme : null;
-                        const td = globalImpact.theme && globalImpact.theme.detail ? globalImpact.theme.detail : detailOf('theme');
-                        gaemiComment=`개미들아! 오늘은 ${th ? th+' 테마' : '종목'} 쪽을 같이 봐야겠어\n\n${td}. 현재 확보된 데이터만으로 테마 전체 동반 상승을 단정하지 않고, 관련 종목 흐름은 추가로 확인하는 게 좋아.`;
-                    }else if(mainReasonKey==='trading_value'){
-                        gaemiComment=`개미들아! 오늘은 거래대금이 눈에 띄네\n\n${detailOf('trading_value')} 데이터가 확인돼. 주가 방향과 함께 실제 자금 유입 강도를 보는 게 좋아.`;
-                    }else if(mainReasonKey==='volume'){
-                        gaemiComment=`개미들아! 오늘은 거래량이 확실히 달라졌어\n\n${detailOf('volume')} 데이터가 확인돼. 평소 대비 거래량과 주가 방향이 함께 움직였는지 보자.`;
-                    }else if(mainReasonKey==='global_impact'){
-                        const us=globalDetail('us_market'), ind=globalDetail('industry_global'), dom=globalDetail('domestic_market');
-                        const chain=[us,ind,dom].filter(Boolean).join(' → ');
-                        gaemiComment=`개미들아! 오늘은 해외 시장 흐름부터 봐야겠어\n\n${chain || globalDetail('transmission') || '미국·국내 시장의 방향이 함께 확인돼.'} 같은 방향의 흐름이 확인돼서 해외 시장 영향이 국내 종목으로 이어졌는지 살펴볼 만해.`;
-                    }else if(mainReasonKey==='market' || mainReasonKey==='market_5d'){
-                        gaemiComment=`개미들아! 오늘은 시장 흐름을 같이 봐야겠어\n\n${detailOf(mainReasonKey)} 데이터가 확인돼. 종목 자체의 움직임인지 시장 영향인지 함께 비교해보자.`;
-                    }else if(topReason && Number(topReason.score||0)<0){
-                        gaemiComment=`개미들아… 오늘은 조금 조심해서 보자\n\n${topReason.label}에서 ${topReason.detail} 신호가 확인돼. 다른 근거까지 같이 확인해보자.`;
-                    }else{
-                        gaemiComment=`개미들아! 오늘 움직임을 조금 더 들여다보자\n\n${topReason?`${topReason.label}에서 ${topReason.detail}`:'현재 확보된 데이터'} 신호가 확인돼. 아래 근거들을 같이 확인해보자.`;
-                    }
+                    // V2 최종 코멘트는 백엔드가 생성한 값을 그대로 표시한다.
+                    // 프론트에서 별도의 원인 판단/문구 생성을 하지 않아 두 엔진이 충돌하지 않는다.
+                    const backendWhyMoved = data.why_moved || {};
+                    const gaemiComment = String(backendWhyMoved.comment || '').trim() ||
+                        '오늘은 한 가지 원인을 뚜렷하게 잡기 어려워. 확인된 데이터부터 보는 게 좋아.';
 
                     const movementIconMap = {
                         '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',

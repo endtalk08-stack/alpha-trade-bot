@@ -3850,11 +3850,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.85rem; line-height: 1.6; color: var(--text-sub); border-top: 1px solid rgba(16, 185, 129, 0.2); }
         .guide-title { font-weight: 800; color: #10b981; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; font-size: 0.92rem; }
 
-        .news-item { padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: block; }
+        .news-item { height: 60px; box-sizing: border-box; padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
         .news-item:last-child { border-bottom: none; }
-        .news-title { color: var(--text-main); font-size: 0.85rem; font-weight: 500; line-height: 1.4; }
+        .news-title { color: var(--text-main); font-size: 0.85rem; font-weight: 500; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .news-title:hover { color: #0284c7; }
-        .news-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; }
+        .news-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
         #bottom-bar {
             display: none;

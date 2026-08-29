@@ -4442,20 +4442,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
                     let gaemiComment='';
                     if(evidenceCount===0){
-                        gaemiComment=`🐜 개미들아, 오늘은 조금 천천히 보자 🤔\n\n지금 확인되는 데이터만으로는 한 가지 이유를 딱 집기 어려워.\n괜히 이유를 만들어내지 말고 확인된 근거부터 보자.`;
+                        gaemiComment=`개미들아, 오늘은 조금 천천히 보자\n\n지금 확인되는 데이터만으로는 한 가지 이유를 딱 집기 어려워.\n괜히 이유를 만들어내지 말고 확인된 근거부터 보자.`;
                     }else if(materialScore>0){
-                        gaemiComment=`🐜 개미들아! 오늘은 재료가 눈에 들어와 👀\n\n${detailOf('material').includes('공시')?'공시와 관련 뉴스 쪽에서 긍정 신호가 같이 잡혔어.':'관련 뉴스에서 긍정적인 재료가 잡혔어.'} ${tradingValueScore>0?'여기에 거래대금도 붙었고':(foreignScore>0||institutionScore>0?'수급도 같이 확인돼서':'주가 반응도 같이 보여서')} 단순한 소문으로만 보긴 어려워.`;
+                        gaemiComment=`개미들아! 오늘은 재료가 눈에 들어와\n\n${detailOf('material').includes('공시')?'공시와 관련 뉴스 쪽에서 긍정 신호가 같이 잡혔어.':'관련 뉴스에서 긍정적인 재료가 잡혔어.'} ${tradingValueScore>0?'여기에 거래대금도 붙었고':(foreignScore>0||institutionScore>0?'수급도 같이 확인돼서':'주가 반응도 같이 보여서')} 단순한 소문으로만 보긴 어려워.`;
                     }else if(foreignScore>0 && institutionScore>0){
-                        gaemiComment=`🐜 개미들아! 오늘은 수급이 같이 붙었어 👀\n\n외국인과 기관이 함께 매수 쪽으로 움직였고, ${tradingValueScore>0?'거래대금도 같이 늘었어. ':''}오늘 움직임은 수급 쪽을 먼저 확인해볼 만해.`;
+                        gaemiComment=`개미들아! 오늘은 수급이 같이 붙었어\n\n외국인과 기관이 함께 매수 쪽으로 움직였고, ${tradingValueScore>0?'거래대금도 같이 늘었어. ':''}오늘 움직임은 수급 쪽을 먼저 확인해볼 만해.`;
                     }else if(foreignScore>0 || institutionScore>0){
                         const who=foreignScore>0?'외국인':'기관';
-                        gaemiComment=`🐜 개미들아! 오늘은 ${who} 수급이 눈에 띄네 👀\n\n${detailOf(foreignScore>0?'foreign':'institution')} 쪽으로 매수 흐름이 확인돼. ${tradingValueScore>0?'거래대금까지 붙었는지 같이 보자.':'아직은 다른 근거도 같이 확인해보는 게 좋아.'}`;
+                        gaemiComment=` 개미들아! 오늘은 ${who} 수급이 눈에 띄네 \n\n${detailOf(foreignScore>0?'foreign':'institution')} 쪽으로 매수 흐름이 확인돼. ${tradingValueScore>0?'거래대금까지 붙었는지 같이 보자.':'아직은 다른 근거도 같이 확인해보는 게 좋아.'}`;
                     }else if(themeScore>0){
-                        gaemiComment=`🐜 개미들아! 오늘은 종목보다 테마 쪽을 봐야겠어 👀\n\n관련 업종·테마에서 같이 움직이는 신호가 잡혔어. ${volumeScore>0?'거래량도 붙어서 동반 움직임인지 확인해볼 만해.':'다른 관련 종목도 같이 움직이는지 확인해보자.'}`;
+                        gaemiComment=`개미들아! 오늘은 종목보다 테마 쪽을 봐야겠어\n\n관련 업종·테마에서 같이 움직이는 신호가 잡혔어. ${volumeScore>0?'거래량도 붙어서 동반 움직임인지 확인해볼 만해.':'다른 관련 종목도 같이 움직이는지 확인해보자.'}`;
                     }else if(topReason && Number(topReason.score||0)<0){
-                        gaemiComment=`🐜 개미들아… 오늘은 조금 조심해서 보자 🥶\n\n${topReason.label} 쪽에서 약한 신호가 먼저 보여. 다른 근거까지 같이 확인하고 성급하게 결론 내리진 말자.`;
+                        gaemiComment=`개미들아… 오늘은 조금 조심해서 보자\n\n${topReason.label} 쪽에서 약한 신호가 먼저 보여. 다른 근거까지 같이 확인하고 성급하게 결론 내리진 말자.`;
                     }else{
-                        gaemiComment=`🐜 개미들아! 오늘 움직임을 조금 더 들여다보자 👀\n\n${topReason?topReason.label:'시장'} 쪽에서 먼저 눈에 띄는 신호가 보여. 한 가지 데이터만 보지 말고 아래 근거들을 같이 확인해보자.`;
+                        gaemiComment=`개미들아! 오늘 움직임을 조금 더 들여다보자\n\n${topReason?topReason.label:'시장'} 쪽에서 먼저 눈에 띄는 신호가 보여. 한 가지 데이터만 보지 말고 아래 근거들을 같이 확인해보자.`;
                     }
 
                     const movementIconMap = {

@@ -3873,11 +3873,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .bottom-bar-grid-wrapper {
             width: 100%;
             max-width: 1196px;
-            display: grid;
-            grid-template-columns: 832px 348px;
-            gap: 16px;
-            margin: 0 auto;
+            display: flex;
             justify-content: center;
+            align-items: center;
+            margin: 0 auto;
+        }
+        .bottom-bar-grid-wrapper .search-container {
+            width: 100%;
+            max-width: 832px;
+            margin: 0 auto;
         }
 
         .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }

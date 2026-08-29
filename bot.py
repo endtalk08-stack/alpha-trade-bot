@@ -5437,7 +5437,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         const dedupedMaterial = dedupedMaterialWords.join(' ').trim();
 
                         if (dedupedMaterial) {
-                            parts.push(`${dedupedMaterial}와 ${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                            parts.push(`${dedupedMaterial} ${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
                         } else {
                             parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
                         }
@@ -6148,7 +6148,7 @@ print("[경제 고정 문장]", build_market_event_fixed(_e["topic"]))
 # 8. 재료 문장의 '소식이 있어!'를 사용하지 않는다.
 # 9. 최종 문장 고정:
 #    - 재료 + 경제 이벤트:
-#      "[종목 재료]와 [경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐."
+#      "[종목 재료] [경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐."
 #    - 재료만:
 #      "[종목 재료] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐."
 #    - 경제 이벤트만:

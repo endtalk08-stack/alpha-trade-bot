@@ -4674,9 +4674,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         <div class="movement-mini-grid">${movementReasonCards}</div>
 
-                        <div style="margin-top:9px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">
-                            ※ 현재 확보된 시장·뉴스·공시·거래량·거래대금·외국인·기관 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.
-                        </div>
+                        
                     `;
                 }
 

@@ -3021,6 +3021,157 @@ def _why_moved_comment(movement_reason):
     return f"오늘은 {label}을 먼저 확인해볼 만해. {detail} 이 데이터가 실제 주가 움직임과 함께 나타났는지 다른 근거까지 같이 확인하는 게 좋아."
 
 
+
+# ----------------------------------------------------
+# STEP 4 V2 — 왜 움직였을까? 데이터 수집 분리 계층
+# ----------------------------------------------------
+WHY_MOVED_DATA_CACHE = {}
+WHY_MOVED_DATA_CACHE_TTL = 300  # 5분
+
+
+def _why_data_cache_get(key):
+    item = WHY_MOVED_DATA_CACHE.get(key)
+    if not item:
+        return None
+    ts, value = item
+    if time.time() - ts >= WHY_MOVED_DATA_CACHE_TTL:
+        WHY_MOVED_DATA_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _why_data_cache_set(key, value):
+    WHY_MOVED_DATA_CACHE[key] = (time.time(), value)
+    if len(WHY_MOVED_DATA_CACHE) > 100:
+        cutoff = time.time() - WHY_MOVED_DATA_CACHE_TTL
+        for k, (ts, _) in list(WHY_MOVED_DATA_CACHE.items()):
+            if ts < cutoff:
+                WHY_MOVED_DATA_CACHE.pop(k, None)
+    return value
+
+
+def _why_news_enrich(items, category, scope):
+    """뉴스를 원인 영역별로 분리하고 출처/수집영역 메타데이터를 붙인다."""
+    out = []
+    for item in (items or []):
+        if not isinstance(item, dict):
+            continue
+        x = dict(item)
+        x["category"] = category
+        x["scope"] = scope
+        x["source_type"] = "Alpha Vantage" if str(x.get("source", "")).lower().find("alpha") >= 0 else "Google News RSS"
+        x["published_at"] = x.get("published") or x.get("pubDate") or ""
+        out.append(x)
+    return out
+
+
+def _why_detect_theme_from_name(formal_name):
+    text = str(formal_name or "").lower()
+    best_theme, best_hits = None, 0
+    for theme, keywords in MOVEMENT_THEME_KEYWORDS.items():
+        hits = sum(1 for k in keywords if str(k).lower() in text)
+        if hits > best_hits:
+            best_theme, best_hits = theme, hits
+    return best_theme, best_hits
+
+
+def _why_industry_query(formal_name):
+    """종목명만으로 확인 가능한 업종/테마 검색어를 만든다. 과도한 추측은 하지 않는다."""
+    theme, hits = _why_detect_theme_from_name(formal_name)
+    if theme:
+        return theme
+    return str(formal_name or "").strip()
+
+
+def collect_why_moved_data(symbol, formal_name, market_name, is_krw=False):
+    """
+    왜 움직였을까? V2 데이터 수집기.
+
+    ① stock      : 종목 자체 뉴스
+    ② industry   : 업종/테마 뉴스
+    ③ global     : 미국/글로벌 시장 뉴스
+    ④ macro      : FRED 실제 관측 + 경제 이벤트
+    ⑤ earnings   : 실적 actual/estimate
+    ⑥ disclosure : 국내 공시
+    ⑦ market     : 가격/시장/수급 검증 데이터
+
+    핵심 원칙: 서로 다른 영역의 데이터를 하나의 news 배열로 섞지 않는다.
+    """
+    cache_key = f"{symbol}|{formal_name}|{market_name}"
+    cached = _why_data_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    theme_query = _why_industry_query(formal_name)
+
+    # 호출 수를 통제하면서 영역별로 필요한 데이터만 병렬 수집한다.
+    jobs = {}
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        jobs["stock_rss"] = executor.submit(fetch_rss_news, formal_name, 8)
+        jobs["industry_rss"] = executor.submit(fetch_rss_news, theme_query, 6) if theme_query else None
+        jobs["global_rss"] = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥 OR 연준 OR CPI", 8)
+
+        # 종목 뉴스는 ticker가 지원되는 미국주식에서만 ticker 기반으로 보강한다.
+        jobs["ticker_news"] = (
+            executor.submit(fetch_alpha_vantage_news, symbol, "")
+            if market_name == "미국주식" and symbol else None
+        )
+        # 글로벌 원인 후보는 종목 ticker와 분리해 주제별로 수집한다.
+        jobs["financial_markets"] = executor.submit(fetch_alpha_vantage_news, "", "financial_markets")
+        jobs["monetary"] = executor.submit(fetch_alpha_vantage_news, "", "economy_monetary")
+        jobs["macro"] = executor.submit(fetch_alpha_vantage_news, "", "economy_macro")
+        jobs["fiscal"] = executor.submit(fetch_alpha_vantage_news, "", "economy_fiscal")
+        jobs["earnings_news"] = executor.submit(fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "earnings")
+
+        jobs["fred"] = executor.submit(fetch_fred_macro_snapshot)
+        jobs["calendar"] = executor.submit(fetch_real_market_calendar_live)
+        jobs["disclosures"] = executor.submit(fetch_dart_disclosures, symbol, is_krw, 8)
+        def get(name, default):
+            f = jobs.get(name)
+            return _safe_future_result(f, default, f"why-data:{name}") if f else default
+
+        stock_rss = get("stock_rss", [])
+        industry_rss = get("industry_rss", [])
+        global_rss = get("global_rss", [])
+        ticker_news = get("ticker_news", [])
+        financial_markets = get("financial_markets", [])
+        monetary = get("monetary", [])
+        macro_news = get("macro", [])
+        fiscal = get("fiscal", [])
+        earnings_news = get("earnings_news", [])
+        fred = get("fred", {})
+        calendar = get("calendar", [])
+        disclosures = get("disclosures", []) or []
+
+    # 영역을 섞지 않는다. 금융시장 뉴스는 global, 금리/CPI/고용 등은 macro로 분리한다.
+    stock_news = merge_news_sources(stock_rss, ticker_news)
+    industry_news = merge_news_sources(industry_rss)
+    global_news = merge_news_sources(global_rss, financial_markets)
+    macro_news = merge_news_sources(macro_news, monetary, fiscal)
+    earnings = fetch_alpha_vantage_earnings(symbol) if market_name == "미국주식" and symbol else {}
+
+    # 모든 뉴스에 영역 메타데이터를 붙인다. 같은 뉴스가 여러 영역에 중복되면
+    # 해당 영역에서 각각 사용하되, 최종 원인 엔진은 category를 기준으로 구분한다.
+    data = {
+        "stock_news": _why_news_enrich(stock_news, "stock", "종목"),
+        "industry_news": _why_news_enrich(industry_news, "industry", "업종·테마"),
+        "global_news": _why_news_enrich(global_news, "global", "글로벌"),
+        "earnings_news": _why_news_enrich(earnings_news, "earnings", "실적"),
+        "macro_news": _why_news_enrich(merge_news_sources(macro_news, monetary, fiscal), "macro", "거시경제"),
+        "macro_snapshot": fred or {},
+        "market_calendar": calendar or [],
+        "dart_disclosures": disclosures,
+        "earnings": earnings or {},
+        "theme": {"name": theme_query, "detected": bool(theme_query)},
+        "collection_meta": {
+            "version": "V2-data-separated",
+            "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S KST"),
+            "areas": ["stock", "industry", "global", "macro", "earnings", "disclosure"],
+        },
+    }
+    return _why_data_cache_set(cache_key, data)
+
+
 def run_why_moved_pipeline(query):
     """독립 /api/why-moved 파이프라인.
     기존 사이트의 실제 가격·수급·시장 데이터는 '검증'에 사용하고,
@@ -3051,20 +3202,33 @@ def run_why_moved_pipeline(query):
     formal_name = base.get("formal_name") or base.get("name") or query.strip()
     market_name = base.get("market", "")
 
-    # 외부 뉴스는 이 API에서 별도로 수집한다. 실패해도 검증 데이터 분석은 계속한다.
+    # V2: 데이터 영역을 분리해서 수집한다.
+    # 종목 뉴스와 글로벌/거시 뉴스가 같은 배열로 섞이지 않도록 한다.
     try:
-        external_news = _why_moved_external_news(symbol, formal_name, market_name)
+        collected = collect_why_moved_data(
+            symbol=symbol,
+            formal_name=formal_name,
+            market_name=market_name,
+            is_krw=market_name in ("국내주식", "국내증시"),
+        )
     except Exception as exc:
-        print(f"[WHY MOVED NEWS] failed: {repr(exc)}")
-        external_news = []
+        print(f"[WHY MOVED DATA V2] failed: {repr(exc)}")
+        collected = {
+            "stock_news": [], "industry_news": [], "global_news": [],
+            "earnings_news": [], "macro_news": [], "macro_snapshot": {},
+            "market_calendar": [], "dart_disclosures": [], "earnings": {},
+            "theme": {}, "collection_meta": {"version": "V2-data-separated-fallback"},
+        }
 
-    # 기존 API가 이미 확보한 데이터에서 검증 가능한 사실을 사용한다.
+    # 기존 /api/analyze의 실제 시장 데이터는 검증 데이터로 계속 사용한다.
     world_board = base.get("world_board") or []
-    stock_news = external_news
-    global_news = external_news
-    macro_snapshot = base.get("macro_snapshot") or {}
-    market_calendar = base.get("market_calendar") or []
-    dart_disclosures = base.get("dart_disclosures") or []
+    stock_news = collected.get("stock_news") or []
+    industry_news = collected.get("industry_news") or []
+    global_news = collected.get("global_news") or []
+    macro_news = collected.get("macro_news") or []
+    macro_snapshot = collected.get("macro_snapshot") or base.get("macro_snapshot") or {}
+    market_calendar = collected.get("market_calendar") or base.get("market_calendar") or []
+    dart_disclosures = collected.get("dart_disclosures") or base.get("dart_disclosures") or []
     domestic_flow = None
     try:
         # track_analysis에 저장된 실제 수급 세부값을 복원할 수 있으면 사용한다.
@@ -3117,10 +3281,18 @@ def run_why_moved_pipeline(query):
         "movement_reason": movement_reason,
         "comment": _why_moved_comment(movement_reason),
         "evidence": _why_moved_evidence_from_reason(movement_reason),
-        "news": external_news[:12],
-        "news_count": len(external_news),
+        "news": stock_news[:12],
+        "news_count": len(stock_news),
+        "news_by_area": {
+            "stock": stock_news[:12],
+            "industry": industry_news[:12],
+            "global": global_news[:12],
+            "macro": macro_news[:12],
+            "earnings": (collected.get("earnings_news") or [])[:12],
+        },
+        "data_collection": collected.get("collection_meta") or {},
         "macro": macro_snapshot,
-        "earnings": movement_reason.get("global_impact", {}).get("earnings") if isinstance(movement_reason.get("global_impact"), dict) else None,
+        "earnings": collected.get("earnings") or (movement_reason.get("global_impact", {}).get("earnings") if isinstance(movement_reason.get("global_impact"), dict) else None),
         "sources": {
             "news": "외부 뉴스 API/RSS",
             "macro": "FRED 실제 관측 + 확인 가능한 경제 이벤트",

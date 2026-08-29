@@ -5852,163 +5852,166 @@ _test = gaemi_fixed_comment(
 
 
 
-# ===== 개미GTP 최종 고정 코멘트 엔진 =====
-# 고정 순서:
-# 시장 → 업종 → 종목 → 수급 → 종목 뉴스/재료 → 시장 경제 일정 → 마무리
-# 디자인/차트/기존 데이터 수집 로직은 이 블록과 분리한다.
+# ===== FINAL TOPIC ENGINE V8 =====
+# 확정 구조:
+# 1) 여러 출처 수집
+# 2) 비슷한 뉴스 그룹화
+# 3) 공통 주제 후보 생성
+# 4) 의미가 같은 표현을 하나의 개념으로 통합
+# 5) 대표 뉴스 선택
+# 6) 출처 반복성으로 교차확인
+# 7) 핵심 재료 1개(필요시 2개)만 확정
+# 8) 확정된 고정 문장에 삽입
+#
+# 중요: 고정 문장 영역은 AI가 다시 작성하지 않는다.
 
-_COMMON_STOPWORDS = {
-    "삼성전자","SK하이닉스","엔비디아","NVIDIA","주가","시장","종목","관련",
-    "오늘","현재","최근","소식","뉴스","전망","주목","확대","증가","감소",
-    "상승","하락","전일","거래","주식","증시","기업"
+TOPIC_STOPWORDS = {
+    "관련","소식","전망","기대","주목","시장","주가","종목","오늘","현재",
+    "최근","증시","기업","업계","분석","가능성","예상","계획","발표",
+    "강세","약세","상승","하락","수혜","영향","확대","증가","감소"
 }
 
-def _normalize_topic_word(text):
-    """뉴스 제목에서 의미 없는 기호/표현을 정리."""
-    text = str(text or "")
-    text = re.sub(r"https?://\S+", " ", text)
-    text = re.sub(r"[^\w가-힣$%.\- ]+", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+SEMANTIC_GROUPS = {
+    "공급확대": {"공급","공급망","생산","생산능력","생산량","양산","확대","늘려","늘린다"},
+    "수요증가": {"수요","증가","견조","확대","늘어","늘어난다"},
+    "금리인하기대": {"금리인하","인하","완화"},
+    "기대약화": {"약화","후퇴","낮아져","낮아졌다","둔화","축소"},
+    "물가": {"물가","cpi","소비자물가","인플레이션"},
+    "예상상회": {"상회","웃돌아","높아","높게"},
+    "고용": {"고용","일자리","고용시장"},
+    "관세정책": {"관세","관세율","관세정책","무역"},
+    "정책변화": {"변화","조정","변경","개편","검토"},
+}
 
-def extract_common_important_topics(news_items, max_topics=2):
-    """
-    여러 뉴스에서 '공통 중요 단어/짧은 구'를 추출한다.
-    - 같은 의미의 짧은 구를 반복 확인
-    - 일반적인 종목명/시장용어는 제외
-    - 서로 다른 출처에서 반복될수록 우선
-    - 최종 결과는 1~2개
-    news_items:
-      [{"title": "...", "source": "Reuters"}, ...]
-    """
-    if not news_items:
-        return []
+def _topic_tokens(text):
+    text = re.sub(r"https?://\S+", " ", str(text or ""))
+    text = re.sub(r"[^\w가-힣$%.\- ]+", " ", text.lower())
+    return [x for x in text.split() if len(x) >= 2 and x not in TOPIC_STOPWORDS]
 
+def _semantic_signature(tokens):
+    sig = set()
+    for group, words in SEMANTIC_GROUPS.items():
+        if any(t in words for t in tokens):
+            sig.add(group)
+    if "hbm4" in tokens:
+        sig.add("HBM4")
+    if "fomc" in tokens:
+        sig.add("FOMC")
+    if "연준" in tokens:
+        sig.add("연준")
+    return sig
+
+def extract_final_topic(news_items, max_topics=1):
+    """
+    사용자 방식(B)을 중심으로 의미 통합/출처 교차확인을 추가한 최종 방식.
+    반환: {'topic': str, 'representative_title': str, 'source_count': int}
+    """
     docs = []
-    for item in news_items:
-        title = _normalize_topic_word(item.get("title", "") if isinstance(item, dict) else item)
-        if not title:
-            continue
-        # 제목 단위 중복 제거
-        if title not in {d[0] for d in docs}:
-            source = (item.get("source","") if isinstance(item, dict) else "")
-            docs.append((title, source))
+    seen_titles = set()
+    for item in news_items or []:
+        if isinstance(item, dict):
+            title = str(item.get("title", "")).strip()
+            source = str(item.get("source", "")).strip() or "unknown"
+        else:
+            title, source = str(item), "unknown"
+        if title and title not in seen_titles:
+            docs.append({"title": title, "source": source, "tokens": _topic_tokens(title)})
+            seen_titles.add(title)
 
-    # 의미 있는 1~3단어 구를 만든다.
-    phrase_counts = {}
-    phrase_sources = {}
+    if not docs:
+        return {"topic": "", "representative_title": "", "source_count": 0}
 
-    for title, source in docs:
-        words = [w for w in title.split() if w not in _COMMON_STOPWORDS and len(w) >= 2]
-        candidates = set(words)
+    # 1) 의미 시그니처별 그룹화
+    groups = {}
+    for d in docs:
+        sig = tuple(sorted(_semantic_signature(d["tokens"])))
+        if sig:
+            groups.setdefault(sig, []).append(d)
 
-        for n in (2, 3):
-            for i in range(len(words) - n + 1):
-                phrase = " ".join(words[i:i+n])
-                if any(w in _COMMON_STOPWORDS for w in words[i:i+n]):
-                    continue
-                candidates.add(phrase)
+    # 2) 가장 많은 독립 출처가 공유하는 그룹 선택
+    group_rank = []
+    for sig, ds in groups.items():
+        sources = len(set(d["source"] for d in ds))
+        group_rank.append((sources, len(ds), len(sig), sig, ds))
+    group_rank.sort(reverse=True)
 
-        for phrase in candidates:
-            key = phrase.lower()
-            phrase_counts[key] = phrase_counts.get(key, 0) + 1
-            phrase_sources.setdefault(key, set()).add(source or f"source_{len(phrase_sources)}")
+    best = group_rank[0] if group_rank else (1, len(docs), 0, (), docs)
+    _, _, _, signature, group_docs = best
 
-    # 짧은 단어보다 반복되는 구를 우선.
-    ranked = []
-    for key, count in phrase_counts.items():
-        if count < 2 and len(docs) >= 3:
-            continue
-        source_count = len(phrase_sources.get(key, set()))
-        token_count = len(key.split())
-        score = count * 3 + source_count * 2 + token_count
-        ranked.append((score, count, source_count, key))
+    # 3) 대표 뉴스: 핵심 시그니처를 가장 많이 포함하고 구체적인 제목 우선
+    representative = max(
+        group_docs,
+        key=lambda d: (len(_semantic_signature(d["tokens"])), len(d["tokens"]))
+    )
 
-    ranked.sort(reverse=True)
+    # 4) 대표 제목에서 의미 있는 '짧은 구'를 만든다.
+    # HBM4 + 공급확대처럼 의미가 결합된 경우 하나의 재료로 유지.
+    t = representative["tokens"]
+    phrases = []
+    if "HBM4" in signature and "공급확대" in signature:
+        phrases.append("HBM4 공급 확대")
+    elif "FOMC" in signature and "금리인하기대" in signature and "기대약화" in signature:
+        phrases.append("FOMC 금리인하 기대 약화")
+    elif "물가" in signature and "예상상회" in signature:
+        phrases.append("미국 물가 예상 상회")
+    elif "고용" in signature and "기대약화" in signature:
+        phrases.append("미국 고용 둔화")
+    elif "관세정책" in signature and "정책변화" in signature:
+        phrases.append("미국 관세 정책 변화")
 
-    selected = []
-    for _, _, _, topic in ranked:
-        # 이미 뽑은 주제에 완전히 포함되면 중복 제거
-        if any(topic == x or topic in x or x in topic for x in selected):
-            continue
-        selected.append(topic)
-        if len(selected) >= max_topics:
-            break
+    if not phrases:
+        # 일반적인 경우 대표 제목에서 2~4개 핵심 토큰을 유지하되,
+        # 의미군이 있으면 그 군을 우선 결합.
+        if "공급확대" in signature:
+            phrases.append("공급 확대")
+        elif "수요증가" in signature:
+            phrases.append("수요 증가")
+        elif "금리인하기대" in signature and "기대약화" in signature:
+            phrases.append("금리인하 기대 약화")
+        elif "관세정책" in signature:
+            phrases.append("관세 정책")
+        else:
+            candidates = [x for x in t if x not in TOPIC_STOPWORDS]
+            phrases.append(" ".join(candidates[:3]))
 
-    return selected
+    source_count = len(set(d["source"] for d in group_docs))
+    return {
+        "topic": phrases[0] if phrases else "",
+        "representative_title": representative["title"],
+        "source_count": source_count,
+    }
 
-
-def build_stock_material_sentence(stock_name, material_topics):
-    """종목 뉴스/재료 고정 문장."""
-    topics = [str(x).strip() for x in (material_topics or []) if str(x).strip()]
-    if not topics:
+def build_stock_material_fixed(stock_name, topic):
+    if not topic:
         return ""
-    material = "와 ".join(topics[:2])
-    return f"{stock_name}는 {material} 소식이 있어!"
+    return f"{stock_name}는 {topic} 소식이 있어!"
 
-
-def build_market_event_sentence(event_topics):
-    """시장/경제 일정 고정 문장."""
-    topics = [str(x).strip() for x in (event_topics or []) if str(x).strip()]
-    if not topics:
+def build_market_event_fixed(topic):
+    if not topic:
         return ""
-    material = "와 ".join(topics[:2])
-    return f"{material} 소식이 있으니 관련 자료 뉴스를 확인해봐."
+    return f"{topic} 소식이 있으니 관련 자료 뉴스를 확인해봐."
 
 
-def build_fixed_comment(market_text, industry_text, stock_text,
-                        flow_text="", stock_news_text="",
-                        market_event_text="", closing_text="🐜 오늘도 개미들 힘내자! 💪"):
-    """확정된 고정 순서대로 데이터가 있는 문장만 출력."""
-    values = [
-        market_text, industry_text, stock_text, flow_text,
-        stock_news_text, market_event_text, closing_text
-    ]
-    lines = []
-    for value in values:
-        value = re.sub(r"\s+", " ", str(value or "")).strip()
-        if value and value not in lines:
-            lines.append(value)
-    return "\n\n".join(lines)
-
-
-def build_fixed_flow_sentence(actor, shares):
-    """수급 고정 문장: 주체 + 수량 + 순매수/순매도."""
-    if not actor or shares is None:
-        return ""
-    value = float(shares)
-    side = "순매수" if value >= 0 else "순매도"
-    return f"최근 5거래일 동안 {actor}이 {abs(int(value)):,}주 {side}를 기록했어."
-
-
-# ===== 자체 테스트 =====
-_test_stock_news = [
-    {"title": "SK하이닉스 HBM4 공급 확대 전망", "source": "A"},
-    {"title": "HBM4 수요 증가에 SK하이닉스 공급 확대", "source": "B"},
-    {"title": "SK하이닉스 HBM4 공급망 확대", "source": "C"},
-    {"title": "HBM4 관련 SK하이닉스 공급 확대", "source": "D"},
+# ===== V8 테스트 =====
+_stock_news = [
+    {"source":"Reuters","title":"SK하이닉스 HBM4 공급 확대 기대"},
+    {"source":"Bloomberg","title":"SK하이닉스 HBM4 공급망 확대"},
+    {"source":"연합뉴스","title":"HBM4 수요 증가에 SK하이닉스 공급 확대"},
+    {"source":"한국경제","title":"SK하이닉스 HBM4 생산능력 확대"},
+    {"source":"서울경제","title":"HBM4 관련 SK하이닉스 공급 확대"},
 ]
-_test_market_news = [
-    {"title": "FOMC 금리인하 기대 약화", "source": "A"},
-    {"title": "연준 발언에 금리인하 기대 후퇴", "source": "B"},
-    {"title": "FOMC 이후 금리인하 전망 약화", "source": "C"},
+_econ_news = [
+    {"source":"Reuters","title":"FOMC 이후 금리인하 기대 약화"},
+    {"source":"Bloomberg","title":"연준 발언에 금리인하 기대 후퇴"},
+    {"source":"CNBC","title":"FOMC 금리인하 전망 약화"},
+    {"source":"WSJ","title":"연준 발언으로 금리인하 기대 낮아져"},
 ]
-_test_stock_topics = extract_common_important_topics(_test_stock_news)
-_test_market_topics = extract_common_important_topics(_test_market_news)
 
-_test_comment = build_fixed_comment(
-    "🐜 개미들아! 오늘 시장 KOSPI는 -1.79% 하락 중이고",
-    "반도체 업종 SOXX는 -0.40% 하락!",
-    "SK하이닉스는 현재 1,653,000원, -4.45% 하락 중이야.",
-    build_fixed_flow_sentence("외국인", -2724956),
-    build_stock_material_sentence("SK하이닉스", _test_stock_topics),
-    build_market_event_sentence(_test_market_topics),
-)
+_s = extract_final_topic(_stock_news)
+_e = extract_final_topic(_econ_news)
 
-print("최종 고정 코멘트 엔진 문법 검사: PASS")
-print("\n[추출된 종목 재료]")
-print(_test_stock_topics)
-print("\n[추출된 시장 경제 재료]")
-print(_test_market_topics)
-print("\n[최종 코멘트 테스트]")
-print(_test_comment)
+print("V8 문법 검사: PASS")
+print("[종목 재료]", _s)
+print("[경제 재료]", _e)
+print("[종목 고정 문장]", build_stock_material_fixed("SK하이닉스", _s["topic"]))
+print("[경제 고정 문장]", build_market_event_fixed(_e["topic"]))

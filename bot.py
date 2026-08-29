@@ -4450,6 +4450,45 @@ HTML_PAGE = r"""<!DOCTYPE html>
         /* 1행: 왜 움직였을까? — 코멘트 전용 */
         #rowCause { grid-column: 1; grid-row: 1; }
 
+        /* STEP 7 — 코멘트 표현만 개선
+           카드 위치/크기/그리드 구조는 기존 그대로 유지한다. */
+        #rowCause .board-header-title {
+            font-size: 1.02rem !important;
+            font-weight: 850 !important;
+            letter-spacing: -0.35px;
+            color: var(--text-title) !important;
+        }
+        #rowCause #movementReasonCard {
+            margin-top: 2px !important;
+            font-size: 0.90rem !important;
+            line-height: 1.86 !important;
+            color: var(--text-main) !important;
+            word-break: keep-all;
+            overflow-wrap: break-word;
+        }
+        #rowCause .why-comment-paragraph {
+            margin: 0 0 10px;
+        }
+        #rowCause .why-comment-paragraph:last-child {
+            margin-bottom: 0;
+        }
+        #rowCause .why-comment-greeting {
+            font-weight: 850;
+            color: var(--text-title);
+        }
+        #rowCause .why-comment-number {
+            font-weight: 850;
+            color: #38bdf8;
+        }
+        #rowCause .why-comment-positive {
+            font-weight: 800;
+            color: #10b981;
+        }
+        #rowCause .why-comment-negative {
+            font-weight: 800;
+            color: #ef4444;
+        }
+
         /* 2행: 차트(좌) & 증시(우) */
         #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
         #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
@@ -6551,11 +6590,23 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         return `<span class="movement-evidence-seg${active}"></span>`;
                     }).join('');
 
-                    mrCard.innerHTML = `
-                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;">
-                            ${gaemiComment}
-                        </div>
-                    `;
+                    // STEP 7: 문구는 서버 결과를 그대로 유지하고, 화면에서만 읽기 좋게 나눈다.
+                    // 내용/원인/점수는 변경하지 않는다.
+                    const escapeCommentHtml = value => String(value || '')
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;')
+                        .replace(/'/g, '&#39;');
+                    const formatGaemiComment = value => {
+                        let html = escapeCommentHtml(value).replace(/\r\n?/g, '\n').trim();
+                        html = html.replace(/(^|\n)(개미들아!)/g, '$1<span class="why-comment-greeting">$2</span>');
+                        html = html.replace(/([+-]?\d+(?:\.\d+)?%)/g, '<span class="why-comment-number">$1</span>');
+                        html = html.replace(/([+-]?\d+(?:\.\d+)?\s*(?:달러|원))/g, '<span class="why-comment-number">$1</span>');
+                        html = html.replace(/(확인해볼 만해!?|확인해보면 좋아!?|같이 확인해보자!?)/g, '<span class="why-comment-positive">$1</span>');
+                        return html.split(/\n\s*\n/).map(part => `<div class="why-comment-paragraph">${part.replace(/\n/g, '<br>')}</div>`).join('');
+                    };
+                    mrCard.innerHTML = formatGaemiComment(gaemiComment);
 
                     // 트랙 분석 렌더링: 서버가 만든 track_analysis 실제 데이터만 사용한다.
                     const ta = data.track_analysis || {};

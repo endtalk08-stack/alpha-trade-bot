@@ -3396,12 +3396,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #rowCalendar { grid-column: 2; grid-row: 5; height: 100%; }
 
         /* 좌측 832px 단독 배치 행들 */
-        #rowConsensus { grid-column: 1; grid-row: 6; }
-        #rowVote { grid-column: 1; grid-row: 7; }
-        #rowComment { grid-column: 1; grid-row: 8; }
-        #rowDart { grid-column: 1; grid-row: 9; }
-        #rowSignal { grid-column: 1; grid-row: 10; }
-        #rowTelegram { grid-column: 1; grid-row: 11; }
+        #rowConsensus { grid-column: 1; grid-row: 7; }
+        #rowVote { grid-column: 1; grid-row: 8; }
+        #rowComment { grid-column: 1; grid-row: 9; }
+        #rowDart { grid-column: 1; grid-row: 10; }
+        #rowSignal { grid-column: 1; grid-row: 11; }
+        #rowTelegram { grid-column: 1; grid-row: 12; }
 
         .card {
             background: var(--bg-card);
@@ -4112,7 +4112,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 2행 좌측: 트랙 분석 — 기존 왜 움직였을까?의 확인된 근거부터 시장 5일 흐름까지 -->
+                        <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
                         <div class="card" id="rowTrack" style="justify-content:flex-start;">
                             <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
                                 <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">트랙 분석</span>

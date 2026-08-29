@@ -5849,3 +5849,166 @@ _test = gaemi_fixed_comment(
     flow={"actor": "외국인", "shares": "-2724956"},
     material="HBM4 공급 확대",
 )
+
+
+
+# ===== 개미GTP 최종 고정 코멘트 엔진 =====
+# 고정 순서:
+# 시장 → 업종 → 종목 → 수급 → 종목 뉴스/재료 → 시장 경제 일정 → 마무리
+# 디자인/차트/기존 데이터 수집 로직은 이 블록과 분리한다.
+
+_COMMON_STOPWORDS = {
+    "삼성전자","SK하이닉스","엔비디아","NVIDIA","주가","시장","종목","관련",
+    "오늘","현재","최근","소식","뉴스","전망","주목","확대","증가","감소",
+    "상승","하락","전일","거래","주식","증시","기업"
+}
+
+def _normalize_topic_word(text):
+    """뉴스 제목에서 의미 없는 기호/표현을 정리."""
+    text = str(text or "")
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[^\w가-힣$%.\- ]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def extract_common_important_topics(news_items, max_topics=2):
+    """
+    여러 뉴스에서 '공통 중요 단어/짧은 구'를 추출한다.
+    - 같은 의미의 짧은 구를 반복 확인
+    - 일반적인 종목명/시장용어는 제외
+    - 서로 다른 출처에서 반복될수록 우선
+    - 최종 결과는 1~2개
+    news_items:
+      [{"title": "...", "source": "Reuters"}, ...]
+    """
+    if not news_items:
+        return []
+
+    docs = []
+    for item in news_items:
+        title = _normalize_topic_word(item.get("title", "") if isinstance(item, dict) else item)
+        if not title:
+            continue
+        # 제목 단위 중복 제거
+        if title not in {d[0] for d in docs}:
+            source = (item.get("source","") if isinstance(item, dict) else "")
+            docs.append((title, source))
+
+    # 의미 있는 1~3단어 구를 만든다.
+    phrase_counts = {}
+    phrase_sources = {}
+
+    for title, source in docs:
+        words = [w for w in title.split() if w not in _COMMON_STOPWORDS and len(w) >= 2]
+        candidates = set(words)
+
+        for n in (2, 3):
+            for i in range(len(words) - n + 1):
+                phrase = " ".join(words[i:i+n])
+                if any(w in _COMMON_STOPWORDS for w in words[i:i+n]):
+                    continue
+                candidates.add(phrase)
+
+        for phrase in candidates:
+            key = phrase.lower()
+            phrase_counts[key] = phrase_counts.get(key, 0) + 1
+            phrase_sources.setdefault(key, set()).add(source or f"source_{len(phrase_sources)}")
+
+    # 짧은 단어보다 반복되는 구를 우선.
+    ranked = []
+    for key, count in phrase_counts.items():
+        if count < 2 and len(docs) >= 3:
+            continue
+        source_count = len(phrase_sources.get(key, set()))
+        token_count = len(key.split())
+        score = count * 3 + source_count * 2 + token_count
+        ranked.append((score, count, source_count, key))
+
+    ranked.sort(reverse=True)
+
+    selected = []
+    for _, _, _, topic in ranked:
+        # 이미 뽑은 주제에 완전히 포함되면 중복 제거
+        if any(topic == x or topic in x or x in topic for x in selected):
+            continue
+        selected.append(topic)
+        if len(selected) >= max_topics:
+            break
+
+    return selected
+
+
+def build_stock_material_sentence(stock_name, material_topics):
+    """종목 뉴스/재료 고정 문장."""
+    topics = [str(x).strip() for x in (material_topics or []) if str(x).strip()]
+    if not topics:
+        return ""
+    material = "와 ".join(topics[:2])
+    return f"{stock_name}는 {material} 소식이 있어!"
+
+
+def build_market_event_sentence(event_topics):
+    """시장/경제 일정 고정 문장."""
+    topics = [str(x).strip() for x in (event_topics or []) if str(x).strip()]
+    if not topics:
+        return ""
+    material = "와 ".join(topics[:2])
+    return f"{material} 소식이 있으니 관련 자료 뉴스를 확인해봐."
+
+
+def build_fixed_comment(market_text, industry_text, stock_text,
+                        flow_text="", stock_news_text="",
+                        market_event_text="", closing_text="🐜 오늘도 개미들 힘내자! 💪"):
+    """확정된 고정 순서대로 데이터가 있는 문장만 출력."""
+    values = [
+        market_text, industry_text, stock_text, flow_text,
+        stock_news_text, market_event_text, closing_text
+    ]
+    lines = []
+    for value in values:
+        value = re.sub(r"\s+", " ", str(value or "")).strip()
+        if value and value not in lines:
+            lines.append(value)
+    return "\n\n".join(lines)
+
+
+def build_fixed_flow_sentence(actor, shares):
+    """수급 고정 문장: 주체 + 수량 + 순매수/순매도."""
+    if not actor or shares is None:
+        return ""
+    value = float(shares)
+    side = "순매수" if value >= 0 else "순매도"
+    return f"최근 5거래일 동안 {actor}이 {abs(int(value)):,}주 {side}를 기록했어."
+
+
+# ===== 자체 테스트 =====
+_test_stock_news = [
+    {"title": "SK하이닉스 HBM4 공급 확대 전망", "source": "A"},
+    {"title": "HBM4 수요 증가에 SK하이닉스 공급 확대", "source": "B"},
+    {"title": "SK하이닉스 HBM4 공급망 확대", "source": "C"},
+    {"title": "HBM4 관련 SK하이닉스 공급 확대", "source": "D"},
+]
+_test_market_news = [
+    {"title": "FOMC 금리인하 기대 약화", "source": "A"},
+    {"title": "연준 발언에 금리인하 기대 후퇴", "source": "B"},
+    {"title": "FOMC 이후 금리인하 전망 약화", "source": "C"},
+]
+_test_stock_topics = extract_common_important_topics(_test_stock_news)
+_test_market_topics = extract_common_important_topics(_test_market_news)
+
+_test_comment = build_fixed_comment(
+    "🐜 개미들아! 오늘 시장 KOSPI는 -1.79% 하락 중이고",
+    "반도체 업종 SOXX는 -0.40% 하락!",
+    "SK하이닉스는 현재 1,653,000원, -4.45% 하락 중이야.",
+    build_fixed_flow_sentence("외국인", -2724956),
+    build_stock_material_sentence("SK하이닉스", _test_stock_topics),
+    build_market_event_sentence(_test_market_topics),
+)
+
+print("최종 고정 코멘트 엔진 문법 검사: PASS")
+print("\n[추출된 종목 재료]")
+print(_test_stock_topics)
+print("\n[추출된 시장 경제 재료]")
+print(_test_market_topics)
+print("\n[최종 코멘트 테스트]")
+print(_test_comment)

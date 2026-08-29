@@ -4138,6 +4138,45 @@ def run_why_moved_pipeline(query):
             "track_analysis": base.get("track_analysis") or {},
             "world_board": world_board,
         },
+        # STEP 4 TEST MODE: V2가 실제로 무엇을 근거로 주원인을 선택했는지
+        # 화면에서 검증할 수 있도록 원인 후보/구성점수/시간검증 요약을 별도로 제공한다.
+        # 최종 사용자용 UI가 아니라 테스트 완료 후 제거할 수 있는 진단 데이터다.
+        "cause_v2_debug": {
+            "analysis_cutoff": price_cutoff.isoformat() if hasattr(price_cutoff, "isoformat") else str(price_cutoff or ""),
+            "primary_key": (movement_reason.get("cause_analysis_v2") or {}).get("primary_key"),
+            "primary_label": (movement_reason.get("cause_analysis_v2") or {}).get("primary_label"),
+            "primary_score": (movement_reason.get("cause_analysis_v2") or {}).get("primary_score", 0),
+            "confidence": (movement_reason.get("cause_analysis_v2") or {}).get("confidence", "낮음"),
+            "direction": (movement_reason.get("cause_analysis_v2") or {}).get("direction", "혼조"),
+            "price_change_pct": (movement_reason.get("cause_analysis_v2") or {}).get("price_change_pct"),
+            "rule": (movement_reason.get("cause_analysis_v2") or {}).get("rule", ""),
+            "candidates": (movement_reason.get("cause_analysis_v2") or {}).get("candidates", []),
+            "secondary_reasons": (movement_reason.get("cause_analysis_v2") or {}).get("secondary_reasons", []),
+            "amplifiers": (movement_reason.get("cause_analysis_v2") or {}).get("amplifiers", []),
+            "temporal_summary": {
+                "areas": (temporal_validation or {}).get("areas", {}),
+            },
+            "aligned_event_counts": {
+                "stock": len(collected_aligned.get("stock_news") or []),
+                "industry": len(collected_aligned.get("industry_news") or []),
+                "global": len(collected_aligned.get("global_news") or []),
+                "macro": len(collected_aligned.get("macro_news") or []),
+                "earnings": len(collected_aligned.get("earnings_news") or []),
+                "calendar": len(collected_aligned.get("market_calendar") or []),
+            },
+            "top_aligned_events": [
+                {"area": area, "title": str(item.get("title") or item.get("name") or "").strip(), "pubDate": str(item.get("pubDate") or item.get("published_at") or item.get("date") or "")}
+                for area, arr in ((
+                    ("stock", collected_aligned.get("stock_news") or []),
+                    ("earnings", collected_aligned.get("earnings_news") or []),
+                    ("macro", collected_aligned.get("macro_news") or []),
+                    ("global", collected_aligned.get("global_news") or []),
+                    ("industry", collected_aligned.get("industry_news") or []),
+                ))
+                for item in arr[:2]
+                if isinstance(item, dict)
+            ][:8],
+        },
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S KST"),
         "engine_versions": {
             "date_alignment": "V2-step5",
@@ -6091,7 +6130,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         }
                     }
                 } catch (whyErr) {
-                    console.warn('왜 움직였을까? 독립 API를 불러오지 못했습니다. 기존 분석 데이터를 사용합니다.', whyErr);
+                    console.warn('왜 움직였을까? 독립 API를 불러오지 못했습니다.', whyErr);
                 }
 
                 const isKrw = data.market === '국내주식' || data.market === '국내증시';
@@ -6563,6 +6602,40 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                             </div>`;
                         }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
+
+                        // STEP 4 TEST MODE: V2 원인 결정 과정을 임시로 시각화한다.
+                        // 기존 트랙 분석 데이터/레이아웃은 그대로 두고 접을 수 있는 진단 영역만 추가한다.
+                        const dbg = data.cause_v2_debug || {};
+                        const debugCandidates = Array.isArray(dbg.candidates) ? dbg.candidates : [];
+                        const fmtScore = v => Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '-';
+                        const fmtPct = v => Number.isFinite(Number(v)) ? `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%` : '-';
+                        const candidateRows = debugCandidates.map((c, idx) => {
+                            const comp = c.components || {};
+                            return `<div style="padding:8px 0;border-top:1px solid var(--border-line);font-size:0.74rem;">
+                                <div style="display:flex;justify-content:space-between;gap:8px;">
+                                    <strong style="color:var(--text-title);">${idx + 1}. ${String(c.label || c.key || '-')}</strong>
+                                    <strong style="color:#38bdf8;">${fmtScore(c.score)}점</strong>
+                                </div>
+                                <div style="color:var(--text-muted);margin-top:3px;">직접 ${fmtScore(comp.direct_evidence)} · 시간 ${fmtScore(comp.temporal)} · 가격 ${fmtScore(comp.price_reaction)} · 전파 ${fmtScore(comp.transmission)} · 거래 ${fmtScore(comp.activity)} · 반대 ${fmtScore(comp.contradiction)}</div>
+                                <div style="color:var(--text-muted);margin-top:2px;">근거 ${fmtScore(c.evidence_count)}건 · 시간상태 ${String(c.temporal_status || '-')}</div>
+                            </div>`;
+                        }).join('');
+                        const eventRows = (Array.isArray(dbg.top_aligned_events) ? dbg.top_aligned_events : []).map(e =>
+                            `<div style="padding:5px 0;border-top:1px solid var(--border-line);font-size:0.72rem;color:var(--text-muted);">[${String(e.area || '-')}] ${String(e.pubDate || '-')} · ${String(e.title || '-')}</div>`
+                        ).join('');
+                        const debugHtml = `<details style="margin-top:12px;border-top:1px dashed var(--border-line);padding-top:8px;">
+                            <summary style="cursor:pointer;color:#38bdf8;font-size:0.76rem;font-weight:800;">STEP 4 V2 검증 보기</summary>
+                            <div style="padding-top:8px;">
+                                <div style="font-size:0.73rem;color:var(--text-muted);">가격 기준일 · ${String(dbg.analysis_cutoff || '-')}</div>
+                                <div style="font-size:0.73rem;color:var(--text-muted);margin-top:3px;">방향 · ${String(dbg.direction || '-')} · 가격반응 ${fmtPct(dbg.price_change_pct)}</div>
+                                <div style="font-size:0.73rem;margin-top:4px;color:var(--text-title);">주원인 · <strong>${String(dbg.primary_label || '원인 미확정')}</strong> · ${fmtScore(dbg.primary_score)}점 · 신뢰도 ${String(dbg.confidence || '-')}</div>
+                                <div style="font-size:0.71rem;color:var(--text-muted);margin-top:3px;">${String(dbg.rule || '')}</div>
+                                <div style="margin-top:8px;">${candidateRows || '<div style="color:var(--text-muted);font-size:0.72rem;">원인 후보 데이터가 없습니다.</div>'}</div>
+                                <div style="margin-top:8px;font-size:0.73rem;font-weight:800;color:var(--text-title);">기준일 내 외부 이벤트 샘플</div>
+                                <div>${eventRows || '<div style="color:var(--text-muted);font-size:0.72rem;padding-top:5px;">기준일 내 표시할 이벤트가 없습니다.</div>'}</div>
+                            </div>
+                        </details>`;
+                        trackDetailList.innerHTML += debugHtml;
                     }
 
                 }

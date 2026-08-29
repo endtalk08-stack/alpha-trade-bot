@@ -4119,11 +4119,65 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
                         <div class="card" id="rowTrack" style="justify-content:flex-start;">
-                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
-                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
+                            <div style="margin-bottom:14px;">
+                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
                             </div>
-                            <div id="movementEvidenceCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
+
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--border-line);">
+                                <div class="gauge-inner-box" style="border-color:#38bdf8;">
+                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="tEvidenceCountVal">-</span>
+                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">근거</span>
+                                </div>
+                                <div style="min-width:0;">
+                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <span style="font-size:0.78rem; color:var(--text-muted);">데이터 상태</span>
+                                        <span style="background:rgba(56,189,248,0.15); color:#38bdf8; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="tStatusBadge">-</span>
+                                    </div>
+                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="tStatusDots">실제 확인된 데이터 기준</div>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
+                                <div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재 주가</div>
+                                    <div style="font-size:1.15rem; font-weight:800; color:var(--text-title);" id="tPriceVal">-</div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">오늘 등락률</div>
+                                    <div style="font-size:1.1rem; font-weight:700; color:var(--text-title);" id="tChangeVal">-</div>
+                                </div>
+                            </div>
+
+                            <!-- 상단 그래프: 실제 종목 최근 60거래일 주가 흐름 -->
+                            <div style="margin:16px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                    <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 주가 흐름</span>
+                                    <span style="font-size:0.7rem; color:#38bdf8; font-weight:800;" id="tPriceTrendTxt">현재 -</span>
+                                </div>
+                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
+                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
+                                </div>
+                            </div>
+
+                            <!-- 하단 그래프: 실제 52주 가격 위치 -->
+                            <div style="margin:12px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);" id="tLow52w"></span>
+                                    <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
+                                    <span style="color:var(--text-muted);" id="tHigh52w"></span>
+                                </div>
+                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
+                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="tSliderFill"></div>
+                                    <div class="dot-marker-style" id="tDotMarker"></div>
+                                </div>
+                            </div>
+
+                            <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
+                                <div id="trackDetailList"></div>
+                            </div>
                         </div>
+
+                        
 
                         <!-- 5행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
                         <div class="card" id="rowCalendar">
@@ -5235,375 +5289,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
                                 : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
 
-                    const evidenceReasons = (mr.reasons || []).slice().sort((a,b) => { const a5=a.key==='market_5d'?1:0; const b5=b.key==='market_5d'?1:0; if(a5!==b5) return a5-b5; return Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)); });
+                    const evidenceReasons = (mr.reasons || []).slice().sort((a,b) => {
+                        const a5 = a.key === 'market_5d' ? 1 : 0;
+                        const b5 = b.key === 'market_5d' ? 1 : 0;
+                        if (a5 !== b5) return a5 - b5;
+                        return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
+                    });
                     const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
-                    const evidenceDirection = Number(mr.total_score || 0) < 0 ? 'negative' : 'positive';
-
-                    // 백엔드의 주원인과 실제 detail/evidence를 그대로 사용한다.
-                    const scoreOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? Number(x.score||0) : 0; };
-                    const detailOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? String(x.detail||'') : ''; };
-                    const materialReason = evidenceReasons.find(r => r.key === 'material') || null;
-                    const materialScore=scoreOf('material'), foreignScore=scoreOf('foreign'), institutionScore=scoreOf('institution');
-                    const tradingValueScore=scoreOf('trading_value'), volumeScore=scoreOf('volume'), themeScore=scoreOf('theme');
-                    const mainReasonKey = mr.main_reason_key || '';
-                    const globalImpact = mr.global_impact || {};
-                    const globalLayers = Array.isArray(globalImpact.layers) ? globalImpact.layers : [];
-                    const globalDetail = key => {
-                        const x=globalLayers.find(r=>r.key===key);
-                        return x ? String(x.detail||'') : '';
-                    };
-                    const positiveNews = Array.isArray(mr.news_evidence)
-                        ? mr.news_evidence.filter(x=>String(x.type||'')==='positive')
-                        : [];
-                    const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
-
-                    // 왜 움직였을까? — 최종 고정 로직 v3
-                    // 고정 순서: 시장 → 업종 → 종목 → 수급 → 종목 재료 → 시장 경제 이벤트 → 마무리
-                    // 시장/업종/종목/수급은 데이터만 교체한다.
-                    // 뉴스/경제 이벤트는 AI가 긴 문장을 창작하지 않고 핵심 재료만 삽입한다.
-
-                    const priceText = data.price || data.price_str || '-';
-                    const pct = Number(data.current_change_pct);
-                    const topicParticle = (() => {
-                        const text = String(displayName || '').trim();
-                        const last = text.charCodeAt(text.length - 1);
-                        if (last >= 0xAC00 && last <= 0xD7A3) {
-                            return ((last - 0xAC00) % 28) === 0 ? '는' : '은';
-                        }
-                        return '은';
-                    })();
-
-                    const directionText =
-                        Number.isFinite(pct)
-                            ? (pct > 0 ? '상승' : pct < 0 ? '하락' : '보합')
-                            : (mr.direction === '하락' ? '하락' : mr.direction === '상승' ? '상승' : '보합');
-
-                    const boardItems = Array.isArray(data.world_board) ? data.world_board : [];
-                    const findBoard = (...names) => boardItems.find(item =>
-                        names.some(name => String(item?.name || '').toLowerCase() === String(name).toLowerCase())
-                    );
-                    const rateNumber = item => {
-                        if (!item) return null;
-                        const n = Number(String(item.rate ?? '').replace('%','').replace('+',''));
-                        return Number.isFinite(n) ? n : null;
-                    };
-                    const upDown = n => n > 0 ? '상승' : n < 0 ? '하락' : '보합';
-
-                    // 시장: 종목 시장에 따라 국내/미국을 구분한다.
-                    // 국내주식 → KOSPI/KOSDAQ, 미국주식 → NASDAQ(실시간 대표값은 QQQ 사용),
-                    // 암호화폐 → 주식시장 지수 문장을 출력하지 않는다.
-                    // 백엔드 result_data의 실제 필드는 market이다.
-                    // v12에서는 market_name만 확인해서 미국 종목도 코스피로 떨어지는 문제가 있었다.
-                    const marketType = String(data.market || data.market_name || data.market_type || '').toLowerCase();
-                    const isUSMarket = marketType.includes('미국주식') || marketType.includes('미국') || marketType.includes('us');
-                    const isCryptoMarket = marketType.includes('암호화폐') || marketType.includes('암호') || marketType.includes('crypto') || marketType.includes('코인');
-                    const selectedMarketName = isUSMarket
-                        ? '나스닥'
-                        : (String(data.market_index_name || '').toUpperCase() === 'KOSDAQ' ? '코스닥' : '코스피');
-                    const marketItem = isUSMarket
-                        ? findBoard('QQQ')
-                        : findBoard(selectedMarketName, selectedMarketName === '코스피' ? 'KOSPI' : 'KOSDAQ');
-                    const marketRate = rateNumber(marketItem);
-
-                    // 업종: 현재 구현에서 확인 가능한 대표 업종은 SOXX.
-                    // 반도체 관련 종목/뉴스일 때만 SOXX를 업종으로 표시하여 잘못된 업종 표시를 막는다.
-                    const newsBlob = [
-                        displayName,
-                        ...(Array.isArray(mr.news_evidence) ? mr.news_evidence.map(x => x?.title || '') : []),
-                        ...(Array.isArray(materialReason?.news_clusters) ? materialReason.news_clusters.flatMap(c => c?.keywords || []) : [])
-                    ].join(' ').toLowerCase();
-                    const semiconductorKeywords = ['반도체','hbm','hbm4','dram','nand','메모리','gpu','semiconductor'];
-                    const isSemiconductor = semiconductorKeywords.some(k => newsBlob.includes(k));
-                    const soxxItem = findBoard('SOXX');
-                    const soxxRate = rateNumber(soxxItem);
-
-                    // 시장/업종 고정 문장
-                    const parts = [];
-                    if (!isCryptoMarket) {
-                        if (marketRate !== null) {
-                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이고`);
-                        } else {
-                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 현재 흐름을 확인 중이고`);
-                        }
-
-                        // 국내/미국 주식에서만 업종을 연결한다.
-                        if (isSemiconductor && soxxRate !== null) {
-                            parts[parts.length - 1] += ` 반도체 업종 SOXX는 ${soxxRate >= 0 ? '+' : ''}${soxxRate.toFixed(2)}% ${upDown(soxxRate)}!`;
-                        }
-                    }
-
-                    // 종목 고정
-                    parts.push(
-                        Number.isFinite(pct)
-                            ? `${displayName}${topicParticle} 현재 ${priceText}, ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
-                            : `${displayName}${topicParticle} 현재 ${priceText} ${directionText} 중이야.`
-                    );
-
-                    // 수급 고정: 외국인/기관 + 순매수/순매도 + 5거래일
-                    const domesticFlowValue = (movementReason, key) => {
-                        const r = Array.isArray(movementReason.reasons)
-                            ? movementReason.reasons.find(x => x.key === key)
-                            : null;
-                        if (!r) return null;
-                        const text = String(r.detail || '');
-                        const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
-                        if (!m) return null;
-                        const n = Number(m[2].replace(/,/g,''));
-                        if (!Number.isFinite(n)) return null;
-                        return m[1] === '순매도' ? -n : n;
-                    };
-
-                    const flowCandidates = [
-                        { key: 'foreign', label: '외국인', value: domesticFlowValue(mr, 'foreign') },
-                        { key: 'institution', label: '기관', value: domesticFlowValue(mr, 'institution') }
-                    ].filter(x => x.value !== null && Number.isFinite(x.value));
-
-                    if (flowCandidates.length) {
-                        const selectedFlow = flowCandidates.sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0];
-                        const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
-                        parts.push(`최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어.`);
-                    }
-
-                    // 종목 뉴스/재료: 여러 출처에서 반복되는 핵심 재료만 사용.
-                    if (materialReason && Array.isArray(materialReason.news_clusters)) {
-                        const cluster = materialReason.news_clusters[0] || null;
-                        const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
-                        const map = {
-                            'hbm4':'HBM4','hbm':'HBM','ai':'AI 수요','인공지능':'AI 수요','gpu':'GPU 수요',
-                            '수요':'수요 확대','공급':'공급 확대','공급망':'공급망 확대','증설':'증설',
-                            '실적':'실적','earnings':'실적','매출':'매출 성장','영업이익':'영업이익',
-                            '수주':'수주','계약':'계약','관세':'관세','aws':'AWS'
-                        };
-                        const mapped = kws.map(k => map[String(k).toLowerCase()] || String(k)).filter(Boolean);
-                        // 지나치게 일반적인 단어는 제거하고 최대 2개.
-                        const generic = new Set(['주가','시장','관련','소식','전망','기대','확대','증가','감소','하락','상승']);
-                        const filtered = mapped.filter(x => !generic.has(x));
-                        const uniq = [...new Set(filtered)];
-                        if (uniq.length) {
-                            materialText = uniq.slice(0, 2).join(' ');
-                        }
-                    }
-
-
-                    // 종목 재료 + 시장 경제 이벤트를 하나의 고정 정보 문장으로 묶는다.
-                    // 종목명과 '소식이 있어!'는 이 영역에서는 제거한다.
-                    // 둘 다 있으면: [핵심 재료]와 [경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.
-                    // 하나만 있으면 해당 재료만 사용한다.
-                    if (materialReason && Array.isArray(materialReason.news_clusters)) {
-                        const cluster = materialReason.news_clusters[0] || null;
-                        const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
-                        const map = {
-                            'hbm4':'HBM4','hbm':'HBM','ai':'AI 수요','인공지능':'AI 수요','gpu':'GPU 수요',
-                            '수요':'수요 확대','공급':'공급 확대','공급망':'공급망 확대','증설':'증설',
-                            '실적':'실적','earnings':'실적','매출':'매출 성장','영업이익':'영업이익',
-                            '수주':'수주','계약':'계약','관세':'관세','aws':'AWS'
-                        };
-                        const mapped = kws.map(k => map[String(k).toLowerCase()] || String(k)).filter(Boolean);
-                        const generic = new Set(['주가','시장','관련','소식','전망','기대','확대','증가','감소','하락','상승']);
-                        const filtered = mapped.filter(x => !generic.has(x));
-                        const uniq = [...new Set(filtered)];
-                        if (uniq.length) {
-                            materialText = uniq.slice(0, 2).join(' ');
-                        }
-                    }
-
-                    let marketEventTopic = '';
-                    const calendarEvents = Array.isArray(data.market_calendar) ? data.market_calendar : [];
-                    const macroText = [
-                        ...(Array.isArray(data.global_news) ? data.global_news.map(x => x?.title || '') : []),
-                        ...(Array.isArray(data.stock_news) ? data.stock_news.map(x => x?.title || '') : []),
-                        ...(Array.isArray(data.market_calendar) ? data.market_calendar.map(x => JSON.stringify(x)) : [])
-                    ].join(' ').toLowerCase();
-
-                    if (/\bfomc\b|연준/.test(macroText)) marketEventTopic = 'FOMC·연준';
-                    else if (/\bcpi\b|소비자물가|물가/.test(macroText)) marketEventTopic = '미국 물가';
-                    else if (/고용|비농업|실업률/.test(macroText)) marketEventTopic = '미국 고용';
-                    else if (/관세|무역/.test(macroText)) marketEventTopic = '미국 관세 정책';
-                    else if (/금리인하|금리인상|기준금리/.test(macroText)) marketEventTopic = '미국 금리';
-
-                    // 종목 재료와 경제 이벤트의 중복 단어 제거.
-                    // 같은 단어가 양쪽에 있으면 시장/경제 이벤트 쪽을 우선 보존한다.
-                    if (materialText && marketEventTopic) {
-                        const macroWords = new Set(
-                            String(marketEventTopic)
-                                .toLowerCase()
-                                .split(/[^0-9a-z가-힣]+/)
-                                .filter(Boolean)
-                        );
-                        const materialWords = String(materialText)
-                            .split(/\s+/)
-                            .filter(Boolean);
-
-                        const dedupedMaterialWords = materialWords.filter(word => {
-                            const normalized = word.toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
-                            return normalized && !macroWords.has(normalized);
-                        });
-
-                        const dedupedMaterial = dedupedMaterialWords.join(' ').trim();
-
-                        if (dedupedMaterial) {
-                            parts.push(`${dedupedMaterial} ${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
-                        } else {
-                            parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
-                        }
-                    } else if (materialText) {
-                        parts.push(`${materialText} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
-                    } else if (marketEventTopic) {
-                        parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
-                    }
-
-                    // 마무리 문장은 고정한다. 방향값을 배열 인덱스로 잘못 사용하는 기존 로직을 제거.
-                    parts.push('🐜 오늘도 개미들 힘내자! 💪');
-                    let gaemiComment = parts.join('\n\n');
-
-                    const movementIconMap = {
-                        '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',
-                        '외국인 수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="7" r="3"></circle><path d="M5 20c.8-4 2.8-6 7-6s6.2 2 7 6"></path></svg>',
-                        '기관 수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16M6 20V9l6-5 6 5v11"></path><path d="M9 13h6M9 16h6"></path></svg>',
-                        '시장': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>',
-                        '업종·테마': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><circle cx="16" cy="16" r="3"></circle><path d="M10.5 10.5l3 3"></path></svg>',
-                        '기업 재료': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"></path><path d="M15 3v4h4M9 12h6M9 16h6"></path></svg>',
-                        '거래량': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
-                        '시장 5일 흐름': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18l5-6 4 3 7-8"></path><path d="M4 20h16"></path></svg>'
-                    };
-
-                    const movementChartStyles = {
-                        '시장': { unit: '%', base: 0 },
-                        '업종·테마': { unit: '%', base: 0 },
-                        '기업 재료': { unit: '건', base: 0 },
-                        '거래량': { unit: '%', base: 0 },
-                        '거래대금': { unit: '원', base: 0 }, '외국인 수급': { unit: '주', base: 0 }, '기관 수급': { unit: '주', base: 0 }
-                    };
-
-                    const movementReasonCards = evidenceReasons.map(r => {
-                        const score = Number(r.score || 0);
-                        const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
-                        const statusStyle = score > 0
-                            ? 'background:rgba(16,185,129,0.12);color:#10b981;'
-                            : score < 0
-                                ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
-                                : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
-
-                        // Convert the existing detail string into a primary metric only when
-                        // the value is explicitly present. Otherwise preserve the text as-is.
-                        const detailText = String(r.detail || '').trim();
-                        const pctMatch = detailText.match(/([+-]?[0-9]+(?:\.[0-9]+)?)%/);
-                        const countMatch = detailText.match(/([0-9]+)\s*건/);
-                        const explicitValue = pctMatch ? Number(pctMatch[1]) : (countMatch ? Number(countMatch[1]) : null);
-
-                        let displayValue = detailText;
-                        let displayUnit = '';
-                        if (explicitValue !== null) {
-                            displayValue = pctMatch ? `${explicitValue >= 0 ? '+' : ''}${explicitValue.toFixed(2)}` : `${explicitValue}`;
-                            displayUnit = pctMatch ? '%' : '건';
-                        }
-
-                        // Chart is intentionally based on the real detail value when available.
-                        // When a value is not present in detail, show a neutral "signal strength"
-                        // bar derived from the existing score, without inventing a new market datum.
-                        const chartMagnitude = explicitValue !== null
-                            ? Math.min(100, Math.max(8, Math.abs(explicitValue) * 10))
-                            : (score === 0 ? 12 : Math.min(100, 28 + Math.abs(score) * 24));
-                        const chartColor = score > 0 ? '#10b981' : (score < 0 ? '#ef4444' : '#64748b');
-
-                        // Build a small 5-point history from the current signal without fabricating
-                        // a numeric time series: stable short bars visualise relative signal strength.
-                        const levels = score > 0
-                            ? [34, 52, 46, 70, 62]
-                            : score < 0
-                                ? [62, 48, 54, 38, 30]
-                                : [42, 46, 40, 48, 44];
-
-                        const iconMap = {
-                            '시장': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>',
-                            '업종·테마': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><circle cx="16" cy="16" r="3"></circle><path d="M10.5 10.5l3 3"></path></svg>',
-                            '기업 재료': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"></path><path d="M15 3v4h4M9 12h6M9 16h6"></path></svg>',
-                            '거래량': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
-                            '기술': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18l5-5 4 3 7-8"></path><path d="M4 4v16h16"></path></svg>'
-                        };
-                        const icon = iconMap[r.label] || '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v8M8 12h8"></path></svg>';
-
-                        const bars = levels.map((h, idx) =>
-                            `<span class="movement-mini-bar" style="height:${h}%;background:${chartColor};opacity:${0.38 + idx * 0.12};"></span>`
-                        ).join('');
-
-                        if (r.key === 'market_5d') {
-                            const pts = Array.isArray(r.chart_points) ? r.chart_points.slice(-5) : [];
-                            const daily = pts.map(p => Number(p.daily_return)).filter(Number.isFinite);
-                            const cumulative = pts.map(p => Number(p.cumulative_return)).filter(Number.isFinite);
-                            const total5 = Number(r.total_return);
-                            const maxAbs = Math.max(0.5, ...daily.map(v => Math.abs(v)));
-                            const barHtml = pts.map((p, idx) => {
-                                const v = Number(p.daily_return);
-                                const h = Math.max(12, Math.min(100, (Math.abs(v) / maxAbs) * 100));
-                                const color = v >= 0 ? '#10b981' : '#ef4444';
-                                const dateLabel = String(p.date || '').slice(5).replace('-', '.');
-                                return `<div class="market5-bar-wrap"><span class="market5-bar" style="height:${h}%;background:${color};"></span><span class="market5-bar-label">${dateLabel}</span></div>`;
-                            }).join('');
-
-                            let lineHtml = '';
-                            if (cumulative.length >= 2) {
-                                const W = 280, H = 58, PX = 4, PY = 6;
-                                const minV = Math.min(...cumulative, 0);
-                                const maxV = Math.max(...cumulative, 0);
-                                const spanV = Math.max(0.3, maxV - minV);
-                                const xx = i => PX + i * ((W - PX * 2) / Math.max(1, cumulative.length - 1));
-                                const yy = v => PY + ((maxV - v) / spanV) * (H - PY * 2);
-                                const path = cumulative.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xx(i).toFixed(1)} ${yy(v).toFixed(1)}`).join(' ');
-                                const zeroY = yy(0);
-                                lineHtml = `
-                                    <div class="market5-line-chart">
-                                        <div class="market5-zero" style="top:${zeroY}px;"></div>
-                                        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="최근 5거래일 시장 누적 수익률">
-                                            <path d="${path}" fill="none" stroke="${total5 >= 0 ? '#10b981' : '#ef4444'}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"></path>
-                                        </svg>
-                                    </div>`;
-                            }
-
-                            return `
-                                <div class="movement-mini-card movement-market5-card">
-                                    <div class="movement-mini-head">
-                                        <div class="movement-reason-title">
-                                            ${icon}
-                                            <span class="movement-reason-name">시장 5일 흐름</span>
-                                        </div>
-                                        <span class="movement-reason-status" style="${statusStyle}">${status}</span>
-                                    </div>
-                                    ${lineHtml}
-                                    <div class="market5-bars">${barHtml || '<span style="color:var(--text-muted);font-size:0.68rem;">데이터 확인 필요</span>'}</div>
-                                    <div class="movement-mini-value">
-                                        <span>${Number.isFinite(total5) ? `${total5 >= 0 ? '+' : ''}${total5.toFixed(2)}` : '-'}</span>
-                                        <span class="movement-mini-unit">%</span>
-                                    </div>
-                                    <div class="movement-mini-detail">${r.index_name || 'KOSPI'} 최근 5거래일 누적 수익률</div>
-                                </div>
-                            `;
-                        }
-
-                        return `
-                            <div class="movement-mini-card">
-                                <div class="movement-mini-head">
-                                    <div class="movement-reason-title">
-                                        ${icon}
-                                        <span class="movement-reason-name">${r.label}</span>
-                                    </div>
-                                    <span class="movement-reason-status" style="${statusStyle}">${status}</span>
-                                </div>
-                                <div class="movement-mini-chart">
-                                    <div class="movement-mini-bars">${bars}</div>
-                                </div>
-                                <div class="movement-mini-value">
-                                    <span>${displayValue}</span><span class="movement-mini-unit">${displayUnit}</span>
-                                </div>
-                                <div class="movement-mini-detail">${detailText}</div>
-                            </div>
-                        `;
-                    }).join('');
-
-                    const evidenceSegments = Array.from({ length: 8 }, (_, i) => {
-                        const active = i < evidenceCount ? ' active' + (evidenceDirection === 'negative' ? ' negative' : '') : '';
-                        return `<span class="movement-evidence-seg${active}"></span>`;
-                    }).join('');
 
                     mrCard.innerHTML = `
                         <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;">
@@ -5611,74 +5303,132 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
                     `;
 
-                    const trackCard = document.getElementById('movementEvidenceCard');
-                    if (!trackCard) return;
+                    // 트랙 분석: 퀀트 분석과 동일한 카드형 레이아웃을 사용한다.
+                    const trackPriceVal = document.getElementById('tPriceVal');
+                    const trackChangeVal = document.getElementById('tChangeVal');
+                    const trackEvidenceVal = document.getElementById('tEvidenceCountVal');
+                    const trackStatusBadge = document.getElementById('tStatusBadge');
+                    const trackStatusDots = document.getElementById('tStatusDots');
+                    const trackPriceTrendTxt = document.getElementById('tPriceTrendTxt');
 
-                    trackCard.innerHTML = `
-                        <div class="movement-evidence-summary">
-                            <div class="movement-evidence-head">
-                                <span class="movement-evidence-label">확인된 근거</span>
-                                <span class="movement-evidence-count">${evidenceCount} / 8</span>
-                            </div>
-                            <div class="movement-evidence-track">${evidenceSegments}</div>
-                        </div>
+                    if (trackPriceVal) trackPriceVal.innerText = data.price_str || '-';
 
-                        ${(() => {
-                            // Primary graph: asset vs benchmark over the latest five sessions.
-                            // The backend can supply rs_chart_points and benchmark_name later.
-                            // Until then, do not fabricate a second time series: hide the graph
-                            // instead of showing invented values.
-                            const rs = data.relative_strength || null;
-                            if (!rs || !Array.isArray(rs.points) || rs.points.length < 2) return '';
+                    const cp = Number(data.current_change_pct);
+                    if (trackChangeVal) {
+                        trackChangeVal.innerText = Number.isFinite(cp) ? `${cp >= 0 ? '+' : ''}${cp.toFixed(2)}%` : '-';
+                        trackChangeVal.style.color =
+                            Number.isFinite(cp) && cp > 0 ? '#10b981' :
+                            (Number.isFinite(cp) && cp < 0 ? '#ef4444' : 'var(--text-title)');
+                    }
 
-                            const pts = rs.points.slice(-5);
-                            const valuesA = pts.map(p => Number(p.asset));
-                            const valuesB = pts.map(p => Number(p.benchmark));
-                            if (valuesA.some(v => !Number.isFinite(v)) || valuesB.some(v => !Number.isFinite(v))) return '';
+                    if (trackEvidenceVal) {
+                        trackEvidenceVal.innerText = `${evidenceCount}/8`;
+                    }
+                    if (trackStatusBadge) {
+                        trackStatusBadge.innerText = mr.confidence || '-';
+                        trackStatusBadge.style.cssText = confidenceStyle;
+                    }
+                    if (trackStatusDots) {
+                        trackStatusDots.innerText =
+                            evidenceCount > 0
+                                ? `확인된 근거 ${evidenceCount}개 · 실제 데이터 기준`
+                                : '확인된 근거 부족 · 추가 확인 필요';
+                    }
 
-                            const all = valuesA.concat(valuesB);
-                            const minV = Math.min(...all);
-                            const maxV = Math.max(...all);
+                    // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
+                    const tPriceChart = document.getElementById('tPriceChart');
+                    const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
+                    const trackVals = candleRows
+                        .map(x => Number(x && x.c))
+                        .filter(Number.isFinite);
+
+                    if (tPriceChart && trackVals.length > 1) {
+                        const first = trackVals[0];
+                        const normalized = first !== 0 ? trackVals.map(v => ((v / first) - 1) * 100) : [];
+                        if (normalized.length > 1 && normalized.every(Number.isFinite)) {
+                            const W = 600, H = 120, pad = 8;
+                            const minV = Math.min(...normalized), maxV = Math.max(...normalized);
                             const span = Math.max(0.01, maxV - minV);
-                            const W = 520, H = 92, PX = 8, PY = 8;
-                            const x = i => PX + (i * (W - PX * 2) / Math.max(1, pts.length - 1));
-                            const y = v => PY + ((maxV - v) / span) * (H - PY * 2);
-                            const path = arr => arr.map((v,i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
-                            const diff = Number(rs.relative_return);
-                            const diffText = Number.isFinite(diff) ? `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%p` : '';
-                            const assetName = rs.asset_name || '종목';
-                            const benchmarkName = rs.benchmark_name || '시장';
-                            const latestAsset = valuesA[valuesA.length - 1];
-                            const latestBenchmark = valuesB[valuesB.length - 1];
+                            const x = i => pad + i * ((W - pad * 2) / Math.max(1, normalized.length - 1));
+                            const y = v => pad + ((maxV - v) / span) * (H - pad * 2);
+                            const coords = normalized.map((v,i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+                            const linePath = 'M ' + coords.join(' L ');
+                            const baseY = y(0);
+                            const areaPath = `M ${coords[0].split(',')[0]},${baseY.toFixed(1)} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${baseY.toFixed(1)} Z`;
+                            const last = normalized[normalized.length - 1];
+                            const stroke = last >= 0 ? '#10b981' : '#ef4444';
 
-                            return `
-                                <div class="movement-relative-chart">
-                                    <div class="movement-relative-head">
-                                        <span class="movement-relative-title">시장 대비 상대강도</span>
-                                        <span class="movement-relative-diff">${diffText}</span>
-                                    </div>
-                                    <div class="movement-relative-chartbox">
-                                        <div class="movement-relative-gridline" style="top:25%;"></div>
-                                        <div class="movement-relative-gridline" style="top:50%;"></div>
-                                        <div class="movement-relative-gridline" style="top:75%;"></div>
-                                        <svg class="movement-relative-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="최근 5거래일 상대강도 비교">
-                                            <path d="${path(valuesB)}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.42"></path>
-                                            <path d="${path(valuesA)}" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"></path>
-                                        </svg>
-                                    </div>
-                                    <div class="movement-relative-legend">
-                                        <span><span class="movement-relative-dot" style="background:var(--text-title);"></span>${assetName} ${latestAsset >= 0 ? '+' : ''}${latestAsset.toFixed(2)}%</span>
-                                        <span><span class="movement-relative-dot" style="background:var(--text-muted);"></span>${benchmarkName} ${latestBenchmark >= 0 ? '+' : ''}${latestBenchmark.toFixed(2)}%</span>
-                                    </div>
-                                    <div class="movement-relative-note">최근 5거래일 동안 종목과 기준시장의 상대적인 움직임을 비교합니다.</div>
-                                </div>
+                            tPriceChart.innerHTML = `
+                                <defs>
+                                    <linearGradient id="tPriceFill" x1="0" x2="0" y1="0" y2="1">
+                                        <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"/>
+                                        <stop offset="100%" stop-color="${stroke}" stop-opacity="0.02"/>
+                                    </linearGradient>
+                                </defs>
+                                <line x1="0" y1="${baseY.toFixed(1)}" x2="600" y2="${baseY.toFixed(1)}"
+                                      stroke="rgba(148,163,184,0.20)" stroke-width="1" stroke-dasharray="4 4"/>
+                                <path d="${areaPath}" fill="url(#tPriceFill)"/>
+                                <path d="${linePath}" fill="none" stroke="${stroke}" stroke-width="3"
+                                      vector-effect="non-scaling-stroke"/>
+                                <circle cx="${coords[coords.length-1].split(',')[0]}"
+                                        cy="${coords[coords.length-1].split(',')[1]}"
+                                        r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2"
+                                        vector-effect="non-scaling-stroke"/>
                             `;
-                        })()}
 
-                        <div class="movement-mini-grid">${movementReasonCards}</div>
+                            if (trackPriceTrendTxt) {
+                                const p = normalized[normalized.length - 1];
+                                trackPriceTrendTxt.innerText =
+                                    `최근 60D ${p >= 0 ? '+' : ''}${p.toFixed(2)}%`;
+                            }
+                        }
+                    } else if (trackPriceTrendTxt) {
+                        trackPriceTrendTxt.innerText = '데이터 부족';
+                    }
 
-                        
-                    `;
+                    // 52주 가격 위치: 현재 퀀트 데이터와 동일한 실제 값 사용.
+                    const tq = data.quant || {};
+                    setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
+                    setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
+                    setTxt('tPos52wLabel', tq.pos_52w ? `52주 가격 위치 ${tq.pos_52w}` : '52주 가격 위치');
+
+                    const sliderPct = Number(tq.slider_fill_pct);
+                    const tFill = document.getElementById('tSliderFill');
+                    if (tFill && Number.isFinite(sliderPct)) tFill.style.width = `${sliderPct}%`;
+
+                    const tDot = document.getElementById('tDotMarker');
+                    if (tDot && Number.isFinite(sliderPct)) {
+                        tDot.style.left = `${Math.min(99, Math.max(1, sliderPct))}%`;
+                    }
+
+                    // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
+                    const trackDetailList = document.getElementById('trackDetailList');
+                    if (trackDetailList) {
+                        const iconForTrack = {
+                            '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂',
+                            '시장':'⌁','업종·테마':'◇','기업 재료':'▤',
+                            '거래량':'♧','시장 5일 흐름':'⌁'
+                        };
+
+                        trackDetailList.innerHTML = evidenceReasons.map(r => {
+                            const score = Number(r.score || 0);
+                            const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
+                            const statusClass =
+                                score > 0 ? 'status-pill-positive' :
+                                score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
+
+                            return `<div class="quant-row-item">
+                                <div class="quant-row-left">
+                                    <span class="quant-row-name">${iconForTrack[r.label] || '•'} ${r.label || '-'}</span>
+                                    <span class="quant-row-status ${statusClass}">${status}</span>
+                                </div>
+                                <div class="quant-row-right">
+                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
+                                    <div class="quant-row-subval">실제 확인 데이터</div>
+                                </div>
+                            </div>`;
+                        }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
+                    }
                 }
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)

@@ -3060,68 +3060,114 @@ def _why_moved_evidence_from_reason(movement_reason):
     ]
 
 
-def _why_moved_comment(movement_reason):
-    """V2 최종 코멘트.
-    기존 movement_reason을 최종 판단 근거로 사용하지 않고,
-    V2 cause_analysis_v2의 주원인/보조원인/증폭요인을 기준으로 작성한다.
+def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, world_board=None):
+    """STEP 5 — 최종 코멘트 자연어 엔진 V2.
+
+    V2 점수 결과만 최종 판단에 사용한다.
+    실제로 확인된 이벤트/가격/활동 데이터만 문장에 넣고,
+    초보자가 읽기 쉬운 '원인 → 반응 → 확인 포인트' 흐름으로 작성한다.
     """
     if not isinstance(movement_reason, dict):
-        return "오늘은 한 가지 원인을 뚜렷하게 잡기 어려워. 확인된 데이터부터 보는 게 좋아."
+        return "🐜 개미들아! 오늘 움직임은 한 가지 원인을 뚜렷하게 잡기 어려워. 확인된 근거부터 같이 봐보자!"
 
     cause = movement_reason.get("cause_analysis_v2") or {}
-    key = cause.get("primary_key")
-    label = cause.get("primary_label") or "원인 미확정"
+    key = str(cause.get("primary_key") or "").strip()
+    label = str(cause.get("primary_label") or "원인 미확정").strip()
     score = _safe_float(cause.get("primary_score")) or 0
-    confidence = str(cause.get("confidence") or "낮음")
+    confidence = str(cause.get("confidence") or "낮음").strip()
     pct = _safe_float(cause.get("price_change_pct"))
-    direction = str(cause.get("direction") or movement_reason.get("direction") or "움직임")
 
     if not key or score < 35:
-        return f"오늘은 {direction} 움직임이 나왔지만, 현재 외부 데이터와 실제 가격 반응만으로는 한 가지 원인을 확정하기 어려워. 여러 요인을 함께 확인하는 게 좋아."
+        if pct is not None:
+            return f"🐜 개미들아! 오늘은 {pct:+.2f}% 움직였지만, 현재 확인된 외부 데이터만으로는 한 가지 원인을 확정하기 어려워. 여러 신호를 같이 확인해보면 좋아!"
+        return "🐜 개미들아! 오늘 움직임은 한 가지 원인을 확정하기 어려워. 확인된 근거부터 같이 봐보자!"
 
     candidates = [x for x in (cause.get("candidates") or []) if isinstance(x, dict)]
-    primary = next((x for x in candidates if x.get("key") == key), None) or {}
-    detail = str(primary.get("detail") or "실제 데이터와 가격 반응이 함께 확인됐어.").strip()
-    secondary = [x for x in (cause.get("secondary_reasons") or []) if isinstance(x, dict) and (_safe_float(x.get("score")) or 0) >= 35][:2]
-    amplifiers = [x for x in (cause.get("amplifiers") or []) if isinstance(x, dict)][:2]
+    primary = next((x for x in candidates if str(x.get("key")) == key), None) or {}
+    components = primary.get("components") or {}
+    temporal_pts = _safe_float(components.get("temporal")) or 0
 
-    pct_text = f"주가는 {pct:+.2f}% 움직였고, " if pct is not None else "주가 반응도 함께 확인됐고, "
-    confidence_text = {"높음": "핵심 원인으로 볼 근거가 비교적 강해.", "중간": "주요 원인으로 볼 근거가 어느 정도 있어.", "낮음": "가능성이 있지만 다른 요인도 함께 봐야 해."}.get(confidence, "다른 요인도 함께 봐야 해.")
+    secondary = [
+        x for x in (cause.get("secondary_reasons") or [])
+        if isinstance(x, dict) and (_safe_float(x.get("score")) or 0) >= 35
+    ][:2]
+    amplifiers = [
+        x for x in (cause.get("amplifiers") or [])
+        if isinstance(x, dict) and (_safe_float(x.get("score")) or 0) >= 35
+    ][:2]
 
-    if key == "earnings":
-        opening = "오늘은 실적을 먼저 봐야겠어."
-    elif key == "material":
-        opening = "오늘은 기업 재료를 먼저 봐야겠어."
-    elif key == "macro":
-        opening = "오늘은 경제·금리 흐름을 먼저 봐야겠어."
-    elif key == "global_impact":
-        opening = "오늘은 해외 시장 흐름을 먼저 봐야겠어."
-    elif key == "theme":
-        opening = "오늘은 업종·테마 흐름을 먼저 봐야겠어."
-    elif key in ("foreign", "institution", "flow_pair"):
-        opening = "오늘은 외국인·기관 수급을 먼저 봐야겠어."
-    elif key == "trading_value":
-        opening = "오늘은 거래대금 흐름을 먼저 봐야겠어."
-    elif key == "volume":
-        opening = "오늘은 거래량 흐름을 먼저 봐야겠어."
-    elif key == "market_5d":
-        opening = "오늘은 최근 시장 흐름을 먼저 봐야겠어."
+    # 같은 항목을 '보조원인'과 '증폭요인'에서 동시에 말하지 않는다.
+    secondary_keys = {str(x.get("key")) for x in secondary}
+    amplifiers = [x for x in amplifiers if str(x.get("key")) not in secondary_keys and str(x.get("key")) != key]
+
+    opening_by_key = {
+        "earnings": "🐜 개미들아! 이번 움직임은 실적을 먼저 보는 게 좋아.",
+        "material": "🐜 개미들아! 이번 움직임은 기업 재료를 먼저 보는 게 좋아.",
+        "macro": "🐜 개미들아! 이번 움직임은 경제·금리 흐름을 먼저 보는 게 좋아.",
+        "global_impact": "🐜 개미들아! 이번 움직임은 해외 시장 흐름부터 보는 게 좋아.",
+        "theme": "🐜 개미들아! 이번 움직임은 업종·테마 흐름을 먼저 보는 게 좋아.",
+        "flow_pair": "🐜 개미들아! 이번 움직임은 외국인·기관 수급을 같이 보는 게 좋아.",
+        "foreign": "🐜 개미들아! 이번 움직임은 외국인 수급을 같이 보는 게 좋아.",
+        "institution": "🐜 개미들아! 이번 움직임은 기관 수급을 같이 보는 게 좋아.",
+        "trading_value": "🐜 개미들아! 이번 움직임은 거래대금 변화를 같이 보는 게 좋아.",
+        "volume": "🐜 개미들아! 이번 움직임은 거래량 변화를 같이 보는 게 좋아.",
+        "market": "🐜 개미들아! 이번 움직임은 시장 흐름부터 비교해보는 게 좋아.",
+        "market_5d": "🐜 개미들아! 이번 움직임은 최근 시장 흐름과 비교해보는 게 좋아.",
+    }
+    opening = opening_by_key.get(key, f"🐜 개미들아! 이번 움직임은 {label}부터 보는 게 좋아.")
+
+    # 분석에 사용된 외부 이벤트 중 하나만 짧게 인용한다. 실제 데이터가 없으면 만들지 않는다.
+    area_map = {
+        "material": "stock_news",
+        "earnings": "earnings_news",
+        "macro": "macro_news",
+        "global_impact": "global_news",
+        "theme": "industry_news",
+    }
+    event_text = ""
+    if key in area_map:
+        for item in ((collected or {}).get(area_map[key], []) or []):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or item.get("headline") or item.get("name") or "").strip()
+            if title:
+                title = re.sub(r"\s+", " ", title)
+                event_text = title[:72].rstrip(" ,…") + ("…" if len(title) > 72 else "")
+                break
+
+    sentences = [opening]
+    if event_text:
+        if temporal_pts > 0:
+            sentences.append(f"관련 외부 이벤트가 확인됐고, 그 이후 가격 반응도 같은 흐름으로 나타났어: {event_text}")
+        else:
+            sentences.append(f"관련 외부 이벤트가 확인됐어: {event_text}")
     else:
-        opening = f"오늘은 {label}을 먼저 봐야겠어."
+        sentences.append(f"현재 확인된 {label} 근거가 주가 움직임과 함께 나타났어.")
 
-    secondary_text = ""
-    if secondary:
-        names = [str(x.get("label") or "") for x in secondary if x.get("label")]
-        if names:
-            secondary_text = f" 보조적으로 {', '.join(names)}도 함께 움직였어."
+    if pct is not None:
+        sentences.append(f"분석 기준 구간의 주가는 {pct:+.2f}% 움직였어.")
 
-    amplifier_text = ""
-    if amplifiers:
-        names = [str(x.get("label") or "") for x in amplifiers if x.get("label")]
-        if names:
-            amplifier_text = f" {', '.join(names)}도 같은 방향인지 확인해볼 만해."
+    # 보조원인과 증폭요인을 겹치지 않게 한 문장씩만 사용한다.
+    sec_labels = list(dict.fromkeys(str(x.get("label") or "") for x in secondary if x.get("label")))
+    amp_labels = list(dict.fromkeys(str(x.get("label") or "") for x in amplifiers if x.get("label")))
+    if sec_labels:
+        sentences.append(f"다만 {', '.join(sec_labels)}도 함께 움직여서 한 가지 요인만으로 보긴 어려워.")
+    elif amp_labels:
+        sentences.append(f"{', '.join(amp_labels)}도 같은 방향으로 확인돼서 실제 움직임을 뒷받침했는지 확인해보면 좋아!")
 
-    return f"{opening} {detail} {pct_text}{confidence_text}{secondary_text}{amplifier_text}"
+    # 확신도에 따라 마지막 문장을 자연스럽게 바꾼다.
+    if confidence == "높음":
+        sentences.append("현재 확인된 근거 가운데서는 이 요인의 영향이 가장 뚜렷해. 눈여겨볼 만해!")
+    elif confidence == "중간":
+        sentences.append("현재 데이터에서는 이 요인이 가장 유력해. 다른 요인도 같이 확인해보면 좋아!")
+    else:
+        sentences.append("이 요인이 유력해 보이지만 아직 단정하긴 어려워. 같이 확인해보면 좋아!")
+
+    # 너무 길어지면 핵심 순서를 유지하며 4문장으로 압축한다.
+    if len(sentences) > 4:
+        # 이벤트가 있으면 이벤트/가격/확인포인트를 우선한다.
+        sentences = [sentences[0], sentences[1], sentences[2], sentences[-1]]
+    return " ".join(re.sub(r"\s+", " ", x).strip() for x in sentences if x.strip())
 
 
 # ----------------------------------------------------
@@ -4109,7 +4155,12 @@ def run_why_moved_pipeline(query):
         "price": base.get("price_str") or base.get("price") or "-",
         "direction": movement_reason.get("direction", "-"),
         "movement_reason": movement_reason,
-        "comment": _why_moved_comment(movement_reason),
+        "comment": _why_moved_comment_v2(
+            movement_reason,
+            collected=collected,
+            domestic_flow=domestic_flow,
+            world_board=world_board,
+        ),
         "evidence": _why_moved_evidence_from_reason(movement_reason),
         # 뉴스 목록은 최신 자료를 숨기지 않는다. 단, 원인 분석에는 기준일 정합성 필터가 적용된다.
         "news": (collected_aligned.get("stock_news") or stock_news)[:12],
@@ -6347,12 +6398,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
                     // STEP 4 FIX: 최종 코멘트는 서버의 V2 독립 분석 결과만 사용한다.
                     // 기존 main_reason_key 기반 클라이언트 조합은 제거해 V2 결과가 되돌아가는 문제를 막는다.
-                    let gaemiComment = String(data.comment || '').trim();
-                    if (!gaemiComment) {
-                        const causeV2 = (mr && mr.cause_analysis_v2) || {};
-                        const v2Label = causeV2.primary_label || '원인 미확정';
-                        gaemiComment = `개미들아! 현재 확인된 데이터에서는 ${v2Label}을 먼저 봐야겠어.`;
-                    }
+                    // STEP 5: 최종 코멘트는 서버의 독립 V2 자연어 엔진 결과만 사용한다.
+                    // 빈 값일 때도 클라이언트가 예전 방식으로 재작성하지 않는다.
+                    const gaemiComment = String(data.comment || '현재 왜 움직였을까? 분석 결과를 불러오지 못했어. 잠시 후 다시 확인해줘.').trim();
 
                     const movementIconMap = {
                         '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',

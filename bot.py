@@ -6076,8 +6076,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     if (whyType.includes('application/json')) {
                         const whyData = await whyResponse.json();
                         if (whyResponse.ok && whyData && whyData.movement_reason) {
+                            // WHY MOVED 독립 API의 결과를 최종 화면에 완전히 연결한다.
+                            // 중요: 기존 /api/analyze의 comment를 절대 재사용하지 않는다.
                             data.movement_reason = whyData.movement_reason;
                             data.why_moved = whyData;
+                            data.comment = String(whyData.comment || '').trim();
+                            if (!data.comment) {
+                                data.comment = '현재 외부 분석 데이터만으로는 움직임의 원인을 확정하기 어려워. 확인된 근거부터 보는 게 좋아.';
+                            }
+                        } else {
+                            // 독립 WHY MOVED API가 실패한 경우 기존 종목분석 comment를 보여주지 않는다.
+                            // 그래야 화면에 예전 코멘트가 섞이는 일이 없다.
+                            data.comment = '현재 왜 움직였을까? 분석 데이터를 불러오지 못했어. 잠시 후 다시 확인해줘.';
                         }
                     }
                 } catch (whyErr) {

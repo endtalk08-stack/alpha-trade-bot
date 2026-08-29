@@ -3320,7 +3320,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         <!-- 차트 바로 위: 독립된 개미들아! 카드 -->
                         <div class="card" id="rowCause" style="justify-content:flex-start;">
                             <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
-                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">개미들아! 이 종목 왜 움직였을까?</span>
+                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
                             </div>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
@@ -4608,7 +4608,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     }).join('');
 
                     mrCard.innerHTML = `
-<div style="font-size:0.72rem;font-weight:800;color:var(--text-title);margin-bottom:6px;">🐜 개미 코멘트</div>
 <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:12px;">
                             ${gaemiComment}
                         </div>

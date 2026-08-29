@@ -2993,8 +2993,8 @@ def run_full_pipeline(query):
         return None
 
     with ThreadPoolExecutor(max_workers=9) as executor:
-        f_news = executor.submit(fetch_rss_news, formal_name, 12)
-        f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 4)
+        f_news = executor.submit(fetch_rss_news, formal_name, 10)
+        f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10)
         f_api_news = executor.submit(fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro")
         f_macro = executor.submit(fetch_fred_macro_snapshot)
         f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
@@ -5676,12 +5676,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     `;
                 }
 
-                // 4. 종목 뉴스 & 해외 뉴스 렌더링
+                // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {
                     sNews.innerHTML = '';
                     if (data.stock_news && data.stock_news.length > 0) {
-                        data.stock_news.forEach(n => {
+                        data.stock_news.slice(0, 6).forEach(n => {
                             sNews.innerHTML += `
                                 <a href="${n.link}" target="_blank" class="news-item">
                                     <div class="news-title">${n.title}</div>
@@ -5698,7 +5698,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 if (gNews) {
                     gNews.innerHTML = '';
                     if (data.global_news && data.global_news.length > 0) {
-                        data.global_news.forEach(n => {
+                        data.global_news.slice(0, 6).forEach(n => {
                             gNews.innerHTML += `
                                 <a href="${n.link}" target="_blank" class="news-item">
                                     <div class="news-title">${n.title}</div>

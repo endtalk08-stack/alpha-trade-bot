@@ -5282,9 +5282,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // 시장: 종목 시장에 따라 국내/미국을 구분한다.
                     // 국내주식 → KOSPI/KOSDAQ, 미국주식 → NASDAQ(실시간 대표값은 QQQ 사용),
                     // 암호화폐 → 주식시장 지수 문장을 출력하지 않는다.
-                    const marketType = String(data.market_name || data.market_type || '').toLowerCase();
-                    const isUSMarket = marketType.includes('미국') || marketType.includes('us');
-                    const isCryptoMarket = marketType.includes('암호') || marketType.includes('crypto') || marketType.includes('코인');
+                    // 백엔드 result_data의 실제 필드는 market이다.
+                    // v12에서는 market_name만 확인해서 미국 종목도 코스피로 떨어지는 문제가 있었다.
+                    const marketType = String(data.market || data.market_name || data.market_type || '').toLowerCase();
+                    const isUSMarket = marketType.includes('미국주식') || marketType.includes('미국') || marketType.includes('us');
+                    const isCryptoMarket = marketType.includes('암호화폐') || marketType.includes('암호') || marketType.includes('crypto') || marketType.includes('코인');
                     const selectedMarketName = isUSMarket
                         ? '나스닥'
                         : (String(data.market_index_name || '').toUpperCase() === 'KOSDAQ' ? '코스닥' : '코스피');

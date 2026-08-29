@@ -5286,20 +5286,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
         /* 1행: 왜 움직였을까? — 코멘트 전용 */
         #rowCause { grid-column: 1; grid-row: 1; }
 
-        /* 2행: 종목 뉴스(좌) — 트랙 분석의 바로 위 */
-        #rowNews { grid-column: 1; grid-row: 2; height: 100%; }
+        /* 2행: 차트(좌) — 왜 움직였을까? 바로 아래 */
+        #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
+        #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* 3행: 트랙 분석 — 종목 뉴스 바로 아래 */
-        #rowTrack { grid-column: 1; grid-row: 3; }
+        /* 3행: 종목 뉴스(좌) — 차트 바로 아래 */
+        #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
+        #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
 
-        /* 해외 뉴스는 원래 위치(4행 우측)를 유지한다. 트랙 분석과 함께 위로 이동하지 않는다. */
-        #rowGlobalNews { grid-column: 2; grid-row: 4; height: 100%; }
+        /* 4행: 트랙 분석(좌) — 종목 뉴스 바로 아래 */
+        #rowTrack { grid-column: 1; grid-row: 4; }
 
-        /* 4행: 차트(좌) & 증시(우) — 기존 좌우 관계 유지 */
-        #rowChart { grid-column: 1; grid-row: 4; height: 100%; }
-        #rowWorld { grid-column: 2; grid-row: 4; height: 100%; }
-
-        /* 5행: 퀀트 분석(좌) & 캘린더(우) — 기존 좌우 관계 유지 */
+        /* 5행: 퀀트 분석(좌) & 캘린더(우) */
         #rowQuant { grid-column: 1; grid-row: 5; height: 100%; }
         #rowCalendar { grid-column: 2; grid-row: 5; height: 100%; }
 

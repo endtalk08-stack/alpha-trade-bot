@@ -221,10 +221,10 @@ def make_us_kr_comment(result):
     if not result or not result.get("matched"):
         return ""
     if result.get("breadth") is not None and result.get("valid", 0) >= 3 and result["breadth"] >= 0.67:
-        return (f'🐜 개미들아! {result["company"]} 쪽 움직임이 국내 {result["theme"]}로 '
-                f'번지는 흐름이 보여 👀 관련 종목들도 같이 움직이고 있어.')
-    return (f'🐜 개미들아! {result["company"]} 관련 해외 재료와 국내 '
-            f'{result["theme"]} 쪽 연결고리가 보여 👀 아직 원인이라고 단정하진 말고 '
+        return (f'개미들아! {result["company"]} 쪽 움직임이 국내 {result["theme"]}로 '
+                f'번지는 흐름이 보여 관련 종목들도 같이 움직이고 있어.')
+    return (f'개미들아! {result["company"]} 관련 해외 재료와 국내 '
+            f'{result["theme"]} 쪽 연결고리가 보여 아직 원인이라고 단정하진 말고 '
             f'관련 종목 움직임을 같이 확인해보자.')
 
 # ===== Real-time program-flow evidence helper =====
@@ -332,10 +332,10 @@ def make_theme_comment(theme_result):
     theme = theme_result["theme"]
     breadth = theme_result.get("breadth")
     if breadth is not None and theme_result.get("valid", 0) >= 3 and breadth >= 0.67:
-        return f"🐜 개미들아! 오늘은 {theme} 쪽 움직임이 같이 보여 👀 관련 종목들도 함께 움직이고 있어서 테마 흐름을 같이 볼 필요가 있어."
+        return f"개미들아! 오늘은 {theme} 쪽 움직임이 같이 보여 관련 종목들도 함께 움직이고 있어서 테마 흐름을 같이 볼 필요가 있어."
     if breadth is not None and theme_result.get("valid", 0) >= 3 and breadth <= 0.33:
-        return f"🐜 개미들아! {theme} 이야기는 보이는데 관련 종목 전체가 같이 움직이는 건 아니야. 테마 영향이라고 단정하긴 아직 이르겠어."
-    return f"🐜 개미들아! 오늘은 {theme} 관련 재료가 눈에 들어와 👀 관련 뉴스와 움직임을 같이 확인해볼 만해."
+        return f"개미들아! {theme} 이야기는 보이는데 관련 종목 전체가 같이 움직이는 건 아니야. 테마 영향이라고 단정하긴 아직 이르겠어."
+    return f"개미들아! 오늘은 {theme} 관련 재료가 눈에 들어와 관련 뉴스와 움직임을 같이 확인해볼 만해."
 
 
 def clean_for_json(obj):
@@ -4449,7 +4449,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         gaemiComment=`개미들아! 오늘은 수급이 같이 붙었어\n\n외국인과 기관이 함께 매수 쪽으로 움직였고, ${tradingValueScore>0?'거래대금도 같이 늘었어. ':''}오늘 움직임은 수급 쪽을 먼저 확인해볼 만해.`;
                     }else if(foreignScore>0 || institutionScore>0){
                         const who=foreignScore>0?'외국인':'기관';
-                        gaemiComment=` 개미들아! 오늘은 ${who} 수급이 눈에 띄네 \n\n${detailOf(foreignScore>0?'foreign':'institution')} 쪽으로 매수 흐름이 확인돼. ${tradingValueScore>0?'거래대금까지 붙었는지 같이 보자.':'아직은 다른 근거도 같이 확인해보는 게 좋아.'}`;
+                        gaemiComment=`개미들아! 오늘은 ${who} 수급이 눈에 띄네 \n\n${detailOf(foreignScore>0?'foreign':'institution')} 쪽으로 매수 흐름이 확인돼. ${tradingValueScore>0?'거래대금까지 붙었는지 같이 보자.':'아직은 다른 근거도 같이 확인해보는 게 좋아.'}`;
                     }else if(themeScore>0){
                         gaemiComment=`개미들아! 오늘은 종목보다 테마 쪽을 봐야겠어\n\n관련 업종·테마에서 같이 움직이는 신호가 잡혔어. ${volumeScore>0?'거래량도 붙어서 동반 움직임인지 확인해볼 만해.':'다른 관련 종목도 같이 움직이는지 확인해보자.'}`;
                     }else if(topReason && Number(topReason.score||0)<0){

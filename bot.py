@@ -5375,12 +5375,29 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         }
                     }
 
-                    if (materialText) {
-                        parts.push(`${displayName}${topicParticle} ${materialText} 소식이 있어!`);
+                    // 종목 재료 + 시장 경제 이벤트를 하나의 고정 정보 문장으로 묶는다.
+                    // 종목명과 '소식이 있어!'는 이 영역에서는 제거한다.
+                    // 둘 다 있으면: [핵심 재료]와 [경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.
+                    // 하나만 있으면 해당 재료만 사용한다.
+                    let materialText = '';
+                    if (materialReason && Array.isArray(materialReason.news_clusters)) {
+                        const cluster = materialReason.news_clusters[0] || null;
+                        const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
+                        const map = {
+                            'hbm4':'HBM4','hbm':'HBM','ai':'AI 수요','인공지능':'AI 수요','gpu':'GPU 수요',
+                            '수요':'수요 확대','공급':'공급 확대','공급망':'공급망 확대','증설':'증설',
+                            '실적':'실적','earnings':'실적','매출':'매출 성장','영업이익':'영업이익',
+                            '수주':'수주','계약':'계약','관세':'관세','aws':'AWS'
+                        };
+                        const mapped = kws.map(k => map[String(k).toLowerCase()] || String(k)).filter(Boolean);
+                        const generic = new Set(['주가','시장','관련','소식','전망','기대','확대','증가','감소','하락','상승']);
+                        const filtered = mapped.filter(x => !generic.has(x));
+                        const uniq = [...new Set(filtered)];
+                        if (uniq.length) {
+                            materialText = uniq.slice(0, 2).join(' ');
+                        }
                     }
 
-                    // 시장 경제 이벤트: 경제 이벤트가 실제로 확인된 경우에만 표시.
-                    // "미국 증시 관련 소식이 전해졌어." 같은 일반 문장은 절대 출력하지 않는다.
                     let marketEventTopic = '';
                     const calendarEvents = Array.isArray(data.market_calendar) ? data.market_calendar : [];
                     const macroText = [
@@ -5395,7 +5412,34 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     else if (/관세|무역/.test(macroText)) marketEventTopic = '미국 관세 정책';
                     else if (/금리인하|금리인상|기준금리/.test(macroText)) marketEventTopic = '미국 금리';
 
-                    if (marketEventTopic) {
+                    // 종목 재료와 경제 이벤트의 중복 단어 제거.
+                    // 같은 단어가 양쪽에 있으면 시장/경제 이벤트 쪽을 우선 보존한다.
+                    if (materialText && marketEventTopic) {
+                        const macroWords = new Set(
+                            String(marketEventTopic)
+                                .toLowerCase()
+                                .split(/[^0-9a-z가-힣]+/)
+                                .filter(Boolean)
+                        );
+                        const materialWords = String(materialText)
+                            .split(/\s+/)
+                            .filter(Boolean);
+
+                        const dedupedMaterialWords = materialWords.filter(word => {
+                            const normalized = word.toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
+                            return normalized && !macroWords.has(normalized);
+                        });
+
+                        const dedupedMaterial = dedupedMaterialWords.join(' ').trim();
+
+                        if (dedupedMaterial) {
+                            parts.push(`${dedupedMaterial}와 ${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                        } else {
+                            parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                        }
+                    } else if (materialText) {
+                        parts.push(`${materialText} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                    } else if (marketEventTopic) {
                         parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
                     }
 
@@ -6085,3 +6129,26 @@ print("[종목 재료]", _s)
 print("[경제 재료]", _e)
 print("[종목 고정 문장]", build_stock_material_fixed("SK하이닉스", _s["topic"]))
 print("[경제 고정 문장]", build_market_event_fixed(_e["topic"]))
+
+
+
+# ===== FINAL LOCK: MATERIAL + MACRO DEDUPLICATION =====
+# [완전 고정 규칙]
+# 1. 종목 뉴스와 경제/시장 이벤트 뉴스는 각각 여러 출처에서 수집한다.
+# 2. 각 영역에서 반복되는 핵심 주제/의미를 먼저 추출한다.
+# 3. 종목 재료와 경제 이벤트를 하나의 최종 정보 영역으로 묶는다.
+# 4. 두 영역에 같은 핵심 단어가 있으면 중복 제거한다.
+# 5. 같은 단어가 아니어도 같은 의미로 판단되는 재료는 중복 제거 대상이다.
+# 6. 동일 재료가 겹칠 경우 경제/시장 이벤트 쪽 표현을 우선 보존한다.
+# 7. 종목명은 재료 문장에서 반복하지 않는다.
+# 8. 재료 문장의 '소식이 있어!'를 사용하지 않는다.
+# 9. 최종 문장 고정:
+#    - 재료 + 경제 이벤트:
+#      "[종목 재료]와 [경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐."
+#    - 재료만:
+#      "[종목 재료] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐."
+#    - 경제 이벤트만:
+#      "[경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐."
+# 10. 중복 제거 후 내용이 완전히 겹치면 경제 이벤트만 출력한다.
+# 11. 시장/업종/종목/수급/마무리 고정 문장은 이 규칙의 영향을 받지 않는다.
+# 12. 이 영역에서는 AI가 임의로 설명을 덧붙이지 않는다.

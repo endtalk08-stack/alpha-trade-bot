@@ -1322,98 +1322,6 @@ def fetch_domestic_candles(code, anchor_price=None):
 
     return None
 
-def fetch_overseas_realtime_snapshot(symbol):
-    """해외주식 실시간/프리·애프터 가격 스냅샷.
-    장중=regularMarketPrice, 프리마켓=preMarketPrice, 장후=postMarketPrice를 사용하고
-    전일 종가 대비 등락률을 같은 가격 기준으로 계산합니다.
-    데이터가 없으면 None을 반환해 기존 일봉 데이터 경로를 보존합니다.
-    """
-    try:
-        encoded_sym = urllib.parse.quote(str(symbol).upper())
-        url = (
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}"
-            f"?range=1d&interval=1m&includePrePost=true"
-        )
-        res = HTTP_SESSION.get(url, timeout=2.5)
-        res.raise_for_status()
-        result = res.json().get("chart", {}).get("result", [])
-        if not result:
-            return None
-
-        meta = result[0].get("meta", {}) or {}
-        state = str(meta.get("marketState") or "").upper()
-        regular = meta.get("regularMarketPrice")
-        pre = meta.get("preMarketPrice")
-        post = meta.get("postMarketPrice")
-        prev = meta.get("previousClose") or meta.get("chartPreviousClose")
-
-        if state in {"PRE", "PREPRE"} and pre is not None:
-            price = float(pre)
-            session = "PRE_MARKET"
-        elif state in {"POST", "POSTPOST"} and post is not None:
-            price = float(post)
-            session = "AFTER_MARKET"
-        elif regular is not None:
-            price = float(regular)
-            session = "REGULAR"
-        elif post is not None:
-            price = float(post)
-            session = "AFTER_MARKET"
-        elif pre is not None:
-            price = float(pre)
-            session = "PRE_MARKET"
-        else:
-            return None
-
-        previous_close = float(prev) if prev is not None else None
-        change_pct = ((price - previous_close) / previous_close * 100.0) if previous_close else None
-
-        return {
-            "price": price,
-            "change_pct": change_pct,
-            "previous_close": previous_close,
-            "market_state": state or "UNKNOWN",
-            "session": session,
-            "source": "Yahoo Finance real-time chart",
-        }
-    except Exception as exc:
-        print(f"[REALTIME US] {symbol} failed: {exc}")
-        return None
-
-
-def fetch_naver_realtime_snapshot(code):
-    """국내주식 현재가 + 당일 등락률을 같은 Naver/KRX 데이터에서 가져옵니다."""
-    try:
-        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
-        res = HTTP_SESSION.get(
-            url,
-            timeout=2.0,
-            headers={"Accept-Language": "ko-KR,ko;q=0.9", "User-Agent": "Mozilla/5.0"}
-        )
-        res.raise_for_status()
-        datas = res.json().get("datas") or []
-        if not datas:
-            return None
-        d = datas[0]
-        price_raw = str(d.get("closePrice", "")).replace(",", "").strip()
-        rate_raw = str(d.get("fluctuationsRatio", "")).replace(",", "").strip()
-        change_raw = str(d.get("compareToPreviousClosePrice", "")).replace(",", "").strip()
-        if not price_raw or not rate_raw:
-            return None
-        return {
-            "price": float(price_raw),
-            "change_pct": float(rate_raw),
-            "change": float(change_raw) if change_raw not in {"", "-", "None"} else None,
-            "market_state": d.get("marketStatus"),
-            "session": "REGULAR",
-            "traded_at": d.get("localTradedAt"),
-            "source": "Naver/KRX realtime",
-        }
-    except Exception as exc:
-        print(f"[REALTIME KR] {code} failed: {exc}")
-        return None
-
-
 def fetch_overseas_candles(symbol):
     try:
         encoded_sym = urllib.parse.quote(symbol.upper())
@@ -2701,7 +2609,6 @@ def run_full_pipeline(query):
     market_name = "국내주식"
     market_index_name = None
     is_krw = True
-    live_snapshot = None
 
     if clean_q in GLOBAL_INDEX_MAP:
         symbol = GLOBAL_INDEX_MAP[clean_q]
@@ -2749,20 +2656,12 @@ def run_full_pipeline(query):
         raw_price, price_str, df = fetch_overseas_candles(symbol)
         market_name = "미국주식"
         is_krw = False
-        live_snapshot = fetch_overseas_realtime_snapshot(symbol)
-        if live_snapshot and live_snapshot.get("price") is not None:
-            raw_price = float(live_snapshot["price"])
-            price_str = f"{raw_price:,.2f} 달러"
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()
         formal_name = symbol
         raw_price, price_str, df = fetch_overseas_candles(symbol)
         market_name = "미국주식"
         is_krw = False
-        live_snapshot = fetch_overseas_realtime_snapshot(symbol)
-        if live_snapshot and live_snapshot.get("price") is not None:
-            raw_price = float(live_snapshot["price"])
-            price_str = f"{raw_price:,.2f} 달러"
 
     else:
         code, name = find_stock_code(query)
@@ -2770,12 +2669,7 @@ def run_full_pipeline(query):
             return None
         symbol, formal_name = code, name
         market_index_name = get_naver_stock_market_type(symbol)
-        live_snapshot = fetch_naver_realtime_snapshot(symbol)
-        if live_snapshot:
-            raw_price = float(live_snapshot["price"])
-            price_str = f"{int(raw_price):,} 원"
-        else:
-            raw_price, price_str = get_naver_realtime_price(symbol)
+        raw_price, price_str = get_naver_realtime_price(symbol)
         df = fetch_domestic_candles(symbol, anchor_price=raw_price)
         if raw_price is None and df is not None and not df.empty:
             raw_price = float(df['Close'].iloc[-1])
@@ -2855,14 +2749,6 @@ def run_full_pipeline(query):
             "news_evidence": []
         }
 
-    # 코멘트에 사용할 시장 현재 등락률은 동일 시점의 world_board에서 가져옵니다.
-    market_live = None
-    if market_name in ("국내주식", "국내증시"):
-        target_name = "코스피" if market_index_name != "KOSDAQ" else "코스닥"
-        market_live = _find_world_item(world_board, [target_name])
-    elif market_name == "미국주식":
-        market_live = _find_world_item(world_board, ["QQQ"])
-
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -2908,8 +2794,6 @@ def run_full_pipeline(query):
         "market": market_name,
         "price": price_str,
         "price_str": price_str,
-        "live_snapshot": live_snapshot,
-        "market_live": market_live,
         "time": now_str,
         "now_str": now_str,
         "quant": quant,
@@ -5010,49 +4894,44 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         ? mr.news_evidence.filter(x=>String(x.type||'')==='positive')
                         : [];
                     const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
-
-                    // STEP 1: 코멘트 첫 문장은 항상 현재 종목/당일 등락률/시장 등락률을 표시한다.
-                    // 화면 디자인은 건드리지 않고, 백엔드에서 전달한 동일 시점 데이터를 그대로 사용한다.
-                    const live = data.live_snapshot || {};
-                    const marketLive = data.market_live || {};
+                    // STEP 1 SAFE: 기존 데이터 수집 파이프라인은 그대로 유지하고
+                    // 화면 코멘트에서 이미 확보된 실제 가격/등락률/시장 데이터를 사용한다.
                     const fmtPct = v => {
                         const n = Number(v);
                         return Number.isFinite(n) ? `${n >= 0 ? '+' : ''}${n.toFixed(2)}%` : '확인 필요';
                     };
-                    const fmtPrice = () => {
-                        if (live && Number.isFinite(Number(live.price))) {
-                            if (data.market === '미국주식') return `${Number(live.price).toFixed(2)}달러`;
-                            if (data.market === '국내주식') return `${Math.round(Number(live.price)).toLocaleString()}원`;
+                    const priceNum = Number(String(data.price || '').replace(/[^0-9.-]/g, ''));
+                    const candlesForMove = Array.isArray(data.candles) ? data.candles : [];
+                    let stockChange = null;
+                    if (candlesForMove.length >= 2) {
+                        const prev = Number(candlesForMove[candlesForMove.length - 2].close);
+                        const last = Number(candlesForMove[candlesForMove.length - 1].close);
+                        if (Number.isFinite(prev) && Number.isFinite(last) && prev !== 0) {
+                            stockChange = ((last / prev) - 1) * 100;
                         }
-                        return String(data.price_str || data.price || '확인 필요');
-                    };
-                    const liveChange = Number.isFinite(Number(live.change_pct))
-                        ? Number(live.change_pct)
-                        : null;
-                    const marketChange = Number.isFinite(Number(String(marketLive.rate || '').replace('%','').replace(',','')))
-                        ? Number(String(marketLive.rate).replace('%','').replace(',',''))
-                        : null;
-                    const sessionLabel = live.session === 'PRE_MARKET'
-                        ? '프리마켓'
-                        : live.session === 'AFTER_MARKET'
-                            ? '장후' : '';
-                    const marketNameForComment = data.market === '미국주식' ? 'QQQ(나스닥100)' : (marketLive.name || '시장');
-                    const firstSentence = liveChange !== null && marketChange !== null
-                        ? `개미들아! ${data.formal_name || data.name}는 현재 ${fmtPrice()}, ${fmtPct(liveChange)} 움직이고 있어. ${marketNameForComment}은 ${fmtPct(marketChange)}${sessionLabel ? ` ${sessionLabel} 기준이야.` : '야.'}`
+                    }
+                    const marketItem = data.market === '미국주식'
+                        ? (data.world_board || []).find(x => String(x.name || '').toUpperCase() === 'QQQ')
+                        : (data.world_board || []).find(x => String(x.name || '') === (data.market_index_name === 'KOSDAQ' ? '코스닥' : '코스피'));
+                    const marketChange = marketItem ? Number(String(marketItem.rate || '').replace('%','').replace(',','')) : null;
+                    const marketLabel = data.market === '미국주식' ? 'QQQ(나스닥100)' : (marketItem?.name || '시장');
+                    const priceLabel = data.market === '미국주식'
+                        ? `${Number.isFinite(priceNum) ? priceNum.toFixed(2) : data.price}달러`
+                        : `${Number.isFinite(priceNum) ? Math.round(priceNum).toLocaleString() : data.price}`;
+
+                    const firstSentence = Number.isFinite(stockChange) && Number.isFinite(marketChange)
+                        ? `개미들아! ${data.formal_name || data.name}는 현재 ${priceLabel}, ${fmtPct(stockChange)} 움직이고 있어. ${marketLabel}은 ${fmtPct(marketChange)}야.`
                         : `개미들아! ${data.formal_name || data.name}의 현재 흐름을 먼저 볼게.`;
 
                     let reasonComment='';
                     if(evidenceCount===0){
-                        reasonComment=`오늘은 한 가지 원인을 확정하기 어려워. 확인된 근거가 많지 않아서 시장·뉴스·거래 흐름을 같이 확인해보는 게 좋아.`;
+                        reasonComment=`오늘은 한 가지 원인을 확정하기 어려워. 지금 확인된 데이터가 많지 않아서 시장·뉴스·거래 흐름을 같이 확인해보는 게 좋아.`;
                     }else if(mainReasonKey==='material'){
                         const md=detailOf('material');
-                        if(positiveNews.length){
-                            reasonComment=`오늘은 기업 재료를 먼저 봐보자. 관련 뉴스에서 긍정 신호가 ${positiveNews.length}건 확인됐고, ${md}.`;
-                        }else{
-                            reasonComment=`오늘은 기업 재료를 먼저 봐보자. ${md}. 뚜렷한 단일 재료가 원인이라고 단정하기보다는 가격 반응과 함께 확인해보자.`;
-                        }
+                        const newsText=positiveNews.length ? `긍정 뉴스 ${positiveNews.length}건이 확인됐고` : '관련 뉴스에서 긍정 신호가 확인됐고';
+                        reasonComment=`오늘은 기업 재료를 먼저 봐보자. ${newsText} ${md}. 실제 주가 반응과 연결되는지도 같이 확인해보자.`;
                     }else if(mainReasonKey==='flow_pair'){
-                        reasonComment=`오늘은 외국인과 기관 수급을 같이 봐야겠어. 두 주체의 수급 데이터가 같은 방향으로 잡혔고, 실제 주가 흐름과 연결되는지 확인해보자.`;
+                        reasonComment=`오늘은 외국인과 기관 수급을 같이 봐야겠어. 두 주체의 실제 수급 데이터가 같은 방향으로 잡혔고, 주가가 움직인 시점과 맞는지도 확인해보자.`;
                     }else if(mainReasonKey==='foreign'){
                         reasonComment=`오늘은 외국인 수급이 눈에 띄네. ${detailOf('foreign')}. 주가가 움직인 시점과 수급 방향이 맞는지도 같이 확인해보자.`;
                     }else if(mainReasonKey==='institution'){
@@ -5077,27 +4956,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         reasonComment=`오늘 움직임은 ${topReason ? `${topReason.label}에서 ${topReason.detail}` : '현재 확보된 데이터'}가 눈에 들어와. 다른 근거와 실제 가격 반응도 같이 확인해보자.`;
                     }
 
-                    // 6하원칙형 디테일은 실제 뉴스가 있을 때만 추가한다. 없는 경우 같은 문장을 반복하지 않는다.
-                    let newsDetail='';
+                    let gaemiComment = `${firstSentence}\n\n${reasonComment}`;
                     if(positiveNews.length){
                         const n=positiveNews[0] || {};
                         const title=String(n.title || n.headline || '').trim();
                         const source=String(n.source || n.publisher || '').trim();
-                        const published=String(n.published_at || n.pubDate || n.date || '').trim();
                         if(title){
-                            newsDetail=`관련 소식은 ${source ? source+'에서 ' : ''}${title}${published ? ` (${published})` : ''}이 확인됐어.`;
+                            gaemiComment += `\n\n관련 소식: ${source ? source+' · ' : ''}${title}`;
                         }
                     }
-
-                    let gaemiComment = `${firstSentence}\n\n${reasonComment}`;
-                    if(newsDetail) gaemiComment += `\n\n${newsDetail}`;
-                    if(mainReasonKey !== 'material' && liveChange !== null && Math.abs(liveChange) >= 0.3 && marketChange !== null){
-                        const relative = liveChange - marketChange;
-                        if(Math.abs(relative) >= 0.5){
-                            gaemiComment += ` ${data.formal_name || data.name}가 시장보다 ${Math.abs(relative).toFixed(2)}%p ${relative > 0 ? '강하게' : '약하게'} 움직이고 있어서 종목 자체 요인도 같이 확인해볼 만해.`;
-                        }
-                    }
-
                     const movementIconMap = {
                         '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',
                         '외국인 수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="7" r="3"></circle><path d="M5 20c.8-4 2.8-6 7-6s6.2 2 7 6"></path></svg>',

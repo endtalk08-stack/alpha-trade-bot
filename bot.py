@@ -5286,16 +5286,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
         /* 1행: 왜 움직였을까? — 코멘트 전용 */
         #rowCause { grid-column: 1; grid-row: 1; }
 
-        /* 2행: 트랙 분석 — 기존 왜 움직였을까?의 확인된 근거부터 시장 5일 흐름까지 */
-        #rowTrack { grid-column: 1; grid-row: 2; }
+        /* 2행: 종목 뉴스(좌) & 해외 뉴스(우) */
+        #rowNews { grid-column: 1; grid-row: 2; height: 100%; }
+        #rowGlobalNews { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* 3행: 차트(좌) & 증시(우) — 기존 좌우 관계 유지 */
-        #rowChart { grid-column: 1; grid-row: 3; height: 100%; }
-        #rowWorld { grid-column: 2; grid-row: 3; height: 100%; }
+        /* 3행: 트랙 분석 — 종목 뉴스 바로 아래 */
+        #rowTrack { grid-column: 1; grid-row: 3; }
 
-        /* 4행: 종목 뉴스(좌) & 해외 뉴스(우) — 기존 좌우 관계 유지 */
-        #rowNews { grid-column: 1; grid-row: 4; height: 100%; }
-        #rowGlobalNews { grid-column: 2; grid-row: 4; height: 100%; }
+        /* 4행: 차트(좌) & 증시(우) — 기존 좌우 관계 유지 */
+        #rowChart { grid-column: 1; grid-row: 4; height: 100%; }
+        #rowWorld { grid-column: 2; grid-row: 4; height: 100%; }
 
         /* 5행: 퀀트 분석(좌) & 캘린더(우) — 기존 좌우 관계 유지 */
         #rowQuant { grid-column: 1; grid-row: 5; height: 100%; }
@@ -6018,7 +6018,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 2행 좌측: 트랙 분석 — 퀀트 분석과 동일한 카드 구조 -->
+                        <!-- 3행 좌측: 트랙 분석 — 종목 뉴스 바로 아래, 퀀트 분석과 동일한 카드 구조 -->
                         <div class="card" id="rowTrack" style="justify-content:flex-start;">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
@@ -6132,13 +6132,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <!-- 3행 좌측: 종목 뉴스 (832px) -->
+                        <!-- 2행 좌측: 종목 뉴스 (832px) -->
                         <div class="card" id="rowNews">
                             <div class="board-header-title" style="margin-bottom:12px;">종목 뉴스</div>
                             <div id="stockNewsList" style="flex:1;"></div>
                         </div>
 
-                        <!-- 3행 우측: 해외 뉴스 (348px, 캘린더 바로 하단 & 종목 뉴스와 높이 100% 일치) -->
+                        <!-- 2행 우측: 해외 뉴스 (348px, 종목 뉴스와 높이 100% 일치) -->
                         <div class="card" id="rowGlobalNews">
                             <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
                             <div id="globalNewsList" style="flex:1;"></div>

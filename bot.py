@@ -2920,6 +2920,221 @@ def run_full_pipeline(query):
     ANALYSIS_CACHE[clean_q] = (now_ts, result_data)
     return result_data
 
+
+# ----------------------------------------------------
+# STEP 4 — 왜 움직였을까? 독립 데이터/분석 API
+# ----------------------------------------------------
+WHY_MOVED_CACHE = {}
+WHY_MOVED_CACHE_TTL = 300  # 5분
+
+
+def _why_cache_get(key):
+    item = WHY_MOVED_CACHE.get(key)
+    if not item:
+        return None
+    ts, value = item
+    if time.time() - ts >= WHY_MOVED_CACHE_TTL:
+        WHY_MOVED_CACHE.pop(key, None)
+        return None
+    return value
+
+
+def _why_cache_set(key, value):
+    WHY_MOVED_CACHE[key] = (time.time(), value)
+    # 메모리 과성장을 막기 위해 오래된 항목 정리
+    if len(WHY_MOVED_CACHE) > 100:
+        cutoff = time.time() - WHY_MOVED_CACHE_TTL
+        for k, (ts, _) in list(WHY_MOVED_CACHE.items()):
+            if ts < cutoff:
+                WHY_MOVED_CACHE.pop(k, None)
+    return value
+
+
+def _why_moved_external_news(symbol, formal_name, market_name):
+    """왜 움직였을까 전용 외부 뉴스 수집.
+    실제 외부 뉴스만 사용하고, 뉴스가 없으면 빈 결과를 반환한다.
+    Alpha Vantage 호출은 기존 캐시를 공유해 무료 API 한도 낭비를 줄인다.
+    """
+    # 국내 종목: Google News RSS에서 종목명 중심의 최신 외부 뉴스
+    stock_rss = fetch_rss_news(formal_name, 8)
+    # 미국 종목: Alpha Vantage 종목 뉴스 + 국내외 검색 뉴스
+    alpha = fetch_alpha_vantage_news(symbol if market_name == "미국주식" else "", "earnings")
+    global_rss = fetch_rss_news("뉴욕증시 OR 미국증시 OR 나스닥 OR 반도체", 6)
+    return merge_news_sources(stock_rss, alpha, global_rss)
+
+
+def _why_moved_evidence_from_reason(movement_reason):
+    reasons = movement_reason.get("reasons", []) if isinstance(movement_reason, dict) else []
+    return [
+        {
+            "key": r.get("key"),
+            "label": r.get("label", "-"),
+            "score": int(r.get("score", 0) or 0),
+            "detail": r.get("detail", "-"),
+            "source": r.get("source"),
+        }
+        for r in reasons if isinstance(r, dict)
+    ]
+
+
+def _why_moved_comment(movement_reason):
+    """초보자가 읽기 쉬운 독립 코멘트 생성.
+    원인 단정 대신 핵심 원인 → 연결 → 확인 순으로 설명한다.
+    """
+    if not isinstance(movement_reason, dict):
+        return "오늘은 한 가지 원인을 뚜렷하게 잡기 어려워. 확인된 데이터부터 보는 게 좋아."
+
+    reasons = [r for r in movement_reason.get("reasons", []) if isinstance(r, dict)]
+    nonzero = [r for r in reasons if _safe_float(r.get("score")) not in (None, 0)]
+    key = movement_reason.get("main_reason_key")
+    direction = movement_reason.get("direction", "움직임")
+    top = next((r for r in reasons if r.get("key") == key), None)
+    if top is None and nonzero:
+        top = sorted(nonzero, key=lambda r: abs(_safe_float(r.get("score")) or 0), reverse=True)[0]
+
+    if not top:
+        return f"오늘은 {direction} 움직임이 나왔지만, 현재 확보된 데이터만으로는 한 가지 원인을 우선순위 높게 잡기 어려워."
+
+    label = str(top.get("label", "주요 데이터"))
+    detail = str(top.get("detail", "실제 데이터가 확인됐어."))
+    global_impact = movement_reason.get("global_impact") or {}
+    layers = global_impact.get("layers") or []
+    us = next((x.get("detail") for x in layers if x.get("key") == "us_market"), "")
+    ind = next((x.get("detail") for x in layers if x.get("key") == "industry_global"), "")
+    dom = next((x.get("detail") for x in layers if x.get("key") == "domestic_market"), "")
+
+    if key == "material":
+        return f"오늘은 기업 재료를 먼저 봐야겠어. {detail} 실제 뉴스·공시가 주가 움직임과 함께 확인됐어. 다만 뉴스가 있었다는 사실만으로 원인을 확정하지 않고 거래와 수급도 같이 보는 게 좋아."
+    if key in ("foreign", "institution", "flow_pair"):
+        return f"오늘은 수급을 먼저 봐야겠어. {detail} 실제 수급 데이터에서 매수 흐름이 확인됐어. 주가 상승과 거래대금이 함께 움직였는지도 같이 확인하면 좋아."
+    if key == "theme":
+        return f"오늘은 {detail} 흐름을 같이 봐야겠어. 관련 뉴스와 시장 데이터가 같은 방향인지 확인되지만, 테마 전체 상승이라고 단정하기보다 해당 종목의 실제 가격·수급을 함께 보는 게 좋아."
+    if key == "global_impact":
+        chain = " → ".join(x for x in (us, ind, dom) if x)
+        return f"오늘은 해외 시장 흐름부터 봐야겠어. {chain or '미국과 국내 시장의 방향이 함께 확인됐어.'} 이런 연결이 보여서 글로벌 시장 영향이 국내 종목으로 이어졌는지 살펴볼 만해."
+    if key == "earnings":
+        return f"오늘은 실적을 먼저 봐야겠어. {detail} 실제값과 예상값을 함께 비교할 수 있는 실적 데이터가 확인됐어. 발표 뒤 주가와 거래대금 반응까지 같이 보면 좋아."
+    if key == "macro":
+        return f"오늘은 경제지표를 먼저 봐야겠어. {detail} 실제값과 예상값을 비교할 수 있는 발표가 확인됐어. 이후 금리와 시장 반응이 같은 방향으로 이어졌는지도 확인해야 해."
+    if key in ("trading_value", "volume"):
+        return f"오늘은 거래 흐름을 먼저 봐야겠어. {detail} 실제 거래 데이터가 확인됐어. 가격 방향과 함께 봐야 실제 매수세가 붙었는지 판단할 수 있어."
+    return f"오늘은 {label}을 먼저 확인해볼 만해. {detail} 이 데이터가 실제 주가 움직임과 함께 나타났는지 다른 근거까지 같이 확인하는 게 좋아."
+
+
+def run_why_moved_pipeline(query):
+    """독립 /api/why-moved 파이프라인.
+    기존 사이트의 실제 가격·수급·시장 데이터는 '검증'에 사용하고,
+    뉴스/거시/실적 후보는 왜 움직였을까 전용 외부 데이터로 다시 수집한다.
+    기존 /api/analyze 결과가 캐시에 있으면 재사용해 API 호출을 줄인다.
+    """
+    clean_q = query.strip().replace(" ", "").upper()
+    if not clean_q:
+        return None
+
+    cached = _why_cache_get(clean_q)
+    if cached is not None:
+        return cached
+
+    # /api/analyze가 직전에 실행된 경우 기존 실제 데이터 묶음을 검증 데이터로 재사용.
+    base = None
+    if clean_q in ANALYSIS_CACHE:
+        ts, val = ANALYSIS_CACHE[clean_q]
+        if time.time() - ts < 60:
+            base = val
+
+    if base is None:
+        base = run_full_pipeline(query)
+    if not base:
+        return None
+
+    symbol = base.get("symbol", "")
+    formal_name = base.get("formal_name") or base.get("name") or query.strip()
+    market_name = base.get("market", "")
+
+    # 외부 뉴스는 이 API에서 별도로 수집한다. 실패해도 검증 데이터 분석은 계속한다.
+    try:
+        external_news = _why_moved_external_news(symbol, formal_name, market_name)
+    except Exception as exc:
+        print(f"[WHY MOVED NEWS] failed: {repr(exc)}")
+        external_news = []
+
+    # 기존 API가 이미 확보한 데이터에서 검증 가능한 사실을 사용한다.
+    world_board = base.get("world_board") or []
+    stock_news = external_news
+    global_news = external_news
+    macro_snapshot = base.get("macro_snapshot") or {}
+    market_calendar = base.get("market_calendar") or []
+    dart_disclosures = base.get("dart_disclosures") or []
+    domestic_flow = None
+    try:
+        # track_analysis에 저장된 실제 수급 세부값을 복원할 수 있으면 사용한다.
+        domestic_flow = (base.get("track_analysis") or {}).get("flow")
+    except Exception:
+        domestic_flow = None
+
+    # 외부 뉴스 + 기존 실제 시장 반응으로 원인을 재평가한다.
+    try:
+        movement_reason = analyze_movement_reason(
+            raw_price=None if not base.get("track_analysis") else (base.get("track_analysis") or {}).get("raw_price"),
+            df=None,
+            formal_name=formal_name,
+            market_name=market_name,
+            world_board=world_board,
+            stock_news=stock_news,
+            dart_disclosures=dart_disclosures,
+            market_index_name=(base.get("track_analysis") or {}).get("market_index", ""),
+            domestic_flow=domestic_flow,
+            global_news=global_news,
+            consensus=base.get("consensus"),
+            macro_snapshot=macro_snapshot,
+            market_calendar=market_calendar,
+            symbol=symbol,
+        )
+    except Exception as exc:
+        print(f"[WHY MOVED] analysis failed: {repr(exc)}")
+        movement_reason = base.get("movement_reason") or {
+            "direction": "-", "confidence": "낮음", "total_score": 0,
+            "main_reason": "-", "main_reason_key": None, "reasons": [], "news_evidence": []
+        }
+
+    # 재평가가 df 없이 수급/가격을 충분히 반영하지 못할 수 있으므로,
+    # 기존 분석 결과가 더 강한 근거를 가진 경우 기존 근거를 보조로 병합한다.
+    original_reason = base.get("movement_reason") or {}
+    if len(_why_moved_evidence_from_reason(movement_reason)) < len(_why_moved_evidence_from_reason(original_reason)):
+        merged = dict(movement_reason)
+        merged["reasons"] = _why_moved_evidence_from_reason(original_reason)
+        merged["main_reason_key"] = original_reason.get("main_reason_key") or merged.get("main_reason_key")
+        merged["main_reason"] = original_reason.get("main_reason") or merged.get("main_reason")
+        merged["confidence"] = original_reason.get("confidence") or merged.get("confidence")
+        movement_reason = merged
+
+    result = {
+        "symbol": symbol,
+        "name": formal_name,
+        "market": market_name,
+        "price": base.get("price_str") or base.get("price") or "-",
+        "direction": movement_reason.get("direction", "-"),
+        "movement_reason": movement_reason,
+        "comment": _why_moved_comment(movement_reason),
+        "evidence": _why_moved_evidence_from_reason(movement_reason),
+        "news": external_news[:12],
+        "news_count": len(external_news),
+        "macro": macro_snapshot,
+        "earnings": movement_reason.get("global_impact", {}).get("earnings") if isinstance(movement_reason.get("global_impact"), dict) else None,
+        "sources": {
+            "news": "외부 뉴스 API/RSS",
+            "macro": "FRED 실제 관측 + 확인 가능한 경제 이벤트",
+            "earnings": "실제 실적 actual/estimate 데이터가 있을 때만 사용",
+            "market_verification": "기존 사이트의 실제 가격·시장·수급 데이터",
+        },
+        "verified_market": {
+            "track_analysis": base.get("track_analysis") or {},
+            "world_board": world_board,
+        },
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S KST"),
+    }
+    return _why_cache_set(clean_q, result)
+
 # ----------------------------------------------------
 # 7. 텔레그램 봇 실시간 인터랙션 엔진
 # ----------------------------------------------------
@@ -4839,6 +5054,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     return;
                 }
 
+                // STEP 4: 왜 움직였을까?는 별도 API에서 외부 뉴스/경제 데이터로 다시 분석한다.
+                // 실패해도 종목분석 화면 전체는 계속 정상 표시되며 기존 데이터가 fallback으로 남는다.
+                try {
+                    const whyResponse = await fetch('/api/why-moved?q=' + encodeURIComponent(cleanQ));
+                    const whyType = whyResponse.headers.get('content-type') || '';
+                    if (whyType.includes('application/json')) {
+                        const whyData = await whyResponse.json();
+                        if (whyResponse.ok && whyData && whyData.movement_reason) {
+                            data.movement_reason = whyData.movement_reason;
+                            data.why_moved = whyData;
+                        }
+                    }
+                } catch (whyErr) {
+                    console.warn('왜 움직였을까? 독립 API를 불러오지 못했습니다. 기존 분석 데이터를 사용합니다.', whyErr);
+                }
+
                 const isKrw = data.market === '국내주식' || data.market === '국내증시';
                 const displayName = data.name || data.formal_name;
                 const displayPrice = data.price || data.price_str;
@@ -5555,6 +5786,26 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/health":
             self._json(200, {"ok": True, "telegram_configured": bool(TELEGRAM_TOKEN)})
+            return
+
+
+        if parsed.path == "/api/why-moved":
+            q = str(params.get("q", [""])[0]).strip()
+            if not q:
+                self._json(400, {"error": "종목명을 입력해주세요."})
+                return
+            try:
+                data = run_why_moved_pipeline(q)
+                if not data:
+                    self._json(404, {"error": "왜 움직였을까? 분석에 필요한 실제 데이터를 가져오지 못했습니다."})
+                    return
+                self._json(200, data)
+            except Exception as exc:
+                print(f"API ERROR /api/why-moved?q={q!r}: {type(exc).__name__}: {exc}")
+                self._json(500, {
+                    "error": "왜 움직였을까? 분석 중 오류가 발생했습니다.",
+                    "detail": f"{type(exc).__name__}: {str(exc)[:400]}"
+                })
             return
 
         if parsed.path == "/api/analyze":

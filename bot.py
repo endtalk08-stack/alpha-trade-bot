@@ -5355,7 +5355,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     }
 
                     // 종목 뉴스/재료: 여러 출처에서 반복되는 핵심 재료만 사용.
-                    let materialText = '';
                     if (materialReason && Array.isArray(materialReason.news_clusters)) {
                         const cluster = materialReason.news_clusters[0] || null;
                         const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
@@ -5375,11 +5374,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         }
                     }
 
-                    // 종목 재료 + 시장 경제 이벤트를 하나의 고정 정보 문장으로 묶는다.
+                                        let materialText = '';
+// 종목 재료 + 시장 경제 이벤트를 하나의 고정 정보 문장으로 묶는다.
                     // 종목명과 '소식이 있어!'는 이 영역에서는 제거한다.
                     // 둘 다 있으면: [핵심 재료]와 [경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.
                     // 하나만 있으면 해당 재료만 사용한다.
-                    let materialText = '';
                     if (materialReason && Array.isArray(materialReason.news_clusters)) {
                         const cluster = materialReason.news_clusters[0] || null;
                         const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];

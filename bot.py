@@ -3026,26 +3026,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
             align-items: stretch;
         }
 
-        /* STEP 1: 기존 2열 레이아웃은 유지하고, 왜 움직였을까? 아래에 트랙 분석만 1개 행 추가 */
-        /* 1행: 왜 움직였을까? (좌측 832px) */
+        /* 1행: 왜 움직였을까? — 코멘트 전용 */
         #rowCause { grid-column: 1; grid-row: 1; }
 
-        /* 2행: 트랙 분석 (좌측 832px) */
+        /* 2행: 트랙 분석 — 기존 왜 움직였을까?의 확인된 근거부터 시장 5일 흐름까지 */
         #rowTrack { grid-column: 1; grid-row: 2; }
 
-        /* 3행: 메인 차트(좌) & 증시는 지금(우) - 기존 1:1 대칭 유지 */
+        /* 3행: 차트(좌) & 증시(우) — 기존 좌우 관계 유지 */
         #rowChart { grid-column: 1; grid-row: 3; height: 100%; }
         #rowWorld { grid-column: 2; grid-row: 3; height: 100%; }
 
-        /* 4행: 종목 뉴스(좌) & 해외 뉴스(우) - 기존 1:1 대칭 유지 */
+        /* 4행: 종목 뉴스(좌) & 해외 뉴스(우) — 기존 좌우 관계 유지 */
         #rowNews { grid-column: 1; grid-row: 4; height: 100%; }
         #rowGlobalNews { grid-column: 2; grid-row: 4; height: 100%; }
 
-        /* 5행: 퀀트 분석(좌) & 캘린더(우) - 기존 1:1 대칭 유지 */
+        /* 5행: 퀀트 분석(좌) & 캘린더(우) — 기존 좌우 관계 유지 */
         #rowQuant { grid-column: 1; grid-row: 5; height: 100%; }
         #rowCalendar { grid-column: 2; grid-row: 5; height: 100%; }
 
-        /* 좌측 832px 단독 배치 행들 - 트랙 분석 추가에 따라 1행씩만 아래로 이동 */
+        /* 좌측 832px 단독 배치 행들 */
         #rowConsensus { grid-column: 1; grid-row: 6; }
         #rowVote { grid-column: 1; grid-row: 7; }
         #rowComment { grid-column: 1; grid-row: 8; }
@@ -3561,20 +3560,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 max-width: 832px;
             }
             
-            #rowCause { order: 1; }
-            #rowTrack { order: 2; }
-            #rowChart { order: 3; }
-            #rowQuant { order: 4; }
-            #rowNews { order: 5; }
-            #rowConsensus { order: 6; }
-            #rowVote { order: 7; }
-            #rowComment { order: 8; }
-            #rowDart { order: 9; }
-            #rowSignal { order: 10; }
-            #rowTelegram { order: 11; }
-            #rowWorld { order: 12; width: 100%; max-width: 832px; }
-            #rowCalendar { order: 13; width: 100%; max-width: 832px; }
-            #rowGlobalNews { order: 14; width: 100%; max-width: 832px; }
+            #rowChart { order: 1; }
+            #rowQuant { order: 2; }
+            #rowNews { order: 3; }
+            #rowConsensus { order: 4; }
+            #rowVote { order: 5; }
+            #rowComment { order: 6; }
+            #rowDart { order: 7; }
+            #rowSignal { order: 8; }
+            #rowTelegram { order: 9; }
+            #rowWorld { order: 10; width: 100%; max-width: 832px; }
+            #rowCalendar { order: 11; width: 100%; max-width: 832px; }
+            #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
 
             .bottom-bar-grid-wrapper {
                 display: flex;
@@ -3697,36 +3694,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
 
-                        <!-- 2행 좌측: 트랙 분석 (STEP 1 구조 분리) -->
-                        <div class="card" id="rowTrack" style="justify-content:flex-start;">
-                            <div class="board-header" style="margin-bottom:10px;">
-                                <span class="board-header-title">트랙 분석</span>
-                                <span class="board-header-sub">실제 데이터</span>
-                            </div>
-                            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;">
-                                <div style="padding:10px 12px;border:1px solid var(--border-line);border-radius:10px;background:var(--bg-subcard);">
-                                    <div style="font-size:0.68rem;color:var(--text-muted);">현재가</div>
-                                    <div id="trackPrice" style="font-size:1rem;font-weight:800;color:var(--text-title);margin-top:3px;">-</div>
-                                </div>
-                                <div style="padding:10px 12px;border:1px solid var(--border-line);border-radius:10px;background:var(--bg-subcard);">
-                                    <div style="font-size:0.68rem;color:var(--text-muted);">시장</div>
-                                    <div id="trackMarket" style="font-size:1rem;font-weight:800;color:var(--text-title);margin-top:3px;">-</div>
-                                </div>
-                                <div style="padding:10px 12px;border:1px solid var(--border-line);border-radius:10px;background:var(--bg-subcard);">
-                                    <div style="font-size:0.68rem;color:var(--text-muted);">현재 추세</div>
-                                    <div id="trackTrend" style="font-size:1rem;font-weight:800;color:var(--text-title);margin-top:3px;">-</div>
-                                </div>
-                                <div style="padding:10px 12px;border:1px solid var(--border-line);border-radius:10px;background:var(--bg-subcard);">
-                                    <div style="font-size:0.68rem;color:var(--text-muted);">데이터 상태</div>
-                                    <div id="trackStatus" style="font-size:1rem;font-weight:800;color:var(--text-title);margin-top:3px;">-</div>
-                                </div>
-                            </div>
-                            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-line);font-size:0.74rem;color:var(--text-muted);">
-                                현재는 화면 구조만 분리한 단계입니다. 상단·하단 그래프와 세부 데이터 디자인은 다음 단계에서 퀀트 분석과 동일한 형태로 적용합니다.
-                            </div>
-                        </div>
-
-                        <!-- 5행 좌측: 퀀트 분석 (832px) -->
+                        <!-- 4행 좌측: 퀀트 분석 (832px) -->
                         <div class="card" id="rowQuant">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
@@ -3785,7 +3753,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         </div>
 
-                        <!-- 차트 바로 위: 독립된 개미들아! 카드 -->
+                        <!-- 1행 좌측: 왜 움직였을까? — 코멘트 전용 -->
                         <div class="card" id="rowCause" style="justify-content:flex-start;">
                             <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
                                 <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
@@ -3793,7 +3761,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 4행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
+                        <!-- 2행 좌측: 트랙 분석 — 기존 왜 움직였을까?의 확인된 근거부터 시장 5일 흐름까지 -->
+                        <div class="card" id="rowTrack" style="justify-content:flex-start;">
+                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
+                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
+                            </div>
+                            <div id="movementEvidenceCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
+                        </div>
+
+                        <!-- 5행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
                         <div class="card" id="rowCalendar">
                             <div>
                                 <div class="cal-top-title-area">
@@ -4887,19 +4863,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     setTxt('rStop', q.stop_p);
                     setTxt('rGuideText', q.guide_text);
                 }
-                // STEP 1: 트랙 분석은 기존 API 데이터를 그대로 표시만 한다. 분석 로직은 변경하지 않는다.
-                setTxt('trackPrice', data.price || data.price_str || '-');
-                setTxt('trackMarket', data.market || '-');
-                setTxt('trackTrend', data.quant && data.quant.trend ? data.quant.trend : '-');
-                const trackStatusEl = document.getElementById('trackStatus');
-                if (trackStatusEl) {
-                    const hasPrice = !!(data.price || data.price_str);
-                    const hasQuant = !!(data.quant);
-                    trackStatusEl.innerText = (hasPrice && hasQuant) ? '정상' : '일부 확인 필요';
-                    trackStatusEl.style.color = (hasPrice && hasQuant) ? '#10b981' : '#f59e0b';
-                }
-
-                // 3.5 "왜 움직였을까?" 원인 분석 렌더링
+                // 3.5 "왜 움직였을까?" 코멘트 + "트랙 분석" 근거 렌더링
                 const mr = data.movement_reason;
                 const mrCard = document.getElementById('movementReasonCard');
                 if (mrCard && mr) {
@@ -5114,10 +5078,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     }).join('');
 
                     mrCard.innerHTML = `
-<div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:12px;">
+                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;">
                             ${gaemiComment}
                         </div>
+                    `;
 
+                    const trackCard = document.getElementById('movementEvidenceCard');
+                    if (!trackCard) return;
+
+                    trackCard.innerHTML = `
                         <div class="movement-evidence-summary">
                             <div class="movement-evidence-head">
                                 <span class="movement-evidence-label">확인된 근거</span>

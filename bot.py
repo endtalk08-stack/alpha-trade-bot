@@ -4997,6 +4997,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         async function doSearch(query) {
+            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
+            let materialText = '';
+
+            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
+
             const cleanQ = query.trim();
             if (!cleanQ) return;
 
@@ -5374,8 +5379,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         }
                     }
 
-                                        let materialText = '';
-// 종목 재료 + 시장 경제 이벤트를 하나의 고정 정보 문장으로 묶는다.
+
+                    // 종목 재료 + 시장 경제 이벤트를 하나의 고정 정보 문장으로 묶는다.
                     // 종목명과 '소식이 있어!'는 이 영역에서는 제거한다.
                     // 둘 다 있으면: [핵심 재료]와 [경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.
                     // 하나만 있으면 해당 재료만 사용한다.

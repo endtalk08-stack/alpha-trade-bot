@@ -1322,30 +1322,113 @@ def fetch_domestic_candles(code, anchor_price=None):
 
     return None
 
-def fetch_overseas_candles(symbol):
+def _fetch_finnhub_daily_candles(symbol, days=1825):
+    """미국주식 Yahoo 실패 시 Finnhub으로 실제 일봉을 보완한다.
+    Finnhub API 키가 없거나 응답이 정상적이지 않으면 None을 반환한다.
+    """
+    if not FINNHUB_API_KEY or not symbol:
+        return None, None, None
     try:
-        encoded_sym = urllib.parse.quote(symbol.upper())
+        now = int(time.time())
+        start = now - int(days) * 86400
+        url = "https://finnhub.io/api/v1/stock/candle"
+        res = HTTP_SESSION.get(
+            url,
+            params={
+                "symbol": symbol.upper(),
+                "resolution": "D",
+                "from": start,
+                "to": now,
+                "token": FINNHUB_API_KEY,
+            },
+            timeout=4.0,
+        ).json()
+        if not isinstance(res, dict) or res.get("s") != "ok":
+            return None, None, None
+
+        ts = res.get("t") or []
+        opens = res.get("o") or []
+        highs = res.get("h") or []
+        lows = res.get("l") or []
+        closes = res.get("c") or []
+        volumes = res.get("v") or []
+        n = min(len(ts), len(opens), len(highs), len(lows), len(closes))
+        records = []
+        for i in range(n):
+            try:
+                if any(x is None for x in (ts[i], opens[i], highs[i], lows[i], closes[i])):
+                    continue
+                records.append({
+                    "Date": pd.to_datetime(int(ts[i]), unit="s"),
+                    "Open": float(opens[i]),
+                    "High": float(highs[i]),
+                    "Low": float(lows[i]),
+                    "Close": float(closes[i]),
+                    "Volume": float(volumes[i]) if i < len(volumes) and volumes[i] is not None else 0.0,
+                })
+            except (TypeError, ValueError, IndexError):
+                continue
+        if not records:
+            return None, None, None
+        df = pd.DataFrame(records).set_index("Date").sort_index()
+        curr_p = float(df["Close"].iloc[-1])
+        return curr_p, f"{curr_p:,.2f} 달러", df
+    except Exception as exc:
+        print(f"[FINNHUB CANDLES] {symbol} fetch failed: {type(exc).__name__}: {exc}")
+        return None, None, None
+
+
+def fetch_overseas_candles(symbol):
+    """해외주식/글로벌 지수 일봉 수집. Yahoo를 우선 사용하고 실패하면 Finnhub을 사용한다.
+    한 행의 결측치 때문에 전체 데이터가 버려지지 않도록 행 단위로 검증한다.
+    """
+    symbol = str(symbol or "").strip().upper()
+    if not symbol:
+        return None, None, None
+
+    # 1차: Yahoo Finance
+    try:
+        encoded_sym = urllib.parse.quote(symbol)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=5y&interval=1d"
-        res = HTTP_SESSION.get(url, timeout=2.0).json()
+        response = HTTP_SESSION.get(url, timeout=3.5)
+        response.raise_for_status()
+        res = response.json()
         result = res.get("chart", {}).get("result", [])
         if result:
-            ts = result[0].get("timestamp", [])
-            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
-            records = [{
-                "Date": pd.to_datetime(ts[i], unit='s'),
-                "Open": float(quote['open'][i]),
-                "High": float(quote['high'][i]),
-                "Low": float(quote['low'][i]),
-                "Close": float(quote['close'][i]),
-                "Volume": float(quote['volume'][i] or 0.0)
-            } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+            payload = result[0]
+            ts = payload.get("timestamp") or []
+            quote = (payload.get("indicators", {}).get("quote") or [{}])[0] or {}
+            opens = quote.get("open") or []
+            highs = quote.get("high") or []
+            lows = quote.get("low") or []
+            closes = quote.get("close") or []
+            volumes = quote.get("volume") or []
+            n = min(len(ts), len(opens), len(highs), len(lows), len(closes))
+            records = []
+            for i in range(n):
+                try:
+                    vals = (ts[i], opens[i], highs[i], lows[i], closes[i])
+                    if any(v is None for v in vals):
+                        continue
+                    records.append({
+                        "Date": pd.to_datetime(int(ts[i]), unit="s"),
+                        "Open": float(opens[i]),
+                        "High": float(highs[i]),
+                        "Low": float(lows[i]),
+                        "Close": float(closes[i]),
+                        "Volume": float(volumes[i]) if i < len(volumes) and volumes[i] is not None else 0.0,
+                    })
+                except (TypeError, ValueError, IndexError):
+                    continue
             if records:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
-                curr_p = float(df['Close'].iloc[-1])
+                curr_p = float(df["Close"].iloc[-1])
                 return curr_p, f"{curr_p:,.2f} 달러", df
-    except Exception:
-        pass
-    return None, None, None
+    except Exception as exc:
+        print(f"[YAHOO CANDLES] {symbol} failed: {type(exc).__name__}: {exc}")
+
+    # 2차: Finnhub fallback (특히 NVDA/TSLA 등 미국주식)
+    return _fetch_finnhub_daily_candles(symbol)
 
 def fetch_crypto_candles(symbol):
     clean_sym = symbol.upper().replace("-", "")

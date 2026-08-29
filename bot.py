@@ -3137,6 +3137,7 @@ def run_full_pipeline(query):
         "formal_name": formal_name,
         "symbol": symbol,
         "market": market_name,
+        "market_index_name": market_index_name,
         "price": price_str,
         "current_price": raw_price,
         "current_change_pct": current_change_pct,
@@ -5245,90 +5246,148 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         : [];
                     const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
 
-                    // 왜 움직였을까? — 최종 정보 전달형 코멘트 v2
-                    // 원칙: 현재 상황 1회 → 종목 핵심 재료 → 시장 정보 → 짧은 마무리.
-                    // 경제/시장 뉴스는 종목의 원인으로 단정하지 않고 '시장 정보'로만 전달한다.
-                    // 숫자 반복, 뉴스 제목 나열, 정리/예측/추천, 확인 유도 문장은 사용하지 않는다.
+                    // 왜 움직였을까? — 최종 고정 로직 v3
+                    // 고정 순서: 시장 → 업종 → 종목 → 수급 → 종목 재료 → 시장 경제 이벤트 → 마무리
+                    // 시장/업종/종목/수급은 데이터만 교체한다.
+                    // 뉴스/경제 이벤트는 AI가 긴 문장을 창작하지 않고 핵심 재료만 삽입한다.
+
                     const priceText = data.price || data.price_str || '-';
                     const pct = Number(data.current_change_pct);
                     const topicParticle = (() => {
                         const text = String(displayName || '').trim();
                         const last = text.charCodeAt(text.length - 1);
-                        if (last >= 0xAC00 && last <= 0xD7A3) return ((last - 0xAC00) % 28) === 0 ? '는' : '은';
+                        if (last >= 0xAC00 && last <= 0xD7A3) {
+                            return ((last - 0xAC00) % 28) === 0 ? '는' : '은';
+                        }
                         return '은';
                     })();
-                    const directionText = Number.isFinite(pct) ? (pct > 0 ? '상승' : pct < 0 ? '하락' : '보합') : (mr.direction === '하락' ? '하락' : mr.direction === '상승' ? '상승' : '움직임');
-                    const reason = key => evidenceReasons.find(r => r.key === key) || null;
-                    const material = reason('material');
-                    const clusters = material && Array.isArray(material.news_clusters) ? material.news_clusters : [];
-                    const topCluster = clusters[0] || null;
-                    const topicMap = {
-                        '실적':'실적', 'earnings':'실적', 'ai':'AI 수요', '인공지능':'AI 수요', 'gpu':'GPU 수요',
-                        'hbm':'HBM', 'hbm4':'HBM4', '데이터센터':'데이터센터 수요', '수요':'수요 확대', '매출':'매출 성장',
-                        '영업이익':'영업이익', '공급':'공급', '공급망':'공급망', '수주':'수주', '계약':'계약', '증설':'증설',
-                        '관세':'관세', '금리':'금리', '연준':'연준', 'fomc':'FOMC', '금리인하':'금리 인하', '금리인상':'금리 인상',
-                        '고용':'고용', '경기':'경기', 'cpi':'CPI', 'pce':'PCE', '반도체':'반도체', '메모리':'메모리', 'dram':'D램', 'nand':'낸드', 'aws':'AWS'
+
+                    const directionText =
+                        Number.isFinite(pct)
+                            ? (pct > 0 ? '상승' : pct < 0 ? '하락' : '보합')
+                            : (mr.direction === '하락' ? '하락' : mr.direction === '상승' ? '상승' : '보합');
+
+                    const boardItems = Array.isArray(data.world_board) ? data.world_board : [];
+                    const findBoard = (...names) => boardItems.find(item =>
+                        names.some(name => String(item?.name || '').toLowerCase() === String(name).toLowerCase())
+                    );
+                    const rateNumber = item => {
+                        if (!item) return null;
+                        const n = Number(String(item.rate ?? '').replace('%','').replace('+',''));
+                        return Number.isFinite(n) ? n : null;
                     };
-                    const clusterKeywords = topCluster && Array.isArray(topCluster.keywords) ? topCluster.keywords : [];
-                    // 키워드 정렬 순서에 따라 AWS/데이터센터 같은 주변어가 먼저 노출되지 않도록
-                    // 실제 코멘트에 유용한 핵심 주제를 우선 선택한다.
-                    const topicPriority = ['실적','earnings','ai','인공지능','gpu','hbm4','hbm','수요','매출','영업이익','데이터센터','공급망','공급','수주','계약','증설','메모리','dram','nand','aws'];
-                    const materialTopics = topicPriority
-                        .filter(k => clusterKeywords.some(x => String(x).toLowerCase() === k.toLowerCase()))
-                        .map(k => topicMap[k])
-                        .filter(Boolean);
-                    if (!materialTopics.length) {
-                        materialTopics.push(...clusterKeywords.slice(0,3).map(k => topicMap[String(k).toLowerCase()] || k));
+                    const upDown = n => n > 0 ? '상승' : n < 0 ? '하락' : '보합';
+
+                    // 시장: 국내 종목이면 KOSPI/KOSDAQ를 반드시 우선 표시.
+                    const selectedMarketName =
+                        String(data.market_index_name || '').toUpperCase() === 'KOSDAQ' ? '코스닥' : '코스피';
+                    const marketItem = findBoard(selectedMarketName, selectedMarketName === '코스피' ? 'KOSPI' : 'KOSDAQ');
+                    const marketRate = rateNumber(marketItem);
+
+                    // 업종: 현재 구현에서 확인 가능한 대표 업종은 SOXX.
+                    // 반도체 관련 종목/뉴스일 때만 SOXX를 업종으로 표시하여 잘못된 업종 표시를 막는다.
+                    const newsBlob = [
+                        displayName,
+                        ...(Array.isArray(mr.news_evidence) ? mr.news_evidence.map(x => x?.title || '') : []),
+                        ...(Array.isArray(material?.news_clusters) ? material.news_clusters.flatMap(c => c?.keywords || []) : [])
+                    ].join(' ').toLowerCase();
+                    const semiconductorKeywords = ['반도체','hbm','hbm4','dram','nand','메모리','gpu','semiconductor'];
+                    const isSemiconductor = semiconductorKeywords.some(k => newsBlob.includes(k));
+                    const soxxItem = findBoard('SOXX');
+                    const soxxRate = rateNumber(soxxItem);
+
+                    // 시장 고정 문장
+                    const parts = [];
+                    if (marketRate !== null) {
+                        parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이고`);
+                    } else {
+                        parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 현재 흐름을 확인 중이고`);
                     }
-                    const marketInfo = mr.global_impact && mr.global_impact.market_information ? mr.global_impact.market_information : null;
-                    const marketInfoText = marketInfo && marketInfo.text ? String(marketInfo.text) : '';
 
-                    let intro = Number.isFinite(pct)
-                        ? `🐜 개미들아! ${displayName}${topicParticle} 현재 ${priceText}, ${pct > 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
-                        : `🐜 개미들아! ${displayName}${topicParticle} 현재 ${priceText} ${directionText} 중이야.`;
+                    // 업종 고정 문장은 시장 문장에 이어 붙인다.
+                    if (isSemiconductor && soxxRate !== null) {
+                        parts[parts.length - 1] += ` 반도체 업종 SOXX는 ${soxxRate >= 0 ? '+' : ''}${soxxRate.toFixed(2)}% ${upDown(soxxRate)}!`;
+                    } else {
+                        parts[parts.length - 1] += ` 업종 데이터는 현재 확인되지 않았어.`;
+                    }
 
+                    // 종목 고정
+                    parts.push(
+                        Number.isFinite(pct)
+                            ? `${displayName}${topicParticle} 현재 ${priceText}, ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
+                            : `${displayName}${topicParticle} 현재 ${priceText} ${directionText} 중이야.`
+                    );
+
+                    // 수급 고정: 외국인/기관 + 순매수/순매도 + 5거래일
                     const domesticFlowValue = (movementReason, key) => {
-                        const r = Array.isArray(movementReason.reasons) ? movementReason.reasons.find(x => x.key === key) : null;
+                        const r = Array.isArray(movementReason.reasons)
+                            ? movementReason.reasons.find(x => x.key === key)
+                            : null;
                         if (!r) return null;
                         const text = String(r.detail || '');
                         const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
                         if (!m) return null;
                         const n = Number(m[2].replace(/,/g,''));
-                        return Number.isFinite(n) ? (m[1] === '순매도' ? -n : n) : null;
+                        if (!Number.isFinite(n)) return null;
+                        return m[1] === '순매도' ? -n : n;
                     };
 
-                    let body = '';
-                    // 수급은 반드시 주체(외국인/기관)와 순매수·순매도를 구분해 표시한다.
-                    // 가격 방향과 같은 방향의 수급 중 가장 강한 한 가지를 코멘트에 사용해 숫자 중복을 막는다.
                     const flowCandidates = [
                         { key: 'foreign', label: '외국인', value: domesticFlowValue(mr, 'foreign') },
                         { key: 'institution', label: '기관', value: domesticFlowValue(mr, 'institution') }
                     ].filter(x => x.value !== null && Number.isFinite(x.value));
-                    // 수급은 주가 방향과 연결해 원인을 단정하지 않는다.
-                    // 실제 수급 정보 자체를 '누가 + 얼마나 + 순매수/순매도'로 전달한다.
-                    const selectedFlow = flowCandidates.sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0] || null;
 
-                    if (selectedFlow) {
-                        const flowWord = selectedFlow.value > 0 ? '순매수' : '순매도';
-                        body = `최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어.`;
-                    } else if (materialTopics.length) {
-                        const topicText = materialTopics.join('·');
-                        body = `${topicText} 관련 소식이 여러 곳에서 이어졌어.`;
-                    } else {
-                        const newsEvidence = Array.isArray(mr.news_evidence) ? mr.news_evidence : [];
-                        const fallback = newsEvidence.length ? String(newsEvidence[0].title || '').replace(/\s+/g,' ').trim() : '';
-                        body = fallback ? `${fallback} 관련 소식이 전해졌어.` : '';
+                    if (flowCandidates.length) {
+                        const selectedFlow = flowCandidates.sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0];
+                        const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
+                        parts.push(`최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어.`);
                     }
 
-                    const parts = [intro];
-                    if (body) parts.push(body);
-                    if (marketInfoText) parts.push(marketInfoText);
+                    // 종목 뉴스/재료: 여러 출처에서 반복되는 핵심 재료만 사용.
+                    let materialText = '';
+                    if (material && Array.isArray(material.news_clusters)) {
+                        const cluster = material.news_clusters[0] || null;
+                        const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
+                        const map = {
+                            'hbm4':'HBM4','hbm':'HBM','ai':'AI 수요','인공지능':'AI 수요','gpu':'GPU 수요',
+                            '수요':'수요 확대','공급':'공급 확대','공급망':'공급망 확대','증설':'증설',
+                            '실적':'실적','earnings':'실적','매출':'매출 성장','영업이익':'영업이익',
+                            '수주':'수주','계약':'계약','관세':'관세','aws':'AWS'
+                        };
+                        const mapped = kws.map(k => map[String(k).toLowerCase()] || String(k)).filter(Boolean);
+                        // 지나치게 일반적인 단어는 제거하고 최대 2개.
+                        const generic = new Set(['주가','시장','관련','소식','전망','기대','확대','증가','감소','하락','상승']);
+                        const filtered = mapped.filter(x => !generic.has(x));
+                        const uniq = [...new Set(filtered)];
+                        if (uniq.length) {
+                            materialText = uniq.slice(0, 2).join(' ');
+                        }
+                    }
 
-                    const closingByDirection = directionText === '상승'
-                        ? ['오늘도 개미들 힘내자! 💪', '우리 개미들 오늘도 화이팅! 🐜', '오늘도 개미답게 차분하게! 💪']
-                        : directionText === '하락'
-                            ? ['쉽지 않은 하루지만 개미들 힘내자! 💪', '오늘도 우리 개미들 화이팅! 🐜', '개미들아, 오늘도 힘내자! 💪']
-                            : ['오늘도 개미들 힘내자! 💪', '우리 개미들 오늘도 화이팅! 🐜', '오늘도 차분하게 가보자!'];
+                    if (materialText) {
+                        parts.push(`${displayName}${topicParticle} ${materialText} 소식이 있어!`);
+                    }
+
+                    // 시장 경제 이벤트: 경제 이벤트가 실제로 확인된 경우에만 표시.
+                    // "미국 증시 관련 소식이 전해졌어." 같은 일반 문장은 절대 출력하지 않는다.
+                    let marketEventTopic = '';
+                    const calendarEvents = Array.isArray(data.market_calendar) ? data.market_calendar : [];
+                    const macroText = [
+                        ...(Array.isArray(data.global_news) ? data.global_news.map(x => x?.title || '') : []),
+                        ...(Array.isArray(data.stock_news) ? data.stock_news.map(x => x?.title || '') : []),
+                        ...(Array.isArray(data.market_calendar) ? data.market_calendar.map(x => JSON.stringify(x)) : [])
+                    ].join(' ').toLowerCase();
+
+                    if (/\bfomc\b|연준/.test(macroText)) marketEventTopic = 'FOMC·연준';
+                    else if (/\bcpi\b|소비자물가|물가/.test(macroText)) marketEventTopic = '미국 물가';
+                    else if (/고용|비농업|실업률/.test(macroText)) marketEventTopic = '미국 고용';
+                    else if (/관세|무역/.test(macroText)) marketEventTopic = '미국 관세 정책';
+                    else if (/금리인하|금리인상|기준금리/.test(macroText)) marketEventTopic = '미국 금리';
+
+                    if (marketEventTopic) {
+                        parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                    }
+
                     const closeSeed = (String(displayName).length + Math.abs(Math.round(Number.isFinite(pct) ? pct * 100 : 0))) % closingByDirection.length;
                     parts.push(`🐜 ${closingByDirection[closeSeed]}`);
                     let gaemiComment = parts.join('\n\n');

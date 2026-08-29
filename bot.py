@@ -3060,14 +3060,16 @@ def _why_moved_evidence_from_reason(movement_reason):
     ]
 
 
-def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, world_board=None, stock_price_text=None, market_name=None, market_index_name=None, formal_name=None):
-    """STEP 6 — 최종 코멘트 자연어 엔진 V3.
+def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, world_board=None):
+    """STEP 5 — 최종 코멘트 자연어 엔진 V2.
 
-    항상 첫 문장에서 현재 종목 가격/오늘 등락률/대표 시장지수 등락률을 먼저 보여준다.
-    이후 V2 원인 점수 결과를 바탕으로 원인 → 이벤트 → 가격 반응 → 보조 근거 순으로 설명한다.
-    화면 레이아웃이나 트랙 분석 데이터에는 관여하지 않는다.
+    V2 점수 결과만 최종 판단에 사용한다.
+    실제로 확인된 이벤트/가격/활동 데이터만 문장에 넣고,
+    초보자가 읽기 쉬운 '원인 → 반응 → 확인 포인트' 흐름으로 작성한다.
     """
-    movement_reason = movement_reason if isinstance(movement_reason, dict) else {}
+    if not isinstance(movement_reason, dict):
+        return "🐜 개미들아! 오늘 움직임은 한 가지 원인을 뚜렷하게 잡기 어려워. 확인된 근거부터 같이 봐보자!"
+
     cause = movement_reason.get("cause_analysis_v2") or {}
     key = str(cause.get("primary_key") or "").strip()
     label = str(cause.get("primary_label") or "원인 미확정").strip()
@@ -3075,59 +3077,10 @@ def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, w
     confidence = str(cause.get("confidence") or "낮음").strip()
     pct = _safe_float(cause.get("price_change_pct"))
 
-    # 대표 시장지수는 종목 시장에 맞춰 선택한다.
-    market_item = None
-    if isinstance(world_board, list):
-        if market_name in ("국내주식", "국내증시"):
-            names = ["코스피"] if str(market_index_name).upper() == "KOSPI" else (["코스닥"] if str(market_index_name).upper() == "KOSDAQ" else ["코스피", "코스닥"])
-        elif market_name == "미국주식":
-            names = ["QQQ"]
-        else:
-            names = []
-        for item in world_board:
-            if isinstance(item, dict) and str(item.get("name") or "") in names:
-                market_item = item
-                break
-
-    market_pct = None
-    market_label = None
-    if isinstance(market_item, dict):
-        market_pct = _movement_rate_to_float(market_item.get("rate"))
-        market_label = str(market_item.get("name") or "").strip() or None
-
-    # 첫 문장은 항상 '현재 상황'이다. 값이 없는 항목은 억지로 만들지 않는다.
-    snapshot_parts = []
-    if stock_price_text not in (None, "", "-"):
-        price_text = str(stock_price_text).strip()
-        if pct is not None:
-            snapshot_parts.append(f"{price_text}, {pct:+.2f}%")
-        else:
-            snapshot_parts.append(price_text)
-    elif pct is not None:
-        snapshot_parts.append(f"{pct:+.2f}%")
-
-    if market_label and market_pct is not None:
-        snapshot_parts.append(f"{market_label} {market_pct:+.2f}%")
-
-    # formal_name은 기존 함수 인자에 없으므로 종목명은 호출부에서 stock_price_text에 포함하지 않고,
-    # movement_reason의 메타값이 있으면 사용한다. 없으면 가격/시장 정보만으로 자연스럽게 시작한다.
-    display_name = str(formal_name or movement_reason.get("formal_name") or movement_reason.get("name") or "").strip()
-    if display_name:
-        lead_name = f"{display_name}는 "
-    else:
-        lead_name = "오늘 종목은 "
-    if snapshot_parts:
-        first = f"🐜 개미들아! {lead_name}{' · '.join(snapshot_parts)} 움직이고 있어."
-    else:
-        first = "🐜 개미들아! 현재 가격 흐름부터 같이 보자."
-
-    # 원인 점수가 낮으면 시장 상황을 포함해 '왜 아직 확정하기 어려운지'를 설명한다.
     if not key or score < 35:
-        if market_label and market_pct is not None and pct is not None:
-            if abs(pct) > abs(market_pct) + 1.0:
-                return f"{first} 시장보다 종목의 움직임이 더 커서 시장 흐름만으로 설명하기는 어려워. 현재 확인된 데이터에서는 한 가지 원인을 확정하기보다 기업 재료·업종·거래량·수급을 같이 확인해보는 게 좋아!"
-            return f"{first} 현재는 시장 흐름과 함께 움직이는 모습이 보여. 다만 한 가지 원인을 확정하기에는 근거가 부족해. 업종·기업 재료·거래량·수급을 같이 확인해보면 좋아!"
-        return f"{first} 현재 확인된 데이터만으로는 한 가지 원인을 확정하기 어려워. 여러 신호를 같이 확인해보면 좋아!"
+        if pct is not None:
+            return f"🐜 개미들아! 오늘은 {pct:+.2f}% 움직였지만, 현재 확인된 외부 데이터만으로는 한 가지 원인을 확정하기 어려워. 여러 신호를 같이 확인해보면 좋아!"
+        return "🐜 개미들아! 오늘 움직임은 한 가지 원인을 확정하기 어려워. 확인된 근거부터 같이 봐보자!"
 
     candidates = [x for x in (cause.get("candidates") or []) if isinstance(x, dict)]
     primary = next((x for x in candidates if str(x.get("key")) == key), None) or {}
@@ -3142,24 +3095,28 @@ def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, w
         x for x in (cause.get("amplifiers") or [])
         if isinstance(x, dict) and (_safe_float(x.get("score")) or 0) >= 35
     ][:2]
+
+    # 같은 항목을 '보조원인'과 '증폭요인'에서 동시에 말하지 않는다.
     secondary_keys = {str(x.get("key")) for x in secondary}
     amplifiers = [x for x in amplifiers if str(x.get("key")) not in secondary_keys and str(x.get("key")) != key]
 
     opening_by_key = {
-        "earnings": "실적 흐름을 먼저 봐보자.",
-        "material": "기업 재료를 먼저 봐보자.",
-        "macro": "경제·금리 흐름을 먼저 봐보자.",
-        "global_impact": "해외 시장 흐름부터 봐보자.",
-        "theme": "업종·테마 흐름을 먼저 봐보자.",
-        "flow_pair": "외국인·기관 수급을 같이 봐보자.",
-        "foreign": "외국인 수급을 같이 봐보자.",
-        "institution": "기관 수급을 같이 봐보자.",
-        "trading_value": "거래대금 변화를 같이 봐보자.",
-        "volume": "거래량 변화를 같이 봐보자.",
-        "market": "시장 흐름부터 비교해보자.",
-        "market_5d": "최근 시장 흐름과 비교해보자.",
+        "earnings": "🐜 개미들아! 이번 움직임은 실적을 먼저 보는 게 좋아.",
+        "material": "🐜 개미들아! 이번 움직임은 기업 재료를 먼저 보는 게 좋아.",
+        "macro": "🐜 개미들아! 이번 움직임은 경제·금리 흐름을 먼저 보는 게 좋아.",
+        "global_impact": "🐜 개미들아! 이번 움직임은 해외 시장 흐름부터 보는 게 좋아.",
+        "theme": "🐜 개미들아! 이번 움직임은 업종·테마 흐름을 먼저 보는 게 좋아.",
+        "flow_pair": "🐜 개미들아! 이번 움직임은 외국인·기관 수급을 같이 보는 게 좋아.",
+        "foreign": "🐜 개미들아! 이번 움직임은 외국인 수급을 같이 보는 게 좋아.",
+        "institution": "🐜 개미들아! 이번 움직임은 기관 수급을 같이 보는 게 좋아.",
+        "trading_value": "🐜 개미들아! 이번 움직임은 거래대금 변화를 같이 보는 게 좋아.",
+        "volume": "🐜 개미들아! 이번 움직임은 거래량 변화를 같이 보는 게 좋아.",
+        "market": "🐜 개미들아! 이번 움직임은 시장 흐름부터 비교해보는 게 좋아.",
+        "market_5d": "🐜 개미들아! 이번 움직임은 최근 시장 흐름과 비교해보는 게 좋아.",
     }
+    opening = opening_by_key.get(key, f"🐜 개미들아! 이번 움직임은 {label}부터 보는 게 좋아.")
 
+    # 분석에 사용된 외부 이벤트 중 하나만 짧게 인용한다. 실제 데이터가 없으면 만들지 않는다.
     area_map = {
         "material": "stock_news",
         "earnings": "earnings_news",
@@ -3178,21 +3135,19 @@ def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, w
                 event_text = title[:72].rstrip(" ,…") + ("…" if len(title) > 72 else "")
                 break
 
-    sentences = [first]
-    sentences.append(f"오늘은 {opening_by_key.get(key, label + ' 흐름')}" )
+    sentences = [opening]
     if event_text:
         if temporal_pts > 0:
-            sentences.append(f"관련 외부 이벤트가 확인됐고, 그 이후 가격 반응도 같은 방향으로 나타났어: {event_text}")
+            sentences.append(f"관련 외부 이벤트가 확인됐고, 그 이후 가격 반응도 같은 흐름으로 나타났어: {event_text}")
         else:
             sentences.append(f"관련 외부 이벤트가 확인됐어: {event_text}")
-    elif key in ("market", "market_5d", "theme") and market_label and market_pct is not None:
-        sentences.append(f"{market_label}도 {market_pct:+.2f}% 움직여 시장 영향이 함께 작용했는지 보는 게 좋아.")
     else:
-        sentences.append(f"현재 확인된 {label} 신호가 주가 움직임과 함께 나타났어.")
+        sentences.append(f"현재 확인된 {label} 근거가 주가 움직임과 함께 나타났어.")
 
-    if pct is not None and not any(f"{pct:+.2f}%" in s for s in sentences):
+    if pct is not None:
         sentences.append(f"분석 기준 구간의 주가는 {pct:+.2f}% 움직였어.")
 
+    # 보조원인과 증폭요인을 겹치지 않게 한 문장씩만 사용한다.
     sec_labels = list(dict.fromkeys(str(x.get("label") or "") for x in secondary if x.get("label")))
     amp_labels = list(dict.fromkeys(str(x.get("label") or "") for x in amplifiers if x.get("label")))
     if sec_labels:
@@ -3200,6 +3155,7 @@ def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, w
     elif amp_labels:
         sentences.append(f"{', '.join(amp_labels)}도 같은 방향으로 확인돼서 실제 움직임을 뒷받침했는지 확인해보면 좋아!")
 
+    # 확신도에 따라 마지막 문장을 자연스럽게 바꾼다.
     if confidence == "높음":
         sentences.append("현재 확인된 근거 가운데서는 이 요인의 영향이 가장 뚜렷해. 눈여겨볼 만해!")
     elif confidence == "중간":
@@ -3207,8 +3163,9 @@ def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, w
     else:
         sentences.append("이 요인이 유력해 보이지만 아직 단정하긴 어려워. 같이 확인해보면 좋아!")
 
-    # 첫 문장 + 핵심 설명 + 확인 포인트가 남도록 최대 4문장으로 압축한다.
+    # 너무 길어지면 핵심 순서를 유지하며 4문장으로 압축한다.
     if len(sentences) > 4:
+        # 이벤트가 있으면 이벤트/가격/확인포인트를 우선한다.
         sentences = [sentences[0], sentences[1], sentences[2], sentences[-1]]
     return " ".join(re.sub(r"\s+", " ", x).strip() for x in sentences if x.strip())
 
@@ -4203,10 +4160,6 @@ def run_why_moved_pipeline(query):
             collected=collected,
             domestic_flow=domestic_flow,
             world_board=world_board,
-            stock_price_text=base.get("price_str") or base.get("price") or "-",
-            market_name=market_name,
-            market_index_name=(base.get("track_analysis") or {}).get("market_index", ""),
-            formal_name=formal_name,
         ),
         "evidence": _why_moved_evidence_from_reason(movement_reason),
         # 뉴스 목록은 최신 자료를 숨기지 않는다. 단, 원인 분석에는 기준일 정합성 필터가 적용된다.
@@ -4496,137 +4449,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         /* 1행: 왜 움직였을까? — 코멘트 전용 */
         #rowCause { grid-column: 1; grid-row: 1; }
-
-        /* STEP 7 — 왜 움직였을까? 시각 강조 디자인
-           레이아웃/그리드 위치는 기존과 동일하게 유지한다. */
-        #rowCause {
-            position: relative;
-            overflow: hidden;
-            justify-content: flex-start !important;
-            padding: 18px 18px 20px !important;
-            background:
-                linear-gradient(180deg, rgba(30,41,59,0.22), rgba(17,24,39,0.06)),
-                var(--bg-card);
-            border: 1px solid rgba(56,189,248,0.20);
-            box-shadow: 0 4px 18px rgba(0,0,0,0.08);
-        }
-        #rowCause::before {
-            content: "";
-            position: absolute;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: 3px;
-            background: linear-gradient(180deg, #38bdf8, rgba(56,189,248,0.18));
-        }
-        .why-moved-header {
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            margin-bottom:12px;
-            padding-bottom:10px;
-            border-bottom:1px solid var(--border-line);
-        }
-        .why-moved-title-wrap {
-            display:flex;
-            align-items:center;
-            gap:9px;
-            min-width:0;
-        }
-        .why-moved-title {
-            font-size:1.02rem;
-            font-weight:850;
-            color:var(--text-title);
-            letter-spacing:-0.35px;
-        }
-        .why-moved-live {
-            font-size:0.62rem;
-            font-weight:800;
-            color:#38bdf8;
-            background:rgba(56,189,248,0.10);
-            border:1px solid rgba(56,189,248,0.20);
-            padding:3px 7px;
-            border-radius:8px;
-            white-space:nowrap;
-        }
-        .why-moved-snapshot {
-            display:grid;
-            grid-template-columns:1fr 1fr;
-            gap:8px;
-            margin-bottom:12px;
-        }
-        .why-moved-snapshot-item {
-            min-width:0;
-            background:rgba(15,23,42,0.28);
-            border:1px solid var(--border-line);
-            border-radius:10px;
-            padding:9px 10px;
-        }
-        .why-moved-snapshot-label {
-            font-size:0.62rem;
-            color:var(--text-muted);
-            margin-bottom:3px;
-        }
-        .why-moved-snapshot-value {
-            font-size:0.94rem;
-            font-weight:850;
-            color:var(--text-title);
-            white-space:nowrap;
-            overflow:hidden;
-            text-overflow:ellipsis;
-        }
-        .why-moved-snapshot-value.up { color:#10b981; }
-        .why-moved-snapshot-value.down { color:#ef4444; }
-        .why-moved-core {
-            display:flex;
-            align-items:center;
-            gap:8px;
-            margin:2px 0 9px;
-        }
-        .why-moved-core-label {
-            font-size:0.68rem;
-            font-weight:800;
-            color:#38bdf8;
-            background:rgba(56,189,248,0.10);
-            border:1px solid rgba(56,189,248,0.18);
-            border-radius:8px;
-            padding:3px 7px;
-            white-space:nowrap;
-        }
-        .why-moved-core-cause {
-            font-size:0.82rem;
-            font-weight:850;
-            color:var(--text-title);
-            overflow:hidden;
-            text-overflow:ellipsis;
-            white-space:nowrap;
-        }
-        .why-moved-comment-body {
-            font-size:0.84rem;
-            line-height:1.72;
-            color:var(--text-main);
-            word-break:keep-all;
-            white-space:pre-line;
-        }
-        .why-moved-comment-body strong {
-            color:var(--text-title);
-            font-weight:850;
-        }
-        .why-moved-foot {
-            margin-top:11px;
-            padding-top:9px;
-            border-top:1px dashed rgba(148,163,184,0.16);
-            font-size:0.63rem;
-            color:var(--text-muted);
-            line-height:1.45;
-            word-break:keep-all;
-        }
-        @media (max-width:560px) {
-            .why-moved-snapshot { grid-template-columns:1fr; }
-            .why-moved-title { font-size:0.98rem; }
-            .why-moved-comment-body { font-size:0.82rem; }
-        }
 
         /* 2행: 차트(좌) & 증시(우) */
         #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
@@ -5355,37 +5177,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         </div>
 
-                        <!-- 1행 좌측: 왜 움직였을까? — STEP 7 시각 강조 -->
-                        <div class="card" id="rowCause">
-                            <div class="why-moved-header">
-                                <div class="why-moved-title-wrap">
-                                    <span class="why-moved-title">왜 움직였을까?</span>
-                                    <span class="why-moved-live">실시간 분석</span>
-                                </div>
-                                <span id="whyMovedConfidenceBadge" class="why-moved-live">-</span>
+                        <!-- 1행 좌측: 왜 움직였을까? — 코멘트 전용 -->
+                        <div class="card" id="rowCause" style="justify-content:flex-start;">
+                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
+                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
                             </div>
-
-                            <div class="why-moved-snapshot">
-                                <div class="why-moved-snapshot-item">
-                                    <div class="why-moved-snapshot-label">현재 종목</div>
-                                    <div id="whyMovedStockSnapshot" class="why-moved-snapshot-value">-</div>
-                                </div>
-                                <div class="why-moved-snapshot-item">
-                                    <div class="why-moved-snapshot-label">시장 흐름</div>
-                                    <div id="whyMovedMarketSnapshot" class="why-moved-snapshot-value">-</div>
-                                </div>
-                            </div>
-
-                            <div class="why-moved-core">
-                                <span class="why-moved-core-label">오늘의 핵심</span>
-                                <span id="whyMovedCoreCause" class="why-moved-core-cause">분석 중</span>
-                            </div>
-
-                            <div id="movementReasonCard" class="why-moved-comment-body"></div>
-
-                            <div id="whyMovedFoot" class="why-moved-foot">
-                                실제 확인된 가격·시장·외부 분석 데이터를 바탕으로 표시해.
-                            </div>
+                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
                         <!-- 2행 좌측: 트랙 분석 — 퀀트 분석과 동일한 카드 구조 -->
@@ -6604,64 +6401,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // STEP 5: 최종 코멘트는 서버의 독립 V2 자연어 엔진 결과만 사용한다.
                     // 빈 값일 때도 클라이언트가 예전 방식으로 재작성하지 않는다.
                     const gaemiComment = String(data.comment || '현재 왜 움직였을까? 분석 결과를 불러오지 못했어. 잠시 후 다시 확인해줘.').trim();
-
-                    // STEP 7: 코멘트 카드의 시각 요약만 추가한다.
-                    // 분석 로직/점수/뉴스 선택에는 개입하지 않는다.
-                    const whyCauseV2 = mr.cause_analysis_v2 || {};
-                    const whyPrimaryLabel = String(whyCauseV2.primary_label || mr.main_reason || '원인 미확정').trim();
-                    const whyConfidence = String(whyCauseV2.confidence || mr.confidence || '낮음').trim();
-                    const whyPriceChange = Number(whyCauseV2.price_change_pct);
-                    const whyStockSnapshot = document.getElementById('whyMovedStockSnapshot');
-                    const whyMarketSnapshot = document.getElementById('whyMovedMarketSnapshot');
-                    const whyCoreCause = document.getElementById('whyMovedCoreCause');
-                    const whyConfidenceBadge = document.getElementById('whyMovedConfidenceBadge');
-
-                    if (whyStockSnapshot) {
-                        const stockText = Number.isFinite(whyPriceChange)
-                            ? `${displayName} · ${displayPrice} · ${whyPriceChange >= 0 ? '+' : ''}${whyPriceChange.toFixed(2)}%`
-                            : `${displayName} · ${displayPrice}`;
-                        whyStockSnapshot.textContent = stockText;
-                        whyStockSnapshot.classList.toggle('up', Number.isFinite(whyPriceChange) && whyPriceChange > 0);
-                        whyStockSnapshot.classList.toggle('down', Number.isFinite(whyPriceChange) && whyPriceChange < 0);
-                    }
-
-                    let whyMarketItem = null;
-                    if (Array.isArray(data.world_board)) {
-                        const marketNames = isKrw
-                            ? ['코스피', '코스닥']
-                            : ['QQQ', 'SPY'];
-                        whyMarketItem = data.world_board.find(w => marketNames.includes(String(w && w.name || '')));
-                    }
-                    if (whyMarketSnapshot) {
-                        if (whyMarketItem) {
-                            const mrk = Number(whyMarketItem.change_pct ?? whyMarketItem.rate);
-                            const mrkText = Number.isFinite(mrk)
-                                ? `${whyMarketItem.name} · ${mrk >= 0 ? '+' : ''}${mrk.toFixed(2)}%`
-                                : `${whyMarketItem.name} · 확인 필요`;
-                            whyMarketSnapshot.textContent = mrkText;
-                            whyMarketSnapshot.classList.toggle('up', Number.isFinite(mrk) && mrk > 0);
-                            whyMarketSnapshot.classList.toggle('down', Number.isFinite(mrk) && mrk < 0);
-                        } else {
-                            whyMarketSnapshot.textContent = `${isKrw ? '시장' : '나스닥100'} · 확인 필요`;
-                        }
-                    }
-                    if (whyCoreCause) whyCoreCause.textContent = whyPrimaryLabel;
-                    if (whyConfidenceBadge) {
-                        whyConfidenceBadge.textContent = `신뢰도 ${whyConfidence}`;
-                        if (whyConfidence === '높음') {
-                            whyConfidenceBadge.style.color = '#10b981';
-                            whyConfidenceBadge.style.background = 'rgba(16,185,129,0.10)';
-                            whyConfidenceBadge.style.borderColor = 'rgba(16,185,129,0.20)';
-                        } else if (whyConfidence === '중간') {
-                            whyConfidenceBadge.style.color = '#f59e0b';
-                            whyConfidenceBadge.style.background = 'rgba(245,158,11,0.10)';
-                            whyConfidenceBadge.style.borderColor = 'rgba(245,158,11,0.20)';
-                        } else {
-                            whyConfidenceBadge.style.color = 'var(--text-muted)';
-                            whyConfidenceBadge.style.background = 'rgba(148,163,184,0.08)';
-                            whyConfidenceBadge.style.borderColor = 'var(--border-line)';
-                        }
-                    }
 
                     const movementIconMap = {
                         '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',

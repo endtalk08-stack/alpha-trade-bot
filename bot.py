@@ -1241,9 +1241,9 @@ def fetch_naver_domestic_flow_metrics(code):
                 v=num(it.get(k))
                 if v is not None: iv.append(v); break
         if fv:
-            total=sum(fv); result['foreigner_latest']=fv[-1]; result['foreigner_5d']=total; result['foreigner_detail']=f"최근 5거래일 순매수 {'+' if total>=0 else '-'}{abs(total):,.0f}주"
+            total=sum(fv); result['foreigner_latest']=fv[-1]; result['foreigner_5d']=total; result['foreigner_detail']=f"최근 5거래일 외국인 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
         if iv:
-            total=sum(iv); result['institution_latest']=iv[-1]; result['institution_5d']=total; result['institution_detail']=f"최근 5거래일 순매수 {'+' if total>=0 else '-'}{abs(total):,.0f}주"
+            total=sum(iv); result['institution_latest']=iv[-1]; result['institution_5d']=total; result['institution_detail']=f"최근 5거래일 기관 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
     except Exception as exc: print(f"[NAVER FLOW] {code} fetch failed: {exc}")
     return result
 
@@ -5258,7 +5258,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         return '은';
                     })();
                     const directionText = Number.isFinite(pct) ? (pct > 0 ? '상승' : pct < 0 ? '하락' : '보합') : (mr.direction === '하락' ? '하락' : mr.direction === '상승' ? '상승' : '움직임');
-                    const evidenceReasons = Array.isArray(mr.reasons) ? mr.reasons : [];
                     const reason = key => evidenceReasons.find(r => r.key === key) || null;
                     const material = reason('material');
                     const clusters = material && Array.isArray(material.news_clusters) ? material.news_clusters : [];
@@ -5288,8 +5287,31 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         ? `🐜 개미들아! ${displayName}${topicParticle} 현재 ${priceText}, ${pct > 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
                         : `🐜 개미들아! ${displayName}${topicParticle} 현재 ${priceText} ${directionText} 중이야.`;
 
+                    const domesticFlowValue = (movementReason, key) => {
+                        const r = Array.isArray(movementReason.reasons) ? movementReason.reasons.find(x => x.key === key) : null;
+                        if (!r) return null;
+                        const text = String(r.detail || '');
+                        const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
+                        if (!m) return null;
+                        const n = Number(m[2].replace(/,/g,''));
+                        return Number.isFinite(n) ? (m[1] === '순매도' ? -n : n) : null;
+                    };
+
                     let body = '';
-                    if (materialTopics.length) {
+                    // 수급은 반드시 주체(외국인/기관)와 순매수·순매도를 구분해 표시한다.
+                    // 가격 방향과 같은 방향의 수급 중 가장 강한 한 가지를 코멘트에 사용해 숫자 중복을 막는다.
+                    const flowCandidates = [
+                        { key: 'foreign', label: '외국인', value: domesticFlowValue(mr, 'foreign') },
+                        { key: 'institution', label: '기관', value: domesticFlowValue(mr, 'institution') }
+                    ].filter(x => x.value !== null && Number.isFinite(x.value));
+                    // 수급은 주가 방향과 연결해 원인을 단정하지 않는다.
+                    // 실제 수급 정보 자체를 '누가 + 얼마나 + 순매수/순매도'로 전달한다.
+                    const selectedFlow = flowCandidates.sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0] || null;
+
+                    if (selectedFlow) {
+                        const flowWord = selectedFlow.value > 0 ? '순매수' : '순매도';
+                        body = `최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어.`;
+                    } else if (materialTopics.length) {
                         const topicText = materialTopics.join('·');
                         body = `${topicText} 관련 소식이 여러 곳에서 이어졌어.`;
                     } else {
@@ -5791,3 +5813,45 @@ def run_web_server():
 
 if __name__ == "__main__":
     run_web_server()
+
+
+
+def _gaemi_final_comment(market_text="", industry_text="", stock_text="",
+                          flow_text="", stock_news_text="", market_event_text="",
+                          closing_text="🐜 오늘도 개미들 힘내자! 💪"):
+    """
+    최종 정보전달형 코멘트 구조
+    고정 순서: 시장 → 업종 → 종목 → 수급 → 종목 뉴스/재료 → 시장 이벤트/경제 뉴스 → 마무리
+    """
+    parts = []
+
+    for text in (
+        market_text, industry_text, stock_text, flow_text,
+        stock_news_text, market_event_text
+    ):
+        if text:
+            text = re.sub(r"\s+", " ", str(text)).strip()
+            if text and text not in parts:
+                parts.append(text)
+
+    if closing_text:
+        parts.append(str(closing_text).strip())
+
+    return "\n\n".join(parts)
+
+
+def _gaemi_flow_sentence(actor, shares, direction=""):
+    """수급을 '주체 + 순매수/순매도 + 수량'으로 명확하게 표현."""
+    try:
+        n = int(abs(float(shares)))
+    except Exception:
+        return ""
+
+    if not actor:
+        actor = "외국인"
+
+    side = direction
+    if side not in ("순매수", "순매도"):
+        side = "순매수" if float(shares) >= 0 else "순매도"
+
+    return f"최근 5거래일 동안 {actor}이 {n:,}주 {side}를 기록했어."

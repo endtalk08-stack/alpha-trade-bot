@@ -5232,6 +5232,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // 백엔드의 주원인과 실제 detail/evidence를 그대로 사용한다.
                     const scoreOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? Number(x.score||0) : 0; };
                     const detailOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? String(x.detail||'') : ''; };
+                    const materialReason = evidenceReasons.find(r => r.key === 'material') || null;
                     const materialScore=scoreOf('material'), foreignScore=scoreOf('foreign'), institutionScore=scoreOf('institution');
                     const tradingValueScore=scoreOf('trading_value'), volumeScore=scoreOf('volume'), themeScore=scoreOf('theme');
                     const mainReasonKey = mr.main_reason_key || '';
@@ -5289,7 +5290,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const newsBlob = [
                         displayName,
                         ...(Array.isArray(mr.news_evidence) ? mr.news_evidence.map(x => x?.title || '') : []),
-                        ...(Array.isArray(material?.news_clusters) ? material.news_clusters.flatMap(c => c?.keywords || []) : [])
+                        ...(Array.isArray(materialReason?.news_clusters) ? materialReason.news_clusters.flatMap(c => c?.keywords || []) : [])
                     ].join(' ').toLowerCase();
                     const semiconductorKeywords = ['반도체','hbm','hbm4','dram','nand','메모리','gpu','semiconductor'];
                     const isSemiconductor = semiconductorKeywords.some(k => newsBlob.includes(k));
@@ -5345,8 +5346,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                     // 종목 뉴스/재료: 여러 출처에서 반복되는 핵심 재료만 사용.
                     let materialText = '';
-                    if (material && Array.isArray(material.news_clusters)) {
-                        const cluster = material.news_clusters[0] || null;
+                    if (materialReason && Array.isArray(materialReason.news_clusters)) {
+                        const cluster = materialReason.news_clusters[0] || null;
                         const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
                         const map = {
                             'hbm4':'HBM4','hbm':'HBM','ai':'AI 수요','인공지능':'AI 수요','gpu':'GPU 수요',

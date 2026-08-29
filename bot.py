@@ -113,6 +113,42 @@ CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
 
+# ===== External API cache / rate-limit protection =====
+FRED_CACHE = {}
+FRED_CACHE_TTL = 900  # 15분
+ALPHA_NEWS_CACHE = {}
+ALPHA_NEWS_CACHE_TTL = 600  # 10분
+ALPHA_EARNINGS_CACHE = {}
+ALPHA_EARNINGS_CACHE_TTL = 1800  # 30분
+FINNHUB_CONSENSUS_CACHE = {}
+FINNHUB_CONSENSUS_CACHE_TTL = 1800  # 30분
+FRED_LAST_REQUEST_TS = 0.0
+FRED_MIN_INTERVAL = 0.55  # FRED 2 req/s 제한에 안전하게 대응
+API_LOCK = threading.Lock()
+
+def _rate_limit_wait(min_interval):
+    global FRED_LAST_REQUEST_TS
+    with API_LOCK:
+        now = time.time()
+        wait = min_interval - (now - FRED_LAST_REQUEST_TS)
+        if wait > 0:
+            time.sleep(wait)
+        FRED_LAST_REQUEST_TS = time.time()
+
+def _cache_get(cache, key, ttl):
+    item = cache.get(key)
+    if not item:
+        return None
+    ts, value = item
+    if time.time() - ts > ttl:
+        cache.pop(key, None)
+        return None
+    return value
+
+def _cache_set(cache, key, value):
+    cache[key] = (time.time(), value)
+    return value
+
 # ===== Theme co-movement engine =====
 THEME_KEYWORDS = {
     "AI·데이터센터": ["ai", "인공지능", "데이터센터", "gpu", "hbm", "서버", "네트워크"],
@@ -658,7 +694,7 @@ MAJOR_KR_EARNINGS = {
 # ----------------------------------------------------
 # 3. 3단계 하이브리드 실적 일정 수집기 (한국/미국 완벽 대응)
 # ----------------------------------------------------
-def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None):
+def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None):
     """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
@@ -712,7 +748,11 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         "ticker": sym,
         "val": val_str,
         "exp": eps_str,
-        "prev": rev_str
+        "prev": rev_str,
+        "actual_eps": actual_eps,
+        "expected_eps": expected_eps,
+        "actual_revenue": actual_rev,
+        "expected_revenue": expected_rev
     }]
 
 def _classify_earnings_hour(dt_utc):
@@ -872,8 +912,8 @@ def fetch_all_real_earnings():
                     build_earnings_event(
                         sym, sym_to_ko[sym], dt_utc,
                         eps_str, rev_str, hour,
-                        actual_eps=eps_actual,
-                        actual_rev=rev_actual
+                        actual_eps=eps_actual, actual_rev=rev_actual,
+                        expected_eps=eps_est, expected_rev=rev_est
                     )
                 )
                 captured_syms.add(sym)
@@ -1327,810 +1367,181 @@ def fetch_crypto_candles(symbol):
     return None, None, None
 
 def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
+    """검증된 컨센서스만 표시한다. 데이터가 없으면 목표가/기관명을 만들어내지 않는다."""
     try:
-        if market_name in ["국내주식", "국내증시"]:
-            target_p = None
+        if market_name in ["국내주식","국내증시"]:
+            target_p=None
+            reports=[]
             try:
-                url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
-                res = HTTP_SESSION.get(url, timeout=1.8).json()
-                for item in res.get("totalInfos", []):
-                    if item.get("code") in ["targetPrice", "consensusTargetPrice"]:
-                        v = str(item.get("value", "")).replace(",", "").strip()
-                        if v.replace(".", "").isdigit():
-                            target_p = float(v)
-                            break
-            except Exception:
-                pass
-
-            if not target_p or target_p <= 0:
-                target_p = round(raw_price * 1.25, -2) if raw_price > 100 else round(raw_price * 1.15, 2)
-
-            low_p = round(min(raw_price * 0.95, target_p * 0.85), -2) if raw_price > 100 else round(raw_price * 0.95, 2)
-            high_p = round(max(raw_price * 1.35, target_p * 1.25), -2) if raw_price > 100 else round(raw_price * 1.25, 2)
-
-            recent_reports = []
+                url=f"https://m.stock.naver.com/api/stock/{symbol}/integration"
+                res=HTTP_SESSION.get(url,timeout=2.0).json()
+                for item in res.get("totalInfos",[]):
+                    if item.get("code") in ["targetPrice","consensusTargetPrice"]:
+                        v=_safe_float(item.get("value"))
+                        if v and v>0: target_p=v; break
+            except Exception: pass
             try:
-                rep_url = f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=4"
-                r_res = HTTP_SESSION.get(rep_url, timeout=1.8).json()
-                items = r_res.get("items", []) or r_res.get("researches", [])
-                for it in items[:3]:
-                    broker = it.get("writeCorpName") or it.get("companyName") or "증권사"
-                    date_val = str(it.get("writeDate") or it.get("date") or datetime.now().strftime("%Y-%m-%d"))[:10].replace("-", ".")
-                    opinion = it.get("investmentOpinion") or "BUY"
-                    tp = it.get("targetPrice") or target_p
-                    tp_f = float(tp) if str(tp).replace(",", "").replace(".", "").isdigit() and float(tp) > 0 else target_p
-                    upside = ((tp_f - raw_price) / raw_price) * 100
-                    recent_reports.append({
-                        "main": broker,
-                        "sub": f"<span style='color:#10b981; font-weight:700;'>{opinion}</span> · 시장분석 · {date_val}",
-                        "val": f"{int(tp_f):,}원" if raw_price > 100 else f"{tp_f:,.2f}",
-                        "sub_val": f"{upside:+.2f}%"
-                    })
-            except Exception:
-                pass
-
-            if not recent_reports:
-                recent_reports = []
-
-            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
-            unit_str = "원" if raw_price > 100 else "pt"
-
-            return {
-                "title": "애널리스트 컨센서스",
-                "gauge_val": str(len(recent_reports)*5),
-                "gauge_label": "기관의견",
-                "status_label": "전체 의견",
-                "badge_text": "상승 우세 (BUY)",
-                "dots": f"<span style='color:#10b981;'>매수 {len(recent_reports)*4}</span> &nbsp; <span style='color:#f97316;'>보유 2</span> &nbsp; <span style='color:#ef4444;'>매도 0</span>",
-                "primary_label": "평균 목표가",
-                "primary_val": f"{int(target_p):,} {unit_str}" if raw_price > 100 else f"{target_p:,.2f} {unit_str}",
-                "secondary_label": "현재가",
-                "secondary_val": f"{int(raw_price):,} {unit_str}" if raw_price > 100 else f"{raw_price:,.2f} {unit_str}",
-                "slider_left": f"{int(raw_price):,}{unit_str}" if raw_price > 100 else f"{raw_price:,.2f}{unit_str}",
-                "slider_mid": f"평균 {int(target_p):,}{unit_str}" if raw_price > 100 else f"평균 {target_p:,.2f}{unit_str}",
-                "slider_right": f"{int(high_p):,}{unit_str}" if raw_price > 100 else f"{high_p:,.2f}{unit_str}",
-                "fill_pct": fill_pct,
-                "list_title": "최근 증권사 리포트 평가",
-                "source_tag": "출처: 한경컨센서스 / 네이버",
-                "items": recent_reports
-            }
-
-        elif market_name in ["미국주식", "글로벌증시", "원자재"]:
-            target_p = round(raw_price * 1.28, 2)
-            low_p = round(raw_price * 0.92, 2)
-            high_p = round(raw_price * 1.45, 2)
-            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
-
-            recent_reports = [
-                {"main": "Morgan Stanley", "sub": "<span style='color:#10b981; font-weight:700;'>Overweight</span> · Wall Street", "val": f"${target_p * 1.08:,.2f}", "sub_val": f"{((target_p * 1.08 - raw_price)/raw_price)*100:+.2f}%"},
-                {"main": "Goldman Sachs", "sub": "<span style='color:#10b981; font-weight:700;'>Buy</span> · Wall Street", "val": f"${target_p:,.2f}", "sub_val": f"{((target_p - raw_price)/raw_price)*100:+.2f}%"},
-                {"main": "Barclays", "sub": "<span style='color:#10b981; font-weight:700;'>Overweight</span> · Wall Street", "val": f"${target_p * 0.96:,.2f}", "sub_val": f"{((target_p * 0.96 - raw_price)/raw_price)*100:+.2f}%"}
-            ]
-
-            return {
-                "title": "애널리스트 컨센서스",
-                "gauge_val": "32",
-                "gauge_label": "기관의견",
-                "status_label": "전체 의견",
-                "badge_text": "상승 모멘텀 우세",
-                "dots": "<span style='color:#10b981;'>Buy 28</span> &nbsp; <span style='color:#f97316;'>Hold 3</span> &nbsp; <span style='color:#ef4444;'>Sell 1</span>",
-                "primary_label": "평균 목표가",
-                "primary_val": f"${target_p:,.2f}",
-                "secondary_label": "현재가",
-                "secondary_val": f"${raw_price:,.2f}",
-                "slider_left": f"${raw_price:,.2f}",
-                "slider_mid": f"평균 ${target_p:,.2f}",
-                "slider_right": f"${high_p:,.2f}",
-                "fill_pct": fill_pct,
-                "list_title": "최근 월가 IB 리포트 평가",
-                "source_tag": "출처: Wall Street Consensus",
-                "items": recent_reports
-            }
-
-        elif market_name == "암호화폐":
-            clean_sym = symbol.upper().replace("-", "")
-            if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
-                clean_sym += "USDT"
-
-            funding_rate_str = "+0.0100%"
-            try:
-                f_url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={clean_sym}&limit=1"
-                f_res = HTTP_SESSION.get(f_url, timeout=1.8).json()
-                if isinstance(f_res, list) and len(f_res) > 0:
-                    fr = float(f_res[0].get("fundingRate", 0.0001)) * 100
-                    funding_rate_str = f"{fr:+.4f}%"
-            except Exception:
-                pass
-
-            usdkrw = get_realtime_usdkrw()
-            kimchi_str = "+1.84%"
-            try:
-                upbit_sym = "KRW-BTC" if "BTC" in clean_sym else ("KRW-ETH" if "ETH" in clean_sym else ("KRW-XRP" if "XRP" in clean_sym else "KRW-DOGE"))
-                u_res = HTTP_SESSION.get(f"https://api.upbit.com/v1/ticker?markets={upbit_sym}", timeout=1.8).json()
-                if isinstance(u_res, list) and len(u_res) > 0:
-                    upbit_krw = float(u_res[0].get("trade_price", 0))
-                    approx_binance_krw = raw_price * usdkrw
-                    if approx_binance_krw > 0:
-                        kp = ((upbit_krw - approx_binance_krw) / approx_binance_krw) * 100
-                        kimchi_str = f"{kp:+.2f}%"
-            except Exception:
-                pass
-
-            fear_greed_score = "74"
-            try:
-                fg_res = HTTP_SESSION.get("https://api.alternative.me/fng/?limit=1", timeout=1.8).json()
-                fear_greed_score = str(fg_res.get("data", [{}])[0].get("value", "74"))
-            except Exception:
-                pass
-
-            return {
-                "title": "글로벌 수급 & 온체인 센티멘트",
-                "gauge_val": fear_greed_score,
-                "gauge_label": "탐욕지수",
-                "status_label": "시장 심리",
-                "badge_text": "롱 포지션 우세",
-                "dots": f"<span style='color:#10b981; font-weight:700;'>롱 64.2%</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>숏 35.8%</span> &nbsp; <span style='color:#d97706; font-weight:700;'>김프 {kimchi_str}</span>",
-                "primary_label": "24H 글로벌 청산 규모",
-                "primary_val": "$184.2M",
-                "secondary_label": "실시간 김치프리미엄",
-                "secondary_val": kimchi_str,
-                "slider_left": "롱 64.2%",
-                "slider_mid": "바이낸스 선물 포지션 비율",
-                "slider_right": "숏 35.8%",
-                "fill_pct": 64,
-                "list_title": "거래소별 파생 펀딩비 및 프리미엄",
-                "source_tag": f"출처: Binance / Upbit (환율 {usdkrw:,.1f}원 연동)",
-                "items": [
-                    {"main": "Binance USDT 선물", "sub": "<span style='color:#10b981; font-weight:700;'>8시간 펀딩비</span> · 롱 포지션 수수료 지급", "val": funding_rate_str, "sub_val": "정상 밴드"},
-                    {"main": "Upbit vs Binance (김프)", "sub": f"<span style='color:#d97706; font-weight:700;'>국내 원화 프리미엄</span> · 환율 {usdkrw:,.1f}원 기준", "val": kimchi_str, "sub_val": "실시간 집계"},
-                    {"main": "OKX 선물 롱/숏 비율", "sub": "<span style='color:#10b981; font-weight:700;'>글로벌 스마트머니</span> · 탑 트레이더", "val": "1.78 : 1", "sub_val": "롱 우세"}
-                ]
-            }
-    except Exception:
-        pass
-    return None
-
-def fetch_all_world_board_parallel():
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
-    return results
-
-def get_trading_val_rank(symbol, is_krw=True):
-    if not is_krw:
-        return ""
-    try:
-        url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
-        res = HTTP_SESSION.get(url, timeout=1.8).json()
-        stocks = res.get("stocks", [])
-        for idx, item in enumerate(stocks):
-            if str(item.get("itemCode", "")).strip() == symbol.strip():
-                return f" ({idx + 1}위)"
-    except Exception:
-        pass
-    return ""
-
-# ----------------------------------------------------
-# 5. 실시간 6대 퀀트 팩터 및 파동 연산
-# ----------------------------------------------------
-def run_real_vectorized_backtest(df):
-    if df is None or len(df) < 30:
-        return 72.0, 78.0, 2.4
-    try:
-        closes = df['Close'].astype(float).values
-        highs = df['High'].astype(float).values
-        lows = df['Low'].astype(float).values
-        n = len(closes)
-        
-        ma20 = pd.Series(closes).rolling(20).mean().values
-        signals = []
-        for i in range(21, n - 10):
-            if not np.isnan(ma20[i-1]) and not np.isnan(ma20[i]):
-                if closes[i-1] <= ma20[i-1] and closes[i] > ma20[i]:
-                    signals.append(i)
-        
-        if not signals:
-            return 70.0, 75.0, 2.2
-
-        results = []
-        pnl_wins = []
-        pnl_losses = []
-
-        for s in signals:
-            entry = closes[s]
-            target = entry * 1.05
-            stop = entry * 0.96
-            outcome = None
-            for k in range(1, 15):
-                if s + k >= n:
-                    break
-                if highs[s+k] >= target:
-                    outcome = True
-                    pnl_wins.append(0.05)
-                    break
-                elif lows[s+k] <= stop:
-                    outcome = False
-                    pnl_losses.append(0.04)
-                    break
-            if outcome is not None:
-                results.append((s, outcome))
-
-        if not results:
-            return 70.0, 75.0, 2.2
-
-        cutoff_1y = n - 250
-        res_1y = [r[1] for r in results if r[0] >= cutoff_1y]
-        win_1y = (sum(res_1y) / len(res_1y) * 100.0) if res_1y else (sum([r[1] for r in results]) / len(results) * 100.0)
-
-        cutoff_2y = n - 500
-        res_2y = [r[1] for r in results if r[0] >= cutoff_2y]
-        win_2y = (sum(res_2y) / len(res_2y) * 100.0) if res_2y else win_1y
-
-        avg_w = float(np.mean(pnl_wins)) if pnl_wins else 0.05
-        avg_l = float(np.mean(pnl_losses)) if pnl_losses else 0.03
-        rr = round(float(avg_w / max(0.01, avg_l)), 1)
-
-        return round(float(min(98.0, max(42.0, win_1y))), 1), round(float(min(98.0, max(42.0, win_2y))), 1), float(max(1.5, rr))
-    except Exception:
-        return 72.0, 78.0, 2.4
-
-def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
-    if df is None or len(df) < 10:
-        return None
-
-    round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"{round(float(v), 2):,.2f} 달러")
-    closes = df['Close']
-    volumes = df['Volume']
-    n_bars = len(df)
-
-    ma5_val = float(closes.tail(5).mean())
-    ma20_val = float(closes.tail(20).mean())
-    ma60_val = float(closes.tail(60).mean()) if n_bars >= 60 else None
-    ma120_val = float(closes.tail(120).mean()) if n_bars >= 120 else None
-    ma600_val = float(closes.tail(600).mean()) if n_bars >= 600 else None
-    ma1200_val = float(closes.tail(1200).mean()) if n_bars >= 1200 else None
-
-    ma5 = round_fn(ma5_val)
-    ma20 = round_fn(ma20_val)
-    ma60 = round_fn(ma60_val) if ma60_val else "-"
-    ma120 = round_fn(ma120_val) if ma120_val else "-"
-    ma600 = round_fn(ma600_val) if ma600_val else "-"
-    ma1200 = round_fn(ma1200_val) if ma1200_val else "-"
-
-    ma5_state = "5일선 상회" if raw_price >= ma5_val else "5일선 하회"
-    ma5_color = "positive" if raw_price >= ma5_val else "negative"
-
-    ma20_state = "20일선 지지" if raw_price >= ma20_val else "20일선 이탈"
-    ma20_color = "positive" if raw_price >= ma20_val else "negative"
-
-    ma60_state = "60일선 지지" if ma60_val and raw_price >= ma60_val else "60일선 하회"
-    ma60_color = "positive" if ma60_val and raw_price >= ma60_val else "warning"
-
-    ma120_state = "120일선 상회" if ma120_val and raw_price >= ma120_val else "120일선 저항"
-    ma120_color = "positive" if ma120_val and raw_price >= ma120_val else "negative"
-
-    std20_val = float(closes.tail(20).std()) if n_bars >= 20 else 1.0
-    if np.isnan(std20_val) or std20_val <= 0:
-        std20_val = 1.0
-    z_score = float((raw_price - ma20_val) / std20_val)
-    if np.isnan(z_score):
-        z_score = 0.0
-
-    if z_score >= 2.0:
-        z_state = f"+{z_score:.2f} σ (과열 밴드)"
-        z_color = "warning"
-    elif z_score <= -2.0:
-        z_state = f"{z_score:.2f} σ (과매도 반등)"
-        z_color = "positive"
-    else:
-        z_state = f"{z_score:+.2f} σ (정상 밴드)"
-        z_color = "neutral"
-
-    pct_changes = closes.pct_change().dropna().tail(20)
-    ann_vol = float(pct_changes.std() * np.sqrt(250) * 100) if len(pct_changes) > 5 else 20.0
-    if np.isnan(ann_vol) or np.isinf(ann_vol):
-        ann_vol = 20.0
-    vol_risk_state = "고변동성" if ann_vol >= 40 else ("적정 변동성" if ann_vol >= 18 else "저변동성")
-    vol_risk_color = "warning" if ann_vol >= 40 else ("positive" if ann_vol >= 18 else "neutral")
-
-    bb_period = min(60, n_bars)
-    bb_mid = float(closes.tail(bb_period).mean())
-    bb_std = float(closes.tail(bb_period).std())
-    bb_upper = bb_mid + (bb_std * 2)
-    bb_lower = bb_mid - (bb_std * 2)
-    bb_str = f"{round_fn(bb_upper)} / {round_fn(bb_lower)}"
-
-    if raw_price >= bb_upper:
-        bb_state = "상단 돌파 (강세)"
-        bb_color = "positive"
-    elif raw_price <= bb_lower:
-        bb_state = "하단 지지 (반등타진)"
-        bb_color = "warning"
-    else:
-        bb_state = "밴드 내 안정등락"
-        bb_color = "neutral"
-
-    if n_bars >= 35:
-        ema12 = closes.ewm(span=12, adjust=False).mean()
-        ema26 = closes.ewm(span=26, adjust=False).mean()
-        macd_line = ema12 - ema26
-        signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        macd_val = float(macd_line.iloc[-1])
-        sig_val = float(signal_line.iloc[-1])
-        macd_str = f"{macd_val:+.2f} (Sig: {sig_val:+.2f})"
-        if macd_val >= sig_val:
-            macd_state = "골든크로스"
-            macd_color = "positive"
-        else:
-            macd_state = "데드크로스"
-            macd_color = "negative"
-    else:
-        macd_str = "-"
-        macd_state = "데이터 집계 중"
-        macd_color = "neutral"
-
-    df_1y = df.tail(250)
-    high_52w = float(df_1y['High'].max())
-    low_52w = float(df_1y['Low'].min())
-    if high_52w > low_52w:
-        pos_52w = ((raw_price - low_52w) / (high_52w - low_52w)) * 100.0
-        pos_52w_str = f"{pos_52w:.1f}% (고:{round_fn(high_52w)}/저:{round_fn(low_52w)})"
-        slider_fill_pct = int(min(92, max(8, int(pos_52w))))
-    else:
-        pos_52w_str = "-"
-        pos_52w = 50.0
-        slider_fill_pct = 50
-
-    disp20 = (raw_price / ma20_val) * 100 if ma20_val > 0 else 100.0
-    disp60 = (raw_price / ma60_val) * 100 if ma60_val and ma60_val > 0 else 100.0
-    disp_str = f"20일: {disp20:.1f}% | 60일: {disp60:.1f}%"
-    disp_state = "적정 이격 유지" if 98.0 <= disp20 <= 104.0 else ("과열 경계" if disp20 > 104.0 else "과매도 구간")
-    disp_color = "positive" if 98.0 <= disp20 <= 104.0 else ("warning" if disp20 > 104.0 else "neutral")
-
-    delta = closes.diff()
-    gain = delta.where(delta > 0, 0.0).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
-    rs = gain / loss
-    rsi_series = 100 - (100 / (1 + rs))
-    rsi_num = float(rsi_series.iloc[-1]) if not np.isnan(rsi_series.iloc[-1]) else 50.0
-    rsi_val = f"{rsi_num:.1f}"
-    if rsi_num >= 70:
-        rsi_state = "과열권 (차익 경계)"
-        rsi_color = "warning"
-    elif rsi_num <= 30:
-        rsi_state = "침체권 (반등 기대)"
-        rsi_color = "positive"
-    else:
-        rsi_state = "중립 심리"
-        rsi_color = "neutral"
-
-    high_low = df['High'] - df['Low']
-    atr_raw = float(high_low.tail(14).mean())
-    if np.isnan(atr_raw) or atr_raw <= 0:
-        atr_raw = raw_price * 0.02
-    atr_val = round_fn(atr_raw)
-    atr_ratio = f"{((atr_raw / raw_price) * 100):.2f}%" if raw_price > 0 else "0.0%"
-
-    v_mean5 = float(volumes.tail(5).mean())
-    v_curr = float(volumes.iloc[-1])
-    vol_pct = ((v_curr / v_mean5) * 100) if v_mean5 > 0 else 100.0
-    vol_ratio = f"{vol_pct:.1f}%"
-    vol_state = "거래 급증 (수급 유입)" if vol_pct >= 150 else ("거래 보통" if vol_pct >= 70 else "거래 침체")
-    vol_color = "positive" if vol_pct >= 150 else "neutral"
-
-    rank_str = get_trading_val_rank(symbol, is_krw)
-    if n_bars >= 20:
-        val_20d = float((closes.tail(20) * volumes.tail(20)).mean())
-        if is_krw:
-            if val_20d >= 100_000_000_000:
-                tval_20d_str = f"{val_20d / 100_000_000_000:.1f}천억원{rank_str}"
-            elif val_20d >= 100_000_000:
-                tval_20d_str = f"{val_20d / 100_000_000:.1f}억원{rank_str}"
+                rep_url=f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=5"
+                rr=HTTP_SESSION.get(rep_url,timeout=2.0).json()
+                for it in (rr.get("items",[]) or rr.get("researches",[]))[:5]:
+                    broker=it.get("writeCorpName") or it.get("companyName")
+                    tp=_safe_float(it.get("targetPrice"))
+                    if not broker and tp is None: continue
+                    reports.append({"main":broker or "증권사 리포트",
+                                    "sub":f"{it.get('investmentOpinion') or '의견 확인 필요'} · {str(it.get('writeDate') or it.get('date') or '')[:10]}",
+                                    "val":f"{int(tp):,}원" if tp else "목표가 미확인",
+                                    "sub_val":f"{((tp-raw_price)/raw_price)*100:+.1f}%" if tp and raw_price else ""})
+            except Exception: pass
+            if target_p and raw_price:
+                low_p=target_p*0.85; high_p=target_p*1.15
+                fill_pct=min(92,max(8,int(((target_p-low_p)/max(1,high_p-low_p))*100)))
+                primary_val=f"{int(target_p):,} 원"
+                slider_mid=f"평균 {int(target_p):,}원"
             else:
-                tval_20d_str = f"{int(val_20d):,}원{rank_str}"
-        else:
-            if val_20d >= 1_000_000_000:
-                tval_20d_str = f"{val_20d / 1_000_000_000:.2f}B 달러"
-            elif val_20d >= 1_000_000:
-                tval_20d_str = f"{val_20d / 1_000_000:.1f}M 달러"
-            else:
-                tval_20d_str = f"{val_20d:,.0f} 달러"
-    else:
-        tval_20d_str = "-"
+                low_p=raw_price*0.95 if raw_price else 0; high_p=raw_price*1.05 if raw_price else 0
+                fill_pct=50; primary_val="실제 컨센서스 없음"; slider_mid="컨센서스 확인 필요"
+            return {
+                "title":"실제 애널리스트 컨센서스", "gauge_val":str(len(reports)), "gauge_label":"확인 리포트",
+                "status_label":"검증 데이터", "badge_text":"실제 데이터만 표시",
+                "dots": "" if not reports else f"확인 리포트 {len(reports)}건",
+                "primary_label":"평균 목표가" if target_p else "목표가", "primary_val":primary_val,
+                "secondary_label":"현재가", "secondary_val":f"{int(raw_price):,} 원" if raw_price else "-",
+                "slider_left":f"{int(raw_price):,}원" if raw_price else "-", "slider_mid":slider_mid,
+                "slider_right":f"{int(high_p):,}원" if high_p else "-", "fill_pct":fill_pct,
+                "list_title":"실제 증권사 리포트", "source_tag":"출처: 네이버 리서치 / 확인 가능한 데이터", "items":reports
+            }
 
-    # 최근 60거래일 모멘텀 파동 계산
-    momentum_history = []
-    try:
-        hist_df = df.tail(80).copy()
-        h_close = hist_df['Close'].astype(float)
-        h_vol = hist_df['Volume'].astype(float)
-        h_ma5 = h_close.rolling(5).mean()
-        h_ma20 = h_close.rolling(20).mean()
-        h_ma60 = h_close.rolling(60).mean()
-        h_vmean5 = h_vol.rolling(5).mean()
-
-        h_ema12 = h_close.ewm(span=12, adjust=False).mean()
-        h_ema26 = h_close.ewm(span=26, adjust=False).mean()
-        h_macd = h_ema12 - h_ema26
-        h_macdsig = h_macd.ewm(span=9, adjust=False).mean()
-
-        h_delta = h_close.diff()
-        h_gain = h_delta.where(h_delta > 0, 0.0).rolling(14).mean()
-        h_loss = (-h_delta.where(h_delta < 0, 0.0)).rolling(14).mean()
-        h_rs = h_gain / h_loss.replace(0, np.nan)
-        h_rsi = 100 - (100 / (1 + h_rs))
-
-        for idx in hist_df.tail(60).index:
-            p_c = float(h_close.loc[idx])
-            b_cnt = 0
-            if pd.notna(h_ma5.loc[idx]) and p_c >= float(h_ma5.loc[idx]): b_cnt += 1
-            if pd.notna(h_ma20.loc[idx]) and p_c >= float(h_ma20.loc[idx]): b_cnt += 1
-            if pd.notna(h_ma60.loc[idx]) and p_c >= float(h_ma60.loc[idx]): b_cnt += 1
-            if pd.notna(h_macd.loc[idx]) and pd.notna(h_macdsig.loc[idx]) and float(h_macd.loc[idx]) >= float(h_macdsig.loc[idx]): b_cnt += 1
-            if pd.notna(h_rsi.loc[idx]) and (40.0 <= float(h_rsi.loc[idx]) <= 65.0): b_cnt += 1
-            if pd.notna(h_vmean5.loc[idx]) and float(h_vol.loc[idx]) >= float(h_vmean5.loc[idx]): b_cnt += 1
-
-            day_score = int(min(98, max(42, int(45 + (b_cnt * 9)))))
-            t_str = pd.to_datetime(idx).strftime("%Y-%m-%d")
-            momentum_history.append({"time": t_str, "score": day_score})
-
-        quant_score = momentum_history[-1]["score"] if momentum_history else 72
-        bullish_count = int(round((quant_score - 45) / 9)) if quant_score >= 45 else 0
-    except Exception:
-        momentum_history = []
-        quant_score = 72
-        bullish_count = 3
-
-    score_badge = "모멘텀 최강세" if quant_score >= 80 else ("상승 모멘텀 우세" if quant_score >= 65 else "중립 횡보 국면")
-
-    if ma60_val and raw_price > ma20_val > ma60_val:
-        trend = "정배열 상승 추세"
-        guide_text = f"20일선 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
-    elif ma60_val and raw_price < ma20_val < ma60_val:
-        trend = "역배열 하락 추세"
-        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며, 20일선 저항 매물대 돌파 실패 시 리스크 관리 필수"
-    else:
-        trend = "박스권 혼조세"
-        guide_text = f"박스권 상하단 밴드 내 매물 공방 국면이므로 볼린저 밴드 하단 지지 확인 시 진입하고, 1차 목표가 도달 시 비중 축소 권장"
-
-    entry1_val = raw_price - (0.5 * atr_raw)
-    entry2_val = raw_price - (1.2 * atr_raw)
-    target1_val = raw_price + (1.5 * atr_raw)
-    target2_val = raw_price + (2.8 * atr_raw)
-    stop_val = raw_price - (1.8 * atr_raw)
-
-    entry1 = round_fn(entry1_val)
-    entry2 = round_fn(entry2_val)
-    target1 = round_fn(target1_val)
-    target2 = round_fn(target2_val)
-    stop_p = round_fn(stop_val)
-
-    sig_fill_pct = min(92, max(8, int(((entry1_val - stop_val) / max(1, target2_val - stop_val)) * 100)))
-    win_1y, win_2y, rr_actual = run_real_vectorized_backtest(df)
-
-    return {
-        "quant_score": str(quant_score),
-        "score_badge": score_badge,
-        "score_dots": f"<span style='color:#10b981; font-weight:700;'>상승 시그널 {bullish_count}</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>중립 {6 - bullish_count}</span>",
-        "trend": trend,
-        "momentum_history": momentum_history,
-        "z_score": f"{z_score:+.2f} σ", "z_state": z_state, "z_color": z_color,
-        "ann_vol": f"{ann_vol:.1f}%", "vol_risk_state": vol_risk_state, "vol_risk_color": vol_risk_color,
-        "ma5": ma5, "ma5_state": ma5_state, "ma5_color": ma5_color,
-        "ma20": ma20, "ma20_state": ma20_state, "ma20_color": ma20_color,
-        "ma60": ma60, "ma60_state": ma60_state, "ma60_color": ma60_color,
-        "ma120": ma120, "ma120_state": ma120_state, "ma120_color": ma120_color,
-        "ma600": ma600, "ma1200": ma1200,
-        "bollinger": bb_str, "bb_state": bb_state, "bb_color": bb_color,
-        "macd": macd_str, "macd_state": macd_state, "macd_color": macd_color,
-        "pos_52w": pos_52w_str, "slider_fill_pct": slider_fill_pct,
-        "high_52w": round_fn(high_52w), "low_52w": round_fn(low_52w),
-        "disp": disp_str, "disp_state": disp_state, "disp_color": disp_color, "disp20_num": f"{disp20:+.1f}%",
-        "rsi": rsi_val, "rsi_state": rsi_state, "rsi_color": rsi_color,
-        "atr": atr_val, "atr_ratio": atr_ratio,
-        "vol_ratio": vol_ratio, "vol_state": vol_state, "vol_color": vol_color,
-        "tval_20d": tval_20d_str,
-        "entry1": entry1, "entry2": entry2,
-        "target1": target1, "target2": target2, "stop_p": stop_p,
-        "sig_fill_pct": sig_fill_pct, "guide_text": guide_text,
-        "bt_1y": f"1년 실측 {win_1y}%", "bt_2y": f"2년 실측 {win_2y}%",
-        "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}"
-    }
-
-
-# ----------------------------------------------------
-# 5.5 "왜 움직였을까?" 원인 분석 엔진
-# ----------------------------------------------------
-# 주의: 이 엔진은 현재 확보된 데이터의 근거 강도를 계산합니다.
-# 실제 인과관계를 100% 증명하는 예측기가 아닙니다.
-
-MOVEMENT_THEME_KEYWORDS = {
-    "반도체": ["삼성전자", "sk하이닉스", "하이닉스", "마이크론", "엔비디아", "nvidia", "amd", "asml", "tsmc", "반도체", "hbm", "dram", "nand", "ai"],
-    "AI": ["ai", "인공지능", "엔비디아", "nvidia", "데이터센터", "gpu", "hbm", "클라우드"],
-    "로봇": ["로봇", "robot", "robotics", "휴머노이드", "자동화", "협동로봇"],
-    "바이오": ["바이오", "제약", "신약", "임상", "hlb", "셀트리온", "리가켐"],
-    "2차전지": ["배터리", "2차전지", "이차전지", "전기차", "리튬", "양극재", "음극재", "에코프로", "lg에너지"],
-    "원전": ["원전", "원자력", "두산에너빌리티", "smr", "원자로", "nuclear"],
-    "방산": ["방산", "방위산업", "미사일", "전투기", "한화에어로", "lignex1", "l3harris"],
-    "우주": ["우주", "위성", "스페이스x", "spacex", "로켓", "satellite"]
-}
-
-POSITIVE_NEWS_KEYWORDS = [
-    "수주", "계약", "공급", "실적 개선", "어닝 서프라이즈", "호실적", "흑자전환",
-    "증가", "확대", "돌파", "신제품", "개발", "투자", "증설", "승인", "특허",
-    "협력", "파트너십", "수혜", "목표가 상향", "상향", "강세", "급등", "사상 최대", "최대 실적"
-]
-
-NEGATIVE_NEWS_KEYWORDS = [
-    "적자", "감소", "하락", "급락", "손실", "부진", "하향", "목표가 하향", "유상증자",
-    "전환사채", "소송", "리콜", "취소", "철회", "지연", "악재", "우려", "규제", "횡령", "배임"
-]
-
-
-def _movement_rate_to_float(value):
-    try:
-        if value is None:
-            return None
-        s = str(value).replace("%", "").replace(",", "").strip()
-        if s in ("", "-", "--"):
-            return None
-        return float(s)
-    except Exception:
-        return None
-
-
-def _find_world_item(world_board, names):
-    if not world_board:
-        return None
-    name_set = {str(x).upper() for x in names}
-    for item in world_board:
-        if str(item.get("name", "")).upper() in name_set:
-            return item
+        if market_name in ["미국주식","글로벌증시","원자재"]:
+            rec=[]; target_p=None; counts={"Buy":0,"Hold":0,"Sell":0}
+            if FINNHUB_API_KEY and symbol:
+                key=symbol.upper(); cached=_cache_get(FINNHUB_CONSENSUS_CACHE,key,FINNHUB_CONSENSUS_CACHE_TTL)
+                if cached is None:
+                    try:
+                        url="https://finnhub.io/api/v1/stock/recommendation"
+                        rr=HTTP_SESSION.get(url,params={"symbol":key,"token":FINNHUB_API_KEY},timeout=4).json()
+                        cached=rr[0] if isinstance(rr,list) and rr else {}
+                        _cache_set(FINNHUB_CONSENSUS_CACHE,key,cached)
+                    except Exception: cached={}
+                for k,label in [("strongBuy","Buy"),("buy","Buy"),("hold","Hold"),("sell","Sell"),("strongSell","Sell")]:
+                    counts[label]+=int(cached.get(k) or 0)
+                if counts["Buy"]+counts["Hold"]+counts["Sell"]>0:
+                    for label in ("Buy","Hold","Sell"):
+                        if counts[label]: rec.append({"main":label,"sub":"Finnhub recommendation trend","val":str(counts[label]),"sub_val":"실제 집계"})
+            return {
+                "title":"실제 애널리스트 의견", "gauge_val":str(sum(counts.values())), "gauge_label":"확인 의견",
+                "status_label":"검증 데이터", "badge_text":"실제 데이터만 표시",
+                "dots":f"Buy {counts['Buy']} · Hold {counts['Hold']} · Sell {counts['Sell']}",
+                "primary_label":"평균 목표가", "primary_val":"실제 목표가 데이터 없음",
+                "secondary_label":"현재가", "secondary_val":f"${raw_price:,.2f}" if raw_price else "-",
+                "slider_left":f"${raw_price:,.2f}" if raw_price else "-", "slider_mid":"목표가 확인 필요",
+                "slider_right":"-", "fill_pct":50, "list_title":"실제 애널리스트 의견",
+                "source_tag":"출처: Finnhub / 확인 가능한 데이터" if FINNHUB_API_KEY else "실제 컨센서스 API 미연결", "items":rec
+            }
+    except Exception as exc:
+        print(f"[CONSENSUS] {symbol} failed: {exc}")
     return None
-
-
-def _news_sentiment_score(news_list):
-    positive = 0
-    negative = 0
-    evidence = []
-    if not news_list:
-        return positive, negative, evidence
-
-    for news in news_list:
-        title = str(news.get("title", "")).lower()
-        pos_hits = [k for k in POSITIVE_NEWS_KEYWORDS if k.lower() in title]
-        neg_hits = [k for k in NEGATIVE_NEWS_KEYWORDS if k.lower() in title]
-
-        if pos_hits:
-            positive += min(2, len(pos_hits))
-            evidence.append({
-                "title": str(news.get("title", "")),
-                "type": "positive",
-                "keywords": pos_hits[:3]
-            })
-        if neg_hits:
-            negative += min(2, len(neg_hits))
-            evidence.append({
-                "title": str(news.get("title", "")),
-                "type": "negative",
-                "keywords": neg_hits[:3]
-            })
-
-    return positive, negative, evidence
-
-
-def _detect_theme(formal_name, stock_news):
-    text_parts = [str(formal_name)]
-    for news in (stock_news or []):
-        text_parts.append(str(news.get("title", "")))
-    text = " ".join(text_parts).lower()
-
-    theme_scores = {}
-    for theme, keywords in MOVEMENT_THEME_KEYWORDS.items():
-        score = sum(1 for keyword in keywords if keyword.lower() in text)
-        if score > 0:
-            theme_scores[theme] = score
-
-    if not theme_scores:
-        return None, 0
-    theme = max(theme_scores, key=theme_scores.get)
-    return theme, theme_scores[theme]
-
-
-
-def analyze_global_impact(formal_name, market_name, world_board, stock_news, dart_disclosures, df=None, domestic_flow=None, market_index_name=None):
-    """
-    글로벌 → 미국 → 국내 → 업종/테마 → 종목의 연결성을 계산한다.
-    실제 확보된 데이터가 없는 단계는 점수에 반영하지 않는다.
-    """
-    layers = []
-    text_blob = " ".join(
-        [str(formal_name or "")]
-        + [str(x.get("title", "")) for x in (stock_news or [])]
-        + [str(x.get("description", "")) for x in (stock_news or [])]
-    ).lower()
-
-    # 미국 시장
-    qqq = _find_world_item(world_board, ["QQQ"])
-    spy = _find_world_item(world_board, ["SPY"])
-    soxx = _find_world_item(world_board, ["SOXX"])
-    us_scores = []
-    for item in (qqq, spy, soxx):
-        if item:
-            r = _movement_rate_to_float(item.get("rate"))
-            if r is not None:
-                us_scores.append(r)
-    us_avg = sum(us_scores) / len(us_scores) if us_scores else None
-    us_score = 0
-    us_detail = "미국 시장 데이터 확인 필요"
-    if us_avg is not None:
-        us_score = 2 if us_avg >= 1.0 else (1 if us_avg >= 0.3 else (-2 if us_avg <= -1.0 else (-1 if us_avg <= -0.3 else 0)))
-        us_detail = f"미국 대표지수·반도체 평균 {us_avg:+.2f}%"
-
-    layers.append({"key":"us_market","label":"미국 시장","score":us_score,"detail":us_detail})
-
-    # 국내 시장
-    domestic = None
-    if market_name in ("국내주식","국내증시"):
-        ref = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
-        if ref:
-            r = _movement_rate_to_float(ref.get("rate"))
-            if r is not None:
-                domestic = r
-    domestic_score = 0
-    domestic_detail = "국내 시장 데이터 확인 필요"
-    if domestic is not None:
-        domestic_score = 2 if domestic >= 1.0 else (1 if domestic >= 0.3 else (-2 if domestic <= -1.0 else (-1 if domestic <= -0.3 else 0)))
-        domestic_detail = f"{market_index_name or '국내시장'} {domestic:+.2f}%"
-
-    layers.append({"key":"domestic_market","label":"국내 시장","score":domestic_score,"detail":domestic_detail})
-
-    # 원자재 / 환율 / 금리 관련 뉴스 연결
-    macro_keywords = {
-        "환율": ["원달러", "달러원", "usd/krw", "환율", "달러"],
-        "금리": ["금리", "fed", "fomc", "미국채", "국채", "10년물", "2년물"],
-        "물가": ["cpi", "ppi", "물가", "인플레이션"],
-        "고용": ["고용", "실업률", "비농업", "nfp", "job"],
-        "유가": ["wti", "유가", "원유", "brent"],
-        "중국": ["중국", "상하이", "홍콩", "위안화", "중국 경기"],
-        "정책·지정학": ["관세", "수출규제", "제재", "전쟁", "휴전", "정책", "opec"]
-    }
-    macro_hits = []
-    for label, kws in macro_keywords.items():
-        hits = [k for k in kws if k.lower() in text_blob]
-        if hits:
-            macro_hits.append((label, hits[:3]))
-
-    macro_score = 1 if macro_hits else 0
-    macro_detail = ", ".join(f"{x[0]}({', '.join(x[1])})" for x in macro_hits[:3]) if macro_hits else "직접 연결되는 거시경제 뉴스 제한적"
-    layers.append({"key":"macro","label":"세계경제·거시환경","score":macro_score,"detail":macro_detail})
-
-    # 실적 전/후 신호
-    earnings_keywords = ["실적", "영업이익", "매출", "어닝", "컨센서스", "가이던스", "잠정실적"]
-    earnings_hits = [k for k in earnings_keywords if k.lower() in text_blob]
-    earnings_score = 1 if earnings_hits else 0
-    earnings_detail = f"실적 관련 신호: {', '.join(earnings_hits[:5])}" if earnings_hits else "실적 관련 직접 신호 제한적"
-    layers.append({"key":"earnings","label":"실적","score":earnings_score,"detail":earnings_detail})
-
-    # 기업 직접 이벤트
-    event_keywords = ["수주", "계약", "공급", "mou", "인수", "합병", "신제품", "승인", "허가", "특허", "자사주", "배당"]
-    event_hits = [k for k in event_keywords if k.lower() in text_blob]
-    event_score = 2 if len(event_hits) >= 2 else (1 if event_hits else 0)
-    event_detail = f"직접 이벤트: {', '.join(event_hits[:6])}" if event_hits else "직접 이벤트 신호 제한적"
-    layers.append({"key":"event","label":"기업 이벤트","score":event_score,"detail":event_detail})
-
-    # 글로벌 → 국내 연결 점수
-    transmission_score = 0
-    transmission_detail = "글로벌→국내 연결 근거 제한적"
-    if us_score > 0 and domestic_score > 0:
-        transmission_score += 2
-        transmission_detail = "미국 시장 강세와 국내 시장 강세가 같은 방향"
-    if soxx and "반도체" in text_blob and us_score > 0:
-        transmission_score += 2
-        transmission_detail = "미국 반도체 흐름과 종목의 산업 연결 가능성 확인"
-    if macro_hits and domestic_score != 0:
-        transmission_score += 1
-        transmission_detail += " · 거시환경과 국내시장 방향도 확인"
-
-    layers.append({"key":"transmission","label":"글로벌→국내 연결","score":transmission_score,"detail":transmission_detail})
-
-    # 연결 강도: 직접 재료/이벤트 > 글로벌 전파 > 산업/테마 > 수급은 기존 분석에서 별도 판단.
-    available = [x for x in layers if x["score"] != 0]
-    total = sum(x["score"] for x in available)
-    return {
-        "layers": layers,
-        "total_score": total,
-        "main_global_key": max(available, key=lambda x: x["score"])["key"] if available else None,
-        "summary": " → ".join(x["detail"] for x in available[:3]) if available else "연결 근거 제한적"
-    }
-
-
-
 
 def _fred_series(series_id, limit=8):
-    """FRED 실제 관측값. 키가 없거나 실패하면 빈 결과를 반환한다."""
+    """FRED 실제 관측값. 캐시와 요청 간격을 적용해 429를 예방한다."""
     if not FRED_API_KEY:
         return []
+    key=f"{series_id}:{limit}"
+    cached=_cache_get(FRED_CACHE,key,FRED_CACHE_TTL)
+    if cached is not None:
+        return cached
     try:
+        _rate_limit_wait(FRED_MIN_INTERVAL)
         url = "https://api.stlouisfed.org/fred/series/observations"
         params = {
-            "series_id": series_id,
-            "api_key": FRED_API_KEY,
-            "file_type": "json",
-            "sort_order": "desc",
-            "limit": int(limit),
+            "series_id": series_id, "api_key": FRED_API_KEY, "file_type": "json",
+            "sort_order": "desc", "limit": int(limit)
         }
-        res = HTTP_SESSION.get(url, params=params, timeout=3.0).json()
-        obs = res.get("observations", [])
-        out = []
+        res = HTTP_SESSION.get(url, params=params, timeout=4.0)
+        if res.status_code == 429:
+            print(f"[FRED] rate limited: {series_id}")
+            return []
+        res.raise_for_status()
+        obs = res.json().get("observations", [])
+        out=[]
         for x in obs:
-            v = _safe_float(x.get("value"))
+            v=_safe_float(x.get("value"))
             if v is not None:
-                out.append({"date": x.get("date"), "value": v})
-        return out
-    except Exception:
+                out.append({"date":x.get("date"),"value":v})
+        return _cache_set(FRED_CACHE,key,out)
+    except Exception as exc:
+        print(f"[FRED] {series_id} fetch failed: {exc}")
         return []
-
 
 def fetch_fred_macro_snapshot():
-    """
-    실제 FRED 시계열:
-    DGS10/DGS2 = 미국 10년/2년 국채금리
-    FEDFUNDS = 연방기금금리
-    CPIAUCSL = CPI
-    UNRATE = 실업률
-    PAYEMS = 비농업고용
-    """
-    series = {
-        "us10y": "DGS10",
-        "us2y": "DGS2",
-        "fedfunds": "FEDFUNDS",
-        "cpi": "CPIAUCSL",
-        "unemployment": "UNRATE",
-        "payroll": "PAYEMS",
+    """FRED 실제 관측값 스냅샷. 15분 캐시로 불필요한 반복 호출을 막는다."""
+    cache_key="macro_snapshot"
+    cached=_cache_get(FRED_CACHE,cache_key,FRED_CACHE_TTL)
+    if cached is not None:
+        return cached
+    series={
+        "us10y":"DGS10","us2y":"DGS2","fedfunds":"FEDFUNDS",
+        "cpi":"CPIAUCSL","unemployment":"UNRATE","payroll":"PAYEMS",
     }
-    result = {}
-    for name, sid in series.items():
-        obs = _fred_series(sid, 8)
+    result={}
+    for name,sid in series.items():
+        obs=_fred_series(sid,8)
         if obs:
-            result[name] = {"series_id": sid, "observations": obs}
-    return result
-
+            result[name]={"series_id":sid,"observations":obs}
+    return _cache_set(FRED_CACHE,cache_key,result)
 
 def fetch_alpha_vantage_news(symbol="", topics=""):
-    """Alpha Vantage News & Sentiment. API가 등록되어 있을 때만 사용."""
+    """Alpha Vantage 뉴스. 캐시를 사용하며 키가 없으면 빈 결과를 반환."""
     if not ALPHA_VANTAGE_API_KEY:
         return []
+    key=(symbol or "").upper()+"|"+(topics or "")
+    cached=_cache_get(ALPHA_NEWS_CACHE,key,ALPHA_NEWS_CACHE_TTL)
+    if cached is not None:
+        return cached
     try:
-        params = {
-            "function": "NEWS_SENTIMENT",
-            "apikey": ALPHA_VANTAGE_API_KEY,
-            "limit": 20,
-        }
-        if symbol:
-            params["tickers"] = symbol
-        if topics:
-            params["topics"] = topics
-        res = HTTP_SESSION.get(
-            "https://www.alphavantage.co/query",
-            params=params,
-            timeout=4.0
-        ).json()
-        feed = res.get("feed", [])
-        out = []
+        params={"function":"NEWS_SENTIMENT","apikey":ALPHA_VANTAGE_API_KEY,"limit":20}
+        if symbol: params["tickers"]=symbol
+        if topics: params["topics"]=topics
+        res=HTTP_SESSION.get("https://www.alphavantage.co/query",params=params,timeout=4.0).json()
+        feed=res.get("feed",[])
+        out=[]
         for item in feed:
-            out.append({
-                "title": item.get("title", ""),
-                "description": item.get("summary", ""),
-                "url": item.get("url", ""),
-                "published": item.get("time_published", ""),
-                "source": item.get("source", "Alpha Vantage"),
-                "sentiment": item.get("overall_sentiment_label", ""),
-                "sentiment_score": _safe_float(item.get("overall_sentiment_score")),
-            })
-        return out
-    except Exception:
+            out.append({"title":item.get("title",""),"description":item.get("summary",""),
+                        "url":item.get("url",""),"published":item.get("time_published",""),
+                        "source":item.get("source","Alpha Vantage"),
+                        "sentiment":item.get("overall_sentiment_label",""),
+                        "sentiment_score":_safe_float(item.get("overall_sentiment_score"))})
+        return _cache_set(ALPHA_NEWS_CACHE,key,out)
+    except Exception as exc:
+        print(f"[ALPHA NEWS] fetch failed: {exc}")
         return []
 
+def fetch_alpha_vantage_earnings(symbol):
+    """실제 EPS actual/estimate/surprise를 반환. 추정 목표가는 절대 생성하지 않는다."""
+    if not ALPHA_VANTAGE_API_KEY or not symbol:
+        return {}
+    key=symbol.upper()
+    cached=_cache_get(ALPHA_EARNINGS_CACHE,key,ALPHA_EARNINGS_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        params={"function":"EARNINGS","symbol":key,"apikey":ALPHA_VANTAGE_API_KEY}
+        res=HTTP_SESSION.get("https://www.alphavantage.co/query",params=params,timeout=5.0).json()
+        q=res.get("quarterlyEarnings",[])
+        rows=[]
+        for x in q[:8]:
+            actual=_safe_float(x.get("reportedEPS"))
+            estimate=_safe_float(x.get("estimatedEPS"))
+            surprise=_safe_float(x.get("surprisePercentage"))
+            if actual is None and estimate is None:
+                continue
+            rows.append({"fiscalDateEnding":x.get("fiscalDateEnding"),
+                         "reportedDate":x.get("reportedDate"),
+                         "actual_eps":actual,"expected_eps":estimate,
+                         "surprise_pct":surprise,"source":"Alpha Vantage EARNINGS"})
+        return _cache_set(ALPHA_EARNINGS_CACHE,key,{"quarterly":rows})
+    except Exception as exc:
+        print(f"[ALPHA EARNINGS] {symbol} fetch failed: {exc}")
+        return {}
 
 def merge_news_sources(*sources):
     """뉴스 중복을 줄이고 실제 출처가 있는 뉴스만 합친다."""
@@ -2245,12 +1656,36 @@ def _build_theme_breadth(formal_name, stock_news):
             "detail": f"{theme} 관련 키워드 {hits}건 감지", "verified_breadth": False}
 
 
+def _find_earnings_event(formal_name, symbol, market_calendar):
+    """현재 종목의 실적 일정에서 실제 actual/estimate가 함께 있는 이벤트를 찾는다."""
+    target={str(symbol).upper(),str(formal_name).upper()}
+    candidates=[]
+    for ev in (market_calendar or []):
+        if ev.get("type")!="earn": continue
+        vals={str(ev.get("ticker","")).upper(),str(ev.get("name","")).upper()}
+        if target & vals or str(formal_name).upper() in str(ev.get("name","")).upper():
+            candidates.append(ev)
+    return candidates[0] if candidates else None
+
+def _verified_macro_event_snapshot(market_calendar):
+    """경제 캘린더의 actual/forecast/previous를 숫자로 비교. 문자열 언급만으로 이벤트를 확정하지 않는다."""
+    out=[]
+    for ev in (market_calendar or []):
+        if ev.get("type")!="eco": continue
+        actual=_safe_float(ev.get("val")); forecast=_safe_float(ev.get("exp")); previous=_safe_float(ev.get("prev"))
+        if actual is not None and forecast is not None:
+            surprise=(actual-forecast)/abs(forecast)*100 if forecast!=0 else None
+            out.append({"name":ev.get("name","경제지표"),"actual":actual,"expected":forecast,"previous":previous,
+                        "surprise_pct":surprise,"date":ev.get("date_key"),"time":ev.get("time")})
+    return out
+
 def analyze_global_impact(formal_name, market_name, world_board, stock_news,
                           global_news=None, dart_disclosures=None, df=None,
                           domestic_flow=None, market_index_name=None,
-                          consensus=None, macro_snapshot=None):
+                          consensus=None, macro_snapshot=None, market_calendar=None, symbol=""):
     """
     글로벌/거시 → 미국 → 국내 → 업종 → 종목 전파 경로를 계산한다.
+    숫자 비교가 가능한 실제 데이터만 강한 근거로 사용한다.
     확인되지 않은 경제지표 값이나 테마 동반 종목 수는 만들어내지 않는다.
     """
     layers = []
@@ -2298,57 +1733,50 @@ def analyze_global_impact(formal_name, market_name, world_board, stock_news,
     fx_detail = f"원/달러 {fx_r:+.2f}%" if fx_r is not None else "원/달러 데이터 확인 필요"
     layers.append({"key":"fx","label":"환율","score":fx_score,"detail":fx_detail})
 
-    # 거시경제: 실제 FRED 관측값 + 뉴스 이벤트를 함께 사용.
+    # 거시경제: 뉴스의 단순 언급은 점수화하지 않는다.
     macro_signals = _detect_macro_signals(stock_news, global_news)
     macro_snapshot = macro_snapshot or {}
-    macro_parts = []
-    for key, label in [
-        ("us10y", "미국 10년물"),
-        ("us2y", "미국 2년물"),
-        ("fedfunds", "연방기금금리"),
-        ("cpi", "CPI"),
-        ("unemployment", "실업률"),
-        ("payroll", "비농업고용")
-    ]:
-        item = macro_snapshot.get(key)
+    macro_parts=[]
+    for key,label in [("us10y","미국 10년물"),("us2y","미국 2년물"),("fedfunds","연방기금금리"),("cpi","CPI"),("unemployment","실업률"),("payroll","비농업고용")]:
+        item=macro_snapshot.get(key)
         if item and item.get("observations"):
-            obs = item["observations"][0]
+            obs=item["observations"][0]
             macro_parts.append(f"{label} {obs['value']:,.2f} ({obs['date']})")
+    verified_macro=_verified_macro_event_snapshot(market_calendar)
+    if verified_macro:
+        top=verified_macro[0]
+        surprise=top.get("surprise_pct")
+        macro_score=2 if surprise is not None and surprise>0.5 else (-2 if surprise is not None and surprise<-0.5 else 1)
+        macro_detail=f"{top['name']} 실제 {top['actual']:g} vs 예상 {top['expected']:g} ({surprise:+.1f}%)" if surprise is not None else f"{top['name']} 실제값과 예상값 확인"
+    else:
+        macro_score=0
+        macro_detail=("실제 FRED 관측: "+" · ".join(macro_parts[:3])) if macro_parts else "발표된 실제값·예상값을 함께 확인할 수 있는 거시 이벤트 없음"
+    layers.append({"key":"macro","label":"세계경제·거시환경","score":macro_score,"detail":macro_detail,"signals":macro_signals,"verified_events":verified_macro,"fred":macro_snapshot})
 
-    macro_event_count = sum(1 for x in macro_signals if x["is_event"])
-    macro_score = 2 if macro_event_count >= 1 else (1 if macro_signals else 0)
-    macro_detail = (
-        ("실제 FRED 관측: " + " · ".join(macro_parts[:3]) + " · " if macro_parts else "") +
-        ("발표/결과 관련 거시 뉴스: " + ", ".join(x["name"] for x in macro_signals if x["is_event"])
-         if macro_event_count else
-         ("거시경제 관련 뉴스 언급: " + ", ".join(x["name"] for x in macro_signals[:4])
-          if macro_signals else "직접 연결되는 거시경제 뉴스 제한적"))
-    )
-    layers.append({
-        "key":"macro","label":"세계경제·거시환경","score":macro_score,
-        "detail":macro_detail,"signals":macro_signals,
-        "fred": macro_snapshot
-    })
-
-    # 실적: consensus가 실제 구조를 가지고 있을 때만 보강.
-    earnings_score = 0
-    earnings_detail = "실적 관련 직접 비교 데이터 확인 필요"
-    consensus_blob = str(consensus or {})
-    stock_blob = _extract_news_text(stock_news).lower()
-    earnings_words = ["실적", "영업이익", "매출", "컨센서스", "가이던스", "어닝"]
-    if any(w in stock_blob for w in earnings_words):
-        earnings_score = 1
-        earnings_detail = "실적 관련 뉴스 신호 확인"
-    if isinstance(consensus, dict):
-        # 실제 구조에서 흔히 쓰이는 값이 존재할 때만 숫자 비교.
-        actual = consensus.get("actual_operating_profit", consensus.get("actual"))
-        expected = consensus.get("expected_operating_profit", consensus.get("expected"))
-        a, e = _safe_float(actual), _safe_float(expected)
-        if a is not None and e not in (None, 0):
-            surprise = (a / e - 1) * 100
-            earnings_score = 2 if surprise >= 10 else (1 if surprise > 0 else (-2 if surprise <= -10 else -1))
-            earnings_detail = f"실적 실제값 vs 예상값 {surprise:+.1f}%"
-    layers.append({"key":"earnings","label":"실적","score":earnings_score,"detail":earnings_detail})
+    # 실적: 실제 actual/estimate가 함께 있을 때만 강한 점수.
+    earnings_score=0
+    earnings_detail="실적 실제값과 예상값을 함께 확인할 수 없음"
+    earnings_event=_find_earnings_event(formal_name,symbol,market_calendar)
+    alpha_earnings=fetch_alpha_vantage_earnings(symbol) if market_name=="미국주식" else {}
+    if earnings_event:
+        a=_safe_float(earnings_event.get("actual_eps")); e=_safe_float(earnings_event.get("expected_eps"))
+        if (a is None or e is None) and alpha_earnings.get("quarterly"):
+            latest=alpha_earnings["quarterly"][0]
+            a=_safe_float(latest.get("actual_eps")); e=_safe_float(latest.get("expected_eps"))
+        if a is not None and e not in (None,0):
+            surprise=(a/e-1)*100
+            earnings_score=2 if surprise>=10 else (1 if surprise>0 else (-2 if surprise<=-10 else -1))
+            earnings_detail=f"EPS 실제 ${a:.2f} vs 예상 ${e:.2f} ({surprise:+.1f}%)"
+        else:
+            earnings_detail="실적 일정은 확인됐지만 실제값·예상값 동시 확인 불가"
+    elif alpha_earnings.get("quarterly"):
+        latest=alpha_earnings["quarterly"][0]
+        a=_safe_float(latest.get("actual_eps")); e=_safe_float(latest.get("expected_eps"))
+        if a is not None and e not in (None,0):
+            surprise=(a/e-1)*100
+            earnings_score=2 if surprise>=10 else (1 if surprise>0 else (-2 if surprise<=-10 else -1))
+            earnings_detail=f"최근 EPS 실제 ${a:.2f} vs 예상 ${e:.2f} ({surprise:+.1f}%)"
+    layers.append({"key":"earnings","label":"실적","score":earnings_score,"detail":earnings_detail,"event":earnings_event,"alpha_earnings":alpha_earnings})
 
     # 기업 이벤트/공시
     positive_disclosures = sum(1 for x in (dart_disclosures or []) if str(x.get("tag_type","")) == "positive")
@@ -2381,10 +1809,11 @@ def analyze_global_impact(formal_name, market_name, world_board, stock_news,
         "theme": theme_info,
         "macro_signals": macro_signals,
         "transmission_score": transmission_score,
+        "summary": " → ".join([x["detail"] for x in layers if x.get("score",0) != 0][:3]) or "확인된 글로벌 연결 근거가 제한적입니다.",
     }
 
 
-def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None):
+def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol=""):
     """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다."""
     reasons = []
 
@@ -2685,34 +2114,19 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         market_name=market_name,
         world_board=world_board,
         stock_news=stock_news,
-        dart_disclosures=dart_disclosures,
-        df=df,
-        domestic_flow=domestic_flow,
-        market_index_name=market_index_name
-    )
-
-    # 글로벌/거시 연결이 강하면, 기존 주원인이 약할 때 글로벌 연결을 우선 보조 원인으로 사용한다.
-    if global_impact["total_score"] >= 3 and main_key in (None, "market", "market_5d", "theme"):
-        main_key = "global_impact"
-        main_reason = "글로벌·국내 연결"
-        summary = f"{global_impact['summary']} 흐름이 함께 확인됩니다."
-
-    global_impact = analyze_global_impact(
-        formal_name=formal_name,
-        market_name=market_name,
-        world_board=world_board,
-        stock_news=stock_news,
         global_news=global_news,
         dart_disclosures=dart_disclosures,
         df=df,
         domestic_flow=domestic_flow,
         market_index_name=market_index_name,
         consensus=consensus,
-        macro_snapshot=macro_snapshot
+        macro_snapshot=macro_snapshot,
+        market_calendar=market_calendar,
+        symbol=symbol
     )
 
     # 직접 공시/재료가 없고 글로벌 전파가 충분히 강할 때만 글로벌 원인을 보조 주원인으로 선택.
-    if global_impact["total_score"] >= 4 and main_key in (None, "market", "market_5d", "theme"):
+    if global_impact["total_score"] >= 5 and global_impact.get("transmission_score", 0) >= 2 and main_key in (None, "market", "market_5d", "theme"):
         main_key = "global_impact"
         main_reason = "글로벌·국내 연결"
         summary = f"{global_impact['transmission_score']}단계 연결 근거가 확인됩니다."
@@ -2855,7 +2269,9 @@ def run_full_pipeline(query):
         domestic_flow=domestic_flow,
         global_news=global_news,
         consensus=consensus,
-        macro_snapshot=macro_snapshot
+        macro_snapshot=macro_snapshot,
+        market_calendar=market_calendar,
+        symbol=symbol
     )
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
@@ -4997,7 +4413,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     }else if(mainReasonKey==='material'){
                         const md=detailOf('material');
                         const newsText=positiveNews.length ? `긍정 뉴스 ${positiveNews.length}건이 확인됐고` : '관련 뉴스에서 긍정 신호가 확인됐고';
-                        gaemiComment=`개미들아! 오늘은 재료가 눈에 들어와\n\n${md.includes('공시')?'관련 공시와 뉴스에서 긍정 신호가 확인됐어.':`${newsText} ${md}.`} ${tradingValueScore>0?detailOf('trading_value')+' 흐름도 함께 확인돼.':(foreignScore>0||institutionScore>0?'수급에서도 매수 신호가 함께 확인돼.':'주가 반응과 함께 확인해볼 만해.')}`;
+                        gaemiComment=`개미들아! 오늘은 기업 재료를 먼저 봐야겠어\n\n${md.includes('공시')?'관련 공시에서 직접적인 신호가 확인됐어.':`${newsText} ${md}.`} ${tradingValueScore>0?detailOf('trading_value')+' 거래대금도 같이 늘었어.':(foreignScore>0||institutionScore>0?'외국인·기관 수급도 같은 방향인지 같이 확인해보자.':'주가 반응과 함께 확인해볼 만해.')}`;
                     }else if(mainReasonKey==='flow_pair'){
                         gaemiComment=`개미들아! 오늘은 외국인과 기관 수급이 같이 움직였어\n\n외국인과 기관의 실제 수급 데이터에서 같은 방향의 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 같이 확인돼.`:''}`;
                     }else if(mainReasonKey==='foreign'){
@@ -5015,7 +4431,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     }else if(mainReasonKey==='global_impact'){
                         const us=globalDetail('us_market'), ind=globalDetail('industry_global'), dom=globalDetail('domestic_market');
                         const chain=[us,ind,dom].filter(Boolean).join(' → ');
-                        gaemiComment=`개미들아! 오늘은 글로벌 흐름도 같이 봐야겠어\n\n${chain || globalDetail('transmission') || '미국·국내 시장의 연결 신호가 확인돼.'} 흐름이 확인돼서 글로벌 시장에서 국내 종목으로 이어진 영향을 살펴볼 만해.`;
+                        gaemiComment=`개미들아! 오늘은 해외 시장 흐름부터 봐야겠어\n\n${chain || globalDetail('transmission') || '미국·국내 시장의 방향이 함께 확인돼.'} 같은 방향의 흐름이 확인돼서 해외 시장 영향이 국내 종목으로 이어졌는지 살펴볼 만해.`;
                     }else if(mainReasonKey==='market' || mainReasonKey==='market_5d'){
                         gaemiComment=`개미들아! 오늘은 시장 흐름을 같이 봐야겠어\n\n${detailOf(mainReasonKey)} 데이터가 확인돼. 종목 자체의 움직임인지 시장 영향인지 함께 비교해보자.`;
                     }else if(topReason && Number(topReason.score||0)<0){

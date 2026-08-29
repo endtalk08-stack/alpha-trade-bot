@@ -2923,12 +2923,43 @@ def run_full_pipeline(query):
         if 'BB_DN' in row and not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
 
+    # 코멘트용 현재가/등락률은 가능하면 동일한 실시간 Snapshot을 사용한다.
+    current_change_pct = None
+    current_session = None
+    current_previous_close = None
+    current_price_source = None
+    if market_name == "미국주식":
+        try:
+            if 'quote_snapshot' in locals() and quote_snapshot:
+                current_change_pct = quote_snapshot.get("change_pct")
+                current_session = quote_snapshot.get("market_state")
+                current_previous_close = quote_snapshot.get("previous_close")
+                current_price_source = quote_snapshot.get("price_source")
+        except Exception:
+            pass
+
+    # 국내/암호화폐/기존 데이터는 차트의 직전 종가를 이용해 보조적으로 계산한다.
+    if current_change_pct is None and df is not None and len(df) >= 2 and raw_price is not None:
+        try:
+            prev_for_pct = float(df["Close"].iloc[-2])
+            if prev_for_pct:
+                current_change_pct = ((float(raw_price) - prev_for_pct) / prev_for_pct) * 100.0
+                current_previous_close = prev_for_pct
+                current_price_source = "calculated"
+        except Exception:
+            pass
+
     result_data = {
         "name": formal_name,
         "formal_name": formal_name,
         "symbol": symbol,
         "market": market_name,
         "price": price_str,
+        "current_price": raw_price,
+        "current_change_pct": current_change_pct,
+        "current_previous_close": current_previous_close,
+        "current_session": current_session,
+        "current_price_source": current_price_source,
         "price_str": price_str,
         "time": now_str,
         "now_str": now_str,
@@ -5030,39 +5061,169 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         ? mr.news_evidence.filter(x=>String(x.type||'')==='positive')
                         : [];
                     const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
-                    let gaemiComment='';
+                    // =========================================================
+                    // 왜 움직였을까? — 정보형 자연어 코멘트 V2
+                    // 원칙:
+                    // 1) 예측/추천하지 않는다.
+                    // 2) 오늘 데이터 + 최근 시황을 함께 설명한다.
+                    // 3) 확인되지 않은 원인을 단정하지 않는다.
+                    // 4) 뉴스가 없으면 시장/업종/수급/거래량으로 설명한다.
+                    // 5) 디자인/카드 구조는 변경하지 않는다.
+                    // =========================================================
+                    const priceText = data.price || data.price_str || '-';
+                    const pct = Number(data.current_change_pct);
+                    const directionText = Number.isFinite(pct)
+                        ? (pct > 0 ? '상승' : pct < 0 ? '하락' : '보합')
+                        : (mr.direction === '하락' ? '하락' : mr.direction === '상승' ? '상승' : '움직임');
 
-                    if(evidenceCount===0){
-                        gaemiComment=`개미들아, 오늘은 조금 천천히 보자\n\n지금 확보된 데이터만으로는 한 가지 원인을 우선순위 높게 잡기 어려워. 확인된 근거부터 보자.`;
-                    }else if(mainReasonKey==='material'){
-                        const md=detailOf('material');
-                        const newsText=positiveNews.length ? `긍정 뉴스 ${positiveNews.length}건이 확인됐고` : '관련 뉴스에서 긍정 신호가 확인됐고';
-                        gaemiComment=`개미들아! 오늘은 기업 재료를 먼저 봐야겠어\n\n${md.includes('공시')?'관련 공시에서 직접적인 신호가 확인됐어.':`${newsText} ${md}.`} ${tradingValueScore>0?detailOf('trading_value')+' 거래대금도 같이 늘었어.':(foreignScore>0||institutionScore>0?'외국인·기관 수급도 같은 방향인지 같이 확인해보자.':'주가 반응과 함께 확인해볼 만해.')}`;
-                    }else if(mainReasonKey==='flow_pair'){
-                        gaemiComment=`개미들아! 오늘은 외국인과 기관 수급이 같이 움직였어\n\n외국인과 기관의 실제 수급 데이터에서 같은 방향의 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 같이 확인돼.`:''}`;
-                    }else if(mainReasonKey==='foreign'){
-                        gaemiComment=`개미들아! 오늘은 외국인 수급이 눈에 띄네\n\n${detailOf('foreign')} 데이터에서 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 함께 확인돼.`:''}`;
-                    }else if(mainReasonKey==='institution'){
-                        gaemiComment=`개미들아! 오늘은 기관 수급이 눈에 띄네\n\n${detailOf('institution')} 데이터에서 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 함께 확인돼.`:''}`;
-                    }else if(mainReasonKey==='theme'){
-                        const th = globalImpact.theme && globalImpact.theme.theme ? globalImpact.theme.theme : null;
-                        const td = globalImpact.theme && globalImpact.theme.detail ? globalImpact.theme.detail : detailOf('theme');
-                        gaemiComment=`개미들아! 오늘은 ${th ? th+' 테마' : '종목'} 쪽을 같이 봐야겠어\n\n${td}. 현재 확보된 데이터만으로 테마 전체 동반 상승을 단정하지 않고, 관련 종목 흐름은 추가로 확인하는 게 좋아.`;
-                    }else if(mainReasonKey==='trading_value'){
-                        gaemiComment=`개미들아! 오늘은 거래대금이 눈에 띄네\n\n${detailOf('trading_value')} 데이터가 확인돼. 주가 방향과 함께 실제 자금 유입 강도를 보는 게 좋아.`;
-                    }else if(mainReasonKey==='volume'){
-                        gaemiComment=`개미들아! 오늘은 거래량이 확실히 달라졌어\n\n${detailOf('volume')} 데이터가 확인돼. 평소 대비 거래량과 주가 방향이 함께 움직였는지 보자.`;
-                    }else if(mainReasonKey==='global_impact'){
-                        const us=globalDetail('us_market'), ind=globalDetail('industry_global'), dom=globalDetail('domestic_market');
-                        const chain=[us,ind,dom].filter(Boolean).join(' → ');
-                        gaemiComment=`개미들아! 오늘은 해외 시장 흐름부터 봐야겠어\n\n${chain || globalDetail('transmission') || '미국·국내 시장의 방향이 함께 확인돼.'} 같은 방향의 흐름이 확인돼서 해외 시장 영향이 국내 종목으로 이어졌는지 살펴볼 만해.`;
-                    }else if(mainReasonKey==='market' || mainReasonKey==='market_5d'){
-                        gaemiComment=`개미들아! 오늘은 시장 흐름을 같이 봐야겠어\n\n${detailOf(mainReasonKey)} 데이터가 확인돼. 종목 자체의 움직임인지 시장 영향인지 함께 비교해보자.`;
-                    }else if(topReason && Number(topReason.score||0)<0){
-                        gaemiComment=`개미들아… 오늘은 조금 조심해서 보자\n\n${topReason.label}에서 ${topReason.detail} 신호가 확인돼. 다른 근거까지 같이 확인해보자.`;
-                    }else{
-                        gaemiComment=`개미들아! 오늘 움직임을 조금 더 들여다보자\n\n${topReason?`${topReason.label}에서 ${topReason.detail}`:'현재 확보된 데이터'} 신호가 확인돼. 아래 근거들을 같이 확인해보자.`;
+                    const marketName = data.market || '';
+                    const marketRef = marketName === '미국주식'
+                        ? (globalLayers.find(x => x.key === 'us_market') || null)
+                        : (globalLayers.find(x => x.key === 'domestic_market') || null);
+                    const marketDetailText = marketRef ? String(marketRef.detail || '') : detailOf('market');
+
+                    const getReason = key => evidenceReasons.find(r => r.key === key) || null;
+                    const material = getReason('material');
+                    const volume = getReason('volume');
+                    const tradingValue = getReason('trading_value');
+                    const foreign = getReason('foreign');
+                    const institution = getReason('institution');
+                    const theme = getReason('theme');
+                    const marketReason = getReason('market');
+                    const market5 = getReason('market_5d');
+
+                    const recentNews = Array.isArray(mr.news_evidence) ? mr.news_evidence.slice(0, 3) : [];
+                    const newsTitle = recentNews.length
+                        ? String(recentNews[0].title || '').trim()
+                        : '';
+
+                    const earningsLayer = globalLayers.find(x => x.key === 'earnings') || null;
+                    const macroLayer = globalLayers.find(x => x.key === 'macro') || null;
+                    const industryLayer = globalLayers.find(x => x.key === 'industry_global') || null;
+                    const fxLayer = globalLayers.find(x => x.key === 'fx') || null;
+
+                    const extraContext = [];
+                    if (earningsLayer && Number(earningsLayer.score || 0) !== 0) {
+                        extraContext.push(String(earningsLayer.detail || ''));
                     }
+                    if (macroLayer && Number(macroLayer.score || 0) !== 0) {
+                        extraContext.push(String(macroLayer.detail || ''));
+                    }
+                    if (industryLayer && Number(industryLayer.score || 0) !== 0) {
+                        extraContext.push(String(industryLayer.detail || ''));
+                    }
+
+                    const flowSentences = [];
+                    if (foreign && Number(foreign.score || 0) !== 0) {
+                        flowSentences.push(String(foreign.detail || ''));
+                    }
+                    if (institution && Number(institution.score || 0) !== 0) {
+                        flowSentences.push(String(institution.detail || ''));
+                    }
+                    if (volume && Number(volume.score || 0) !== 0) {
+                        flowSentences.push(String(volume.detail || ''));
+                    }
+                    if (tradingValue && Number(tradingValue.score || 0) !== 0) {
+                        flowSentences.push(String(tradingValue.detail || ''));
+                    }
+
+                    // 1) 현재 상황 — 가능하면 실시간 등락률까지 명시
+                    let intro;
+                    if (Number.isFinite(pct)) {
+                        const pctWord = pct > 0 ? `+${pct.toFixed(2)}%` : `${pct.toFixed(2)}%`;
+                        const marketText = marketDetailText
+                            ? ` ${marketDetailText}.`
+                            : '';
+                        intro = `🐜 개미들아! ${displayName}은(는) 현재 ${priceText}, ${pctWord} ${directionText} 중이야.${marketText}`;
+                    } else {
+                        intro = `🐜 개미들아! ${displayName}은(는) 현재 ${priceText} ${directionText} 중이야.`;
+                    }
+
+                    // 2) 가장 중요한 원인 — 기업 재료/뉴스가 있으면 먼저 전달
+                    let body = '';
+                    if (material && Number(material.score || 0) !== 0) {
+                        if (newsTitle) {
+                            const newsCount = recentNews.length;
+                            body = `오늘은 ${newsCount > 1 ? '관련 소식들이' : '관련 소식이'} 전해지면서 주가가 ${directionText}했어. ${newsTitle}`;
+                        } else {
+                            body = `오늘은 ${String(material.detail || '기업 관련 재료')}가 확인되면서 주가가 ${directionText}했어.`;
+                        }
+                    } else if (earningsLayer && Number(earningsLayer.score || 0) !== 0) {
+                        body = `최근 실적 흐름이 이번 움직임의 배경으로 잡혀 있어. ${String(earningsLayer.detail || '')}`;
+                    } else if (macroLayer && Number(macroLayer.score || 0) !== 0) {
+                        body = `최근 시장에서는 ${String(macroLayer.detail || '거시경제 흐름')}이(가) 나타났고, 이런 시황 속에서 ${displayName}도 ${directionText}했어.`;
+                    } else if (industryLayer && Number(industryLayer.score || 0) !== 0) {
+                        body = `오늘은 ${String(industryLayer.detail || '관련 업종 흐름')}과 함께 움직이면서 ${directionText}했어.`;
+                    } else if (marketReason && Number(marketReason.score || 0) !== 0) {
+                        body = `오늘은 종목 자체의 뚜렷한 단일 재료보다 ${String(marketReason.detail || '시장 흐름')}의 영향을 받으면서 ${directionText}했어.`;
+                    } else if (theme && Number(theme.score || 0) !== 0) {
+                        body = `오늘은 ${String(theme.detail || '관련 업종·테마 흐름')}이(가) 나타나면서 ${directionText}했어.`;
+                    } else {
+                        body = `오늘은 뚜렷한 단일 기업 재료보다는 최근 시황과 시장 흐름 속에서 ${directionText}하는 모습이야.`;
+                    }
+
+                    // 3) 최근 시황을 보강 — 오늘 뉴스가 없어도 코멘트가 빈약하지 않게
+                    const contextParts = [];
+                    if (earningsLayer && Number(earningsLayer.score || 0) !== 0 && !body.includes(String(earningsLayer.detail || ''))) {
+                        contextParts.push(String(earningsLayer.detail || ''));
+                    }
+                    if (macroLayer && Number(macroLayer.score || 0) !== 0 && contextParts.length < 1) {
+                        contextParts.push(String(macroLayer.detail || ''));
+                    }
+                    if (industryLayer && Number(industryLayer.score || 0) !== 0 && contextParts.length < 2) {
+                        contextParts.push(String(industryLayer.detail || ''));
+                    }
+                    if (market5 && Number(market5.score || 0) !== 0 && contextParts.length < 2) {
+                        contextParts.push(String(market5.detail || ''));
+                    }
+
+                    let contextSentence = '';
+                    if (contextParts.length) {
+                        contextSentence = ` 최근 시황에서는 ${contextParts.join(' · ')} 흐름도 함께 나타나고 있어.`;
+                    }
+
+                    // 4) 거래량/수급은 "원인"으로 과장하지 않고 실제 확인된 보조정보로 전달
+                    let flowSentence = '';
+                    if (flowSentences.length) {
+                        const uniqueFlow = [...new Set(flowSentences.filter(Boolean))].slice(0, 2);
+                        flowSentence = ` 거래 흐름에서는 ${uniqueFlow.join(' · ')} 데이터가 함께 확인돼.`;
+                    }
+
+                    // 5) 핵심 정리 — 예측이 아니라 오늘의 사실을 요약
+                    let summarySentence = '';
+                    if (material && Number(material.score || 0) !== 0) {
+                        summarySentence = `정리하면 오늘 ${displayName}의 ${directionText} 움직임은 기업 재료${contextSentence ? '와 최근 시황' : ''}${flowSentence ? '에 거래 흐름' : ''}이 함께 나타난 날이야.`;
+                    } else if (marketReason && Number(marketReason.score || 0) !== 0) {
+                        summarySentence = `정리하면 오늘은 ${String(marketReason.detail || '시장 흐름')} 속에서 ${displayName}의 ${directionText} 움직임이 나타났어.`;
+                    } else {
+                        summarySentence = `정리하면 현재 확인되는 자료에서는 ${displayName}의 ${directionText} 움직임을 시장·업종·거래 흐름으로 설명할 수 있어.`;
+                    }
+
+                    // 6) 개미GTP다운 마무리 — 예측/추천 없이 캐릭터성만 유지
+                    const closingByDirection = directionText === '상승'
+                        ? [
+                            '오늘도 개미들 힘내자! 💪',
+                            '우리 개미들 오늘도 화이팅! 🐜',
+                            '오늘도 개미답게 차분하게! 💪',
+                            '개미들아, 오늘도 힘내자! 🔥'
+                        ]
+                        : directionText === '하락'
+                            ? [
+                                '쉽지 않은 하루지만 개미들 힘내자! 💪',
+                                '오늘도 우리 개미들 화이팅! 🐜',
+                                '개미들아, 오늘도 차분하게 힘내자!',
+                                '오늘도 잘 버텨보자, 개미들! 💪'
+                            ]
+                            : [
+                                '오늘도 개미들 힘내자! 💪',
+                                '우리 개미들 오늘도 화이팅! 🐜',
+                                '오늘도 차분하게 가보자!'
+                            ];
+
+                    const closeSeed = (String(displayName).length + Math.abs(Math.round(Number.isFinite(pct) ? pct * 100 : 0))) % closingByDirection.length;
+                    const closing = closingByDirection[closeSeed];
+
+                    let gaemiComment = `${intro}\n\n${body}${contextSentence}${flowSentence}\n\n${summarySentence}\n\n🐜 ${closing}`;
 
                     const movementIconMap = {
                         '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',

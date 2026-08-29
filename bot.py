@@ -2578,6 +2578,103 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         "news_evidence": news_evidence[:5]
     }
 
+
+def build_track_analysis(raw_price, price_str, df, quant, movement_reason, domestic_flow, world_board, market_name, market_index_name, symbol, formal_name):
+    """트랙 분석 전용 데이터 묶음.
+    임의 숫자를 만들지 않고 기존 파이프라인에서 실제 확보된 값만 전달한다.
+    화면은 이 객체만 렌더링하도록 해 데이터와 UI의 결합을 단순화한다.
+    """
+    result = {
+        "price": price_str or "-",
+        "raw_price": float(raw_price) if raw_price is not None else None,
+        "change_pct": None,
+        "market": market_name or "-",
+        "market_index": market_index_name or "-",
+        "status": "정상" if (df is not None and len(df) > 0) else "데이터 부족",
+        "evidence_count": 0,
+        "evidence_total": 8,
+        "recent_60d": [],
+        "recent_60d_change_pct": None,
+        "low_52w": quant.get("low_52w") if isinstance(quant, dict) else None,
+        "high_52w": quant.get("high_52w") if isinstance(quant, dict) else None,
+        "pos_52w": quant.get("pos_52w") if isinstance(quant, dict) else None,
+        "slider_fill_pct": quant.get("slider_fill_pct") if isinstance(quant, dict) else None,
+        "details": [],
+        "sources": {
+            "price": "기존 종목 가격 데이터",
+            "history": "기존 종목 캔들 데이터",
+            "flow": "기존 수급 데이터",
+            "evidence": "왜 움직였을까? 확인된 근거"
+        }
+    }
+
+    try:
+        if df is not None and len(df) >= 2:
+            close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+            if len(close) >= 2:
+                prev = float(close.iloc[-2])
+                last = float(close.iloc[-1])
+                if prev != 0:
+                    result["change_pct"] = round(((last / prev) - 1.0) * 100.0, 2)
+                vals = close.tail(60).tolist()
+                if len(vals) >= 2 and vals[0] != 0:
+                    result["recent_60d"] = [round(float(v), 8) for v in vals]
+                    result["recent_60d_change_pct"] = round(((vals[-1] / vals[0]) - 1.0) * 100.0, 2)
+    except Exception as exc:
+        print(f"[TRACK DATA] price history build failed: {repr(exc)}")
+
+    reasons = movement_reason.get("reasons", []) if isinstance(movement_reason, dict) else []
+    result["evidence_count"] = sum(1 for r in reasons if isinstance(r, dict) and int(r.get("score", 0) or 0) != 0)
+    result["details"] = [
+        {
+            "key": r.get("key"),
+            "label": r.get("label", "-"),
+            "score": int(r.get("score", 0) or 0),
+            "detail": r.get("detail", "-"),
+            "source": r.get("source")
+        }
+        for r in reasons if isinstance(r, dict)
+    ]
+
+    # 수급은 movement_reason과 동일한 실제 데이터를 별도로 명시해 UI에서 안정적으로 사용할 수 있게 한다.
+    if isinstance(domestic_flow, dict):
+        result["flow"] = {
+            "foreigner_5d": domestic_flow.get("foreigner_5d"),
+            "institution_5d": domestic_flow.get("institution_5d"),
+            "trading_value": domestic_flow.get("trading_value"),
+            "foreigner_detail": domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요"),
+            "institution_detail": domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요"),
+            "trading_value_detail": domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요")
+        }
+    else:
+        result["flow"] = {
+            "foreigner_5d": None,
+            "institution_5d": None,
+            "trading_value": None,
+            "foreigner_detail": "외국인 수급 데이터 확인 필요",
+            "institution_detail": "기관 수급 데이터 확인 필요",
+            "trading_value_detail": "거래대금 데이터 확인 필요"
+        }
+
+    # 시장/업종 관련 실제 world_board 값도 트랙 분석에 함께 보존한다.
+    def find_item(names):
+        return _find_world_item(world_board or [], names)
+
+    if market_name in ("국내주식", "국내증시"):
+        item = find_item([market_index_name or "KOSPI"])
+        if item:
+            result["market_value"] = item.get("price")
+            result["market_rate"] = item.get("rate")
+            result["market_detail"] = f"{item.get('name', market_index_name or '시장')} {item.get('rate', '-') }"
+    elif market_name == "미국주식":
+        item = find_item(["QQQ", "SPY"])
+        if item:
+            result["market_value"] = item.get("price")
+            result["market_rate"] = item.get("rate")
+            result["market_detail"] = f"{item.get('name', '미국시장')} {item.get('rate', '-') }"
+
+    return result
+
 # ----------------------------------------------------
 # 6. 전체 통합 파이프라인
 # ----------------------------------------------------
@@ -2749,6 +2846,13 @@ def run_full_pipeline(query):
             "news_evidence": []
         }
 
+    track_analysis = build_track_analysis(
+        raw_price=raw_price, price_str=price_str, df=df, quant=quant,
+        movement_reason=movement_reason, domestic_flow=domestic_flow,
+        world_board=world_board, market_name=market_name,
+        market_index_name=market_index_name, symbol=symbol, formal_name=formal_name
+    )
+
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -2797,6 +2901,7 @@ def run_full_pipeline(query):
         "time": now_str,
         "now_str": now_str,
         "quant": quant,
+        "track_analysis": track_analysis,
         "movement_reason": movement_reason,
         "consensus": consensus,
         "stock_news": stock_news,
@@ -5135,7 +5240,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
                     `;
 
-                    // 트랙 분석 렌더링: 기존 실제 데이터만 사용하고, 임의의 시계열을 생성하지 않는다.
+                    // 트랙 분석 렌더링: 서버가 만든 track_analysis 실제 데이터만 사용한다.
+                    const ta = data.track_analysis || {};
                     const trackPriceVal = document.getElementById('tPriceVal');
                     const trackChangeVal = document.getElementById('tChangeVal');
                     const trackEvidenceVal = document.getElementById('tEvidenceCountVal');
@@ -5143,34 +5249,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const trackStatusDots = document.getElementById('tStatusDots');
                     const trackPriceTrendTxt = document.getElementById('tPriceTrendTxt');
 
-                    const candlesForTrack = Array.isArray(data.candles) ? data.candles.filter(c =>
-                        c && Number.isFinite(Number(c.close))
-                    ) : [];
-                    const closesForTrack = candlesForTrack.map(c => Number(c.close));
-                    const latestClose = closesForTrack.length ? closesForTrack[closesForTrack.length - 1] : null;
-                    const prevClose = closesForTrack.length > 1 ? closesForTrack[closesForTrack.length - 2] : null;
-                    const changePct = latestClose !== null && prevClose !== null && prevClose !== 0
-                        ? ((latestClose / prevClose) - 1) * 100 : null;
-
-                    if (trackPriceVal) trackPriceVal.innerText = data.price_str || data.price || (latestClose !== null ? latestClose.toLocaleString() : '-');
+                    if (trackPriceVal) trackPriceVal.innerText = ta.price || data.price_str || '-';
                     if (trackChangeVal) {
-                        trackChangeVal.innerText = Number.isFinite(changePct) ? `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%` : '-';
-                        trackChangeVal.style.color = Number.isFinite(changePct) && changePct > 0 ? '#10b981' : (Number.isFinite(changePct) && changePct < 0 ? '#ef4444' : 'var(--text-title)');
+                        const cp = Number(ta.change_pct);
+                        trackChangeVal.innerText = Number.isFinite(cp) ? `${cp >= 0 ? '+' : ''}${cp.toFixed(2)}%` : '-';
+                        trackChangeVal.style.color = Number.isFinite(cp) && cp > 0 ? '#10b981' : (Number.isFinite(cp) && cp < 0 ? '#ef4444' : 'var(--text-title)');
                     }
 
-                    const evidenceReasonsTrack = Array.isArray(mr.reasons) ? mr.reasons : [];
-                    const evidenceCountTrack = evidenceReasonsTrack.filter(x => Number(x.score || 0) !== 0).length;
-                    const statusTrack = mr.confidence || (evidenceCountTrack >= 4 ? '높음' : evidenceCountTrack >= 2 ? '중간' : '낮음');
-                    if (trackEvidenceVal) trackEvidenceVal.innerText = `${evidenceCountTrack}/8`;
-                    if (trackStatusBadge) trackStatusBadge.innerText = statusTrack;
-                    if (trackStatusDots) trackStatusDots.innerText = evidenceCountTrack > 0 ? `확인된 근거 ${evidenceCountTrack}개 · 실제 데이터 기준` : '확인된 근거 부족 · 추가 확인 필요';
+                    const ec = Number(ta.evidence_count);
+                    if (trackEvidenceVal) trackEvidenceVal.innerText = Number.isFinite(ec) ? `${ec}/${ta.evidence_total || 8}` : '-';
+                    const mrConfidence = (data.movement_reason && data.movement_reason.confidence) || '-';
+                    if (trackStatusBadge) trackStatusBadge.innerText = mrConfidence;
+                    if (trackStatusDots) trackStatusDots.innerText = Number.isFinite(ec) && ec > 0 ? `확인된 근거 ${ec}개 · 실제 데이터 기준` : '확인된 근거 부족 · 추가 확인 필요';
 
-                    // 상단 그래프: candles의 실제 종가를 최근 60개로 잘라 정규화하여 표시.
+                    // 상단 그래프: 서버가 전달한 실제 최근 60거래일 종가.
                     const tPriceChart = document.getElementById('tPriceChart');
-                    if (tPriceChart && closesForTrack.length > 1) {
-                        const vals = closesForTrack.slice(-60);
-                        const first = vals[0];
-                        const normalized = first !== 0 ? vals.map(v => ((v / first) - 1) * 100) : [];
+                    const trackVals = Array.isArray(ta.recent_60d) ? ta.recent_60d.map(Number).filter(Number.isFinite) : [];
+                    if (tPriceChart && trackVals.length > 1) {
+                        const first = trackVals[0];
+                        const normalized = first !== 0 ? trackVals.map(v => ((v / first) - 1) * 100) : [];
                         if (normalized.length > 1 && normalized.every(Number.isFinite)) {
                             const W = 600, H = 120, pad = 8;
                             const minV = Math.min(...normalized), maxV = Math.max(...normalized);
@@ -5195,13 +5292,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <path d="${linePath}" fill="none" stroke="${stroke}" stroke-width="3" vector-effect="non-scaling-stroke"/>
                                 <circle cx="${coords[coords.length-1].split(',')[0]}" cy="${coords[coords.length-1].split(',')[1]}" r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2" vector-effect="non-scaling-stroke"/>
                             `;
-                            if (trackPriceTrendTxt) trackPriceTrendTxt.innerText = `최근 60D ${last >= 0 ? '+' : ''}${last.toFixed(2)}%`;
+                            if (trackPriceTrendTxt) {
+                                const p = Number(ta.recent_60d_change_pct);
+                                trackPriceTrendTxt.innerText = Number.isFinite(p) ? `최근 60D ${p >= 0 ? '+' : ''}${p.toFixed(2)}%` : '최근 60D';
+                            }
                         }
                     } else if (trackPriceTrendTxt) {
                         trackPriceTrendTxt.innerText = '데이터 부족';
                     }
 
-                    // 하단 그래프: 퀀트와 동일한 52주 가격 위치 UI. 실제 quant 계산값을 그대로 사용.
+                    // 하단 그래프: 서버의 실제 quant 52주 가격 위치.
                     const tq = data.quant || {};
                     setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
                     setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
@@ -5211,13 +5311,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const tDot = document.getElementById('tDotMarker');
                     if (tDot && Number.isFinite(Number(tq.slider_fill_pct))) tDot.style.left = `${Math.min(99, Math.max(1, Number(tq.slider_fill_pct)))}%`;
 
-                    // 하단 세부 목록: 기존 movement_reason의 실제 근거를 그대로 표시.
+                    // 하단 세부 목록: 서버 track_analysis.details의 실제 근거.
                     const trackDetailList = document.getElementById('trackDetailList');
                     if (trackDetailList) {
                         const iconForTrack = {
                             '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂','시장':'⌁','업종·테마':'◇','기업 재료':'▤','거래량':'♧','시장 5일 흐름':'⌁'
                         };
-                        trackDetailList.innerHTML = evidenceReasonsTrack.map(r => {
+                        const details = Array.isArray(ta.details) ? ta.details : [];
+                        trackDetailList.innerHTML = details.map(r => {
                             const score = Number(r.score || 0);
                             const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
                             const statusClass = score > 0 ? 'status-pill-positive' : score < 0 ? 'status-pill-negative' : 'status-pill-neutral';

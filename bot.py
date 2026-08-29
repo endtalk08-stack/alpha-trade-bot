@@ -4015,7 +4015,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         <div id="result-scroll-view">
             <div class="result-inner">
-                <div class="loading" id="loading">세계 증시, 전자공시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
+                <div class="loading" id="loading">......</div>
                 <div id="result-card-wrap" style="display:none;">
                     
                     <!-- [마스터 그리드] PC: 832px + 348px 2열 / 모바일: 순차 1열 -->

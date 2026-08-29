@@ -2190,6 +2190,113 @@ def _find_world_item(world_board, names):
             return item
     return None
 
+# ===== WHY MOVED: multi-source news clustering engine =====
+NEWS_CLUSTER_STOPWORDS = {
+    "sk하이닉스","하이닉스","삼성전자","엔비디아","nvidia","nvda","tesla","tsla",
+    "오늘","최근","관련","주가","주식","종목","시장","증시","상승","하락","급등","급락",
+    "전망","분석","소식","뉴스","관련주","주목","관심","이유","영향","장중","마감",
+    "the","and","for","with","from","stock","shares","market","today","latest","news"
+}
+NEWS_GENERIC_TOKENS = {
+    "실적","ai","인공지능","gpu","hbm","hbm4","데이터센터","수요","매출","영업이익","순이익",
+    "공급","공급망","수주","계약","증설","관세","금리","인플레이션","물가","연준","fomc",
+    "금리인하","금리인상","고용","경기","cpi","pce","반도체","메모리","dram","nand","aws",
+    "cloud","클라우드","데이터센터","invest","investment","earnings","revenue","profit","guidance"
+}
+NEWS_POLARITY = {
+    "positive": ["호조","개선","증가","성장","상회","확대","수요 증가","강세","수주","계약","돌파","흑자","record","beat","beats","growth","strong demand","upgrade","surge","expansion"],
+    "negative": ["부진","감소","하회","둔화","악화","축소","약세","우려","관세 부담","금리 부담","공급 차질","적자","downgrade","miss","decline","weak demand","cut","risk","concern"]
+}
+
+def _news_tokens(text):
+    text = re.sub(r"[^0-9A-Za-z가-힣]+", " ", str(text or "").lower())
+    raw = [x for x in text.split() if len(x) >= 2]
+    return [x for x in raw if x not in NEWS_CLUSTER_STOPWORDS]
+
+def _news_cluster_key(news):
+    title = str(news.get("title", ""))
+    desc = str(news.get("description", news.get("summary", "")))
+    tokens = _news_tokens(title + " " + desc)
+    # 핵심 후보 단어만 남겨 동일 재료를 안정적으로 묶는다.
+    core = [x for x in tokens if x in NEWS_GENERIC_TOKENS]
+    return set(core)
+
+def _news_polarity(news):
+    text = (str(news.get("title", "")) + " " + str(news.get("description", news.get("summary", "")))).lower()
+    pos = sum(1 for k in NEWS_POLARITY["positive"] if k.lower() in text)
+    neg = sum(1 for k in NEWS_POLARITY["negative"] if k.lower() in text)
+    if pos > neg: return 1
+    if neg > pos: return -1
+    return 0
+
+def analyze_news_clusters(news_list, target_name="", symbol=""):
+    """여러 출처의 뉴스를 공통 주제로 묶고 출처 다양성/반복성을 계산한다."""
+    items = [x for x in (news_list or []) if isinstance(x, dict) and str(x.get("title", "")).strip()]
+    clusters = []
+    for item in items:
+        keys = _news_cluster_key(item)
+        if not keys:
+            continue
+        best = None
+        best_overlap = 0
+        for c in clusters:
+            overlap = len(keys & c["keywords"])
+            union = len(keys | c["keywords"]) or 1
+            similarity = overlap / union
+            if overlap >= 1 and similarity >= 0.25 and overlap > best_overlap:
+                best, best_overlap = c, overlap
+        if best is None:
+            best = {"keywords": set(keys), "items": []}
+            clusters.append(best)
+        else:
+            best["keywords"].update(keys)
+        best["items"].append(item)
+
+    scored = []
+    for c in clusters:
+        items_c = c["items"]
+        sources = {str(x.get("media") or x.get("source") or "").strip().lower() for x in items_c}
+        sources.discard("")
+        polarity = sum(_news_polarity(x) for x in items_c)
+        pos = sum(1 for x in items_c if _news_polarity(x) > 0)
+        neg = sum(1 for x in items_c if _news_polarity(x) < 0)
+        source_count = len(sources)
+        repeat_count = len(items_c)
+        # 서로 다른 출처 + 반복 횟수 + 방향 일치 + 핵심주제 단어 수
+        score = repeat_count * 1.0 + source_count * 2.0 + min(3, len(c["keywords"])) * 0.7
+        if polarity > 0 and pos >= max(2, neg + 1): score += 2.0
+        elif polarity < 0 and neg >= max(2, pos + 1): score += 2.0
+        scored.append({
+            "keywords": sorted(c["keywords"], key=lambda x: (-len(x), x))[:5],
+            "items": items_c,
+            "repeat_count": repeat_count,
+            "source_count": source_count,
+            "polarity": 1 if polarity > 0 else -1 if polarity < 0 else 0,
+            "positive_count": pos,
+            "negative_count": neg,
+            "score": round(score, 2),
+        })
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored
+
+def build_clustered_material_evidence(news_list, target_name="", symbol=""):
+    clusters = analyze_news_clusters(news_list, target_name, symbol)
+    if not clusters:
+        return {"score": 0, "detail": "반복적으로 확인되는 핵심 뉴스 재료 없음", "evidence": [], "clusters": []}
+    top = clusters[0]
+    # 출처가 하나뿐이고 기사도 1개면 강한 재료로 승격하지 않는다.
+    reliable = top["repeat_count"] >= 2 and top["source_count"] >= 2
+    direction = top["polarity"]
+    if reliable and direction > 0: score = 2
+    elif reliable and direction < 0: score = -2
+    elif top["repeat_count"] >= 2 and direction != 0: score = direction
+    else: score = 0
+    topic = "·".join(top["keywords"][:3]) or "관련 재료"
+    detail = f"{topic} 관련 내용이 {top['repeat_count']}건, 서로 다른 출처 {top['source_count']}곳에서 반복 확인"
+    if direction > 0: detail += " · 긍정 방향"
+    elif direction < 0: detail += " · 부정 방향"
+    return {"score": score, "detail": detail, "evidence": top["items"][:5], "clusters": clusters[:5]}
+
 def _news_sentiment_score(news_list):
     positive = 0
     negative = 0
@@ -2446,7 +2553,18 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     reasons.append({"key":"theme","label":"업종·테마","score":theme_score,"detail":theme_detail,"theme_hits":theme_hits})
 
     # 3. 기업 재료
-    news_positive, news_negative, news_evidence = _news_sentiment_score(stock_news)
+    # 여러 뉴스채널에서 반복되는 공통 주제를 먼저 찾고, 단일 기사만으로는 강한 재료로 인정하지 않는다.
+    clustered_material = build_clustered_material_evidence(stock_news, formal_name, symbol)
+    news_evidence = []
+    for n in clustered_material.get("evidence", []):
+        pol = _news_polarity(n)
+        news_evidence.append({
+            "title": str(n.get("title", "")),
+            "type": "positive" if pol > 0 else "negative" if pol < 0 else "neutral",
+            "keywords": _news_tokens(str(n.get("title", "")))[:5],
+            "media": str(n.get("media") or n.get("source") or "")
+        })
+
     disclosure_positive = 0
     disclosure_negative = 0
     for item in (dart_disclosures or []):
@@ -2454,24 +2572,17 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         if tag_type == "positive": disclosure_positive += 1
         elif tag_type == "negative": disclosure_negative += 1
 
-    net_material = news_positive + disclosure_positive * 2 - news_negative - disclosure_negative * 2
-    if net_material >= 3:
-        material_score = 2
-        material_detail = f"긍정 재료 다수 · 뉴스 +{news_positive}, 공시 +{disclosure_positive}"
-    elif net_material > 0:
+    material_score = int(clustered_material.get("score", 0))
+    # 공시는 독립적인 1차 근거이므로 뉴스 클러스터가 없을 때도 보조한다.
+    if material_score == 0 and disclosure_positive > disclosure_negative:
         material_score = 1
-        material_detail = f"긍정 재료 존재 · 뉴스 +{news_positive}, 공시 +{disclosure_positive}"
-    elif net_material <= -3:
-        material_score = -2
-        material_detail = f"부정 재료 우세 · 뉴스 -{news_negative}, 공시 -{disclosure_negative}"
-    elif net_material < 0:
+    elif material_score == 0 and disclosure_negative > disclosure_positive:
         material_score = -1
-        material_detail = f"부정 재료 존재 · 뉴스 -{news_negative}, 공시 -{disclosure_negative}"
-    else:
-        material_score = 0
-        material_detail = "최근 강한 기업 재료 확인 안 됨"
+    material_detail = clustered_material.get("detail", "반복적으로 확인되는 핵심 뉴스 재료 없음")
+    if disclosure_positive or disclosure_negative:
+        material_detail += f" · 공시 호재 {disclosure_positive}건/악재 {disclosure_negative}건"
 
-    reasons.append({"key":"material","label":"기업 재료","score":material_score,"detail":material_detail})
+    reasons.append({"key":"material","label":"기업 재료","score":material_score,"detail":material_detail,"news_clusters":clustered_material.get("clusters",[])})
 
     # 4. 거래량
     flow_score = 0
@@ -2815,7 +2926,7 @@ def run_full_pipeline(query):
         return None
 
     with ThreadPoolExecutor(max_workers=9) as executor:
-        f_news = executor.submit(fetch_rss_news, formal_name, 5)
+        f_news = executor.submit(fetch_rss_news, formal_name, 12)
         f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 4)
         f_api_news = executor.submit(fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro")
         f_macro = executor.submit(fetch_fred_macro_snapshot)
@@ -2828,7 +2939,12 @@ def run_full_pipeline(query):
         api_news = _safe_future_result(f_api_news, [], "Alpha Vantage news")
         macro_snapshot = _safe_future_result(f_macro, {}, "FRED macro")
 
-        stock_news = merge_news_sources(stock_news_rss, api_news)
+        ticker_news = _safe_future_result(
+            executor.submit(fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None,
+            [], "Alpha ticker news"
+        )
+        # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
+        stock_news = merge_news_sources(stock_news_rss, ticker_news)
         global_news = merge_news_sources(global_news_rss, api_news)
         consensus = _safe_future_result(f_consensus, None, "consensus")
         dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
@@ -5116,20 +5232,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         .trim();
 
                     const newsEvidence = Array.isArray(mr.news_evidence) ? mr.news_evidence : [];
-                    const directionNewsType = directionText === '상승' ? 'positive' : directionText === '하락' ? 'negative' : '';
-                    const matchingNews = directionNewsType
-                        ? newsEvidence.filter(x => String(x.type || '') === directionNewsType)
-                        : newsEvidence;
-                    const primaryNewsTitle = matchingNews.length
-                        ? cleanNewsTitle(matchingNews[0].title)
-                        : (newsEvidence.length ? cleanNewsTitle(newsEvidence[0].title) : '');
-
-                    // 첫 문장에서 가격/등락률을 이미 전달하므로 뉴스 제목의 등락 숫자는 제거한다.
-                    const newsTitleForComment = primaryNewsTitle
-                        .replace(/[+-]?(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)%/g, '')
-                        .replace(/\s+(상승|하락|급등|급락)(?:\s*중)?\s*$/i, '')
-                        .replace(/\s+/g, ' ')
-                        .trim();
+                    const materialClusters = material && Array.isArray(material.news_clusters) ? material.news_clusters : [];
+                    const topMaterialCluster = materialClusters.length ? materialClusters[0] : null;
+                    const clusterKeywords = topMaterialCluster && Array.isArray(topMaterialCluster.keywords) ? topMaterialCluster.keywords : [];
+                    const clusterTopic = clusterKeywords.slice(0, 3).join('·');
+                    const newsTitleForComment = '';
 
                     const numFromText = (text) => {
                         const m = String(text || '').match(/[+-]?(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)%/);
@@ -5159,11 +5266,23 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     let body = '';
                     let support = '';
 
-                    if (newsTitleForComment) {
+                    if (mainReasonKey === 'material' && material) {
+                        // 특정 기사 하나를 고르지 않고, 여러 출처에서 반복된 공통 재료를 자연어로 전달한다.
+                        const topicMap = {
+                            '실적':'실적', 'earnings':'실적', 'ai':'AI 수요', '인공지능':'AI 수요',
+                            'gpu':'GPU 수요', 'hbm':'HBM', 'hbm4':'HBM4', '데이터센터':'데이터센터 투자',
+                            '수요':'수요 확대', '매출':'매출 성장', '영업이익':'영업이익', '공급':'공급 관련',
+                            '공급망':'공급망', '수주':'수주', '계약':'계약', '증설':'증설', '관세':'관세',
+                            '금리':'금리', '인플레이션':'인플레이션', '연준':'연준 정책', 'fomc':'FOMC',
+                            '금리인하':'금리 인하', '금리인상':'금리 인상', '고용':'고용', '경기':'경기',
+                            'cpi':'CPI', 'pce':'PCE', '반도체':'반도체', '메모리':'메모리', 'dram':'D램',
+                            'nand':'낸드', 'aws':'AWS'
+                        };
+                        const topicParts = clusterKeywords.slice(0, 3).map(k => topicMap[String(k).toLowerCase()] || k);
+                        const topicText = [...new Set(topicParts)].join('·') || '기업 관련 핵심 재료';
+                        body = `${topicText} 관련 내용이 여러 곳에서 반복적으로 전해지면서 주가 ${directionText}에 영향을 줬어.`;
+                    } else if (newsTitleForComment) {
                         body = `${newsTitleForComment} 관련 소식이 전해지면서 주가가 ${directionText}했어.`;
-                    } else if (mainReasonKey === 'material' && material) {
-                        const md = stripLeadingMeta(material.detail || '기업 관련 재료');
-                        body = `${md} 관련 재료가 주가 ${directionText}에 영향을 줬어.`;
                     } else if (mainReasonKey === 'global_impact') {
                         const us = globalDetail('us_market');
                         const ind = globalDetail('industry_global');

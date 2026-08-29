@@ -5061,6 +5061,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         ? mr.news_evidence.filter(x=>String(x.type||'')==='positive')
                         : [];
                     const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
+
+                    // 문장 품질 규칙 V2.1
+                    // ① 같은 어미 반복 금지
+                    // ② 같은 의미의 문장 반복 금지
+                    // ③ 앞에서 사용한 데이터 재설명 금지
+                    // ④ 동일 숫자는 핵심 위치에서 1회만 사용
+                    // ⑤ 데이터 → 해석 → 정리 순서 유지
+                    // ⑥ 한 문장에 관련 정보 2~3개를 자연스럽게 묶기
+                    const usedNumbers = new Set();
+                    const cleanSentence = (text) => String(text || '')
+                        .replace(/\s+/g, ' ')
+                        .replace(/(나타났어|확인됐어|확인되고 있어|볼 수 있어|움직이고 있어|이어지고 있어)(\s+\1)+/g, '$1')
+                        .trim();
+
                     // =========================================================
                     // 왜 움직였을까? — 정보형 자연어 코멘트 V2
                     // 원칙:

@@ -1322,189 +1322,205 @@ def fetch_domestic_candles(code, anchor_price=None):
 
     return None
 
-def _fetch_finnhub_daily_candles(symbol, days=1825):
-    """미국주식 Yahoo 실패 시 Finnhub으로 실제 일봉을 보완한다.
-    Finnhub API 키가 없거나 응답이 정상적이지 않으면 None을 반환한다.
-    """
-    if not FINNHUB_API_KEY or not symbol:
-        return None, None, None
+# ----------------------------------------------------
+# STEP 2 — 실시간 가격 Snapshot 통합
+# 원본 디자인은 수정하지 않고, 현재가/등락률/세션 데이터를 한 묶음으로 관리한다.
+# ----------------------------------------------------
+def _format_price_for_market(price, market_name):
+    if price is None:
+        return None
     try:
-        now = int(time.time())
-        start = now - int(days) * 86400
-        url = "https://finnhub.io/api/v1/stock/candle"
-        res = HTTP_SESSION.get(
-            url,
-            params={
-                "symbol": symbol.upper(),
-                "resolution": "D",
-                "from": start,
-                "to": now,
-                "token": FINNHUB_API_KEY,
-            },
-            timeout=4.0,
-        ).json()
-        if not isinstance(res, dict) or res.get("s") != "ok":
-            return None, None, None
+        p = float(price)
+    except (TypeError, ValueError):
+        return None
+    if market_name in {"국내주식", "국내증시"}:
+        return f"{int(round(p)):,} 원"
+    return f"{p:,.2f} 달러"
 
-        ts = res.get("t") or []
-        opens = res.get("o") or []
-        highs = res.get("h") or []
-        lows = res.get("l") or []
-        closes = res.get("c") or []
-        volumes = res.get("v") or []
-        n = min(len(ts), len(opens), len(highs), len(lows), len(closes))
-        records = []
-        for i in range(n):
-            try:
-                if any(x is None for x in (ts[i], opens[i], highs[i], lows[i], closes[i])):
-                    continue
-                records.append({
-                    "Date": pd.to_datetime(int(ts[i]), unit="s"),
-                    "Open": float(opens[i]),
-                    "High": float(highs[i]),
-                    "Low": float(lows[i]),
-                    "Close": float(closes[i]),
-                    "Volume": float(volumes[i]) if i < len(volumes) and volumes[i] is not None else 0.0,
-                })
-            except (TypeError, ValueError, IndexError):
-                continue
-        if not records:
-            return None, None, None
-        df = pd.DataFrame(records).set_index("Date").sort_index()
-        curr_p = float(df["Close"].iloc[-1])
-        return curr_p, f"{curr_p:,.2f} 달러", df
+
+def _us_session_now():
+    """미국 동부시간 기준 현재 세션을 판별한다. 휴장 여부는 다음 단계에서 보강한다."""
+    try:
+        tz = ZoneInfo("America/New_York") if ZoneInfo else timezone.utc
+        now = datetime.now(tz)
+        if now.weekday() >= 5:
+            return "CLOSED"
+        minutes = now.hour * 60 + now.minute
+        if 4 * 60 <= minutes < 9 * 60 + 30:
+            return "PRE_MARKET"
+        if 9 * 60 + 30 <= minutes < 16 * 60:
+            return "REGULAR"
+        if 16 * 60 <= minutes < 20 * 60:
+            return "AFTER_MARKET"
+        return "CLOSED"
+    except Exception:
+        return "UNKNOWN"
+
+
+def fetch_unified_us_price_snapshot(symbol, fallback_price=None):
+    """Yahoo 실시간 메타를 한 번만 읽어 현재 세션의 가격/등락률을 통일한다."""
+    try:
+        encoded = urllib.parse.quote(str(symbol).upper())
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=1d&interval=1m"
+        res = HTTP_SESSION.get(url, timeout=2.0)
+        res.raise_for_status()
+        result = (res.json().get("chart", {}).get("result") or [None])[0]
+        meta = (result or {}).get("meta") or {}
+
+        prev_close = meta.get("previousClose")
+        if prev_close is None:
+            prev_close = meta.get("chartPreviousClose")
+        prev_close = float(prev_close) if prev_close is not None else None
+
+        regular = meta.get("regularMarketPrice")
+        pre = meta.get("preMarketPrice")
+        post = meta.get("postMarketPrice")
+        session = _us_session_now()
+
+        if session == "PRE_MARKET" and pre is not None:
+            price = float(pre)
+        elif session == "AFTER_MARKET" and post is not None:
+            price = float(post)
+        elif regular is not None:
+            price = float(regular)
+        elif fallback_price is not None:
+            price = float(fallback_price)
+        else:
+            return None
+
+        rate = ((price - prev_close) / prev_close * 100.0) if prev_close else None
+        return {
+            "price": price,
+            "price_str": _format_price_for_market(price, "미국주식"),
+            "change_pct": rate,
+            "previous_close": prev_close,
+            "session": session,
+            "source": "Yahoo Finance 실시간",
+            "realtime": True,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
     except Exception as exc:
-        print(f"[FINNHUB CANDLES] {symbol} fetch failed: {type(exc).__name__}: {exc}")
-        return None, None, None
+        print(f"[UNIFIED US PRICE] {symbol} failed: {exc}")
+        if fallback_price is not None:
+            return {
+                "price": float(fallback_price),
+                "price_str": _format_price_for_market(fallback_price, "미국주식"),
+                "change_pct": None,
+                "previous_close": None,
+                "session": "UNKNOWN",
+                "source": "기존 가격 데이터(실시간 조회 실패)",
+                "realtime": False,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        return None
+
+
+def fetch_unified_domestic_price_snapshot(code, fallback_price=None, fallback_df=None):
+    """Naver/KRX 실시간 종목 데이터를 현재가/등락률 Snapshot으로 통일한다."""
+    try:
+        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        res = HTTP_SESSION.get(url, timeout=1.8)
+        res.raise_for_status()
+        datas = res.json().get("datas") or []
+        if datas:
+            d = datas[0]
+            price_raw = str(d.get("closePrice", "")).replace(",", "").strip()
+            rate_raw = str(d.get("fluctuationsRatio", "")).replace(",", "").strip()
+            prev_raw = str(d.get("compareToPreviousClosePrice", "")).replace(",", "").strip()
+            price = float(price_raw) if price_raw else None
+            rate = float(rate_raw) if rate_raw else None
+            prev_change = float(prev_raw) if prev_raw not in {"", "-", "None"} else None
+            prev_close = (price - prev_change) if price is not None and prev_change is not None else None
+            if price is not None:
+                return {
+                    "price": price,
+                    "price_str": _format_price_for_market(price, "국내주식"),
+                    "change_pct": rate,
+                    "previous_close": prev_close,
+                    "session": d.get("marketStatus") or "REGULAR",
+                    "source": "Naver/KRX 실시간",
+                    "realtime": True,
+                    "timestamp": d.get("localTradedAt") or datetime.now(timezone.utc).isoformat(),
+                }
+    except Exception as exc:
+        print(f"[UNIFIED KR PRICE] {code} failed: {exc}")
+
+    # 실시간 API가 실패하면 기존 가격을 보존하되 '실시간'이라고 표시하지 않는다.
+    if fallback_price is not None:
+        rate = None
+        prev_close = None
+        try:
+            if fallback_df is not None and len(fallback_df) >= 2:
+                c = float(fallback_df["Close"].iloc[-1])
+                p = float(fallback_df["Close"].iloc[-2])
+                if p:
+                    rate = (c / p - 1.0) * 100.0
+                    prev_close = p
+        except Exception:
+            pass
+        return {
+            "price": float(fallback_price),
+            "price_str": _format_price_for_market(fallback_price, "국내주식"),
+            "change_pct": rate,
+            "previous_close": prev_close,
+            "session": "UNKNOWN",
+            "source": "기존 가격 데이터(실시간 조회 실패)",
+            "realtime": False,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    return None
+
+
+def fetch_unified_market_snapshot(market_name):
+    """종목과 같은 방식으로 코멘트에 사용할 시장 등락률 Snapshot을 가져온다."""
+    if market_name == "미국주식":
+        return fetch_unified_us_price_snapshot("QQQ")
+    if market_name == "국내주식":
+        index_name = "KOSPI"
+        try:
+            # 종목의 실제 시장 구분은 호출부에서 보정할 수 있으므로 기본값은 KOSPI.
+            live = fetch_naver_realtime_index(index_name)
+            if live:
+                return {
+                    "price": live.get("price"),
+                    "price_str": f"{float(live.get('price')):,.2f}",
+                    "change_pct": live.get("rate"),
+                    "previous_close": None,
+                    "session": live.get("market_status"),
+                    "source": "Naver/KRX 실시간",
+                    "realtime": True,
+                    "timestamp": live.get("traded_at") or datetime.now(timezone.utc).isoformat(),
+                    "name": index_name,
+                }
+        except Exception:
+            pass
+    return None
 
 
 def fetch_overseas_candles(symbol):
-    """해외주식/글로벌 지수 일봉 수집. Yahoo를 우선 사용하고 실패하면 Finnhub을 사용한다.
-    한 행의 결측치 때문에 전체 데이터가 버려지지 않도록 행 단위로 검증한다.
-    """
-    symbol = str(symbol or "").strip().upper()
-    if not symbol:
-        return None, None, None
-
-    # 1차: Yahoo Finance
     try:
-        encoded_sym = urllib.parse.quote(symbol)
+        encoded_sym = urllib.parse.quote(symbol.upper())
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=5y&interval=1d"
-        response = HTTP_SESSION.get(url, timeout=3.5)
-        response.raise_for_status()
-        res = response.json()
+        res = HTTP_SESSION.get(url, timeout=2.0).json()
         result = res.get("chart", {}).get("result", [])
         if result:
-            payload = result[0]
-            ts = payload.get("timestamp") or []
-            quote = (payload.get("indicators", {}).get("quote") or [{}])[0] or {}
-            opens = quote.get("open") or []
-            highs = quote.get("high") or []
-            lows = quote.get("low") or []
-            closes = quote.get("close") or []
-            volumes = quote.get("volume") or []
-            n = min(len(ts), len(opens), len(highs), len(lows), len(closes))
-            records = []
-            for i in range(n):
-                try:
-                    vals = (ts[i], opens[i], highs[i], lows[i], closes[i])
-                    if any(v is None for v in vals):
-                        continue
-                    records.append({
-                        "Date": pd.to_datetime(int(ts[i]), unit="s"),
-                        "Open": float(opens[i]),
-                        "High": float(highs[i]),
-                        "Low": float(lows[i]),
-                        "Close": float(closes[i]),
-                        "Volume": float(volumes[i]) if i < len(volumes) and volumes[i] is not None else 0.0,
-                    })
-                except (TypeError, ValueError, IndexError):
-                    continue
+            ts = result[0].get("timestamp", [])
+            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
+            records = [{
+                "Date": pd.to_datetime(ts[i], unit='s'),
+                "Open": float(quote['open'][i]),
+                "High": float(quote['high'][i]),
+                "Low": float(quote['low'][i]),
+                "Close": float(quote['close'][i]),
+                "Volume": float(quote['volume'][i] or 0.0)
+            } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
             if records:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
-                curr_p = float(df["Close"].iloc[-1])
+                curr_p = float(df['Close'].iloc[-1])
                 return curr_p, f"{curr_p:,.2f} 달러", df
-    except Exception as exc:
-        print(f"[YAHOO CANDLES] {symbol} failed: {type(exc).__name__}: {exc}")
-
-    # 2차: Finnhub fallback (특히 NVDA/TSLA 등 미국주식)
-    return _fetch_finnhub_daily_candles(symbol)
-
-def build_unified_price_snapshot(symbol, market_name, df=None):
-    """STEP 2: 화면/코멘트가 공유하는 단일 현재가 스냅샷.
-    미국은 Yahoo의 세션별 최신 가격, 국내는 기존 Naver 실시간 가격을 사용한다.
-    실패하면 None을 반환하며 기존 분석 데이터는 건드리지 않는다.
-    """
-    try:
-        if market_name == "미국주식":
-            sym = str(symbol or "").strip().upper()
-            if not sym:
-                return None
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(sym)}?range=1d&interval=1m&includePrePost=true"
-            res = HTTP_SESSION.get(url, timeout=3.5)
-            res.raise_for_status()
-            payload = (res.json().get("chart", {}).get("result") or [None])[0]
-            if not payload:
-                return None
-            meta = payload.get("meta") or {}
-            state = str(meta.get("marketState") or "").upper()
-            regular = meta.get("regularMarketPrice")
-            prev = meta.get("previousClose") or meta.get("chartPreviousClose")
-            pre = meta.get("preMarketPrice")
-            post = meta.get("postMarketPrice")
-
-            if state in ("PRE", "PREPRE") and pre is not None:
-                price = float(pre)
-                session = "PRE_MARKET"
-            elif state in ("POST", "POSTPOST", "POST_MARKET") and post is not None:
-                price = float(post)
-                session = "AFTER_MARKET"
-            elif regular is not None:
-                price = float(regular)
-                session = "REGULAR" if state in ("REGULAR", "OPEN") else "CLOSED"
-            else:
-                return None
-
-            previous_close = float(prev) if prev is not None else None
-            change_pct = None
-            change = None
-            if previous_close is not None and previous_close != 0:
-                change = price - previous_close
-                change_pct = (change / previous_close) * 100.0
-            return {
-                "symbol": sym, "price": price, "price_str": f"{price:,.2f} 달러",
-                "previous_close": previous_close, "change": change, "change_pct": change_pct,
-                "session": session, "market_state": state, "source": "Yahoo Finance",
-                "is_realtime": session in ("PRE_MARKET", "REGULAR", "AFTER_MARKET"),
-            }
-
-        if market_name == "국내주식":
-            price, price_str = get_naver_realtime_price(symbol)
-            if price is None:
-                return None
-            previous_close = None
-            if df is not None and not df.empty and "Close" in df.columns:
-                try:
-                    idx = pd.to_datetime(df.index)
-                    today = pd.Timestamp.now().normalize()
-                    valid = df.loc[idx.normalize() < today]
-                    if not valid.empty:
-                        previous_close = float(valid["Close"].iloc[-1])
-                    else:
-                        previous_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else None
-                except Exception:
-                    previous_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else None
-            change = (price - previous_close) if previous_close is not None else None
-            change_pct = ((change / previous_close) * 100.0) if previous_close not in (None, 0) else None
-            return {
-                "symbol": str(symbol), "price": float(price), "price_str": price_str,
-                "previous_close": previous_close, "change": change, "change_pct": change_pct,
-                "session": "REGULAR", "market_state": "KR", "source": "Naver Finance",
-                "is_realtime": True,
-            }
-    except Exception as exc:
-        print(f"[UNIFIED PRICE SNAPSHOT] {symbol} failed: {type(exc).__name__}: {exc}")
-    return None
+    except Exception:
+        pass
+    return None, None, None
 
 def fetch_crypto_candles(symbol):
     clean_sym = symbol.upper().replace("-", "")
@@ -2737,103 +2753,6 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         "news_evidence": news_evidence[:5]
     }
 
-
-def build_track_analysis(raw_price, price_str, df, quant, movement_reason, domestic_flow, world_board, market_name, market_index_name, symbol, formal_name):
-    """트랙 분석 전용 데이터 묶음.
-    임의 숫자를 만들지 않고 기존 파이프라인에서 실제 확보된 값만 전달한다.
-    화면은 이 객체만 렌더링하도록 해 데이터와 UI의 결합을 단순화한다.
-    """
-    result = {
-        "price": price_str or "-",
-        "raw_price": float(raw_price) if raw_price is not None else None,
-        "change_pct": None,
-        "market": market_name or "-",
-        "market_index": market_index_name or "-",
-        "status": "정상" if (df is not None and len(df) > 0) else "데이터 부족",
-        "evidence_count": 0,
-        "evidence_total": 8,
-        "recent_60d": [],
-        "recent_60d_change_pct": None,
-        "low_52w": quant.get("low_52w") if isinstance(quant, dict) else None,
-        "high_52w": quant.get("high_52w") if isinstance(quant, dict) else None,
-        "pos_52w": quant.get("pos_52w") if isinstance(quant, dict) else None,
-        "slider_fill_pct": quant.get("slider_fill_pct") if isinstance(quant, dict) else None,
-        "details": [],
-        "sources": {
-            "price": "기존 종목 가격 데이터",
-            "history": "기존 종목 캔들 데이터",
-            "flow": "기존 수급 데이터",
-            "evidence": "왜 움직였을까? 확인된 근거"
-        }
-    }
-
-    try:
-        if df is not None and len(df) >= 2:
-            close = pd.to_numeric(df["Close"], errors="coerce").dropna()
-            if len(close) >= 2:
-                prev = float(close.iloc[-2])
-                last = float(close.iloc[-1])
-                if prev != 0:
-                    result["change_pct"] = round(((last / prev) - 1.0) * 100.0, 2)
-                vals = close.tail(60).tolist()
-                if len(vals) >= 2 and vals[0] != 0:
-                    result["recent_60d"] = [round(float(v), 8) for v in vals]
-                    result["recent_60d_change_pct"] = round(((vals[-1] / vals[0]) - 1.0) * 100.0, 2)
-    except Exception as exc:
-        print(f"[TRACK DATA] price history build failed: {repr(exc)}")
-
-    reasons = movement_reason.get("reasons", []) if isinstance(movement_reason, dict) else []
-    result["evidence_count"] = sum(1 for r in reasons if isinstance(r, dict) and int(r.get("score", 0) or 0) != 0)
-    result["details"] = [
-        {
-            "key": r.get("key"),
-            "label": r.get("label", "-"),
-            "score": int(r.get("score", 0) or 0),
-            "detail": r.get("detail", "-"),
-            "source": r.get("source")
-        }
-        for r in reasons if isinstance(r, dict)
-    ]
-
-    # 수급은 movement_reason과 동일한 실제 데이터를 별도로 명시해 UI에서 안정적으로 사용할 수 있게 한다.
-    if isinstance(domestic_flow, dict):
-        result["flow"] = {
-            "foreigner_5d": domestic_flow.get("foreigner_5d"),
-            "institution_5d": domestic_flow.get("institution_5d"),
-            "trading_value": domestic_flow.get("trading_value"),
-            "foreigner_detail": domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요"),
-            "institution_detail": domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요"),
-            "trading_value_detail": domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요")
-        }
-    else:
-        result["flow"] = {
-            "foreigner_5d": None,
-            "institution_5d": None,
-            "trading_value": None,
-            "foreigner_detail": "외국인 수급 데이터 확인 필요",
-            "institution_detail": "기관 수급 데이터 확인 필요",
-            "trading_value_detail": "거래대금 데이터 확인 필요"
-        }
-
-    # 시장/업종 관련 실제 world_board 값도 트랙 분석에 함께 보존한다.
-    def find_item(names):
-        return _find_world_item(world_board or [], names)
-
-    if market_name in ("국내주식", "국내증시"):
-        item = find_item([market_index_name or "KOSPI"])
-        if item:
-            result["market_value"] = item.get("price")
-            result["market_rate"] = item.get("rate")
-            result["market_detail"] = f"{item.get('name', market_index_name or '시장')} {item.get('rate', '-') }"
-    elif market_name == "미국주식":
-        item = find_item(["QQQ", "SPY"])
-        if item:
-            result["market_value"] = item.get("price")
-            result["market_rate"] = item.get("rate")
-            result["market_detail"] = f"{item.get('name', '미국시장')} {item.get('rate', '-') }"
-
-    return result
-
 # ----------------------------------------------------
 # 6. 전체 통합 파이프라인
 # ----------------------------------------------------
@@ -2865,6 +2784,7 @@ def run_full_pipeline(query):
     market_name = "국내주식"
     market_index_name = None
     is_krw = True
+    price_snapshot = None
 
     if clean_q in GLOBAL_INDEX_MAP:
         symbol = GLOBAL_INDEX_MAP[clean_q]
@@ -2912,12 +2832,20 @@ def run_full_pipeline(query):
         raw_price, price_str, df = fetch_overseas_candles(symbol)
         market_name = "미국주식"
         is_krw = False
+        price_snapshot = fetch_unified_us_price_snapshot(symbol, fallback_price=raw_price)
+        if price_snapshot:
+            raw_price = price_snapshot["price"]
+            price_str = price_snapshot["price_str"]
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()
         formal_name = symbol
         raw_price, price_str, df = fetch_overseas_candles(symbol)
         market_name = "미국주식"
         is_krw = False
+        price_snapshot = fetch_unified_us_price_snapshot(symbol, fallback_price=raw_price)
+        if price_snapshot:
+            raw_price = price_snapshot["price"]
+            price_str = price_snapshot["price_str"]
 
     else:
         code, name = find_stock_code(query)
@@ -2927,15 +2855,13 @@ def run_full_pipeline(query):
         market_index_name = get_naver_stock_market_type(symbol)
         raw_price, price_str = get_naver_realtime_price(symbol)
         df = fetch_domestic_candles(symbol, anchor_price=raw_price)
+        price_snapshot = fetch_unified_domestic_price_snapshot(symbol, fallback_price=raw_price, fallback_df=df)
+        if price_snapshot:
+            raw_price = price_snapshot["price"]
+            price_str = price_snapshot["price_str"]
         if raw_price is None and df is not None and not df.empty:
             raw_price = float(df['Close'].iloc[-1])
             price_str = f"{int(raw_price):,} 원"
-
-    # STEP 2: 상단/코멘트가 동일한 현재가 스냅샷을 공유한다.
-    price_snapshot = build_unified_price_snapshot(symbol, market_name, df=df)
-    if price_snapshot:
-        raw_price = price_snapshot.get("price") or raw_price
-        price_str = price_snapshot.get("price_str") or price_str
 
     if raw_price is None or df is None:
         return None
@@ -3011,13 +2937,6 @@ def run_full_pipeline(query):
             "news_evidence": []
         }
 
-    track_analysis = build_track_analysis(
-        raw_price=raw_price, price_str=price_str, df=df, quant=quant,
-        movement_reason=movement_reason, domestic_flow=domestic_flow,
-        world_board=world_board, market_name=market_name,
-        market_index_name=market_index_name, symbol=symbol, formal_name=formal_name
-    )
-
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -3056,6 +2975,38 @@ def run_full_pipeline(query):
         if 'BB_DN' in row and not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
 
+    market_snapshot = None
+    if market_name == "미국주식":
+        market_snapshot = fetch_unified_us_price_snapshot("QQQ")
+    elif market_name == "국내주식":
+        try:
+            market_key = market_index_name or "KOSPI"
+            live_market = fetch_naver_realtime_index(market_key)
+            if live_market:
+                market_snapshot = {
+                    "name": market_key,
+                    "price": live_market.get("price"),
+                    "change_pct": live_market.get("rate"),
+                    "session": live_market.get("market_status"),
+                    "source": "Naver/KRX 실시간",
+                    "realtime": True,
+                    "timestamp": live_market.get("traded_at")
+                }
+        except Exception:
+            market_snapshot = None
+
+    if price_snapshot is None:
+        price_snapshot = {
+            "price": raw_price,
+            "price_str": price_str,
+            "change_pct": None,
+            "previous_close": None,
+            "session": "UNKNOWN",
+            "source": "기존 가격 데이터",
+            "realtime": False,
+            "timestamp": now_str
+        }
+
     result_data = {
         "name": formal_name,
         "formal_name": formal_name,
@@ -3063,15 +3014,11 @@ def run_full_pipeline(query):
         "market": market_name,
         "price": price_str,
         "price_str": price_str,
-        "price_snapshot": price_snapshot or {
-            "price": raw_price, "price_str": price_str, "previous_close": None,
-            "change": None, "change_pct": None, "session": "UNKNOWN",
-            "source": "existing analysis data", "is_realtime": False
-        },
+        "price_snapshot": price_snapshot,
+        "market_snapshot": market_snapshot,
         "time": now_str,
         "now_str": now_str,
         "quant": quant,
-        "track_analysis": track_analysis,
         "movement_reason": movement_reason,
         "consensus": consensus,
         "stock_news": stock_news,
@@ -3089,1257 +3036,6 @@ def run_full_pipeline(query):
 
     ANALYSIS_CACHE[clean_q] = (now_ts, result_data)
     return result_data
-
-
-# ----------------------------------------------------
-# STEP 4 — 왜 움직였을까? 독립 데이터/분석 API
-# ----------------------------------------------------
-WHY_MOVED_CACHE = {}
-WHY_MOVED_CACHE_TTL = 300  # 5분
-
-
-def _why_cache_get(key):
-    item = WHY_MOVED_CACHE.get(key)
-    if not item:
-        return None
-    ts, value = item
-    if time.time() - ts >= WHY_MOVED_CACHE_TTL:
-        WHY_MOVED_CACHE.pop(key, None)
-        return None
-    return value
-
-
-def _why_cache_set(key, value):
-    WHY_MOVED_CACHE[key] = (time.time(), value)
-    # 메모리 과성장을 막기 위해 오래된 항목 정리
-    if len(WHY_MOVED_CACHE) > 100:
-        cutoff = time.time() - WHY_MOVED_CACHE_TTL
-        for k, (ts, _) in list(WHY_MOVED_CACHE.items()):
-            if ts < cutoff:
-                WHY_MOVED_CACHE.pop(k, None)
-    return value
-
-
-def _why_moved_external_news(symbol, formal_name, market_name):
-    """왜 움직였을까 전용 외부 뉴스 수집.
-    실제 외부 뉴스만 사용하고, 뉴스가 없으면 빈 결과를 반환한다.
-    Alpha Vantage 호출은 기존 캐시를 공유해 무료 API 한도 낭비를 줄인다.
-    """
-    # 국내 종목: Google News RSS에서 종목명 중심의 최신 외부 뉴스
-    stock_rss = fetch_rss_news(formal_name, 8)
-    # 미국 종목: Alpha Vantage 종목 뉴스 + 국내외 검색 뉴스
-    alpha = fetch_alpha_vantage_news(symbol if market_name == "미국주식" else "", "earnings")
-    global_rss = fetch_rss_news("뉴욕증시 OR 미국증시 OR 나스닥 OR 반도체", 6)
-    return merge_news_sources(stock_rss, alpha, global_rss)
-
-
-def _why_moved_evidence_from_reason(movement_reason):
-    reasons = movement_reason.get("reasons", []) if isinstance(movement_reason, dict) else []
-    return [
-        {
-            "key": r.get("key"),
-            "label": r.get("label", "-"),
-            "score": int(r.get("score", 0) or 0),
-            "detail": r.get("detail", "-"),
-            "source": r.get("source"),
-        }
-        for r in reasons if isinstance(r, dict)
-    ]
-
-
-def _why_moved_comment_v2(movement_reason, collected=None, domestic_flow=None, world_board=None, price_snapshot=None, formal_name=""):
-    """STEP 5 — 최종 코멘트 자연어 엔진 V2.
-
-    V2 점수 결과만 최종 판단에 사용한다.
-    실제로 확인된 이벤트/가격/활동 데이터만 문장에 넣고,
-    초보자가 읽기 쉬운 '원인 → 반응 → 확인 포인트' 흐름으로 작성한다.
-    """
-    if not isinstance(movement_reason, dict):
-        return "🐜 개미들아! 오늘 움직임은 한 가지 원인을 뚜렷하게 잡기 어려워. 확인된 근거부터 같이 봐보자!"
-
-    snapshot = price_snapshot if isinstance(price_snapshot, dict) else {}
-    live_price = _safe_float(snapshot.get("price"))
-    live_pct = _safe_float(snapshot.get("change_pct"))
-    live_price_str = str(snapshot.get("price_str") or "").strip()
-    session = str(snapshot.get("session") or "").strip()
-    if live_price is not None and live_pct is not None:
-        session_text = {
-            "PRE_MARKET": "프리마켓", "REGULAR": "정규장",
-            "AFTER_MARKET": "애프터마켓", "CLOSED": "장 마감 후"
-        }.get(session, "현재")
-        intro = f"🐜 개미들아! {formal_name or ''}은(는) 현재 {live_price_str}, {live_pct:+.2f}% 움직이고 있어. {session_text} 기준이야."
-    elif live_price is not None:
-        intro = f"🐜 개미들아! {movement_reason.get('formal_name') or ''}은(는) 현재 {live_price_str}야."
-    else:
-        intro = "🐜 개미들아! 현재 확인된 가격 데이터부터 살펴보자."
-
-    cause = movement_reason.get("cause_analysis_v2") or {}
-    key = str(cause.get("primary_key") or "").strip()
-    label = str(cause.get("primary_label") or "원인 미확정").strip()
-    score = _safe_float(cause.get("primary_score")) or 0
-    confidence = str(cause.get("confidence") or "낮음").strip()
-    pct = _safe_float(cause.get("price_change_pct"))
-
-    if not key or score < 35:
-        if pct is not None:
-            return f"🐜 개미들아! 오늘은 {pct:+.2f}% 움직였지만, 현재 확인된 외부 데이터만으로는 한 가지 원인을 확정하기 어려워. 여러 신호를 같이 확인해보면 좋아!"
-        return "🐜 개미들아! 오늘 움직임은 한 가지 원인을 확정하기 어려워. 확인된 근거부터 같이 봐보자!"
-
-    candidates = [x for x in (cause.get("candidates") or []) if isinstance(x, dict)]
-    primary = next((x for x in candidates if str(x.get("key")) == key), None) or {}
-    components = primary.get("components") or {}
-    temporal_pts = _safe_float(components.get("temporal")) or 0
-
-    secondary = [
-        x for x in (cause.get("secondary_reasons") or [])
-        if isinstance(x, dict) and (_safe_float(x.get("score")) or 0) >= 35
-    ][:2]
-    amplifiers = [
-        x for x in (cause.get("amplifiers") or [])
-        if isinstance(x, dict) and (_safe_float(x.get("score")) or 0) >= 35
-    ][:2]
-
-    # 같은 항목을 '보조원인'과 '증폭요인'에서 동시에 말하지 않는다.
-    secondary_keys = {str(x.get("key")) for x in secondary}
-    amplifiers = [x for x in amplifiers if str(x.get("key")) not in secondary_keys and str(x.get("key")) != key]
-
-    opening_by_key = {
-        "earnings": "🐜 개미들아! 이번 움직임은 실적을 먼저 보는 게 좋아.",
-        "material": "🐜 개미들아! 이번 움직임은 기업 재료를 먼저 보는 게 좋아.",
-        "macro": "🐜 개미들아! 이번 움직임은 경제·금리 흐름을 먼저 보는 게 좋아.",
-        "global_impact": "🐜 개미들아! 이번 움직임은 해외 시장 흐름부터 보는 게 좋아.",
-        "theme": "🐜 개미들아! 이번 움직임은 업종·테마 흐름을 먼저 보는 게 좋아.",
-        "flow_pair": "🐜 개미들아! 이번 움직임은 외국인·기관 수급을 같이 보는 게 좋아.",
-        "foreign": "🐜 개미들아! 이번 움직임은 외국인 수급을 같이 보는 게 좋아.",
-        "institution": "🐜 개미들아! 이번 움직임은 기관 수급을 같이 보는 게 좋아.",
-        "trading_value": "🐜 개미들아! 이번 움직임은 거래대금 변화를 같이 보는 게 좋아.",
-        "volume": "🐜 개미들아! 이번 움직임은 거래량 변화를 같이 보는 게 좋아.",
-        "market": "🐜 개미들아! 이번 움직임은 시장 흐름부터 비교해보는 게 좋아.",
-        "market_5d": "🐜 개미들아! 이번 움직임은 최근 시장 흐름과 비교해보는 게 좋아.",
-    }
-    opening = opening_by_key.get(key, f"🐜 개미들아! 이번 움직임은 {label}부터 보는 게 좋아.")
-
-    # 분석에 사용된 외부 이벤트 중 하나만 짧게 인용한다. 실제 데이터가 없으면 만들지 않는다.
-    area_map = {
-        "material": "stock_news",
-        "earnings": "earnings_news",
-        "macro": "macro_news",
-        "global_impact": "global_news",
-        "theme": "industry_news",
-    }
-    event_text = ""
-    if key in area_map:
-        for item in ((collected or {}).get(area_map[key], []) or []):
-            if not isinstance(item, dict):
-                continue
-            title = str(item.get("title") or item.get("headline") or item.get("name") or "").strip()
-            if title:
-                title = re.sub(r"\s+", " ", title)
-                event_text = title[:72].rstrip(" ,…") + ("…" if len(title) > 72 else "")
-                break
-
-    sentences = [intro, opening.replace("🐜 개미들아! ", "", 1)]
-    if event_text:
-        if temporal_pts > 0:
-            sentences.append(f"관련 외부 이벤트가 확인됐고, 그 이후 가격 반응도 같은 흐름으로 나타났어: {event_text}")
-        else:
-            sentences.append(f"관련 외부 이벤트가 확인됐어: {event_text}")
-    else:
-        sentences.append(f"현재 확인된 {label} 근거가 주가 움직임과 함께 나타났어.")
-
-    if pct is not None:
-        sentences.append(f"분석 기준 구간의 주가는 {pct:+.2f}% 움직였어.")
-
-    # 보조원인과 증폭요인을 겹치지 않게 한 문장씩만 사용한다.
-    sec_labels = list(dict.fromkeys(str(x.get("label") or "") for x in secondary if x.get("label")))
-    amp_labels = list(dict.fromkeys(str(x.get("label") or "") for x in amplifiers if x.get("label")))
-    if sec_labels:
-        sentences.append(f"다만 {', '.join(sec_labels)}도 함께 움직여서 한 가지 요인만으로 보긴 어려워.")
-    elif amp_labels:
-        sentences.append(f"{', '.join(amp_labels)}도 같은 방향으로 확인돼서 실제 움직임을 뒷받침했는지 확인해보면 좋아!")
-
-    # 확신도에 따라 마지막 문장을 자연스럽게 바꾼다.
-    if confidence == "높음":
-        sentences.append("현재 확인된 근거 가운데서는 이 요인의 영향이 가장 뚜렷해. 눈여겨볼 만해!")
-    elif confidence == "중간":
-        sentences.append("현재 데이터에서는 이 요인이 가장 유력해. 다른 요인도 같이 확인해보면 좋아!")
-    else:
-        sentences.append("이 요인이 유력해 보이지만 아직 단정하긴 어려워. 같이 확인해보면 좋아!")
-
-    # 너무 길어지면 핵심 순서를 유지하며 4문장으로 압축한다.
-    if len(sentences) > 4:
-        # 이벤트가 있으면 이벤트/가격/확인포인트를 우선한다.
-        sentences = [sentences[0], sentences[1], sentences[2], sentences[-1]]
-    return " ".join(re.sub(r"\s+", " ", x).strip() for x in sentences if x.strip())
-
-
-# ----------------------------------------------------
-# STEP 4 V2 — 왜 움직였을까? 데이터 수집 분리 계층
-# ----------------------------------------------------
-WHY_MOVED_DATA_CACHE = {}
-WHY_MOVED_DATA_CACHE_TTL = 300  # 5분
-
-
-def _why_data_cache_get(key):
-    item = WHY_MOVED_DATA_CACHE.get(key)
-    if not item:
-        return None
-    ts, value = item
-    if time.time() - ts >= WHY_MOVED_DATA_CACHE_TTL:
-        WHY_MOVED_DATA_CACHE.pop(key, None)
-        return None
-    return value
-
-
-def _why_data_cache_set(key, value):
-    WHY_MOVED_DATA_CACHE[key] = (time.time(), value)
-    if len(WHY_MOVED_DATA_CACHE) > 100:
-        cutoff = time.time() - WHY_MOVED_DATA_CACHE_TTL
-        for k, (ts, _) in list(WHY_MOVED_DATA_CACHE.items()):
-            if ts < cutoff:
-                WHY_MOVED_DATA_CACHE.pop(k, None)
-    return value
-
-
-def _why_news_enrich(items, category, scope):
-    """뉴스를 원인 영역별로 분리하고 출처/수집영역 메타데이터를 붙인다."""
-    out = []
-    for item in (items or []):
-        if not isinstance(item, dict):
-            continue
-        x = dict(item)
-        x["category"] = category
-        x["scope"] = scope
-        x["source_type"] = "Alpha Vantage" if str(x.get("source", "")).lower().find("alpha") >= 0 else "Google News RSS"
-        x["published_at"] = x.get("published") or x.get("pubDate") or ""
-        out.append(x)
-    return out
-
-
-def _why_detect_theme_from_name(formal_name):
-    text = str(formal_name or "").lower()
-    best_theme, best_hits = None, 0
-    for theme, keywords in MOVEMENT_THEME_KEYWORDS.items():
-        hits = sum(1 for k in keywords if str(k).lower() in text)
-        if hits > best_hits:
-            best_theme, best_hits = theme, hits
-    return best_theme, best_hits
-
-
-def _why_industry_query(formal_name):
-    """종목명만으로 확인 가능한 업종/테마 검색어를 만든다. 과도한 추측은 하지 않는다."""
-    theme, hits = _why_detect_theme_from_name(formal_name)
-    if theme:
-        return theme
-    return str(formal_name or "").strip()
-
-
-def collect_why_moved_data(symbol, formal_name, market_name, is_krw=False):
-    """
-    왜 움직였을까? V2 데이터 수집기.
-
-    ① stock      : 종목 자체 뉴스
-    ② industry   : 업종/테마 뉴스
-    ③ global     : 미국/글로벌 시장 뉴스
-    ④ macro      : FRED 실제 관측 + 경제 이벤트
-    ⑤ earnings   : 실적 actual/estimate
-    ⑥ disclosure : 국내 공시
-    ⑦ market     : 가격/시장/수급 검증 데이터
-
-    핵심 원칙: 서로 다른 영역의 데이터를 하나의 news 배열로 섞지 않는다.
-    """
-    cache_key = f"{symbol}|{formal_name}|{market_name}"
-    cached = _why_data_cache_get(cache_key)
-    if cached is not None:
-        return cached
-
-    theme_query = _why_industry_query(formal_name)
-
-    # 호출 수를 통제하면서 영역별로 필요한 데이터만 병렬 수집한다.
-    jobs = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        jobs["stock_rss"] = executor.submit(fetch_rss_news, formal_name, 8)
-        jobs["industry_rss"] = executor.submit(fetch_rss_news, theme_query, 6) if theme_query else None
-        jobs["global_rss"] = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥 OR 연준 OR CPI", 8)
-
-        # 종목 뉴스는 ticker가 지원되는 미국주식에서만 ticker 기반으로 보강한다.
-        jobs["ticker_news"] = (
-            executor.submit(fetch_alpha_vantage_news, symbol, "")
-            if market_name == "미국주식" and symbol else None
-        )
-        # 글로벌 원인 후보는 종목 ticker와 분리해 주제별로 수집한다.
-        jobs["financial_markets"] = executor.submit(fetch_alpha_vantage_news, "", "financial_markets")
-        jobs["monetary"] = executor.submit(fetch_alpha_vantage_news, "", "economy_monetary")
-        jobs["macro"] = executor.submit(fetch_alpha_vantage_news, "", "economy_macro")
-        jobs["fiscal"] = executor.submit(fetch_alpha_vantage_news, "", "economy_fiscal")
-        jobs["earnings_news"] = executor.submit(fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "earnings")
-
-        jobs["fred"] = executor.submit(fetch_fred_macro_snapshot)
-        jobs["calendar"] = executor.submit(fetch_real_market_calendar_live)
-        jobs["disclosures"] = executor.submit(fetch_dart_disclosures, symbol, is_krw, 8)
-        def get(name, default):
-            f = jobs.get(name)
-            return _safe_future_result(f, default, f"why-data:{name}") if f else default
-
-        stock_rss = get("stock_rss", [])
-        industry_rss = get("industry_rss", [])
-        global_rss = get("global_rss", [])
-        ticker_news = get("ticker_news", [])
-        financial_markets = get("financial_markets", [])
-        monetary = get("monetary", [])
-        macro_news = get("macro", [])
-        fiscal = get("fiscal", [])
-        earnings_news = get("earnings_news", [])
-        fred = get("fred", {})
-        calendar = get("calendar", [])
-        disclosures = get("disclosures", []) or []
-
-    # 영역을 섞지 않는다. 금융시장 뉴스는 global, 금리/CPI/고용 등은 macro로 분리한다.
-    stock_news = merge_news_sources(stock_rss, ticker_news)
-    industry_news = merge_news_sources(industry_rss)
-    global_news = merge_news_sources(global_rss, financial_markets)
-    macro_news = merge_news_sources(macro_news, monetary, fiscal)
-    earnings = fetch_alpha_vantage_earnings(symbol) if market_name == "미국주식" and symbol else {}
-
-    # 모든 뉴스에 영역 메타데이터를 붙인다. 같은 뉴스가 여러 영역에 중복되면
-    # 해당 영역에서 각각 사용하되, 최종 원인 엔진은 category를 기준으로 구분한다.
-    data = {
-        "stock_news": _why_news_enrich(stock_news, "stock", "종목"),
-        "industry_news": _why_news_enrich(industry_news, "industry", "업종·테마"),
-        "global_news": _why_news_enrich(global_news, "global", "글로벌"),
-        "earnings_news": _why_news_enrich(earnings_news, "earnings", "실적"),
-        "macro_news": _why_news_enrich(merge_news_sources(macro_news, monetary, fiscal), "macro", "거시경제"),
-        "macro_snapshot": fred or {},
-        "market_calendar": calendar or [],
-        "dart_disclosures": disclosures,
-        "earnings": earnings or {},
-        "theme": {"name": theme_query, "detected": bool(theme_query)},
-        "collection_meta": {
-            "version": "V2-data-separated",
-            "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S KST"),
-            "areas": ["stock", "industry", "global", "macro", "earnings", "disclosure"],
-        },
-    }
-    return _why_data_cache_set(cache_key, data)
-
-
-
-
-def _why_parse_news_time(item):
-    """뉴스 published 값을 가능한 범위에서 실제 시각으로 변환한다.
-    Alpha Vantage는 YYYYMMDDTHHMMSS(UTC), RSS는 RFC/ISO 형식을 주로 사용한다.
-    파싱 실패는 None으로 처리하며 임의 시각을 만들지 않는다.
-    """
-    raw = str((item or {}).get("published_at") or (item or {}).get("published") or (item or {}).get("pubDate") or "").strip()
-    if not raw:
-        return None
-    try:
-        if re.fullmatch(r"\d{8}T\d{6}", raw):
-            return datetime.strptime(raw, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
-        value = raw.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            # 시간대 정보가 없는 RSS는 한국 사이트 수집 결과를 우선 KST로 본다.
-            dt = dt.replace(tzinfo=ZoneInfo("Asia/Seoul") if ZoneInfo else timezone.utc)
-        return dt
-    except Exception:
-        try:
-            from email.utils import parsedate_to_datetime
-            dt = parsedate_to_datetime(raw)
-            if dt and dt.tzinfo is None:
-                dt = dt.replace(tzinfo=ZoneInfo("Asia/Seoul") if ZoneInfo else timezone.utc)
-            return dt
-        except Exception:
-            return None
-
-
-def _why_market_timezone(market_name):
-    if market_name in ("국내주식", "국내증시"):
-        return ZoneInfo("Asia/Seoul") if ZoneInfo else timezone.utc
-    if market_name == "미국주식":
-        return ZoneInfo("America/New_York") if ZoneInfo else timezone.utc
-    return ZoneInfo("UTC") if ZoneInfo else timezone.utc
-
-
-
-# ----------------------------------------------------
-# STEP 5 — 가격 기준일 ↔ 뉴스 기준일 정합성 엔진
-# ----------------------------------------------------
-# 원칙:
-# 1) 원인 분석의 기준일은 실제 가격 시계열의 마지막 거래일로 고정한다.
-# 2) 기준일 이후에 발표된 뉴스/이벤트는 화면 표시에는 남길 수 있지만
-#    해당 가격 움직임의 원인 후보로는 절대 사용하지 않는다.
-# 3) 기준일 당일 장마감 이후 뉴스도 그날 종가의 원인으로 사용하지 않는다.
-# 4) 미래 뉴스 때문에 과거 가격 움직임이 설명되는 시간 역전(bias)을 차단한다.
-
-
-def _why_price_cutoff_from_df(df, market_name):
-    """실제 가격 데이터의 마지막 거래일/종료시각을 분석 기준점으로 만든다."""
-    try:
-        if df is None or len(df) == 0:
-            return None
-        idx = pd.to_datetime(df.index, errors="coerce")
-        idx = idx[~idx.isna()]
-        if len(idx) == 0:
-            return None
-        last = idx[-1]
-        if hasattr(last, "to_pydatetime"):
-            last = last.to_pydatetime()
-        tz = _why_market_timezone(market_name)
-        if last.tzinfo is None:
-            # 일봉 인덱스가 날짜만 제공하는 경우 시장의 장마감 시각을 기준점으로 한다.
-            close_h, close_m = ((15, 30) if market_name in ("국내주식", "국내증시")
-                                else (16, 0) if market_name == "미국주식"
-                                else (23, 59))
-            last = last.replace(hour=close_h, minute=close_m, second=0, microsecond=0, tzinfo=tz)
-        else:
-            last = last.astimezone(tz)
-        return last
-    except Exception as exc:
-        print(f"[WHY DATE ALIGN] price cutoff failed: {exc}")
-        return None
-
-
-def _why_normalize_news_dt(item, market_name):
-    dt = _why_parse_news_time(item)
-    if dt is None:
-        return None
-    try:
-        return dt.astimezone(_why_market_timezone(market_name))
-    except Exception:
-        return dt
-
-
-def _why_news_is_causal_for_price(item, price_cutoff, market_name):
-    """뉴스가 가격 기준일의 움직임을 설명할 수 있는지 보수적으로 판정한다."""
-    dt = _why_normalize_news_dt(item, market_name)
-    if dt is None or price_cutoff is None:
-        return False, "검증불가"
-
-    local_cutoff = price_cutoff.astimezone(_why_market_timezone(market_name))
-    local_dt = dt.astimezone(_why_market_timezone(market_name))
-
-    # 기준일보다 미래에 발표된 뉴스는 절대 원인으로 사용하지 않는다.
-    if local_dt.date() > local_cutoff.date():
-        return False, "기준일후"
-
-    # 기준일 당일 장마감 후 발표된 뉴스는 당일 종가 원인이 될 수 없다.
-    if local_dt.date() == local_cutoff.date():
-        close_total = (15 * 60 + 30) if market_name in ("국내주식", "국내증시") else (16 * 60 if market_name == "미국주식" else 23 * 60 + 59)
-        news_total = local_dt.hour * 60 + local_dt.minute
-        if news_total > close_total:
-            return False, "기준일장마감후"
-
-    return True, "기준일이전/당일"
-
-
-def _why_align_collected_to_price_cutoff(collected, price_cutoff, market_name):
-    """수집 데이터는 보존하되, 원인 분석용 배열에서 기준일 이후 자료를 제거한다."""
-    if not isinstance(collected, dict):
-        return collected, {"status": "검증불가", "reason": "수집 데이터 없음"}
-
-    aligned = dict(collected)
-    meta = {
-        "version": "V2-price-news-date-alignment-1",
-        "price_cutoff": price_cutoff.isoformat() if price_cutoff else "",
-        "market_timezone": str(_why_market_timezone(market_name)),
-        "future_excluded": 0,
-        "after_close_excluded": 0,
-        "undated_kept_for_display_only": 0,
-        "areas": {},
-        "rule": "가격 기준일 이후 뉴스와 기준일 장마감 후 뉴스는 원인 분석에서 제외",
-    }
-
-    news_keys = ("stock_news", "industry_news", "global_news", "macro_news", "earnings_news")
-    for key in news_keys:
-        original = collected.get(key) or []
-        causal = []
-        excluded = []
-        for item in original:
-            if not isinstance(item, dict):
-                continue
-            dt = _why_normalize_news_dt(item, market_name)
-            if dt is None:
-                # 시간 미확인 자료는 원인 분석에 넣지 않고 화면 표시용으로만 보존한다.
-                x = dict(item)
-                x["date_alignment"] = "시간미확인"
-                x["causal_eligible"] = False
-                excluded.append(x)
-                meta["undated_kept_for_display_only"] += 1
-                continue
-            ok, status = _why_news_is_causal_for_price(item, price_cutoff, market_name)
-            x = dict(item)
-            x["event_at_normalized"] = dt.isoformat()
-            x["date_alignment"] = status
-            x["causal_eligible"] = bool(ok)
-            if ok:
-                causal.append(x)
-            else:
-                excluded.append(x)
-                if status == "기준일후":
-                    meta["future_excluded"] += 1
-                elif status == "기준일장마감후":
-                    meta["after_close_excluded"] += 1
-
-        # 화면에는 기존 수집 뉴스 전체를 그대로 남긴다.
-        aligned[key] = original
-        meta["areas"][key] = {
-            "display_count": len(original),
-            "causal_count": len(causal),
-            "excluded_count": len(excluded),
-            "excluded": excluded[:20],
-        }
-
-    # 원인 엔진에서 사용할 별도 묶음. 원본 collected는 변경하지 않는다.
-    analysis = dict(collected)
-    for key in news_keys:
-        original = collected.get(key) or []
-        causal = []
-        for item in original:
-            if not isinstance(item, dict):
-                continue
-            ok, _ = _why_news_is_causal_for_price(item, price_cutoff, market_name)
-            if ok:
-                causal.append(item)
-        analysis[key] = causal
-
-    meta["status"] = "확인" if price_cutoff is not None else "검증불가"
-    aligned["date_alignment"] = meta
-    analysis["date_alignment"] = meta
-    return aligned, analysis
-
-
-def _why_event_date_alignment_summary(collected, price_cutoff, market_name):
-    """API 응답에서 기준일 정합성을 직접 확인할 수 있게 요약한다."""
-    _, analysis = _why_align_collected_to_price_cutoff(collected, price_cutoff, market_name)
-    meta = analysis.get("date_alignment") or {}
-    return {
-        "status": meta.get("status", "검증불가"),
-        "price_cutoff": meta.get("price_cutoff", ""),
-        "market_timezone": meta.get("market_timezone", ""),
-        "future_excluded": int(meta.get("future_excluded", 0) or 0),
-        "after_close_excluded": int(meta.get("after_close_excluded", 0) or 0),
-        "rule": meta.get("rule", ""),
-        "areas": meta.get("areas", {}),
-    }
-
-def _why_temporal_status(dt, last_trade_dt, market_name):
-    """뉴스와 최근 거래일의 선후관계를 보수적으로 판정한다.
-    일봉 데이터만 있을 때는 같은 날의 장중 인과관계를 확정하지 않는다.
-    반환: score, status, explanation
-    """
-    if dt is None or last_trade_dt is None:
-        return 0, "검증불가", "뉴스 발표 시각 또는 거래일 시각을 확인할 수 없음"
-    tz = _why_market_timezone(market_name)
-    try:
-        local = dt.astimezone(tz)
-        trade = last_trade_dt.astimezone(tz)
-    except Exception:
-        local, trade = dt, last_trade_dt
-
-    d_days = (trade.date() - local.date()).days
-    if d_days < 0:
-        return -3, "미래뉴스", "최근 거래일 이후 발표된 뉴스"
-
-    # 장 마감 이후 발표된 같은 날짜 뉴스는 그날 가격의 원인이 될 수 없다.
-    close_hour, close_minute = (15, 30) if market_name in ("국내주식", "국내증시") else ((16, 0) if market_name == "미국주식" else (23, 59))
-    open_hour, open_minute = (9, 0) if market_name in ("국내주식", "국내증시") else ((9, 30) if market_name == "미국주식" else (0, 0))
-
-    if d_days == 0:
-        minutes = local.hour * 60 + local.minute
-        close_total = close_hour * 60 + close_minute
-        open_total = open_hour * 60 + open_minute
-        if minutes > close_total:
-            return -2, "장마감후", "최근 거래일 장 마감 후 발표된 뉴스"
-        if minutes < open_total:
-            return 2, "장시작전", "최근 거래일 장 시작 전에 발표된 뉴스"
-        return 1, "당일장중", "최근 거래일 장중 발표됐지만 일봉만으로 직접 반응 시점은 확정할 수 없음"
-    if d_days == 1:
-        return 2, "전거래일", "최근 거래일 직전 거래일에 발표된 뉴스"
-    if 2 <= d_days <= 3:
-        return 1, "최근뉴스", "최근 2~3일 내 발표된 뉴스"
-    if 4 <= d_days <= 7:
-        return 0, "과거뉴스", "최근 거래일 기준 4~7일 전 뉴스"
-    return -1, "오래된뉴스", "최근 거래일 기준 7일보다 오래된 뉴스"
-
-
-def _why_build_temporal_validation(collected, df, market_name):
-    """뉴스 → 최근 거래일의 시간 선후관계를 영역별로 검증한다.
-    점수는 원인 확정값이 아니라 다음 단계 원인 점수 엔진의 입력값이다.
-    """
-    if df is None or len(df) == 0:
-        return {"status": "검증불가", "reason": "가격 시계열 없음", "areas": {}}
-    try:
-        idx = pd.to_datetime(df.index)
-        last = idx[-1]
-        if getattr(last, "tzinfo", None) is None:
-            last = last.to_pydatetime().replace(tzinfo=_why_market_timezone(market_name))
-        else:
-            last = last.to_pydatetime()
-    except Exception:
-        return {"status": "검증불가", "reason": "최근 거래일 파싱 실패", "areas": {}}
-
-    area_map = {
-        "stock_news": "stock",
-        "industry_news": "industry",
-        "global_news": "global",
-        "macro_news": "macro",
-        "earnings_news": "earnings",
-    }
-    areas = {}
-    all_valid = 0
-    for key, area in area_map.items():
-        items = (collected or {}).get(key) or []
-        checks = []
-        for item in items:
-            dt = _why_parse_news_time(item)
-            score, status, explanation = _why_temporal_status(dt, last, market_name)
-            checks.append({
-                "title": str(item.get("title", ""))[:180],
-                "published_at": item.get("published_at") or item.get("published") or "",
-                "score": score, "status": status, "explanation": explanation,
-            })
-        checks.sort(key=lambda x: (x["score"], x["published_at"]), reverse=True)
-        positive = [x for x in checks if x["score"] > 0]
-        same_or_prior = [x for x in checks if x["score"] >= 1]
-        best = checks[0] if checks else None
-        areas[area] = {
-            "count": len(checks),
-            "valid_count": len([x for x in checks if x["status"] != "검증불가"]),
-            "positive_count": len(positive),
-            "same_or_prior_count": len(same_or_prior),
-            "best_score": best["score"] if best else 0,
-            "best_status": best["status"] if best else "데이터없음",
-            "best_explanation": best["explanation"] if best else "시간 정보가 있는 뉴스 없음",
-            "items": checks[:5],
-        }
-        all_valid += areas[area]["valid_count"]
-
-    return {
-        "status": "확인" if all_valid else "검증불가",
-        "last_trade_time": last.isoformat(),
-        "market_timezone": str(_why_market_timezone(market_name)),
-        "areas": areas,
-        "rule": "일봉만 있는 경우 당일 장중 뉴스는 인과관계를 확정하지 않고 약한 시간 선후 근거로만 사용",
-    }
-
-
-
-def _why_v2_direction_from_df(df):
-    """실제 가격 시계열에서 최근 방향을 계산한다. 데이터가 없으면 None."""
-    try:
-        if df is None or len(df) < 2 or "Close" not in df.columns:
-            return None, None
-        close = pd.to_numeric(df["Close"], errors="coerce").dropna()
-        if len(close) < 2 or float(close.iloc[-2]) == 0:
-            return None, None
-        pct = (float(close.iloc[-1]) / float(close.iloc[-2]) - 1.0) * 100.0
-        return (1 if pct > 0 else (-1 if pct < 0 else 0)), pct
-    except Exception:
-        return None, None
-
-
-def _why_v2_temporal_to_points(score):
-    """STEP 2 시간검증 점수를 원인점수의 시간축(최대 +20, 강한 반대 -20)에 매핑."""
-    mapping = {2: 20, 1: 10, 0: 0, -1: -12, -2: -20, -3: -20}
-    try:
-        return mapping.get(int(score), 0)
-    except Exception:
-        return 0
-
-
-def _why_v2_sentiment_strength(items):
-    """실제 뉴스 제목의 긍/부정 키워드 강도. 단순 뉴스 개수보다 보수적으로 계산."""
-    pos, neg, _ = _news_sentiment_score(items)
-    return pos, neg, min(25, pos * 4), min(25, neg * 4)
-
-
-def _why_v2_price_alignment(df, expected_direction):
-    """뉴스 이후 직접적인 분봉 반응을 가장하지 않는다. 현재 확보된 일봉의 실제 방향 일치만 평가."""
-    actual_direction, pct = _why_v2_direction_from_df(df)
-    if actual_direction is None or expected_direction is None or expected_direction == 0:
-        return 0, "가격 방향 검증불가"
-    if actual_direction == expected_direction:
-        if abs(pct or 0) >= 3:
-            return 20, f"최근 종가 방향 일치 ({pct:+.2f}%)"
-        if abs(pct or 0) >= 1:
-            return 15, f"최근 종가 방향 일치 ({pct:+.2f}%)"
-        if abs(pct or 0) >= 0.3:
-            return 8, f"최근 종가 방향 일치 ({pct:+.2f}%)"
-        return 3, f"최근 종가 방향 일치 ({pct:+.2f}%)"
-    return -15, f"최근 종가 방향 불일치 ({pct:+.2f}%)"
-
-
-def _why_v2_activity_points(df, domestic_flow, expected_direction):
-    """거래량/거래대금은 원인이 아니라 '실제 반응이 있었는지'를 보강하는 점수."""
-    points = 0
-    details = []
-    try:
-        if df is not None and len(df) >= 6 and "Volume" in df.columns and "Close" in df.columns:
-            close = pd.to_numeric(df["Close"], errors="coerce")
-            vol = pd.to_numeric(df["Volume"], errors="coerce")
-            pct = ((close.iloc[-1] / close.iloc[-2]) - 1.0) * 100 if close.iloc[-2] else 0
-            avg = float(vol.tail(6).iloc[:-1].mean()) if len(vol.tail(6)) >= 2 else 0
-            vr = (float(vol.iloc[-1]) / avg) * 100 if avg > 0 else None
-            if expected_direction and ((pct > 0) == (expected_direction > 0)):
-                if vr is not None and vr >= 150:
-                    points += 5; details.append(f"거래량 {vr:.0f}%")
-                elif vr is not None and vr >= 120:
-                    points += 3; details.append(f"거래량 {vr:.0f}%")
-    except Exception:
-        pass
-    if domestic_flow:
-        for key, label in (("foreigner_5d", "외국인 5일"), ("institution_5d", "기관 5일")):
-            try:
-                v = float(domestic_flow.get(key))
-                if expected_direction and ((v > 0) == (expected_direction > 0)) and v != 0:
-                    points += 2
-                    details.append(f"{label} 같은 방향")
-            except Exception:
-                pass
-    return min(5, points), " · ".join(details)
-
-
-def _why_v2_candidate_score(key, label, items, temporal_area, expected_direction, df,
-                            domestic_flow, world_board, market_name, market_index_name,
-                            theme_info=None, earnings=None, macro_events=None,
-                            disclosures=None, global_impact=None):
-    """원인 후보별 0~100 점을 계산한다.
-
-    구성:
-      관련성/직접근거 0~25
-      시간 선후관계   -20~20
-      실제 가격 반응 -15~20
-      시장 전파      0~15
-      수급/거래 확인  0~10
-      반대 증거      -20
-    """
-    items = items or []
-    temporal_best = 0
-    if isinstance(temporal_area, dict):
-        temporal_best = int(temporal_area.get("best_score", 0) or 0)
-    temporal_pts = _why_v2_temporal_to_points(temporal_best)
-
-    pos, neg, pos_rel, neg_rel = _why_v2_sentiment_strength(items)
-    # 기본 직접근거: 실제 뉴스가 존재할수록 커지되, 키워드 개수만으로 과대평가하지 않는다.
-    if key == "earnings":
-        direct = 25 if earnings else min(15, len(items) * 3)
-    elif key == "macro":
-        direct = 25 if macro_events else min(12, len(items) * 3)
-    elif key == "material":
-        direct = min(25, pos_rel + min(8, len(disclosures or []) * 4)) if expected_direction > 0 else min(25, neg_rel + min(8, len(disclosures or []) * 4))
-    elif key == "theme":
-        direct = min(25, len(items) * 4 + (5 if (theme_info or {}).get("theme") else 0))
-    elif key == "global_impact":
-        direct = min(25, len(items) * 3 + (8 if global_impact and global_impact.get("transmission_score", 0) >= 2 else 0))
-    else:
-        direct = 0
-
-    # 가격 방향은 모든 후보의 공통 검증축이다. 글로벌/시장 후보는 같은 방향의 시장 데이터가 있어야 한다.
-    price_pts = 0
-    price_detail = ""
-    if key in ("material", "earnings", "macro", "theme", "global_impact"):
-        price_pts, price_detail = _why_v2_price_alignment(df, expected_direction)
-
-    transmission = 0
-    transmission_detail = ""
-    gi = global_impact or {}
-    if key == "global_impact":
-        transmission = min(15, int(gi.get("transmission_score", 0) or 0) * 4)
-        transmission_detail = gi.get("summary", "")
-    elif key == "theme":
-        # 실제 SOXX와 국내시장 방향이 확인되는 경우에만 보강.
-        soxx = _find_world_item(world_board, ["SOXX"])
-        if soxx:
-            sr = _movement_rate_to_float(soxx.get("rate"))
-            if sr is not None and expected_direction and ((sr > 0) == (expected_direction > 0)):
-                transmission = 10 if abs(sr) >= 1 else 6
-                transmission_detail = f"SOXX {sr:+.2f}%와 종목 방향 일치"
-    elif key in ("macro", "earnings"):
-        # 거시/실적은 별도의 actual/estimate 검증이 있으면 직접근거로 반영하고,
-        # 가격 방향은 위 price_pts에서 별도로 검증한다.
-        transmission = 0
-    elif key == "material":
-        # 공시는 직접기업 재료이므로 시장 전파 점수를 억지로 추가하지 않는다.
-        transmission = 0
-
-    activity, activity_detail = _why_v2_activity_points(df, domestic_flow, expected_direction)
-
-    # 수급 후보는 실제 5일/최신 수급이 같은 방향인지 별도로 평가.
-    if key in ("foreign", "institution", "flow_pair"):
-        v1 = _safe_float((domestic_flow or {}).get("foreigner_5d"))
-        v2 = _safe_float((domestic_flow or {}).get("institution_5d"))
-        latest1 = _safe_float((domestic_flow or {}).get("foreigner_latest"))
-        latest2 = _safe_float((domestic_flow or {}).get("institution_latest"))
-        if key == "foreign":
-            direct = 20 if v1 is not None and v1 * expected_direction > 0 and latest1 is not None and latest1 * expected_direction > 0 else (10 if v1 is not None and v1 * expected_direction > 0 else 0)
-        elif key == "institution":
-            direct = 20 if v2 is not None and v2 * expected_direction > 0 and latest2 is not None and latest2 * expected_direction > 0 else (10 if v2 is not None and v2 * expected_direction > 0 else 0)
-        else:
-            direct = 25 if all(x is not None and x * expected_direction > 0 for x in (v1, v2)) else 0
-        price_pts, price_detail = _why_v2_price_alignment(df, expected_direction)
-    elif key == "trading_value":
-        tv = _safe_float((domestic_flow or {}).get("trading_value"))
-        # 기존 엔진이 계산한 tv_ratio가 있으면 그 값을 사용하지 않고, 실제 데이터 존재만 보수적으로 반영.
-        direct = 15 if tv is not None and activity > 0 else (8 if tv is not None else 0)
-        price_pts, price_detail = _why_v2_price_alignment(df, expected_direction)
-    elif key == "volume":
-        direct = 15 if activity >= 3 else (8 if activity > 0 else 0)
-        price_pts, price_detail = _why_v2_price_alignment(df, expected_direction)
-    elif key == "market":
-        direct = 15
-        price_pts = 0
-    elif key == "market_5d":
-        direct = 12
-        price_pts = 0
-
-    # 반대 증거: 후보의 방향과 실제 가격/수급이 반대면 강하게 감점.
-    contradiction = 0
-    if key in ("foreign", "institution", "flow_pair"):
-        if direct == 0:
-            contradiction -= 15
-    elif key in ("material", "earnings", "macro", "theme", "global_impact"):
-        if price_pts < 0:
-            contradiction -= 20
-    elif key in ("market", "market_5d"):
-        # 시장 후보는 종목 방향과 반대인 경우 원인 가능성이 낮다.
-        try:
-            r = next((x for x in (world_board or []) if x.get("name") in (["코스피"] if market_index_name == "KOSPI" else ["코스닥"])), None)
-            rr = _movement_rate_to_float(r.get("rate")) if r else None
-            if rr is not None and expected_direction and rr * expected_direction < 0:
-                contradiction -= 15
-            elif rr is not None and expected_direction and rr * expected_direction > 0:
-                transmission = 8
-        except Exception:
-            pass
-
-    raw = direct + temporal_pts + price_pts + transmission + activity + contradiction
-    score = max(0, min(100, int(raw)))
-
-    return {
-        "key": key,
-        "label": label,
-        "score": score,
-        "components": {
-            "direct_evidence": int(direct),
-            "temporal": int(temporal_pts),
-            "price_reaction": int(price_pts),
-            "transmission": int(transmission),
-            "activity": int(activity),
-            "contradiction": int(contradiction),
-        },
-        "temporal_score": temporal_best,
-        "temporal_status": temporal_area.get("best_status") if isinstance(temporal_area, dict) else "검증불가",
-        "price_detail": price_detail,
-        "activity_detail": activity_detail,
-        "transmission_detail": transmission_detail,
-        "evidence_count": len(items),
-    }
-
-
-def analyze_why_moved_cause_v2(movement_reason, collected, temporal_validation, df,
-                               domestic_flow, world_board, market_name, market_index_name,
-                               formal_name, symbol=""):
-    """STEP 3: 원인별 점수 엔진 V2.
-
-    기존 8개 근거 카드는 그대로 유지하고, 별도의 `cause_analysis_v2`에서
-    원인 후보를 0~100으로 다시 평가한다. 따라서 현재 화면을 깨뜨리지 않는다.
-    """
-    base = dict(movement_reason or {})
-    collected = collected or {}
-    temporal = temporal_validation or {}
-    areas = temporal.get("areas") or {}
-
-    direction, pct = _why_v2_direction_from_df(df)
-    if direction is None:
-        old_direction = str(base.get("direction", "")).lower()
-        direction = -1 if "하락" in old_direction else (1 if "상승" in old_direction else 0)
-
-    theme_info = (base.get("global_impact") or {}).get("theme") if isinstance(base.get("global_impact"), dict) else None
-    if not theme_info:
-        theme_info = {"theme": (collected.get("theme") or {}).get("name")}
-
-    earnings = collected.get("earnings") or {}
-    earnings_rows = earnings.get("quarterly") if isinstance(earnings, dict) else []
-    earnings_rows = earnings_rows or []
-    macro_events = []
-    for ev in (collected.get("market_calendar") or []):
-        if isinstance(ev, dict) and ev.get("type") == "eco":
-            actual = _safe_float(ev.get("val")); expected = _safe_float(ev.get("exp"))
-            if actual is not None and expected is not None:
-                macro_events.append(ev)
-
-    labels = {
-        "material": "기업 재료", "earnings": "실적", "macro": "경제·거시",
-        "global_impact": "글로벌·국내 연결", "theme": "업종·테마",
-        "flow_pair": "외국인·기관 수급", "foreign": "외국인 수급",
-        "institution": "기관 수급", "trading_value": "거래대금",
-        "volume": "거래량", "market": "시장", "market_5d": "시장 5일 흐름",
-    }
-
-    candidates = []
-    for key in labels:
-        if key == "material": items = list(collected.get("stock_news") or []) + list(collected.get("earnings_news") or [])
-        elif key == "earnings": items = list(collected.get("earnings_news") or [])
-        elif key == "macro": items = list(collected.get("macro_news") or [])
-        elif key == "global_impact": items = list(collected.get("global_news") or [])
-        elif key == "theme": items = list(collected.get("industry_news") or [])
-        else: items = []
-        area = areas.get({
-            "material": "stock", "earnings": "earnings", "macro": "macro",
-            "global_impact": "global", "theme": "industry"
-        }.get(key, ""), {})
-        candidate = _why_v2_candidate_score(
-            key, labels[key], items, area, direction, df, domestic_flow,
-            world_board, market_name, market_index_name, theme_info=theme_info,
-            earnings=earnings_rows, macro_events=macro_events,
-            disclosures=collected.get("dart_disclosures") or [],
-            global_impact=base.get("global_impact") or {},
-        )
-        candidates.append(candidate)
-
-    candidates.sort(key=lambda x: x["score"], reverse=True)
-    primary = candidates[0] if candidates else None
-    secondary = candidates[1:4] if candidates else []
-
-    # 최소 신뢰 문턱. 점수가 낮으면 '원인 미확정'으로 둔다.
-    if not primary or primary["score"] < 35:
-        primary_key = None
-        confidence = "낮음"
-    else:
-        primary_key = primary["key"]
-        if primary["score"] >= 70:
-            confidence = "높음"
-        elif primary["score"] >= 50:
-            confidence = "중간"
-        else:
-            confidence = "낮음"
-
-    # 보조 원인은 주원인과 방향이 맞고 점수가 최소 35 이상인 것만.
-    secondary = [x for x in secondary if x["score"] >= 35][:2]
-
-    # 증폭 요인: 수급/거래가 주원인과 별도로 실제 방향을 강화할 때만 선택.
-    amplifier_keys = {"foreign", "institution", "flow_pair", "trading_value", "volume"}
-    amplifiers = [x for x in candidates if x["key"] in amplifier_keys and x["score"] >= 35]
-    amplifiers = amplifiers[:2]
-
-    return {
-        "version": "V2-cause-score",
-        "direction": "상승" if direction > 0 else ("하락" if direction < 0 else "혼조"),
-        "price_change_pct": pct,
-        "primary_key": primary_key,
-        "primary_label": labels.get(primary_key, "원인 미확정") if primary_key else "원인 미확정",
-        "primary_score": primary["score"] if primary_key else 0,
-        "confidence": confidence,
-        "candidates": candidates,
-        "secondary_reasons": secondary,
-        "amplifiers": amplifiers,
-        "rule": "직접근거 + 시간선후 + 실제가격반응 + 시장전파 + 거래확인 - 반대증거",
-    }
-
-def _why_apply_temporal_validation(movement_reason, temporal):
-    """시간 검증 결과를 원인 후보에 붙이고, 시간상 명백히 뒤늦은 재료는 주원인 선택에서 제외한다."""
-    if not isinstance(movement_reason, dict):
-        return movement_reason
-    out = dict(movement_reason)
-    reasons = [dict(r) for r in (movement_reason.get("reasons") or []) if isinstance(r, dict)]
-    areas = (temporal or {}).get("areas") or {}
-    reason_area = {
-        "material": ["stock", "earnings"],
-        "theme": ["industry"],
-    }
-    for r in reasons:
-        keys = reason_area.get(r.get("key"), [])
-        vals = [areas[a].get("best_score", 0) for a in keys if a in areas]
-        if vals:
-            ts = max(vals)
-            r["temporal_score"] = ts
-            r["temporal_status"] = next((areas[a].get("best_status") for a in keys if a in areas and areas[a].get("best_score", 0) == ts), "검증불가")
-        else:
-            r["temporal_score"] = None
-            r["temporal_status"] = "뉴스시간검증대상아님"
-    out["reasons"] = reasons
-
-    main_key = out.get("main_reason_key")
-    main_temporal = next((r.get("temporal_score") for r in reasons if r.get("key") == main_key), None)
-    out["temporal_validation"] = temporal
-    out["main_reason_temporal_score"] = main_temporal
-    if main_key in ("material", "theme") and main_temporal is not None and main_temporal < 0:
-        # 뉴스가 최근 거래일 이후에 나왔다면 해당 재료를 같은 날 원인으로 확정하지 않는다.
-        alternatives = [r for r in reasons if r.get("key") not in ("material", "theme") and int(r.get("score", 0) or 0) != 0]
-        if alternatives:
-            alt = max(alternatives, key=lambda r: int(r.get("score", 0) or 0))
-            out["main_reason_key"] = alt.get("key")
-            out["main_reason"] = {
-                "foreign": "외국인 수급", "institution": "기관 수급",
-                "trading_value": "거래대금", "volume": "거래량",
-                "market": "시장", "market_5d": "시장 5일 흐름",
-            }.get(alt.get("key"), out.get("main_reason", "-"))
-            out["temporal_override"] = {
-                "from": main_key, "to": alt.get("key"),
-                "reason": "주요 뉴스가 최근 거래일 장마감 후 또는 미래 시점에 발표되어 당일 원인으로 인정하지 않음"
-            }
-    return out
-
-
-def _why_fetch_price_frame(symbol, market_name):
-    """왜 움직였을까? 시간 검증용 실제 가격 시계열. 실패해도 분석 전체는 중단하지 않는다."""
-    try:
-        if market_name in ("국내주식", "국내증시"):
-            _, _, df = fetch_domestic_candles(symbol)
-        elif market_name == "미국주식":
-            _, _, df = fetch_overseas_candles(symbol)
-        elif market_name == "암호화폐":
-            _, _, df = fetch_crypto_candles(symbol)
-        else:
-            return None
-        return df
-    except Exception as exc:
-        print(f"[WHY MOVED PRICE FRAME] failed: {exc}")
-        return None
-
-def run_why_moved_pipeline(query):
-    """독립 /api/why-moved 파이프라인.
-    기존 사이트의 실제 가격·수급·시장 데이터는 '검증'에 사용하고,
-    뉴스/거시/실적 후보는 왜 움직였을까 전용 외부 데이터로 다시 수집한다.
-    기존 /api/analyze 결과가 캐시에 있으면 재사용해 API 호출을 줄인다.
-    """
-    clean_q = query.strip().replace(" ", "").upper()
-    if not clean_q:
-        return None
-
-    cached = _why_cache_get(clean_q)
-    if cached is not None:
-        return cached
-
-    # /api/analyze가 직전에 실행된 경우 기존 실제 데이터 묶음을 검증 데이터로 재사용.
-    base = None
-    if clean_q in ANALYSIS_CACHE:
-        ts, val = ANALYSIS_CACHE[clean_q]
-        if time.time() - ts < 60:
-            base = val
-
-    if base is None:
-        base = run_full_pipeline(query)
-    if not base:
-        return None
-
-    symbol = base.get("symbol", "")
-    formal_name = base.get("formal_name") or base.get("name") or query.strip()
-    market_name = base.get("market", "")
-
-    # V2: 데이터 영역을 분리해서 수집한다.
-    # 종목 뉴스와 글로벌/거시 뉴스가 같은 배열로 섞이지 않도록 한다.
-    try:
-        collected = collect_why_moved_data(
-            symbol=symbol,
-            formal_name=formal_name,
-            market_name=market_name,
-            is_krw=market_name in ("국내주식", "국내증시"),
-        )
-    except Exception as exc:
-        print(f"[WHY MOVED DATA V2] failed: {repr(exc)}")
-        collected = {
-            "stock_news": [], "industry_news": [], "global_news": [],
-            "earnings_news": [], "macro_news": [], "macro_snapshot": {},
-            "market_calendar": [], "dart_disclosures": [], "earnings": {},
-            "theme": {}, "collection_meta": {"version": "V2-data-separated-fallback"},
-        }
-
-    # 기존 /api/analyze의 실제 시장 데이터는 검증 데이터로 계속 사용한다.
-    world_board = base.get("world_board") or []
-    stock_news = collected.get("stock_news") or []
-    industry_news = collected.get("industry_news") or []
-    global_news = collected.get("global_news") or []
-    macro_news = collected.get("macro_news") or []
-    macro_snapshot = collected.get("macro_snapshot") or base.get("macro_snapshot") or {}
-    market_calendar = collected.get("market_calendar") or base.get("market_calendar") or []
-    dart_disclosures = collected.get("dart_disclosures") or base.get("dart_disclosures") or []
-    domestic_flow = None
-    try:
-        # track_analysis에 저장된 실제 수급 세부값을 복원할 수 있으면 사용한다.
-        domestic_flow = (base.get("track_analysis") or {}).get("flow")
-    except Exception:
-        domestic_flow = None
-
-    # 외부 뉴스 + 기존 실제 시장 반응으로 원인을 재평가한다.
-    # STEP 2: 실제 가격 시계열을 다시 확보해 뉴스 발표일과 최근 거래일의 선후관계를 검증한다.
-    why_df = _why_fetch_price_frame(symbol, market_name)
-    if why_df is None:
-        try:
-            candles = (base.get("candles") or [])
-            if candles:
-                why_df = pd.DataFrame(candles)
-                if "time" in why_df.columns:
-                    why_df["Date"] = pd.to_datetime(why_df["time"], errors="coerce")
-                    why_df = why_df.set_index("Date")
-        except Exception:
-            why_df = None
-
-    # STEP 5: 가격 기준일과 뉴스 기준일을 일치시킨다.
-    # display용 collected는 보존하고, 원인 분석에는 analysis_collected만 사용한다.
-    price_cutoff = _why_price_cutoff_from_df(why_df, market_name)
-    collected_display = collected
-    try:
-        collected_aligned, analysis_collected = _why_align_collected_to_price_cutoff(
-            collected, price_cutoff, market_name
-        )
-        collected = analysis_collected
-    except Exception as exc:
-        print(f"[WHY DATE ALIGN] failed: {repr(exc)}")
-        collected_aligned = collected_display
-        analysis_collected = collected_display
-
-    # 정합성 필터를 적용한 분석용 데이터로 아래 모든 원인 계산을 수행한다.
-    stock_news = collected.get("stock_news") or []
-    industry_news = collected.get("industry_news") or []
-    global_news = collected.get("global_news") or []
-    macro_news = collected.get("macro_news") or []
-    market_calendar = collected.get("market_calendar") or []
-    dart_disclosures = collected.get("dart_disclosures") or []
-
-    temporal_validation = _why_build_temporal_validation(collected, why_df, market_name)
-
-    try:
-        movement_reason = analyze_movement_reason(
-            raw_price=None if not base.get("track_analysis") else (base.get("track_analysis") or {}).get("raw_price"),
-            df=why_df,
-            formal_name=formal_name,
-            market_name=market_name,
-            world_board=world_board,
-            stock_news=stock_news,
-            dart_disclosures=dart_disclosures,
-            market_index_name=(base.get("track_analysis") or {}).get("market_index", ""),
-            domestic_flow=domestic_flow,
-            global_news=global_news,
-            consensus=base.get("consensus"),
-            macro_snapshot=macro_snapshot,
-            market_calendar=market_calendar,
-            symbol=symbol,
-        )
-    except Exception as exc:
-        print(f"[WHY MOVED] analysis failed: {repr(exc)}")
-        movement_reason = base.get("movement_reason") or {
-            "direction": "-", "confidence": "낮음", "total_score": 0,
-            "main_reason": "-", "main_reason_key": None, "reasons": [], "news_evidence": []
-        }
-
-    # STEP 2: 시간 선후관계 결과를 원인 후보에 반영한다.
-    movement_reason = _why_apply_temporal_validation(movement_reason, temporal_validation)
-
-    # STEP 3: 원인별 점수 엔진 V2. 기존 8개 근거 카드와 화면용 score는 유지하고,
-    # V2 결과를 별도 객체로 붙여 다음 단계의 코멘트 엔진이 사용하도록 한다.
-    try:
-        cause_v2 = analyze_why_moved_cause_v2(
-            movement_reason=movement_reason,
-            collected=collected,
-            temporal_validation=temporal_validation,
-            df=why_df,
-            domestic_flow=domestic_flow,
-            world_board=world_board,
-            market_name=market_name,
-            market_index_name=(base.get("track_analysis") or {}).get("market_index", ""),
-            formal_name=formal_name,
-            symbol=symbol,
-        )
-        movement_reason = dict(movement_reason)
-        movement_reason["cause_analysis_v2"] = cause_v2
-        movement_reason["primary_reason_v2_key"] = cause_v2.get("primary_key")
-        movement_reason["primary_reason_v2_label"] = cause_v2.get("primary_label")
-        movement_reason["primary_reason_v2_score"] = cause_v2.get("primary_score", 0)
-        movement_reason["confidence_v2"] = cause_v2.get("confidence", "낮음")
-    except Exception as exc:
-        print(f"[WHY MOVED CAUSE V2] failed: {repr(exc)}")
-
-    result = {
-        "symbol": symbol,
-        "name": formal_name,
-        "market": market_name,
-        "price": base.get("price_str") or base.get("price") or "-",
-        "direction": movement_reason.get("direction", "-"),
-        "movement_reason": movement_reason,
-        "comment": _why_moved_comment_v2(
-            movement_reason,
-            collected=collected,
-            domestic_flow=domestic_flow,
-            world_board=world_board,
-            price_snapshot=base.get("price_snapshot"),
-            formal_name=formal_name,
-        ),
-        "evidence": _why_moved_evidence_from_reason(movement_reason),
-        # 뉴스 목록은 최신 자료를 숨기지 않는다. 단, 원인 분석에는 기준일 정합성 필터가 적용된다.
-        "news": (collected_aligned.get("stock_news") or stock_news)[:12],
-        "news_count": len(stock_news),
-        "news_by_area": {
-            "stock": (collected_display.get("stock_news") or stock_news)[:12],
-            "industry": (collected_display.get("industry_news") or industry_news)[:12],
-            "global": (collected_display.get("global_news") or global_news)[:12],
-            "macro": (collected_display.get("macro_news") or macro_news)[:12],
-            "earnings": (collected_display.get("earnings_news") or [])[:12],
-        },
-        "data_collection": collected_display.get("collection_meta") or {},
-        "date_alignment": _why_event_date_alignment_summary(
-            collected_display, price_cutoff, market_name
-        ),
-        "temporal_validation": temporal_validation,
-        "macro": macro_snapshot,
-        "earnings": collected.get("earnings") or (movement_reason.get("global_impact", {}).get("earnings") if isinstance(movement_reason.get("global_impact"), dict) else None),
-        "sources": {
-            "news": "외부 뉴스 API/RSS",
-            "macro": "FRED 실제 관측 + 확인 가능한 경제 이벤트",
-            "earnings": "실제 실적 actual/estimate 데이터가 있을 때만 사용",
-            "market_verification": "기존 사이트의 실제 가격·시장·수급 데이터",
-        },
-        "verified_market": {
-            "track_analysis": base.get("track_analysis") or {},
-            "world_board": world_board,
-        },
-        # STEP 4 TEST MODE: V2가 실제로 무엇을 근거로 주원인을 선택했는지
-        # 화면에서 검증할 수 있도록 원인 후보/구성점수/시간검증 요약을 별도로 제공한다.
-        # 최종 사용자용 UI가 아니라 테스트 완료 후 제거할 수 있는 진단 데이터다.
-        "cause_v2_debug": {
-            "analysis_cutoff": price_cutoff.isoformat() if hasattr(price_cutoff, "isoformat") else str(price_cutoff or ""),
-            "primary_key": (movement_reason.get("cause_analysis_v2") or {}).get("primary_key"),
-            "primary_label": (movement_reason.get("cause_analysis_v2") or {}).get("primary_label"),
-            "primary_score": (movement_reason.get("cause_analysis_v2") or {}).get("primary_score", 0),
-            "confidence": (movement_reason.get("cause_analysis_v2") or {}).get("confidence", "낮음"),
-            "direction": (movement_reason.get("cause_analysis_v2") or {}).get("direction", "혼조"),
-            "price_change_pct": (movement_reason.get("cause_analysis_v2") or {}).get("price_change_pct"),
-            "rule": (movement_reason.get("cause_analysis_v2") or {}).get("rule", ""),
-            "candidates": (movement_reason.get("cause_analysis_v2") or {}).get("candidates", []),
-            "secondary_reasons": (movement_reason.get("cause_analysis_v2") or {}).get("secondary_reasons", []),
-            "amplifiers": (movement_reason.get("cause_analysis_v2") or {}).get("amplifiers", []),
-            "temporal_summary": {
-                "areas": (temporal_validation or {}).get("areas", {}),
-            },
-            "aligned_event_counts": {
-                "stock": len(collected_aligned.get("stock_news") or []),
-                "industry": len(collected_aligned.get("industry_news") or []),
-                "global": len(collected_aligned.get("global_news") or []),
-                "macro": len(collected_aligned.get("macro_news") or []),
-                "earnings": len(collected_aligned.get("earnings_news") or []),
-                "calendar": len(collected_aligned.get("market_calendar") or []),
-            },
-            "top_aligned_events": [
-                {"area": area, "title": str(item.get("title") or item.get("name") or "").strip(), "pubDate": str(item.get("pubDate") or item.get("published_at") or item.get("date") or "")}
-                for area, arr in ((
-                    ("stock", collected_aligned.get("stock_news") or []),
-                    ("earnings", collected_aligned.get("earnings_news") or []),
-                    ("macro", collected_aligned.get("macro_news") or []),
-                    ("global", collected_aligned.get("global_news") or []),
-                    ("industry", collected_aligned.get("industry_news") or []),
-                ))
-                for item in arr[:2]
-                if isinstance(item, dict)
-            ][:8],
-        },
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S KST"),
-        "engine_versions": {
-            "date_alignment": "V2-step5",
-            "rule": "price_cutoff_equals_latest_real_price_date; future_news_excluded_from_causal_analysis",
-        },
-    }
-    return _why_cache_set(clean_q, result)
 
 # ----------------------------------------------------
 # 7. 텔레그램 봇 실시간 인터랙션 엔진
@@ -4552,156 +3248,26 @@ HTML_PAGE = r"""<!DOCTYPE html>
             align-items: stretch;
         }
 
-        /* 1행: 왜 움직였을까? — 코멘트 전용 */
+        /* STEP 1: 기존 2열 레이아웃은 유지하고, 왜 움직였을까? 아래에 트랙 분석만 1개 행 추가 */
+        /* 1행: 왜 움직였을까? (좌측 832px) */
         #rowCause { grid-column: 1; grid-row: 1; }
 
-        /* STEP 7 — 왜 움직였을까? 시각 강조 디자인
-           레이아웃/그리드 위치는 기존과 동일하게 유지한다. */
-        #rowCause {
-            position: relative;
-            overflow: hidden;
-            justify-content: flex-start !important;
-            padding: 18px 18px 20px !important;
-            background:
-                linear-gradient(180deg, rgba(30,41,59,0.22), rgba(17,24,39,0.06)),
-                var(--bg-card);
-            border: 1px solid rgba(56,189,248,0.20);
-            box-shadow: 0 4px 18px rgba(0,0,0,0.08);
-        }
-        #rowCause::before {
-            content: "";
-            position: absolute;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: 3px;
-            background: linear-gradient(180deg, #38bdf8, rgba(56,189,248,0.18));
-        }
-        .why-moved-header {
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            margin-bottom:12px;
-            padding-bottom:10px;
-            border-bottom:1px solid var(--border-line);
-        }
-        .why-moved-title-wrap {
-            display:flex;
-            align-items:center;
-            gap:9px;
-            min-width:0;
-        }
-        .why-moved-title {
-            font-size:1.02rem;
-            font-weight:850;
-            color:var(--text-title);
-            letter-spacing:-0.35px;
-        }
-        .why-moved-live {
-            font-size:0.62rem;
-            font-weight:800;
-            color:#38bdf8;
-            background:rgba(56,189,248,0.10);
-            border:1px solid rgba(56,189,248,0.20);
-            padding:3px 7px;
-            border-radius:8px;
-            white-space:nowrap;
-        }
-        .why-moved-snapshot {
-            display:grid;
-            grid-template-columns:1fr 1fr;
-            gap:8px;
-            margin-bottom:12px;
-        }
-        .why-moved-snapshot-item {
-            min-width:0;
-            background:rgba(15,23,42,0.28);
-            border:1px solid var(--border-line);
-            border-radius:10px;
-            padding:9px 10px;
-        }
-        .why-moved-snapshot-label {
-            font-size:0.62rem;
-            color:var(--text-muted);
-            margin-bottom:3px;
-        }
-        .why-moved-snapshot-value {
-            font-size:0.94rem;
-            font-weight:850;
-            color:var(--text-title);
-            white-space:nowrap;
-            overflow:hidden;
-            text-overflow:ellipsis;
-        }
-        .why-moved-snapshot-value.up { color:#10b981; }
-        .why-moved-snapshot-value.down { color:#ef4444; }
-        .why-moved-core {
-            display:flex;
-            align-items:center;
-            gap:8px;
-            margin:2px 0 9px;
-        }
-        .why-moved-core-label {
-            font-size:0.68rem;
-            font-weight:800;
-            color:#38bdf8;
-            background:rgba(56,189,248,0.10);
-            border:1px solid rgba(56,189,248,0.18);
-            border-radius:8px;
-            padding:3px 7px;
-            white-space:nowrap;
-        }
-        .why-moved-core-cause {
-            font-size:0.82rem;
-            font-weight:850;
-            color:var(--text-title);
-            overflow:hidden;
-            text-overflow:ellipsis;
-            white-space:nowrap;
-        }
-        .why-moved-comment-body {
-            font-size:0.84rem;
-            line-height:1.72;
-            color:var(--text-main);
-            word-break:keep-all;
-            white-space:pre-line;
-        }
-        .why-moved-comment-body strong {
-            color:var(--text-title);
-            font-weight:850;
-        }
-        .why-moved-foot {
-            margin-top:11px;
-            padding-top:9px;
-            border-top:1px dashed rgba(148,163,184,0.16);
-            font-size:0.63rem;
-            color:var(--text-muted);
-            line-height:1.45;
-            word-break:keep-all;
-        }
-        @media (max-width:560px) {
-            .why-moved-snapshot { grid-template-columns:1fr; }
-            .why-moved-title { font-size:0.98rem; }
-            .why-moved-comment-body { font-size:0.82rem; }
-        }
+        /* 2행: 트랙 분석 (좌측 832px) */
+        #rowTrack { grid-column: 1; grid-row: 2; }
 
-        /* 2행: 차트(좌) & 증시(우) */
-        #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
-        #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
+        /* 3행: 메인 차트(좌) & 증시는 지금(우) - 기존 1:1 대칭 유지 */
+        #rowChart { grid-column: 1; grid-row: 3; height: 100%; }
+        #rowWorld { grid-column: 2; grid-row: 3; height: 100%; }
 
-        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) */
-        #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
-        #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
+        /* 4행: 종목 뉴스(좌) & 해외 뉴스(우) - 기존 1:1 대칭 유지 */
+        #rowNews { grid-column: 1; grid-row: 4; height: 100%; }
+        #rowGlobalNews { grid-column: 2; grid-row: 4; height: 100%; }
 
-        /* 4행: 트랙 분석 — 종목 뉴스 바로 아래 */
-        #rowTrack { grid-column: 1; grid-row: 4; }
-
-        /* 5행: 퀀트 분석(좌) & 캘린더(우) */
+        /* 5행: 퀀트 분석(좌) & 캘린더(우) - 기존 1:1 대칭 유지 */
         #rowQuant { grid-column: 1; grid-row: 5; height: 100%; }
         #rowCalendar { grid-column: 2; grid-row: 5; height: 100%; }
 
-        /* 좌측 832px 단독 배치 행들 */
+        /* 좌측 832px 단독 배치 행들 - 트랙 분석 추가에 따라 1행씩만 아래로 이동 */
         #rowConsensus { grid-column: 1; grid-row: 6; }
         #rowVote { grid-column: 1; grid-row: 7; }
         #rowComment { grid-column: 1; grid-row: 8; }
@@ -5217,21 +3783,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 max-width: 832px;
             }
             
-            /* 모바일에서도 화면 순서를 동일하게 유지: 왜 움직였을까 → 차트 → 종목 뉴스 → 트랙 분석 */
-            #rowCause { order: 0; }
-            #rowChart { order: 1; }
-            #rowWorld { order: 2; width: 100%; max-width: 832px; }
-            #rowNews { order: 3; }
-            #rowGlobalNews { order: 4; width: 100%; max-width: 832px; }
-            #rowTrack { order: 5; }
-            #rowQuant { order: 6; }
-            #rowCalendar { order: 7; width: 100%; max-width: 832px; }
-            #rowConsensus { order: 8; }
-            #rowVote { order: 9; }
-            #rowComment { order: 10; }
-            #rowDart { order: 11; }
-            #rowSignal { order: 12; }
-            #rowTelegram { order: 13; }
+            #rowCause { order: 1; }
+            #rowTrack { order: 2; }
+            #rowChart { order: 3; }
+            #rowQuant { order: 4; }
+            #rowNews { order: 5; }
+            #rowConsensus { order: 6; }
+            #rowVote { order: 7; }
+            #rowComment { order: 8; }
+            #rowDart { order: 9; }
+            #rowSignal { order: 10; }
+            #rowTelegram { order: 11; }
+            #rowWorld { order: 12; width: 100%; max-width: 832px; }
+            #rowCalendar { order: 13; width: 100%; max-width: 832px; }
+            #rowGlobalNews { order: 14; width: 100%; max-width: 832px; }
 
             .bottom-bar-grid-wrapper {
                 display: flex;
@@ -5354,7 +3919,36 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
 
-                        <!-- 4행 좌측: 퀀트 분석 (832px) -->
+                        <!-- 2행 좌측: 트랙 분석 (STEP 1 구조 분리) -->
+                        <div class="card" id="rowTrack" style="justify-content:flex-start;">
+                            <div class="board-header" style="margin-bottom:10px;">
+                                <span class="board-header-title">트랙 분석</span>
+                                <span class="board-header-sub">실제 데이터</span>
+                            </div>
+                            <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;">
+                                <div style="padding:10px 12px;border:1px solid var(--border-line);border-radius:10px;background:var(--bg-subcard);">
+                                    <div style="font-size:0.68rem;color:var(--text-muted);">현재가</div>
+                                    <div id="trackPrice" style="font-size:1rem;font-weight:800;color:var(--text-title);margin-top:3px;">-</div>
+                                </div>
+                                <div style="padding:10px 12px;border:1px solid var(--border-line);border-radius:10px;background:var(--bg-subcard);">
+                                    <div style="font-size:0.68rem;color:var(--text-muted);">시장</div>
+                                    <div id="trackMarket" style="font-size:1rem;font-weight:800;color:var(--text-title);margin-top:3px;">-</div>
+                                </div>
+                                <div style="padding:10px 12px;border:1px solid var(--border-line);border-radius:10px;background:var(--bg-subcard);">
+                                    <div style="font-size:0.68rem;color:var(--text-muted);">현재 추세</div>
+                                    <div id="trackTrend" style="font-size:1rem;font-weight:800;color:var(--text-title);margin-top:3px;">-</div>
+                                </div>
+                                <div style="padding:10px 12px;border:1px solid var(--border-line);border-radius:10px;background:var(--bg-subcard);">
+                                    <div style="font-size:0.68rem;color:var(--text-muted);">데이터 상태</div>
+                                    <div id="trackStatus" style="font-size:1rem;font-weight:800;color:var(--text-title);margin-top:3px;">-</div>
+                                </div>
+                            </div>
+                            <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-line);font-size:0.74rem;color:var(--text-muted);">
+                                현재는 화면 구조만 분리한 단계입니다. 상단·하단 그래프와 세부 데이터 디자인은 다음 단계에서 퀀트 분석과 동일한 형태로 적용합니다.
+                            </div>
+                        </div>
+
+                        <!-- 5행 좌측: 퀀트 분석 (832px) -->
                         <div class="card" id="rowQuant">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
@@ -5413,100 +4007,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         </div>
 
-                        <!-- 1행 좌측: 왜 움직였을까? — STEP 7 시각 강조 -->
-                        <div class="card" id="rowCause">
-                            <div class="why-moved-header">
-                                <div class="why-moved-title-wrap">
-                                    <span class="why-moved-title">왜 움직였을까?</span>
-                                    <span class="why-moved-live">실시간 분석</span>
-                                </div>
-                                <span id="whyMovedConfidenceBadge" class="why-moved-live">-</span>
+                        <!-- 차트 바로 위: 독립된 개미들아! 카드 -->
+                        <div class="card" id="rowCause" style="justify-content:flex-start;">
+                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
+                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
                             </div>
-
-                            <div class="why-moved-snapshot">
-                                <div class="why-moved-snapshot-item">
-                                    <div class="why-moved-snapshot-label">현재 종목</div>
-                                    <div id="whyMovedStockSnapshot" class="why-moved-snapshot-value">-</div>
-                                </div>
-                                <div class="why-moved-snapshot-item">
-                                    <div class="why-moved-snapshot-label">시장 흐름</div>
-                                    <div id="whyMovedMarketSnapshot" class="why-moved-snapshot-value">-</div>
-                                </div>
-                            </div>
-
-                            <div class="why-moved-core">
-                                <span class="why-moved-core-label">오늘의 핵심</span>
-                                <span id="whyMovedCoreCause" class="why-moved-core-cause">분석 중</span>
-                            </div>
-
-                            <div id="movementReasonCard" class="why-moved-comment-body"></div>
-
-                            <div id="whyMovedFoot" class="why-moved-foot">
-                                실제 확인된 가격·시장·외부 분석 데이터를 바탕으로 표시해.
-                            </div>
+                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 2행 좌측: 트랙 분석 — 퀀트 분석과 동일한 카드 구조 -->
-                        <div class="card" id="rowTrack" style="justify-content:flex-start;">
-                            <div style="margin-bottom:14px;">
-                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
-                            </div>
-
-                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--border-line);">
-                                <div class="gauge-inner-box" style="border-color:#38bdf8;">
-                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="tEvidenceCountVal">-</span>
-                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">근거</span>
-                                </div>
-                                <div style="min-width:0;">
-                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                        <span style="font-size:0.78rem; color:var(--text-muted);">데이터 상태</span>
-                                        <span style="background:rgba(56,189,248,0.15); color:#38bdf8; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="tStatusBadge">-</span>
-                                    </div>
-                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="tStatusDots">실제 확인된 데이터 기준</div>
-                                </div>
-                            </div>
-
-                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
-                                <div>
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재 주가</div>
-                                    <div style="font-size:1.15rem; font-weight:800; color:var(--text-title);" id="tPriceVal">-</div>
-                                </div>
-                                <div style="text-align:right;">
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">오늘 등락률</div>
-                                    <div style="font-size:1.1rem; font-weight:700; color:var(--text-title);" id="tChangeVal">-</div>
-                                </div>
-                            </div>
-
-                            <!-- 상단 그래프: 실제 종목 최근 60거래일 주가 흐름 -->
-                            <div style="margin:16px 0 12px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                                    <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 주가 흐름</span>
-                                    <span style="font-size:0.7rem; color:#38bdf8; font-weight:800;" id="tPriceTrendTxt">현재 -</span>
-                                </div>
-                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
-                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
-                                </div>
-                            </div>
-
-                            <!-- 하단 그래프: 실제 52주 가격 위치 -->
-                            <div style="margin:12px 0 12px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
-                                    <span style="color:var(--text-muted);" id="tLow52w"></span>
-                                    <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
-                                    <span style="color:var(--text-muted);" id="tHigh52w"></span>
-                                </div>
-                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="tSliderFill"></div>
-                                    <div class="dot-marker-style" id="tDotMarker"></div>
-                                </div>
-                            </div>
-
-                            <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
-                                <div id="trackDetailList"></div>
-                            </div>
-                        </div>
-
-                        <!-- 5행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
+                        <!-- 4행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
                         <div class="card" id="rowCalendar">
                             <div>
                                 <div class="cal-top-title-area">
@@ -6419,32 +4928,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     return;
                 }
 
-                // STEP 4: 왜 움직였을까?는 별도 API에서 외부 뉴스/경제 데이터로 다시 분석한다.
-                // 실패해도 종목분석 화면 전체는 계속 정상 표시되며 기존 데이터가 fallback으로 남는다.
-                try {
-                    const whyResponse = await fetch('/api/why-moved?q=' + encodeURIComponent(cleanQ));
-                    const whyType = whyResponse.headers.get('content-type') || '';
-                    if (whyType.includes('application/json')) {
-                        const whyData = await whyResponse.json();
-                        if (whyResponse.ok && whyData && whyData.movement_reason) {
-                            // WHY MOVED 독립 API의 결과를 최종 화면에 완전히 연결한다.
-                            // 중요: 기존 /api/analyze의 comment를 절대 재사용하지 않는다.
-                            data.movement_reason = whyData.movement_reason;
-                            data.why_moved = whyData;
-                            data.comment = String(whyData.comment || '').trim();
-                            if (!data.comment) {
-                                data.comment = '현재 외부 분석 데이터만으로는 움직임의 원인을 확정하기 어려워. 확인된 근거부터 보는 게 좋아.';
-                            }
-                        } else {
-                            // 독립 WHY MOVED API가 실패한 경우 기존 종목분석 comment를 보여주지 않는다.
-                            // 그래야 화면에 예전 코멘트가 섞이는 일이 없다.
-                            data.comment = '현재 왜 움직였을까? 분석 데이터를 불러오지 못했어. 잠시 후 다시 확인해줘.';
-                        }
-                    }
-                } catch (whyErr) {
-                    console.warn('왜 움직였을까? 독립 API를 불러오지 못했습니다.', whyErr);
-                }
-
                 const isKrw = data.market === '국내주식' || data.market === '국내증시';
                 const displayName = data.name || data.formal_name;
                 const displayPrice = data.price || data.price_str;
@@ -6626,7 +5109,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     setTxt('rStop', q.stop_p);
                     setTxt('rGuideText', q.guide_text);
                 }
-                // 3.5 "왜 움직였을까?" 코멘트 + "트랙 분석" 근거 렌더링
+                // STEP 1: 트랙 분석은 기존 API 데이터를 그대로 표시만 한다. 분석 로직은 변경하지 않는다.
+                setTxt('trackPrice', data.price || data.price_str || '-');
+                setTxt('trackMarket', data.market || '-');
+                setTxt('trackTrend', data.quant && data.quant.trend ? data.quant.trend : '-');
+                const trackStatusEl = document.getElementById('trackStatus');
+                if (trackStatusEl) {
+                    const hasPrice = !!(data.price || data.price_str);
+                    const hasQuant = !!(data.quant);
+                    trackStatusEl.innerText = (hasPrice && hasQuant) ? '정상' : '일부 확인 필요';
+                    trackStatusEl.style.color = (hasPrice && hasQuant) ? '#10b981' : '#f59e0b';
+                }
+
+                // 3.5 "왜 움직였을까?" 원인 분석 렌더링
                 const mr = data.movement_reason;
                 const mrCard = document.getElementById('movementReasonCard');
                 if (mrCard && mr) {
@@ -6657,69 +5152,50 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         ? mr.news_evidence.filter(x=>String(x.type||'')==='positive')
                         : [];
                     const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
-                    // STEP 4 FIX: 최종 코멘트는 서버의 V2 독립 분석 결과만 사용한다.
-                    // 기존 main_reason_key 기반 클라이언트 조합은 제거해 V2 결과가 되돌아가는 문제를 막는다.
-                    // STEP 5: 최종 코멘트는 서버의 독립 V2 자연어 엔진 결과만 사용한다.
-                    // 빈 값일 때도 클라이언트가 예전 방식으로 재작성하지 않는다.
-                    const gaemiComment = String(data.comment || '현재 왜 움직였을까? 분석 결과를 불러오지 못했어. 잠시 후 다시 확인해줘.').trim();
+                    let gaemiComment='';
+                    const ps = data.price_snapshot || {};
+                    const ms = data.market_snapshot || {};
+                    const livePrice = ps.price_str || data.price || data.price_str || '-';
+                    const livePctNum = Number(ps.change_pct);
+                    const livePct = Number.isFinite(livePctNum) ? `${livePctNum >= 0 ? '+' : ''}${livePctNum.toFixed(2)}%` : '등락률 확인 필요';
+                    const marketName = ms.name || (data.market === '미국주식' ? 'QQQ' : (data.market_index_name || '시장'));
+                    const marketPctNum = Number(ms.change_pct);
+                    const marketPct = Number.isFinite(marketPctNum) ? `${marketPctNum >= 0 ? '+' : ''}${marketPctNum.toFixed(2)}%` : '확인 필요';
+                    const liveIntro = `개미들아! ${data.name || data.formal_name || ''}는 현재 ${livePrice}, ${livePct} 움직이고 있어. ${marketName}는 ${marketPct}로 움직이고 있어.`;
 
-                    // STEP 7: 코멘트 카드의 시각 요약만 추가한다.
-                    // 분석 로직/점수/뉴스 선택에는 개입하지 않는다.
-                    const whyCauseV2 = mr.cause_analysis_v2 || {};
-                    const whyPrimaryLabel = String(whyCauseV2.primary_label || mr.main_reason || '원인 미확정').trim();
-                    const whyConfidence = String(whyCauseV2.confidence || mr.confidence || '낮음').trim();
-                    const whyPriceChange = Number(whyCauseV2.price_change_pct);
-                    const whyStockSnapshot = document.getElementById('whyMovedStockSnapshot');
-                    const whyMarketSnapshot = document.getElementById('whyMovedMarketSnapshot');
-                    const whyCoreCause = document.getElementById('whyMovedCoreCause');
-                    const whyConfidenceBadge = document.getElementById('whyMovedConfidenceBadge');
-
-                    if (whyStockSnapshot) {
-                        const stockText = Number.isFinite(whyPriceChange)
-                            ? `${displayName} · ${displayPrice} · ${whyPriceChange >= 0 ? '+' : ''}${whyPriceChange.toFixed(2)}%`
-                            : `${displayName} · ${displayPrice}`;
-                        whyStockSnapshot.textContent = stockText;
-                        whyStockSnapshot.classList.toggle('up', Number.isFinite(whyPriceChange) && whyPriceChange > 0);
-                        whyStockSnapshot.classList.toggle('down', Number.isFinite(whyPriceChange) && whyPriceChange < 0);
+                    if(evidenceCount===0){
+                        gaemiComment=`개미들아, 오늘은 조금 천천히 보자\n\n지금 확보된 데이터만으로는 한 가지 원인을 우선순위 높게 잡기 어려워. 확인된 근거부터 보자.`;
+                    }else if(mainReasonKey==='material'){
+                        const md=detailOf('material');
+                        const newsText=positiveNews.length ? `긍정 뉴스 ${positiveNews.length}건이 확인됐고` : '관련 뉴스에서 긍정 신호가 확인됐고';
+                        gaemiComment=`개미들아! 오늘은 기업 재료를 먼저 봐야겠어\n\n${md.includes('공시')?'관련 공시에서 직접적인 신호가 확인됐어.':`${newsText} ${md}.`} ${tradingValueScore>0?detailOf('trading_value')+' 거래대금도 같이 늘었어.':(foreignScore>0||institutionScore>0?'외국인·기관 수급도 같은 방향인지 같이 확인해보자.':'주가 반응과 함께 확인해볼 만해.')}`;
+                    }else if(mainReasonKey==='flow_pair'){
+                        gaemiComment=`개미들아! 오늘은 외국인과 기관 수급이 같이 움직였어\n\n외국인과 기관의 실제 수급 데이터에서 같은 방향의 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 같이 확인돼.`:''}`;
+                    }else if(mainReasonKey==='foreign'){
+                        gaemiComment=`개미들아! 오늘은 외국인 수급이 눈에 띄네\n\n${detailOf('foreign')} 데이터에서 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 함께 확인돼.`:''}`;
+                    }else if(mainReasonKey==='institution'){
+                        gaemiComment=`개미들아! 오늘은 기관 수급이 눈에 띄네\n\n${detailOf('institution')} 데이터에서 매수 흐름이 확인됐어.${tradingValueScore>0?` ${detailOf('trading_value')} 흐름도 함께 확인돼.`:''}`;
+                    }else if(mainReasonKey==='theme'){
+                        const th = globalImpact.theme && globalImpact.theme.theme ? globalImpact.theme.theme : null;
+                        const td = globalImpact.theme && globalImpact.theme.detail ? globalImpact.theme.detail : detailOf('theme');
+                        gaemiComment=`개미들아! 오늘은 ${th ? th+' 테마' : '종목'} 쪽을 같이 봐야겠어\n\n${td}. 현재 확보된 데이터만으로 테마 전체 동반 상승을 단정하지 않고, 관련 종목 흐름은 추가로 확인하는 게 좋아.`;
+                    }else if(mainReasonKey==='trading_value'){
+                        gaemiComment=`개미들아! 오늘은 거래대금이 눈에 띄네\n\n${detailOf('trading_value')} 데이터가 확인돼. 주가 방향과 함께 실제 자금 유입 강도를 보는 게 좋아.`;
+                    }else if(mainReasonKey==='volume'){
+                        gaemiComment=`개미들아! 오늘은 거래량이 확실히 달라졌어\n\n${detailOf('volume')} 데이터가 확인돼. 평소 대비 거래량과 주가 방향이 함께 움직였는지 보자.`;
+                    }else if(mainReasonKey==='global_impact'){
+                        const us=globalDetail('us_market'), ind=globalDetail('industry_global'), dom=globalDetail('domestic_market');
+                        const chain=[us,ind,dom].filter(Boolean).join(' → ');
+                        gaemiComment=`개미들아! 오늘은 해외 시장 흐름부터 봐야겠어\n\n${chain || globalDetail('transmission') || '미국·국내 시장의 방향이 함께 확인돼.'} 같은 방향의 흐름이 확인돼서 해외 시장 영향이 국내 종목으로 이어졌는지 살펴볼 만해.`;
+                    }else if(mainReasonKey==='market' || mainReasonKey==='market_5d'){
+                        gaemiComment=`개미들아! 오늘은 시장 흐름을 같이 봐야겠어\n\n${detailOf(mainReasonKey)} 데이터가 확인돼. 종목 자체의 움직임인지 시장 영향인지 함께 비교해보자.`;
+                    }else if(topReason && Number(topReason.score||0)<0){
+                        gaemiComment=`개미들아… 오늘은 조금 조심해서 보자\n\n${topReason.label}에서 ${topReason.detail} 신호가 확인돼. 다른 근거까지 같이 확인해보자.`;
+                    }else{
+                        gaemiComment=`개미들아! 오늘 움직임을 조금 더 들여다보자\n\n${topReason?`${topReason.label}에서 ${topReason.detail}`:'현재 확보된 데이터'} 신호가 확인돼. 아래 근거들을 같이 확인해보자.`;
                     }
 
-                    let whyMarketItem = null;
-                    if (Array.isArray(data.world_board)) {
-                        const marketNames = isKrw
-                            ? ['코스피', '코스닥']
-                            : ['QQQ', 'SPY'];
-                        whyMarketItem = data.world_board.find(w => marketNames.includes(String(w && w.name || '')));
-                    }
-                    if (whyMarketSnapshot) {
-                        if (whyMarketItem) {
-                            const mrk = Number(whyMarketItem.change_pct ?? whyMarketItem.rate);
-                            const mrkText = Number.isFinite(mrk)
-                                ? `${whyMarketItem.name} · ${mrk >= 0 ? '+' : ''}${mrk.toFixed(2)}%`
-                                : `${whyMarketItem.name} · 확인 필요`;
-                            whyMarketSnapshot.textContent = mrkText;
-                            whyMarketSnapshot.classList.toggle('up', Number.isFinite(mrk) && mrk > 0);
-                            whyMarketSnapshot.classList.toggle('down', Number.isFinite(mrk) && mrk < 0);
-                        } else {
-                            whyMarketSnapshot.textContent = `${isKrw ? '시장' : '나스닥100'} · 확인 필요`;
-                        }
-                    }
-                    if (whyCoreCause) whyCoreCause.textContent = whyPrimaryLabel;
-                    if (whyConfidenceBadge) {
-                        whyConfidenceBadge.textContent = `신뢰도 ${whyConfidence}`;
-                        if (whyConfidence === '높음') {
-                            whyConfidenceBadge.style.color = '#10b981';
-                            whyConfidenceBadge.style.background = 'rgba(16,185,129,0.10)';
-                            whyConfidenceBadge.style.borderColor = 'rgba(16,185,129,0.20)';
-                        } else if (whyConfidence === '중간') {
-                            whyConfidenceBadge.style.color = '#f59e0b';
-                            whyConfidenceBadge.style.background = 'rgba(245,158,11,0.10)';
-                            whyConfidenceBadge.style.borderColor = 'rgba(245,158,11,0.20)';
-                        } else {
-                            whyConfidenceBadge.style.color = 'var(--text-muted)';
-                            whyConfidenceBadge.style.background = 'rgba(148,163,184,0.08)';
-                            whyConfidenceBadge.style.borderColor = 'var(--border-line)';
-                        }
-                    }
+                    gaemiComment = `${liveIntro}\n\n${gaemiComment}`;
 
                     const movementIconMap = {
                         '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',
@@ -6871,140 +5347,74 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     }).join('');
 
                     mrCard.innerHTML = `
-                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;">
+<div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:12px;">
                             ${gaemiComment}
                         </div>
-                    `;
 
-                    // 트랙 분석 렌더링: 서버가 만든 track_analysis 실제 데이터만 사용한다.
-                    const ta = data.track_analysis || {};
-                    const trackPriceVal = document.getElementById('tPriceVal');
-                    const trackChangeVal = document.getElementById('tChangeVal');
-                    const trackEvidenceVal = document.getElementById('tEvidenceCountVal');
-                    const trackStatusBadge = document.getElementById('tStatusBadge');
-                    const trackStatusDots = document.getElementById('tStatusDots');
-                    const trackPriceTrendTxt = document.getElementById('tPriceTrendTxt');
-
-                    if (trackPriceVal) trackPriceVal.innerText = ta.price || data.price_str || '-';
-                    if (trackChangeVal) {
-                        const cp = Number(ta.change_pct);
-                        trackChangeVal.innerText = Number.isFinite(cp) ? `${cp >= 0 ? '+' : ''}${cp.toFixed(2)}%` : '-';
-                        trackChangeVal.style.color = Number.isFinite(cp) && cp > 0 ? '#10b981' : (Number.isFinite(cp) && cp < 0 ? '#ef4444' : 'var(--text-title)');
-                    }
-
-                    const ec = Number(ta.evidence_count);
-                    if (trackEvidenceVal) trackEvidenceVal.innerText = Number.isFinite(ec) ? `${ec}/${ta.evidence_total || 8}` : '-';
-                    const mrConfidence = (data.movement_reason && data.movement_reason.confidence) || '-';
-                    if (trackStatusBadge) trackStatusBadge.innerText = mrConfidence;
-                    if (trackStatusDots) trackStatusDots.innerText = Number.isFinite(ec) && ec > 0 ? `확인된 근거 ${ec}개 · 실제 데이터 기준` : '확인된 근거 부족 · 추가 확인 필요';
-
-                    // 상단 그래프: 서버가 전달한 실제 최근 60거래일 종가.
-                    const tPriceChart = document.getElementById('tPriceChart');
-                    const trackVals = Array.isArray(ta.recent_60d) ? ta.recent_60d.map(Number).filter(Number.isFinite) : [];
-                    if (tPriceChart && trackVals.length > 1) {
-                        const first = trackVals[0];
-                        const normalized = first !== 0 ? trackVals.map(v => ((v / first) - 1) * 100) : [];
-                        if (normalized.length > 1 && normalized.every(Number.isFinite)) {
-                            const W = 600, H = 120, pad = 8;
-                            const minV = Math.min(...normalized), maxV = Math.max(...normalized);
-                            const span = Math.max(0.01, maxV - minV);
-                            const x = i => pad + i * ((W - pad * 2) / Math.max(1, normalized.length - 1));
-                            const y = v => pad + ((maxV - v) / span) * (H - pad * 2);
-                            const coords = normalized.map((v,i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
-                            const linePath = 'M ' + coords.join(' L ');
-                            const baseY = y(0);
-                            const areaPath = `M ${coords[0].split(',')[0]},${baseY.toFixed(1)} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${baseY.toFixed(1)} Z`;
-                            const last = normalized[normalized.length - 1];
-                            const stroke = last >= 0 ? '#10b981' : '#ef4444';
-                            tPriceChart.innerHTML = `
-                                <defs>
-                                    <linearGradient id="tPriceFill" x1="0" x2="0" y1="0" y2="1">
-                                        <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"/>
-                                        <stop offset="100%" stop-color="${stroke}" stop-opacity="0.02"/>
-                                    </linearGradient>
-                                </defs>
-                                <line x1="0" y1="${baseY.toFixed(1)}" x2="600" y2="${baseY.toFixed(1)}" stroke="rgba(148,163,184,0.20)" stroke-width="1" stroke-dasharray="4 4"/>
-                                <path d="${areaPath}" fill="url(#tPriceFill)"/>
-                                <path d="${linePath}" fill="none" stroke="${stroke}" stroke-width="3" vector-effect="non-scaling-stroke"/>
-                                <circle cx="${coords[coords.length-1].split(',')[0]}" cy="${coords[coords.length-1].split(',')[1]}" r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2" vector-effect="non-scaling-stroke"/>
-                            `;
-                            if (trackPriceTrendTxt) {
-                                const p = Number(ta.recent_60d_change_pct);
-                                trackPriceTrendTxt.innerText = Number.isFinite(p) ? `최근 60D ${p >= 0 ? '+' : ''}${p.toFixed(2)}%` : '최근 60D';
-                            }
-                        }
-                    } else if (trackPriceTrendTxt) {
-                        trackPriceTrendTxt.innerText = '데이터 부족';
-                    }
-
-                    // 하단 그래프: 서버의 실제 quant 52주 가격 위치.
-                    const tq = data.quant || {};
-                    setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
-                    setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
-                    setTxt('tPos52wLabel', tq.pos_52w ? `52주 가격 위치 ${tq.pos_52w}` : '52주 가격 위치');
-                    const tFill = document.getElementById('tSliderFill');
-                    if (tFill && Number.isFinite(Number(tq.slider_fill_pct))) tFill.style.width = `${tq.slider_fill_pct}%`;
-                    const tDot = document.getElementById('tDotMarker');
-                    if (tDot && Number.isFinite(Number(tq.slider_fill_pct))) tDot.style.left = `${Math.min(99, Math.max(1, Number(tq.slider_fill_pct)))}%`;
-
-                    // 하단 세부 목록: 서버 track_analysis.details의 실제 근거.
-                    const trackDetailList = document.getElementById('trackDetailList');
-                    if (trackDetailList) {
-                        const iconForTrack = {
-                            '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂','시장':'⌁','업종·테마':'◇','기업 재료':'▤','거래량':'♧','시장 5일 흐름':'⌁'
-                        };
-                        const details = Array.isArray(ta.details) ? ta.details : [];
-                        trackDetailList.innerHTML = details.map(r => {
-                            const score = Number(r.score || 0);
-                            const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
-                            const statusClass = score > 0 ? 'status-pill-positive' : score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
-                            return `<div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">${iconForTrack[r.label] || '•'} ${r.label || '-'}</span>
-                                    <span class="quant-row-status ${statusClass}">${status}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
-                                    <div class="quant-row-subval">실제 확인 데이터</div>
-                                </div>
-                            </div>`;
-                        }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
-
-                        // STEP 4 TEST MODE: V2 원인 결정 과정을 임시로 시각화한다.
-                        // 기존 트랙 분석 데이터/레이아웃은 그대로 두고 접을 수 있는 진단 영역만 추가한다.
-                        const dbg = data.cause_v2_debug || {};
-                        const debugCandidates = Array.isArray(dbg.candidates) ? dbg.candidates : [];
-                        const fmtScore = v => Number.isFinite(Number(v)) ? Number(v).toFixed(0) : '-';
-                        const fmtPct = v => Number.isFinite(Number(v)) ? `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(2)}%` : '-';
-                        const candidateRows = debugCandidates.map((c, idx) => {
-                            const comp = c.components || {};
-                            return `<div style="padding:8px 0;border-top:1px solid var(--border-line);font-size:0.74rem;">
-                                <div style="display:flex;justify-content:space-between;gap:8px;">
-                                    <strong style="color:var(--text-title);">${idx + 1}. ${String(c.label || c.key || '-')}</strong>
-                                    <strong style="color:#38bdf8;">${fmtScore(c.score)}점</strong>
-                                </div>
-                                <div style="color:var(--text-muted);margin-top:3px;">직접 ${fmtScore(comp.direct_evidence)} · 시간 ${fmtScore(comp.temporal)} · 가격 ${fmtScore(comp.price_reaction)} · 전파 ${fmtScore(comp.transmission)} · 거래 ${fmtScore(comp.activity)} · 반대 ${fmtScore(comp.contradiction)}</div>
-                                <div style="color:var(--text-muted);margin-top:2px;">근거 ${fmtScore(c.evidence_count)}건 · 시간상태 ${String(c.temporal_status || '-')}</div>
-                            </div>`;
-                        }).join('');
-                        const eventRows = (Array.isArray(dbg.top_aligned_events) ? dbg.top_aligned_events : []).map(e =>
-                            `<div style="padding:5px 0;border-top:1px solid var(--border-line);font-size:0.72rem;color:var(--text-muted);">[${String(e.area || '-')}] ${String(e.pubDate || '-')} · ${String(e.title || '-')}</div>`
-                        ).join('');
-                        const debugHtml = `<details style="margin-top:12px;border-top:1px dashed var(--border-line);padding-top:8px;">
-                            <summary style="cursor:pointer;color:#38bdf8;font-size:0.76rem;font-weight:800;">STEP 4 V2 검증 보기</summary>
-                            <div style="padding-top:8px;">
-                                <div style="font-size:0.73rem;color:var(--text-muted);">가격 기준일 · ${String(dbg.analysis_cutoff || '-')}</div>
-                                <div style="font-size:0.73rem;color:var(--text-muted);margin-top:3px;">방향 · ${String(dbg.direction || '-')} · 가격반응 ${fmtPct(dbg.price_change_pct)}</div>
-                                <div style="font-size:0.73rem;margin-top:4px;color:var(--text-title);">주원인 · <strong>${String(dbg.primary_label || '원인 미확정')}</strong> · ${fmtScore(dbg.primary_score)}점 · 신뢰도 ${String(dbg.confidence || '-')}</div>
-                                <div style="font-size:0.71rem;color:var(--text-muted);margin-top:3px;">${String(dbg.rule || '')}</div>
-                                <div style="margin-top:8px;">${candidateRows || '<div style="color:var(--text-muted);font-size:0.72rem;">원인 후보 데이터가 없습니다.</div>'}</div>
-                                <div style="margin-top:8px;font-size:0.73rem;font-weight:800;color:var(--text-title);">기준일 내 외부 이벤트 샘플</div>
-                                <div>${eventRows || '<div style="color:var(--text-muted);font-size:0.72rem;padding-top:5px;">기준일 내 표시할 이벤트가 없습니다.</div>'}</div>
+                        <div class="movement-evidence-summary">
+                            <div class="movement-evidence-head">
+                                <span class="movement-evidence-label">확인된 근거</span>
+                                <span class="movement-evidence-count">${evidenceCount} / 8</span>
                             </div>
-                        </details>`;
-                        trackDetailList.innerHTML += debugHtml;
-                    }
+                            <div class="movement-evidence-track">${evidenceSegments}</div>
+                        </div>
 
+                        ${(() => {
+                            // Primary graph: asset vs benchmark over the latest five sessions.
+                            // The backend can supply rs_chart_points and benchmark_name later.
+                            // Until then, do not fabricate a second time series: hide the graph
+                            // instead of showing invented values.
+                            const rs = data.relative_strength || null;
+                            if (!rs || !Array.isArray(rs.points) || rs.points.length < 2) return '';
+
+                            const pts = rs.points.slice(-5);
+                            const valuesA = pts.map(p => Number(p.asset));
+                            const valuesB = pts.map(p => Number(p.benchmark));
+                            if (valuesA.some(v => !Number.isFinite(v)) || valuesB.some(v => !Number.isFinite(v))) return '';
+
+                            const all = valuesA.concat(valuesB);
+                            const minV = Math.min(...all);
+                            const maxV = Math.max(...all);
+                            const span = Math.max(0.01, maxV - minV);
+                            const W = 520, H = 92, PX = 8, PY = 8;
+                            const x = i => PX + (i * (W - PX * 2) / Math.max(1, pts.length - 1));
+                            const y = v => PY + ((maxV - v) / span) * (H - PY * 2);
+                            const path = arr => arr.map((v,i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
+                            const diff = Number(rs.relative_return);
+                            const diffText = Number.isFinite(diff) ? `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%p` : '';
+                            const assetName = rs.asset_name || '종목';
+                            const benchmarkName = rs.benchmark_name || '시장';
+                            const latestAsset = valuesA[valuesA.length - 1];
+                            const latestBenchmark = valuesB[valuesB.length - 1];
+
+                            return `
+                                <div class="movement-relative-chart">
+                                    <div class="movement-relative-head">
+                                        <span class="movement-relative-title">시장 대비 상대강도</span>
+                                        <span class="movement-relative-diff">${diffText}</span>
+                                    </div>
+                                    <div class="movement-relative-chartbox">
+                                        <div class="movement-relative-gridline" style="top:25%;"></div>
+                                        <div class="movement-relative-gridline" style="top:50%;"></div>
+                                        <div class="movement-relative-gridline" style="top:75%;"></div>
+                                        <svg class="movement-relative-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="최근 5거래일 상대강도 비교">
+                                            <path d="${path(valuesB)}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.42"></path>
+                                            <path d="${path(valuesA)}" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"></path>
+                                        </svg>
+                                    </div>
+                                    <div class="movement-relative-legend">
+                                        <span><span class="movement-relative-dot" style="background:var(--text-title);"></span>${assetName} ${latestAsset >= 0 ? '+' : ''}${latestAsset.toFixed(2)}%</span>
+                                        <span><span class="movement-relative-dot" style="background:var(--text-muted);"></span>${benchmarkName} ${latestBenchmark >= 0 ? '+' : ''}${latestBenchmark.toFixed(2)}%</span>
+                                    </div>
+                                    <div class="movement-relative-note">최근 5거래일 동안 종목과 기준시장의 상대적인 움직임을 비교합니다.</div>
+                                </div>
+                            `;
+                        })()}
+
+                        <div class="movement-mini-grid">${movementReasonCards}</div>
+
+                        
+                    `;
                 }
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링
@@ -7225,26 +5635,6 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/health":
             self._json(200, {"ok": True, "telegram_configured": bool(TELEGRAM_TOKEN)})
-            return
-
-
-        if parsed.path == "/api/why-moved":
-            q = str(params.get("q", [""])[0]).strip()
-            if not q:
-                self._json(400, {"error": "종목명을 입력해주세요."})
-                return
-            try:
-                data = run_why_moved_pipeline(q)
-                if not data:
-                    self._json(404, {"error": "왜 움직였을까? 분석에 필요한 실제 데이터를 가져오지 못했습니다."})
-                    return
-                self._json(200, data)
-            except Exception as exc:
-                print(f"API ERROR /api/why-moved?q={q!r}: {type(exc).__name__}: {exc}")
-                self._json(500, {
-                    "error": "왜 움직였을까? 분석 중 오류가 발생했습니다.",
-                    "detail": f"{type(exc).__name__}: {str(exc)[:400]}"
-                })
             return
 
         if parsed.path == "/api/analyze":

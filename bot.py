@@ -1938,109 +1938,79 @@ def _detect_theme(formal_name, stock_news):
 
 
 def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None):
-    """현재 데이터에서 주가 움직임을 시장/테마/재료/거래량/최근 5거래일 시장흐름으로 분해한다."""
+    """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다."""
     reasons = []
-
-    try:
-        raw_price = float(raw_price)
-    except Exception:
-        raw_price = None
 
     # 1. 시장
     market_score = 0
     market_detail = "시장 영향 확인 필요"
-
     kospi = _find_world_item(world_board, ["코스피"])
     kosdaq = _find_world_item(world_board, ["코스닥"])
     qqq = _find_world_item(world_board, ["QQQ"])
     spy = _find_world_item(world_board, ["SPY"])
 
     if market_name in ("국내주식", "국내증시"):
-        # 종목의 실제 거래시장(KOSPI/KOSDAQ)을 기준으로 시장 카드를 선택합니다.
         selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else "KOSPI"
         ref = kospi if selected_index == "KOSPI" else kosdaq
         if ref:
             rate = _movement_rate_to_float(ref.get("rate"))
             if rate is not None:
-                if rate >= 1.0:
-                    market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
-                elif rate >= 0.3:
-                    market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
-                elif rate <= -1.0:
-                    market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
-                elif rate <= -0.3:
-                    market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
-                else:
-                    market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
+                if rate >= 1.0: market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
+                elif rate >= 0.3: market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
+                elif rate <= -1.0: market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
+                elif rate <= -0.3: market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
+                else: market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
     elif market_name == "미국주식":
         ref = qqq if qqq and qqq.get("rate") != "-" else spy
         if ref:
             rate = _movement_rate_to_float(ref.get("rate"))
             if rate is not None:
-                if rate >= 1.0:
-                    market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
-                elif rate >= 0.3:
-                    market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
-                elif rate <= -1.0:
-                    market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
-                elif rate <= -0.3:
-                    market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
-                else:
-                    market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
+                if rate >= 1.0: market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
+                elif rate >= 0.3: market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
+                elif rate <= -1.0: market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
+                elif rate <= -0.3: market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
+                else: market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
     elif market_name == "암호화폐":
-        # 암호화폐는 KOSPI/NASDAQ 같은 전통시장 지수를 쓰지 않고
-        # 검색한 코인 자체의 최근 일간 등락을 시장 요인으로 사용합니다.
         if df is not None and len(df) >= 2:
             try:
                 prev_close = float(df["Close"].iloc[-2])
                 current_close = float(df["Close"].iloc[-1])
                 rate = ((current_close / prev_close) - 1.0) * 100.0 if prev_close else 0.0
                 label = formal_name or symbol or "코인"
-                if rate >= 1.0:
-                    market_score, market_detail = 2, f"{label} 시장 강세 ({rate:+.2f}%)"
-                elif rate >= 0.3:
-                    market_score, market_detail = 1, f"{label} 시장 상승 ({rate:+.2f}%)"
-                elif rate <= -1.0:
-                    market_score, market_detail = -2, f"{label} 시장 약세 ({rate:+.2f}%)"
-                elif rate <= -0.3:
-                    market_score, market_detail = -1, f"{label} 시장 하락 ({rate:+.2f}%)"
-                else:
-                    market_detail = f"{label} 시장 보합 ({rate:+.2f}%)"
+                if rate >= 1.0: market_score, market_detail = 2, f"{label} 시장 강세 ({rate:+.2f}%)"
+                elif rate >= 0.3: market_score, market_detail = 1, f"{label} 시장 상승 ({rate:+.2f}%)"
+                elif rate <= -1.0: market_score, market_detail = -2, f"{label} 시장 약세 ({rate:+.2f}%)"
+                elif rate <= -0.3: market_score, market_detail = -1, f"{label} 시장 하락 ({rate:+.2f}%)"
+                else: market_detail = f"{label} 시장 보합 ({rate:+.2f}%)"
             except Exception:
                 pass
     else:
         market_detail = "시장 공통 요인 영향 낮음"
 
-    reasons.append({"key": "market", "label": "시장", "score": market_score, "detail": market_detail})
+    reasons.append({"key":"market","label":"시장","score":market_score,"detail":market_detail})
 
     # 2. 업종/테마
     theme, theme_hits = _detect_theme(formal_name, stock_news)
     theme_score = 0
     theme_detail = "뚜렷한 테마 근거 없음"
-
     if theme:
         sector_rate = None
         if theme in ("반도체", "AI"):
             soxx = _find_world_item(world_board, ["SOXX"])
             if soxx:
                 sector_rate = _movement_rate_to_float(soxx.get("rate"))
-
         if sector_rate is not None:
-            if sector_rate >= 1.0:
-                theme_score, theme_detail = 2, f"{theme} 업종 강세 · SOXX {sector_rate:+.2f}%"
-            elif sector_rate >= 0.3:
-                theme_score, theme_detail = 1, f"{theme} 업종 동반 상승 · SOXX {sector_rate:+.2f}%"
-            elif sector_rate <= -1.0:
-                theme_score, theme_detail = -2, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
-            elif sector_rate <= -0.3:
-                theme_score, theme_detail = -1, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
-            else:
-                theme_detail = f"{theme} 테마 감지 · 업종 움직임 제한적"
+            if sector_rate >= 1.0: theme_score, theme_detail = 2, f"{theme} 업종 강세 · SOXX {sector_rate:+.2f}%"
+            elif sector_rate >= 0.3: theme_score, theme_detail = 1, f"{theme} 업종 동반 상승 · SOXX {sector_rate:+.2f}%"
+            elif sector_rate <= -1.0: theme_score, theme_detail = -2, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
+            elif sector_rate <= -0.3: theme_score, theme_detail = -1, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
+            else: theme_detail = f"{theme} 테마 감지 · 업종 움직임 제한적"
         else:
-            theme_score = min(1, theme_hits)
+            # 단순 키워드 감지는 약한 증거로만 취급한다.
+            theme_score = 1 if theme_hits >= 2 else 0
             theme_detail = f"{theme} 관련 키워드 {theme_hits}건 감지"
 
-    reasons.append({"key": "theme", "label": "업종·테마", "score": theme_score, "detail": theme_detail})
+    reasons.append({"key":"theme","label":"업종·테마","score":theme_score,"detail":theme_detail,"theme_hits":theme_hits})
 
     # 3. 기업 재료
     news_positive, news_negative, news_evidence = _news_sentiment_score(stock_news)
@@ -2048,10 +2018,8 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     disclosure_negative = 0
     for item in (dart_disclosures or []):
         tag_type = str(item.get("tag_type", ""))
-        if tag_type == "positive":
-            disclosure_positive += 1
-        elif tag_type == "negative":
-            disclosure_negative += 1
+        if tag_type == "positive": disclosure_positive += 1
+        elif tag_type == "negative": disclosure_negative += 1
 
     net_material = news_positive + disclosure_positive * 2 - news_negative - disclosure_negative * 2
     if net_material >= 3:
@@ -2070,11 +2038,13 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         material_score = 0
         material_detail = "최근 강한 기업 재료 확인 안 됨"
 
-    reasons.append({"key": "material", "label": "기업 재료", "score": material_score, "detail": material_detail})
+    reasons.append({"key":"material","label":"기업 재료","score":material_score,"detail":material_detail})
 
-    # 4. 거래량/수급
+    # 4. 거래량
     flow_score = 0
     flow_detail = "거래량 변화 제한적"
+    price_change = None
+    volume_ratio = None
     try:
         if df is not None and len(df) >= 6:
             close = df["Close"].astype(float)
@@ -2085,7 +2055,6 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
             avg_volume = float(volume.tail(6).iloc[:-1].mean())
             price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
             volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
-
             if price_change >= 1.0 and volume_ratio >= 150:
                 flow_score, flow_detail = 2, f"상승 +{price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
             elif price_change >= 0.3 and volume_ratio >= 120:
@@ -2098,58 +2067,63 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
                 flow_detail = f"거래량 {volume_ratio:.0f}%"
     except Exception:
         pass
+    reasons.append({"key":"volume","label":"거래량","score":flow_score,"detail":flow_detail})
 
-    reasons.append({"key": "volume", "label": "거래량", "score": flow_score, "detail": flow_detail})
-
+    # 5. 거래대금
     tv_score = 0
     tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
-    if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
-        try:
+    tv_ratio = None
+    try:
+        if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
             tv = float(domestic_flow["trading_value"])
             close_s = df["Close"].astype(float)
             vol_s = df["Volume"].astype(float)
             proxy = close_s * vol_s
             avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
-            ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
-            if ratio >= 2.0 and flow_score > 0:
-                tv_score = 2
-            elif ratio >= 1.2 and flow_score > 0:
-                tv_score = 1
-            elif ratio >= 2.0 and flow_score < 0:
-                tv_score = -2
-            elif ratio >= 1.2 and flow_score < 0:
-                tv_score = -1
-            tv_detail += f" · 평소 대비 약 {ratio*100:.0f}%" if ratio > 0 else ""
-        except Exception:
-            pass
+            tv_ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
+            # 거래대금은 실제 급증 + 가격 방향이 같이 있을 때 강한 원인으로 인정.
+            if tv_ratio >= 2.0 and flow_score > 0: tv_score = 2
+            elif tv_ratio >= 1.2 and flow_score > 0: tv_score = 1
+            elif tv_ratio >= 2.0 and flow_score < 0: tv_score = -2
+            elif tv_ratio >= 1.2 and flow_score < 0: tv_score = -1
+            tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%" if tv_ratio > 0 else ""
+    except Exception:
+        pass
     reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
 
+    # 6. 외국인 수급
     foreign_score = 0
     foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
     if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
-        v=float(domestic_flow["foreigner_5d"]); latest=domestic_flow.get("foreigner_latest")
-        foreign_score=2 if v>0 and latest is not None and latest>0 else (1 if v>0 else (-2 if v<0 and latest is not None and latest<0 else (-1 if v<0 else 0)))
+        try:
+            v = float(domestic_flow["foreigner_5d"])
+            latest = domestic_flow.get("foreigner_latest")
+            foreign_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+        except Exception:
+            pass
     reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
 
+    # 7. 기관 수급
     institution_score = 0
     institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
     if domestic_flow and domestic_flow.get("institution_5d") is not None:
-        v=float(domestic_flow["institution_5d"]); latest=domestic_flow.get("institution_latest")
-        institution_score=2 if v>0 and latest is not None and latest>0 else (1 if v>0 else (-2 if v<0 and latest is not None and latest<0 else (-1 if v<0 else 0)))
+        try:
+            v = float(domestic_flow["institution_5d"])
+            latest = domestic_flow.get("institution_latest")
+            institution_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+        except Exception:
+            pass
     reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
 
     # 8. 최근 5거래일 시장 흐름
     market5 = None
     if market_name in ("국내주식", "국내증시") and market_index_name in ("KOSPI", "KOSDAQ"):
-        selected_index = market_index_name
-        ref5 = _find_world_item(world_board, ["코스피" if selected_index == "KOSPI" else "코스닥"])
-        market5 = fetch_naver_index_5day_returns(selected_index, ref5)
+        ref5 = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
+        market5 = fetch_naver_index_5day_returns(market_index_name, ref5)
     elif market_name == "미국주식":
-        # 미국 개별주식은 Nasdaq 계열 대표 지표로 QQQ를 사용합니다.
         ref5 = _find_world_item(world_board, ["QQQ"])
         market5 = fetch_market_5day_returns_from_symbol("QQQ", "NASDAQ", ref5)
     elif market_name == "암호화폐":
-        # 코인은 해당 코인 자체의 최근 5거래일 흐름을 사용합니다.
         market5 = fetch_market_5day_returns_from_df(df, formal_name or symbol or "Crypto")
 
     if market5:
@@ -2163,38 +2137,108 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         market5_points = []
 
     reasons.append({
-        "key": "market_5d",
-        "label": "시장 5일 흐름",
-        "score": market5_score,
-        "detail": market5_detail,
-        "chart_points": market5_points,
-        "total_return": market5.get("total_return") if market5 else None,
-        "source": market5.get("source") if market5 else None,
-        "index_name": market5.get("index_name") if market5 else selected_index,
+        "key":"market_5d","label":"시장 5일 흐름","score":market5_score,
+        "detail":market5_detail,"chart_points":market5_points,
+        "total_return":market5.get("total_return") if market5 else None,
+        "source":market5.get("source") if market5 else None,
+        "index_name":market5.get("index_name") if market5 else selected_index
     })
 
-    total_score = sum(int(x["score"]) for x in reasons)
+    # ----------------------------------------------------
+    # 핵심: "먼저 걸리는 조건"이 아니라 실제 강도를 비교한다.
+    # 상승/하락 방향을 가격 움직임과 맞춰 원인 후보를 평가한다.
+    # ----------------------------------------------------
+    move_direction = 1
+    try:
+        if price_change is not None and price_change < 0:
+            move_direction = -1
+    except Exception:
+        pass
+
     positive_count = sum(1 for x in reasons if x["score"] > 0)
     negative_count = sum(1 for x in reasons if x["score"] < 0)
     evidence_count = sum(1 for x in reasons if x["score"] != 0)
+    total_score = sum(int(x["score"]) for x in reasons)
 
-    confidence = "높음" if evidence_count >= 4 else ("중간" if evidence_count >= 2 else "낮음")
-    direction = "상승" if total_score >= 4 else ("하락" if total_score <= -4 else "혼조")
-    sorted_reasons = sorted(reasons, key=lambda x: abs(int(x["score"])), reverse=True)
-    main_reason = sorted_reasons[0]["label"] if sorted_reasons else "-"
+    # 실제 원인 선택용 보너스.
+    candidate_scores = {}
+    for r in reasons:
+        s = int(r["score"])
+        # 현재 주가 방향과 반대인 신호는 "원인"으로 선택하지 않도록 감점.
+        directional = s * move_direction
+        candidate_scores[r["key"]] = directional
 
-    if direction == "상승":
-        summary = f"{main_reason} 요인이 가장 강하게 나타났고, 전체적으로 상승에 우호적인 근거가 {positive_count}개 확인됩니다."
-    elif direction == "하락":
-        summary = f"{main_reason} 요인이 가장 강하게 나타났고, 전체적으로 하락에 우호적인 근거가 {negative_count}개 확인됩니다."
+    # 강한 근거가 있는 항목에만 보너스를 주되, 단순 키워드 테마는 과대평가하지 않는다.
+    if material_score > 0:
+        candidate_scores["material"] += 1 if material_score >= 2 else 0
+    if foreign_score > 0 and institution_score > 0:
+        candidate_scores["foreign"] += 1
+        candidate_scores["institution"] += 1
+    if tv_score > 0 and flow_score > 0:
+        candidate_scores["trading_value"] += 1
+    if theme_score > 0 and theme_hits >= 2:
+        candidate_scores["theme"] += 1
+
+    # 실제 상승/하락을 설명할 수 있는 양(+)의 후보만 선택.
+    positive_candidates = [(k,v) for k,v in candidate_scores.items() if v > 0]
+    if positive_candidates:
+        max_candidate = max(v for _, v in positive_candidates)
+        top_keys = [k for k,v in positive_candidates if v == max_candidate]
     else:
-        summary = "시장·재료·수급 요인이 서로 엇갈려 단일 원인으로 설명하기 어려운 상태입니다."
+        top_keys = []
+
+    # 재료 > 양매수 수급 > 거래대금/거래량 > 테마 > 시장 순의 tie-break.
+    priority = {
+        "material": 7,
+        "foreign": 6,
+        "institution": 6,
+        "trading_value": 5,
+        "volume": 4,
+        "theme": 3,
+        "market": 2,
+        "market_5d": 1,
+    }
+    main_key = max(top_keys, key=lambda k: priority.get(k,0)) if top_keys else None
+
+    # 양매수 수급은 하나의 원인으로 묶는다.
+    if foreign_score > 0 and institution_score > 0 and main_key in ("foreign","institution"):
+        main_key = "flow_pair"
+
+    # 재료가 약하고 거래가 매우 강하면 거래대금/거래량을 우선.
+    if main_key == "material" and material_score == 1:
+        if tv_score >= 2:
+            main_key = "trading_value"
+        elif flow_score >= 2:
+            main_key = "volume"
+
+    main_label_map = {
+        "material":"기업 재료","flow_pair":"외국인·기관 수급",
+        "foreign":"외국인 수급","institution":"기관 수급",
+        "trading_value":"거래대금","volume":"거래량",
+        "theme":"업종·테마","market":"시장","market_5d":"시장 5일 흐름"
+    }
+    main_reason = main_label_map.get(main_key, "-")
+
+    # 상승/하락 방향은 전체 점수로 판단하되, 혼조이면 실제 가격 방향을 사용한다.
+    direction = "상승" if total_score >= 4 else ("하락" if total_score <= -4 else ("상승" if move_direction > 0 and raw_price is not None else "혼조"))
+    confidence = "높음" if evidence_count >= 4 else ("중간" if evidence_count >= 2 else "낮음")
+
+    if main_reason != "-":
+        if direction == "상승":
+            summary = f"{main_reason} 신호가 가장 강하게 잡혔고, 실제 움직임과 함께 확인됩니다."
+        elif direction == "하락":
+            summary = f"{main_reason} 쪽 약세 신호가 가장 강하게 잡혔고, 실제 움직임과 함께 확인됩니다."
+        else:
+            summary = f"{main_reason} 신호가 가장 눈에 띄지만 다른 근거와 엇갈리는 부분도 있습니다."
+    else:
+        summary = "현재 확보된 데이터만으로는 특정 원인을 우선순위 높게 선택하기 어렵습니다."
 
     return {
         "direction": direction,
         "confidence": confidence,
         "total_score": total_score,
         "main_reason": main_reason,
+        "main_reason_key": main_key,
         "summary": summary,
         "reasons": reasons,
         "news_evidence": news_evidence[:5]
@@ -4434,28 +4478,62 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
                     const evidenceDirection = Number(mr.total_score || 0) < 0 ? 'negative' : 'positive';
 
-                    // 실제 근거에 따라 매번 다른 친근한 코멘트를 만든다.
+                    // 백엔드가 선택한 실제 주원인(main_reason_key)을 그대로 사용한다.
+                    // 코멘트의 숫자/근거는 movement_reason의 실제 데이터에서만 가져온다.
                     const scoreOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? Number(x.score||0) : 0; };
                     const detailOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? String(x.detail||'') : ''; };
                     const materialScore=scoreOf('material'), foreignScore=scoreOf('foreign'), institutionScore=scoreOf('institution');
                     const tradingValueScore=scoreOf('trading_value'), volumeScore=scoreOf('volume'), themeScore=scoreOf('theme');
-                    const topReason=[...evidenceReasons].sort((a,b)=>Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)))[0];
+                    const mainReasonKey = mr.main_reason_key || '';
+                    const newsEvidence = Array.isArray(mr.news_evidence) ? mr.news_evidence : [];
+                    const positiveNews = newsEvidence.filter(x => String(x.type||'') === 'positive');
+                    const negativeNews = newsEvidence.filter(x => String(x.type||'') === 'negative');
+                    const themeDetail = detailOf('theme');
+                    const tradingDetail = detailOf('trading_value');
+                    const volumeDetail = detailOf('volume');
+                    const foreignDetail = detailOf('foreign');
+                    const institutionDetail = detailOf('institution');
+
+                    // 실제 수치가 문자열 detail에 있을 때 그대로 활용할 수 있도록 보조 문구를 만든다.
+                    const materialEvidenceText = positiveNews.length
+                        ? `긍정적으로 잡힌 뉴스 ${positiveNews.length}건이 있고`
+                        : (negativeNews.length ? `부정적으로 잡힌 뉴스 ${negativeNews.length}건이 있고` : '최근 강한 뉴스 근거는 제한적이고');
+
                     let gaemiComment='';
+
                     if(evidenceCount===0){
                         gaemiComment=`개미들아, 오늘은 조금 천천히 보자\n\n지금 확인되는 데이터만으로는 한 가지 이유를 딱 집기 어려워.\n괜히 이유를 만들어내지 말고 확인된 근거부터 보자.`;
-                    }else if(materialScore>0){
-                        gaemiComment=`개미들아! 오늘은 재료가 눈에 들어와\n\n${detailOf('material').includes('공시')?'공시와 관련 뉴스 쪽에서 긍정 신호가 같이 잡혔어.':'관련 뉴스에서 긍정적인 재료가 잡혔어.'} ${tradingValueScore>0?'여기에 거래대금도 붙었고':(foreignScore>0||institutionScore>0?'수급도 같이 확인돼서':'주가 반응도 같이 보여서')} 단순한 소문으로만 보긴 어려워.`;
-                    }else if(foreignScore>0 && institutionScore>0){
-                        gaemiComment=`개미들아! 오늘은 수급이 같이 붙었어\n\n외국인과 기관이 함께 매수 쪽으로 움직였고, ${tradingValueScore>0?'거래대금도 같이 늘었어. ':''}오늘 움직임은 수급 쪽을 먼저 확인해볼 만해.`;
-                    }else if(foreignScore>0 || institutionScore>0){
-                        const who=foreignScore>0?'외국인':'기관';
-                        gaemiComment=`개미들아! 오늘은 ${who} 수급이 눈에 띄네 \n\n${detailOf(foreignScore>0?'foreign':'institution')} 쪽으로 매수 흐름이 확인돼. ${tradingValueScore>0?'거래대금까지 붙었는지 같이 보자.':'아직은 다른 근거도 같이 확인해보는 게 좋아.'}`;
-                    }else if(themeScore>0){
-                        gaemiComment=`개미들아! 오늘은 종목보다 테마 쪽을 봐야겠어\n\n관련 업종·테마에서 같이 움직이는 신호가 잡혔어. ${volumeScore>0?'거래량도 붙어서 동반 움직임인지 확인해볼 만해.':'다른 관련 종목도 같이 움직이는지 확인해보자.'}`;
+                    }else if(mainReasonKey==='material'){
+                        const materialDetail = detailOf('material');
+                        const materialBase = materialDetail.includes('공시')
+                            ? '공시와 관련 뉴스에서 긍정 신호가 확인됐어.'
+                            : `${materialEvidenceText} 관련 뉴스에서 긍정 신호가 확인됐어.`;
+                        const materialFollow = tradingValueScore>0
+                            ? ` 거래대금도 ${tradingDetail.replace(/^거래대금\s*/, '')} 흐름이 확인돼.`
+                            : (foreignScore>0 || institutionScore>0
+                                ? ' 수급에서도 매수 신호가 함께 확인돼.'
+                                : ' 주가 반응도 함께 확인돼.');
+                        gaemiComment=`개미들아! 오늘은 재료가 눈에 들어와\n\n${materialBase}${materialFollow}`;
+                    }else if(mainReasonKey==='flow_pair'){
+                        const tv = tradingValueScore>0 ? ` ${tradingDetail} 흐름도 같이 확인돼.` : '';
+                        gaemiComment=`개미들아! 오늘은 외국인과 기관 수급이 같이 움직였어\n\n외국인과 기관 모두 최근 수급 데이터에서 매수 흐름이 확인돼.${tv}`;
+                    }else if(mainReasonKey==='foreign'){
+                        gaemiComment=`개미들아! 오늘은 외국인 수급이 눈에 띄네\n\n${foreignDetail} 데이터에서 매수 흐름이 확인돼.${tradingValueScore>0 ? ` ${tradingDetail} 흐름도 함께 확인돼.` : ''}`;
+                    }else if(mainReasonKey==='institution'){
+                        gaemiComment=`개미들아! 오늘은 기관 수급이 눈에 띄네\n\n${institutionDetail} 데이터에서 매수 흐름이 확인돼.${tradingValueScore>0 ? ` ${tradingDetail} 흐름도 함께 확인돼.` : ''}`;
+                    }else if(mainReasonKey==='theme'){
+                        const themeName = themeDetail.match(/^(.*?)\s+(?:업종|테마|관련)/)?.[1] || '관련';
+                        gaemiComment=`개미들아! 오늘은 종목보다 ${themeName} 테마 쪽을 봐야겠어\n\n${themeDetail} 근거가 확인돼.${volumeScore>0 ? ` ${volumeDetail} 흐름도 함께 확인돼.` : ' 다른 관련 종목도 같이 움직이는지 확인해보자.'}`;
+                    }else if(mainReasonKey==='trading_value'){
+                        gaemiComment=`개미들아! 오늘은 거래대금이 눈에 띄네\n\n${tradingDetail} 데이터가 확인돼. 주가 움직임과 함께 자금 유입 강도를 먼저 확인해볼 만해.`;
+                    }else if(mainReasonKey==='volume'){
+                        gaemiComment=`개미들아! 오늘은 거래량이 확실히 달라졌어\n\n${volumeDetail} 데이터가 확인돼. 평소 대비 거래가 얼마나 늘었는지와 주가 방향을 같이 보는 게 좋아.`;
+                    }else if(mainReasonKey==='market' || mainReasonKey==='market_5d'){
+                        gaemiComment=`개미들아! 오늘은 시장 흐름을 같이 봐야겠어\n\n${detailOf(mainReasonKey)} 데이터가 확인돼. 종목 자체의 움직임인지 시장 영향인지 같이 비교해보자.`;
                     }else if(topReason && Number(topReason.score||0)<0){
-                        gaemiComment=`개미들아… 오늘은 조금 조심해서 보자\n\n${topReason.label} 쪽에서 약한 신호가 먼저 보여. 다른 근거까지 같이 확인하고 성급하게 결론 내리진 말자.`;
+                        gaemiComment=`개미들아… 오늘은 조금 조심해서 보자\n\n${topReason.label}에서 ${topReason.detail} 신호가 확인돼. 다른 근거까지 같이 확인해보자.`;
                     }else{
-                        gaemiComment=`개미들아! 오늘 움직임을 조금 더 들여다보자\n\n${topReason?topReason.label:'시장'} 쪽에서 먼저 눈에 띄는 신호가 보여. 한 가지 데이터만 보지 말고 아래 근거들을 같이 확인해보자.`;
+                        gaemiComment=`개미들아! 오늘 움직임을 조금 더 들여다보자\n\n${topReason?`${topReason.label}에서 ${topReason.detail}`:'현재 확보된 데이터'} 신호가 확인돼. 아래 근거들을 같이 확인해보자.`;
                     }
 
                     const movementIconMap = {

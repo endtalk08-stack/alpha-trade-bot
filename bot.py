@@ -2667,6 +2667,13 @@ def build_track_analysis(raw_price, price_str, df, quant, movement_reason, domes
     임의 숫자를 만들지 않고 기존 파이프라인에서 실제 확보된 값만 전달한다.
     화면은 이 객체만 렌더링하도록 해 데이터와 UI의 결합을 단순화한다.
     """
+    _reference_close = None
+    try:
+        if why_df is not None and len(why_df) and "Close" in why_df.columns:
+            _reference_close = float(pd.to_numeric(why_df["Close"], errors="coerce").dropna().iloc[-1])
+    except Exception:
+        _reference_close = None
+
     result = {
         "price": price_str or "-",
         "raw_price": float(raw_price) if raw_price is not None else None,
@@ -3686,6 +3693,206 @@ def _why_prepare_price_df(df, market_name):
     except Exception as exc:
         print(f"[WHY EVENT PRICE] prepare failed: {repr(exc)}")
         return None
+
+
+def _why_price_reference_date(df, market_name):
+    """
+    왜 움직였을까?의 단일 가격 기준일을 결정한다.
+
+    핵심 규칙:
+      - 실제 가격 일봉의 마지막 거래일(현지 시장 날짜)을 기준일로 고정한다.
+      - 이후 뉴스/공시/캘린더/실적 자료는 원인 분석에서 사용하지 않는다.
+      - 가격 기준일과 뉴스 기준일은 반드시 동일한 현지 날짜여야 한다.
+    """
+    dates = _why_price_index_dates(df, market_name)
+    return dates[-1] if dates else None
+
+
+def _why_item_local_date(item, market_name):
+    """뉴스/이벤트 항목의 실제 발표 시각을 시장 현지 날짜로 변환한다."""
+    if not isinstance(item, dict):
+        return None
+    dt = _why_parse_news_time(item)
+    if dt is None:
+        # 캘린더/실적 이벤트는 event_at을 우선 확인한다.
+        raw_event = str(item.get("event_at") or "").strip()
+        if raw_event:
+            try:
+                dt = datetime.fromisoformat(raw_event.replace("Z", "+00:00"))
+            except Exception:
+                dt = None
+    if dt is None:
+        return None
+    try:
+        return _why_localize_event_dt(dt, market_name).date()
+    except Exception:
+        return None
+
+
+def _why_disclosure_local_date(item, market_name):
+    """DART 공시 날짜를 시장 현지 날짜로 변환한다."""
+    if not isinstance(item, dict):
+        return None
+    raw = str(item.get("date") or item.get("rceptDt") or "").strip()
+    if not raw:
+        return None
+    raw = raw[:10].replace("/", "-").replace(".", "-")
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _why_filter_exact_price_date(items, reference_date, market_name, kind="news"):
+    """가격 기준일과 날짜가 정확히 같은 자료만 통과시킨다."""
+    kept, excluded, unknown = [], 0, 0
+    for item in (items or []):
+        if not isinstance(item, dict):
+            unknown += 1
+            continue
+        item_date = (_why_disclosure_local_date(item, market_name)
+                     if kind == "disclosure" else _why_item_local_date(item, market_name))
+        if item_date is None:
+            unknown += 1
+            continue
+        if reference_date is not None and item_date == reference_date:
+            x = dict(item)
+            x["price_reference_date"] = reference_date.isoformat()
+            x["date_alignment"] = "동일일자"
+            kept.append(x)
+        else:
+            excluded += 1
+    return kept, excluded, unknown
+
+
+def _why_filter_earnings_exact_price_date(earnings, reference_date, market_name):
+    """실적 원본도 발표일/보고일이 가격 기준일과 같은 경우만 원인 분석에 사용한다."""
+    if not isinstance(earnings, dict):
+        return earnings, 0, 0
+    out = dict(earnings)
+    total_excluded = total_unknown = 0
+    for key in ("quarterly", "annual", "history", "earnings"):
+        rows = earnings.get(key)
+        if not isinstance(rows, list):
+            continue
+        kept, excluded, unknown = [], 0, 0
+        for row in rows:
+            if not isinstance(row, dict):
+                unknown += 1
+                continue
+            raw = (row.get("date") or row.get("reportedDate") or row.get("reportDate")
+                   or row.get("fiscalDateEnding") or row.get("event_at") or "")
+            item_date = None
+            if raw:
+                try:
+                    dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    item_date = _why_localize_event_dt(dt, market_name).date()
+                except Exception:
+                    try:
+                        item_date = datetime.strptime(str(raw)[:10].replace(".", "-"), "%Y-%m-%d").date()
+                    except Exception:
+                        item_date = None
+            if item_date is None:
+                unknown += 1
+                continue
+            if reference_date is not None and item_date == reference_date:
+                x = dict(row)
+                x["price_reference_date"] = reference_date.isoformat()
+                x["date_alignment"] = "동일일자"
+                kept.append(x)
+            else:
+                excluded += 1
+        out[key] = kept
+        total_excluded += excluded
+        total_unknown += unknown
+    return out, total_excluded, total_unknown
+
+
+def _why_align_collected_to_price_date(collected, df, market_name):
+    """
+    가격 기준일을 중심으로 왜 움직였을까? 데이터 전체를 강제 정렬한다.
+
+    중요: 화면 표시용 최신 수집과 달리 '원인 분석 입력값'은 여기서 날짜가
+    정확히 같은 자료만 남긴다. 따라서 미래 뉴스/과거 뉴스가 현재 가격의
+    원인으로 섞이는 look-ahead 오류를 차단한다.
+    """
+    data = dict(collected or {})
+    reference_date = _why_price_reference_date(df, market_name)
+    alignment = {
+        "version": "V3-strict-price-news-date-alignment",
+        "price_reference_date": reference_date.isoformat() if reference_date else "",
+        "market_timezone": str(_why_market_timezone(market_name)),
+        "rule": "가격 기준일과 뉴스/이벤트/공시 기준일이 정확히 동일한 자료만 원인 분석에 사용",
+        "excluded_future_or_other_dates": 0,
+        "excluded_unknown_dates": 0,
+        "areas": {},
+    }
+
+    for key in ("stock_news", "industry_news", "global_news", "macro_news", "earnings_news"):
+        original = data.get(key) or []
+        kept, excluded, unknown = _why_filter_exact_price_date(original, reference_date, market_name, "news")
+        data[key] = kept
+        alignment["areas"][key] = {
+            "original_count": len(original),
+            "aligned_count": len(kept),
+            "excluded_count": excluded,
+            "unknown_date_count": unknown,
+        }
+        alignment["excluded_future_or_other_dates"] += excluded
+        alignment["excluded_unknown_dates"] += unknown
+
+    original_disclosures = data.get("dart_disclosures") or []
+    kept, excluded, unknown = _why_filter_exact_price_date(original_disclosures, reference_date, market_name, "disclosure")
+    data["dart_disclosures"] = kept
+    alignment["areas"]["dart_disclosures"] = {
+        "original_count": len(original_disclosures),
+        "aligned_count": len(kept),
+        "excluded_count": excluded,
+        "unknown_date_count": unknown,
+    }
+    alignment["excluded_future_or_other_dates"] += excluded
+    alignment["excluded_unknown_dates"] += unknown
+
+    original_calendar = data.get("market_calendar") or []
+    kept, excluded, unknown = _why_filter_exact_price_date(original_calendar, reference_date, market_name, "news")
+    data["market_calendar"] = kept
+    alignment["areas"]["market_calendar"] = {
+        "original_count": len(original_calendar),
+        "aligned_count": len(kept),
+        "excluded_count": excluded,
+        "unknown_date_count": unknown,
+    }
+    alignment["excluded_future_or_other_dates"] += excluded
+    alignment["excluded_unknown_dates"] += unknown
+
+    aligned_earnings, excluded, unknown = _why_filter_earnings_exact_price_date(
+        data.get("earnings") or {}, reference_date, market_name
+    )
+    data["earnings"] = aligned_earnings
+    alignment["areas"]["earnings"] = {
+        "excluded_count": excluded,
+        "unknown_date_count": unknown,
+    }
+    alignment["excluded_future_or_other_dates"] += excluded
+    alignment["excluded_unknown_dates"] += unknown
+
+    meta = dict(data.get("collection_meta") or {})
+    meta["date_alignment"] = alignment
+    meta["version"] = "V3-data-separated-strict-date-aligned"
+    data["collection_meta"] = meta
+    data["date_alignment"] = alignment
+
+    # 이벤트 타임라인도 정렬된 데이터만으로 다시 생성한다.
+    try:
+        data["event_timeline"] = build_why_event_timeline(
+            collected=data, market_name=market_name,
+            symbol=str(data.get("symbol") or ""),
+            formal_name=str(data.get("name") or ""),
+        )
+    except Exception:
+        data["event_timeline"] = {"events": []}
+
+    return data
 
 
 def _why_localize_event_dt(dt, market_name):
@@ -4903,6 +5110,17 @@ def run_why_moved_pipeline(query):
         except Exception:
             why_df = None
 
+    # STEP 2A: 가격 기준일과 뉴스/이벤트 기준일을 강제 동일화한다.
+    # 이 지점 이후의 모든 원인 분석 입력은 반드시 같은 기준일만 사용한다.
+    collected = _why_align_collected_to_price_date(collected, why_df, market_name)
+    stock_news = collected.get("stock_news") or []
+    industry_news = collected.get("industry_news") or []
+    global_news = collected.get("global_news") or []
+    macro_news = collected.get("macro_news") or []
+    market_calendar = collected.get("market_calendar") or []
+    dart_disclosures = collected.get("dart_disclosures") or []
+    macro_snapshot = collected.get("macro_snapshot") or {}
+
     # STEP 2: 이벤트 발생 시점과 실제 가격 반응을 연결한다.
     # 이벤트 데이터가 없거나 가격 시계열이 없으면 기존 분석은 그대로 진행한다.
     try:
@@ -4948,8 +5166,14 @@ def run_why_moved_pipeline(query):
     temporal_validation = _why_build_temporal_validation(collected, why_df, market_name)
 
     try:
+        _analysis_raw_price = None
+        try:
+            if why_df is not None and len(why_df) and "Close" in why_df.columns:
+                _analysis_raw_price = float(pd.to_numeric(why_df["Close"], errors="coerce").dropna().iloc[-1])
+        except Exception:
+            _analysis_raw_price = None
         movement_reason = analyze_movement_reason(
-            raw_price=None if not base.get("track_analysis") else (base.get("track_analysis") or {}).get("raw_price"),
+            raw_price=_analysis_raw_price if _analysis_raw_price is not None else (None if not base.get("track_analysis") else (base.get("track_analysis") or {}).get("raw_price")),
             df=why_df,
             formal_name=formal_name,
             market_name=market_name,
@@ -5007,22 +5231,18 @@ def run_why_moved_pipeline(query):
     except Exception as exc:
         print(f"[WHY MOVED CAUSE V2] failed: {repr(exc)}")
 
-    # 재평가가 df 없이 수급/가격을 충분히 반영하지 못할 수 있으므로,
-    # 기존 분석 결과가 더 강한 근거를 가진 경우 기존 근거를 보조로 병합한다.
-    original_reason = base.get("movement_reason") or {}
-    if len(_why_moved_evidence_from_reason(movement_reason)) < len(_why_moved_evidence_from_reason(original_reason)):
-        merged = dict(movement_reason)
-        merged["reasons"] = _why_moved_evidence_from_reason(original_reason)
-        merged["main_reason_key"] = original_reason.get("main_reason_key") or merged.get("main_reason_key")
-        merged["main_reason"] = original_reason.get("main_reason") or merged.get("main_reason")
-        merged["confidence"] = original_reason.get("confidence") or merged.get("confidence")
-        movement_reason = merged
+    # 정합성 보호: 기존 /api/analyze의 뉴스 기반 주원인을 다시 섞지 않는다.
+    # /api/analyze는 현재 시점 데이터일 수 있으므로, 이 단계에서 병합하면
+    # 가격 기준일과 다른 날짜의 뉴스가 다시 원인 분석에 들어갈 수 있다.
+    # 따라서 V3에서는 날짜 정렬이 끝난 movement_reason만 최종 사용한다.
 
     result = {
         "symbol": symbol,
         "name": formal_name,
         "market": market_name,
         "price": base.get("price_str") or base.get("price") or "-",
+        "price_reference_date": (collected.get("date_alignment") or {}).get("price_reference_date", ""),
+        "price_reference_close": _reference_close,
         "direction": movement_reason.get("direction", "-"),
         "movement_reason": movement_reason,
         "comment": _why_moved_comment(movement_reason),
@@ -5047,6 +5267,7 @@ def run_why_moved_pipeline(query):
             "by_type": {},
         },
         "temporal_validation": temporal_validation,
+        "date_alignment": collected.get("date_alignment") or {},
         "macro": macro_snapshot,
         "earnings": collected.get("earnings") or (movement_reason.get("global_impact", {}).get("earnings") if isinstance(movement_reason.get("global_impact"), dict) else None),
         "sources": {
@@ -5062,12 +5283,13 @@ def run_why_moved_pipeline(query):
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S KST"),
         "engine_versions": {
             "data_collection": "V2-data-separated",
-            "temporal_validation": "V2-step2",
+            "temporal_validation": "V3-strict-date-alignment",
             "cause_scoring": "V2-step3",
             "event_structure": "V2-step1",
             "event_price_reaction": "V2-step2",
             "event_impact_score": "V2-step3",
             "event_cause_integration": "V2-step4",
+            "date_alignment": "V3-strict-price-news-date-alignment",
         },
     }
     return _why_cache_set(clean_q, result)

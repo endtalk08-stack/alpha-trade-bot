@@ -5153,89 +5153,77 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         intro = `🐜 개미들아! ${displayName}${topicParticle} 현재 ${priceText} ${directionText} 중이야.`;
                     }
 
-                    // 2) 핵심 원인 — 백엔드가 선택한 main_reason을 우선 사용한다.
-                    // 단, 코멘트에서는 데이터의 나열이 아니라 '원인 → 해석' 형태로 번역한다.
+                    // 2) 핵심 원인 — 정보 전달형 코멘트만 생성한다.
+                    // 원칙: 가격/등락률은 1회, 핵심 뉴스 또는 핵심 데이터 1개, 필요 시 시황 1개.
+                    // 예측/추천/확인 유도/요약 문장은 사용하지 않는다.
                     let body = '';
                     let support = '';
 
-                    if (mainReasonKey === 'material' && material && Number(material.score || 0) !== 0) {
-                        if (newsTitleForComment) {
-                            body = `${newsTitleForComment} 소식에 주가가 ${directionText}했어.`;
-                        } else {
-                            const md = stripLeadingMeta(material.detail || '기업 관련 재료');
-                            const materialLabel = md.includes('부정 재료') ? '부정적인 기업 재료가' : (md.includes('긍정 재료') ? '긍정적인 기업 재료가' : `${md}`);
-                            body = `${materialLabel} 주가에 영향을 줬어.`;
-                        }
+                    if (newsTitleForComment) {
+                        body = `${newsTitleForComment} 관련 소식이 전해지면서 주가가 ${directionText}했어.`;
+                    } else if (mainReasonKey === 'material' && material) {
+                        const md = stripLeadingMeta(material.detail || '기업 관련 재료');
+                        body = `${md} 관련 재료가 주가 ${directionText}에 영향을 줬어.`;
                     } else if (mainReasonKey === 'global_impact') {
                         const us = globalDetail('us_market');
                         const ind = globalDetail('industry_global');
                         const dom = globalDetail('domestic_market');
                         const chain = [us, ind, dom].filter(Boolean).slice(0, 2);
                         body = chain.length
-                            ? `${chain.join('과 ')} 흐름이 이어지면서 ${displayName}도 ${directionText}했어.`
-                            : `해외 시장과 연결된 흐름이 ${displayName}의 ${directionText} 움직임에 영향을 줬어.`;
+                            ? `${chain.join('과 ')} 영향으로 ${displayName} 주가가 ${directionText}했어.`
+                            : `해외 시장 흐름이 ${displayName} 주가 ${directionText}에 영향을 줬어.`;
                     } else if (mainReasonKey === 'market' || mainReasonKey === 'market_5d') {
-                        const md = detailOf(mainReasonKey) || marketDetailText || '시장 흐름';
-                        const marketCause = stripLeadingMeta(md).replace(/\s*\([+-]?[0-9]+(?:\.[0-9]+)?%\)/g, '').trim();
-                        const marketPhrase = (marketCause || '시장 흐름').replace(/\s*흐름$/,'');
-                        body = `${marketPhrase} 흐름이 이어지면서 ${displayName}도 ${directionText}했어.`;
-                    } else if (mainReasonKey === 'theme' && theme && Number(theme.score || 0) !== 0) {
+                        const md = stripLeadingMeta(detailOf(mainReasonKey) || marketDetailText || '시장 흐름');
+                        body = `${md} 영향으로 ${displayName} 주가가 ${directionText}했어.`;
+                    } else if (mainReasonKey === 'theme' && theme) {
                         const td = globalImpact.theme && globalImpact.theme.detail ? globalImpact.theme.detail : detailOf('theme');
-                        body = `${stripLeadingMeta(td || '관련 업종 흐름')}이(가) ${displayName} 주가에 영향을 줬어.`;
+                        body = `${stripLeadingMeta(td || '관련 업종 흐름')}에 따라 주가가 ${directionText}했어.`;
                     } else if (mainReasonKey === 'flow_pair' && (foreign || institution)) {
-                        body = `외국인과 기관의 수급 방향이 ${directionText === '하락' ? '매도 쪽으로' : directionText === '상승' ? '매수 쪽으로' : '엇갈리는 방향으로'} 움직였어.`;
+                        const fs = foreign ? Number(foreign.score || 0) : 0;
+                        const ins = institution ? Number(institution.score || 0) : 0;
+                        const same = fs !== 0 && ins !== 0 && (fs > 0 ? 1 : -1) === (ins > 0 ? 1 : -1);
+                        body = same
+                            ? `외국인과 기관의 수급이 같은 방향으로 움직이며 주가 ${directionText}에 영향을 줬어.`
+                            : `외국인과 기관의 수급이 엇갈린 가운데 주가가 ${directionText}했어.`;
                     } else if (mainReasonKey === 'foreign' && foreign) {
-                        body = `${stripLeadingMeta(foreign.detail || '외국인 수급')}이(가) ${directionText} 흐름에 영향을 줬어.`;
+                        body = `${stripLeadingMeta(foreign.detail || '외국인 수급')} 흐름이 주가 ${directionText}에 영향을 줬어.`;
                     } else if (mainReasonKey === 'institution' && institution) {
-                        body = `${stripLeadingMeta(institution.detail || '기관 수급')}이(가) ${directionText} 흐름에 영향을 줬어.`;
+                        body = `${stripLeadingMeta(institution.detail || '기관 수급')} 흐름이 주가 ${directionText}에 영향을 줬어.`;
                     } else if (mainReasonKey === 'volume' && volume) {
-                        body = `${stripLeadingMeta(volume.detail || '거래량 변화')}이(가) 커지면서 주가 움직임도 확대됐어.`;
+                        body = `${stripLeadingMeta(volume.detail || '거래량 변화')}로 거래가 활발해지면서 주가가 ${directionText}했어.`;
                     } else if (mainReasonKey === 'trading_value' && tradingValue) {
-                        body = `${stripLeadingMeta(tradingValue.detail || '거래대금 변화')} 흐름이 주가와 함께 움직였어.`;
+                        body = `${stripLeadingMeta(tradingValue.detail || '거래대금 변화')} 흐름이 주가 ${directionText}에 영향을 줬어.`;
                     } else if (earningsLayer && Number(earningsLayer.score || 0) !== 0) {
-                        body = `실적 관련 흐름이 ${displayName} 주가에 영향을 줬어.`;
+                        body = `실적 관련 흐름이 ${displayName} 주가 ${directionText}에 영향을 줬어.`;
                     } else if (macroLayer && Number(macroLayer.score || 0) !== 0) {
-                        body = `금리·경제 등 거시환경 변화가 ${displayName} 주가에 영향을 줬어.`;
+                        body = `금리·경제 등 거시환경 변화가 ${displayName} 주가 ${directionText}에 영향을 줬어.`;
                     } else if (industryLayer && Number(industryLayer.score || 0) !== 0) {
-                        body = `관련 업종 흐름이 ${displayName} 주가에 영향을 줬어.`;
-                    } else if (newsTitleForComment) {
-                        body = `${newsTitleForComment} 소식에 주가가 ${directionText}했어.`;
+                        body = `관련 업종 흐름이 ${displayName} 주가 ${directionText}에 영향을 줬어.`;
                     } else {
-                        body = `현재 확인된 자료에서는 특정 기업 재료보다 시장과 업종 흐름의 영향이 크게 작용하고 있어.`;
+                        body = `현재 확보된 자료에서는 뚜렷한 단일 원인보다 여러 시장 흐름이 함께 반영된 모습이야.`;
                     }
 
-                    // 3) 보조 근거 — 핵심 원인과 직접 연결되는 데이터만 하나 선택한다.
-                    // 숫자는 트랙 카드에서 이미 보이므로 여기서는 숫자를 재출력하지 않는다.
+                    // 3) 보조 시황 — 이미 본 숫자는 다시 쓰지 않고, 의미 있는 맥락만 하나 붙인다.
                     const moveSign = directionText === '상승' ? 1 : directionText === '하락' ? -1 : 0;
-                    if (mainReasonKey === 'material') {
-                        if (industryLayer && Number(industryLayer.score || 0) !== 0) {
-                            const industrySign = Number(industryLayer.score || 0) > 0 ? 1 : -1;
-                            support = industrySign === moveSign
-                                ? `관련 업종 흐름도 같은 방향이야.`
-                                : `관련 업종은 반대 방향으로 움직여 개별 재료의 영향이 더 두드러졌어.`;
-                        } else if (earningsLayer && Number(earningsLayer.score || 0) !== 0) {
-                            support = `실적 관련 흐름도 함께 작용하고 있어.`;
-                        } else if ((foreign && Number(foreign.score || 0) !== 0) || (institution && Number(institution.score || 0) !== 0)) {
-                            const flowScores = [foreign, institution].filter(Boolean).map(x => Number(x.score || 0)).filter(x => x !== 0);
-                            const sameDirection = flowScores.length && flowScores.every(x => (x > 0 ? 1 : -1) === moveSign);
-                            support = sameDirection ? `수급 흐름도 같은 방향이야.` : `수급은 주가와 다른 방향으로 움직였어.`;
-                        }
-                    } else if (mainReasonKey !== 'foreign' && mainReasonKey !== 'institution' && mainReasonKey !== 'flow_pair') {
-                        if (foreign && institution && Number(foreign.score || 0) !== 0 && Number(institution.score || 0) !== 0) {
-                            const fs = Number(foreign.score || 0) > 0 ? 1 : -1;
-                            const ins = Number(institution.score || 0) > 0 ? 1 : -1;
-                            support = fs === moveSign && ins === moveSign
-                                ? `외국인과 기관 수급도 같은 방향이야.`
-                                : `외국인과 기관 수급은 주가와 다른 방향으로 움직였어.`;
-                        } else if (volume && Number(volume.score || 0) !== 0) {
-                            support = `거래량도 주가와 같은 방향으로 움직였어.`;
+                    if (!newsTitleForComment && mainReasonKey !== 'market' && mainReasonKey !== 'market_5d' && marketDetailText) {
+                        const marketSign = Number(marketReason?.score || 0);
+                        if (marketSign !== 0 && moveSign !== 0) {
+                            support = (marketSign > 0 ? 1 : -1) === moveSign
+                                ? `시장 흐름도 같은 방향이었어.`
+                                : `시장 흐름은 반대 방향으로 움직였어.`;
                         }
                     }
+                    if (!support && mainReasonKey === 'material' && industryLayer && Number(industryLayer.score || 0) !== 0) {
+                        const industrySign = Number(industryLayer.score || 0) > 0 ? 1 : -1;
+                        support = industrySign === moveSign ? `관련 업종도 같은 방향으로 움직였어.` : `관련 업종은 반대 방향으로 움직였어.`;
+                    }
+                    if (!support && (mainReasonKey === 'foreign' || mainReasonKey === 'institution') && volume && Number(volume.score || 0) !== 0) {
+                        support = `거래량 흐름도 함께 반영됐어.`;
+                    }
 
-                    // 4) 핵심 원인과 보조 근거만 출력. '정리하면'과 반복 문장은 사용하지 않는다.
                     const commentParts = [intro, body, support].filter(Boolean);
 
-                    // 5) 개미GTP다운 짧은 마무리 — 정보 전달 뒤 캐릭터성만 유지
+                    // 4) 개미GTP다운 짧은 마무리 — 정보 전달 뒤 캐릭터성만 유지
                     const closingByDirection = directionText === '상승'
                         ? ['오늘도 개미들 힘내자! 💪', '우리 개미들 오늘도 화이팅! 🐜', '오늘도 개미답게 차분하게! 💪']
                         : directionText === '하락'

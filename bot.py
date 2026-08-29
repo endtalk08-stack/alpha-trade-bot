@@ -3761,12 +3761,64 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 2행 좌측: 트랙 분석 — 기존 왜 움직였을까?의 확인된 근거부터 시장 5일 흐름까지 -->
+                        <!-- 2행 좌측: 트랙 분석 — 퀀트 분석과 동일한 카드 구조 -->
                         <div class="card" id="rowTrack" style="justify-content:flex-start;">
-                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
-                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
+                            <div style="margin-bottom:14px;">
+                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
                             </div>
-                            <div id="movementEvidenceCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
+
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--border-line);">
+                                <div class="gauge-inner-box" style="border-color:#38bdf8;">
+                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="tEvidenceCountVal">-</span>
+                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">근거</span>
+                                </div>
+                                <div style="min-width:0;">
+                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <span style="font-size:0.78rem; color:var(--text-muted);">데이터 상태</span>
+                                        <span style="background:rgba(56,189,248,0.15); color:#38bdf8; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="tStatusBadge">-</span>
+                                    </div>
+                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="tStatusDots">실제 확인된 데이터 기준</div>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
+                                <div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재 주가</div>
+                                    <div style="font-size:1.15rem; font-weight:800; color:var(--text-title);" id="tPriceVal">-</div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">오늘 등락률</div>
+                                    <div style="font-size:1.1rem; font-weight:700; color:var(--text-title);" id="tChangeVal">-</div>
+                                </div>
+                            </div>
+
+                            <!-- 상단 그래프: 실제 종목 최근 60거래일 주가 흐름 -->
+                            <div style="margin:16px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                    <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 주가 흐름</span>
+                                    <span style="font-size:0.7rem; color:#38bdf8; font-weight:800;" id="tPriceTrendTxt">현재 -</span>
+                                </div>
+                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
+                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
+                                </div>
+                            </div>
+
+                            <!-- 하단 그래프: 실제 52주 가격 위치 -->
+                            <div style="margin:12px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);" id="tLow52w"></span>
+                                    <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
+                                    <span style="color:var(--text-muted);" id="tHigh52w"></span>
+                                </div>
+                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
+                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="tSliderFill"></div>
+                                    <div class="dot-marker-style" id="tDotMarker"></div>
+                                </div>
+                            </div>
+
+                            <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
+                                <div id="trackDetailList"></div>
+                            </div>
                         </div>
 
                         <!-- 5행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
@@ -5083,74 +5135,105 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
                     `;
 
-                    const trackCard = document.getElementById('movementEvidenceCard');
-                    if (!trackCard) return;
+                    // 트랙 분석 렌더링: 기존 실제 데이터만 사용하고, 임의의 시계열을 생성하지 않는다.
+                    const trackPriceVal = document.getElementById('tPriceVal');
+                    const trackChangeVal = document.getElementById('tChangeVal');
+                    const trackEvidenceVal = document.getElementById('tEvidenceCountVal');
+                    const trackStatusBadge = document.getElementById('tStatusBadge');
+                    const trackStatusDots = document.getElementById('tStatusDots');
+                    const trackPriceTrendTxt = document.getElementById('tPriceTrendTxt');
 
-                    trackCard.innerHTML = `
-                        <div class="movement-evidence-summary">
-                            <div class="movement-evidence-head">
-                                <span class="movement-evidence-label">확인된 근거</span>
-                                <span class="movement-evidence-count">${evidenceCount} / 8</span>
-                            </div>
-                            <div class="movement-evidence-track">${evidenceSegments}</div>
-                        </div>
+                    const candlesForTrack = Array.isArray(data.candles) ? data.candles.filter(c =>
+                        c && Number.isFinite(Number(c.close))
+                    ) : [];
+                    const closesForTrack = candlesForTrack.map(c => Number(c.close));
+                    const latestClose = closesForTrack.length ? closesForTrack[closesForTrack.length - 1] : null;
+                    const prevClose = closesForTrack.length > 1 ? closesForTrack[closesForTrack.length - 2] : null;
+                    const changePct = latestClose !== null && prevClose !== null && prevClose !== 0
+                        ? ((latestClose / prevClose) - 1) * 100 : null;
 
-                        ${(() => {
-                            // Primary graph: asset vs benchmark over the latest five sessions.
-                            // The backend can supply rs_chart_points and benchmark_name later.
-                            // Until then, do not fabricate a second time series: hide the graph
-                            // instead of showing invented values.
-                            const rs = data.relative_strength || null;
-                            if (!rs || !Array.isArray(rs.points) || rs.points.length < 2) return '';
+                    if (trackPriceVal) trackPriceVal.innerText = data.price_str || data.price || (latestClose !== null ? latestClose.toLocaleString() : '-');
+                    if (trackChangeVal) {
+                        trackChangeVal.innerText = Number.isFinite(changePct) ? `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%` : '-';
+                        trackChangeVal.style.color = Number.isFinite(changePct) && changePct > 0 ? '#10b981' : (Number.isFinite(changePct) && changePct < 0 ? '#ef4444' : 'var(--text-title)');
+                    }
 
-                            const pts = rs.points.slice(-5);
-                            const valuesA = pts.map(p => Number(p.asset));
-                            const valuesB = pts.map(p => Number(p.benchmark));
-                            if (valuesA.some(v => !Number.isFinite(v)) || valuesB.some(v => !Number.isFinite(v))) return '';
+                    const evidenceReasonsTrack = Array.isArray(mr.reasons) ? mr.reasons : [];
+                    const evidenceCountTrack = evidenceReasonsTrack.filter(x => Number(x.score || 0) !== 0).length;
+                    const statusTrack = mr.confidence || (evidenceCountTrack >= 4 ? '높음' : evidenceCountTrack >= 2 ? '중간' : '낮음');
+                    if (trackEvidenceVal) trackEvidenceVal.innerText = `${evidenceCountTrack}/8`;
+                    if (trackStatusBadge) trackStatusBadge.innerText = statusTrack;
+                    if (trackStatusDots) trackStatusDots.innerText = evidenceCountTrack > 0 ? `확인된 근거 ${evidenceCountTrack}개 · 실제 데이터 기준` : '확인된 근거 부족 · 추가 확인 필요';
 
-                            const all = valuesA.concat(valuesB);
-                            const minV = Math.min(...all);
-                            const maxV = Math.max(...all);
+                    // 상단 그래프: candles의 실제 종가를 최근 60개로 잘라 정규화하여 표시.
+                    const tPriceChart = document.getElementById('tPriceChart');
+                    if (tPriceChart && closesForTrack.length > 1) {
+                        const vals = closesForTrack.slice(-60);
+                        const first = vals[0];
+                        const normalized = first !== 0 ? vals.map(v => ((v / first) - 1) * 100) : [];
+                        if (normalized.length > 1 && normalized.every(Number.isFinite)) {
+                            const W = 600, H = 120, pad = 8;
+                            const minV = Math.min(...normalized), maxV = Math.max(...normalized);
                             const span = Math.max(0.01, maxV - minV);
-                            const W = 520, H = 92, PX = 8, PY = 8;
-                            const x = i => PX + (i * (W - PX * 2) / Math.max(1, pts.length - 1));
-                            const y = v => PY + ((maxV - v) / span) * (H - PY * 2);
-                            const path = arr => arr.map((v,i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
-                            const diff = Number(rs.relative_return);
-                            const diffText = Number.isFinite(diff) ? `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%p` : '';
-                            const assetName = rs.asset_name || '종목';
-                            const benchmarkName = rs.benchmark_name || '시장';
-                            const latestAsset = valuesA[valuesA.length - 1];
-                            const latestBenchmark = valuesB[valuesB.length - 1];
-
-                            return `
-                                <div class="movement-relative-chart">
-                                    <div class="movement-relative-head">
-                                        <span class="movement-relative-title">시장 대비 상대강도</span>
-                                        <span class="movement-relative-diff">${diffText}</span>
-                                    </div>
-                                    <div class="movement-relative-chartbox">
-                                        <div class="movement-relative-gridline" style="top:25%;"></div>
-                                        <div class="movement-relative-gridline" style="top:50%;"></div>
-                                        <div class="movement-relative-gridline" style="top:75%;"></div>
-                                        <svg class="movement-relative-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="최근 5거래일 상대강도 비교">
-                                            <path d="${path(valuesB)}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.42"></path>
-                                            <path d="${path(valuesA)}" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"></path>
-                                        </svg>
-                                    </div>
-                                    <div class="movement-relative-legend">
-                                        <span><span class="movement-relative-dot" style="background:var(--text-title);"></span>${assetName} ${latestAsset >= 0 ? '+' : ''}${latestAsset.toFixed(2)}%</span>
-                                        <span><span class="movement-relative-dot" style="background:var(--text-muted);"></span>${benchmarkName} ${latestBenchmark >= 0 ? '+' : ''}${latestBenchmark.toFixed(2)}%</span>
-                                    </div>
-                                    <div class="movement-relative-note">최근 5거래일 동안 종목과 기준시장의 상대적인 움직임을 비교합니다.</div>
-                                </div>
+                            const x = i => pad + i * ((W - pad * 2) / Math.max(1, normalized.length - 1));
+                            const y = v => pad + ((maxV - v) / span) * (H - pad * 2);
+                            const coords = normalized.map((v,i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+                            const linePath = 'M ' + coords.join(' L ');
+                            const baseY = y(0);
+                            const areaPath = `M ${coords[0].split(',')[0]},${baseY.toFixed(1)} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${baseY.toFixed(1)} Z`;
+                            const last = normalized[normalized.length - 1];
+                            const stroke = last >= 0 ? '#10b981' : '#ef4444';
+                            tPriceChart.innerHTML = `
+                                <defs>
+                                    <linearGradient id="tPriceFill" x1="0" x2="0" y1="0" y2="1">
+                                        <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"/>
+                                        <stop offset="100%" stop-color="${stroke}" stop-opacity="0.02"/>
+                                    </linearGradient>
+                                </defs>
+                                <line x1="0" y1="${baseY.toFixed(1)}" x2="600" y2="${baseY.toFixed(1)}" stroke="rgba(148,163,184,0.20)" stroke-width="1" stroke-dasharray="4 4"/>
+                                <path d="${areaPath}" fill="url(#tPriceFill)"/>
+                                <path d="${linePath}" fill="none" stroke="${stroke}" stroke-width="3" vector-effect="non-scaling-stroke"/>
+                                <circle cx="${coords[coords.length-1].split(',')[0]}" cy="${coords[coords.length-1].split(',')[1]}" r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2" vector-effect="non-scaling-stroke"/>
                             `;
-                        })()}
+                            if (trackPriceTrendTxt) trackPriceTrendTxt.innerText = `최근 60D ${last >= 0 ? '+' : ''}${last.toFixed(2)}%`;
+                        }
+                    } else if (trackPriceTrendTxt) {
+                        trackPriceTrendTxt.innerText = '데이터 부족';
+                    }
 
-                        <div class="movement-mini-grid">${movementReasonCards}</div>
+                    // 하단 그래프: 퀀트와 동일한 52주 가격 위치 UI. 실제 quant 계산값을 그대로 사용.
+                    const tq = data.quant || {};
+                    setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
+                    setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
+                    setTxt('tPos52wLabel', tq.pos_52w ? `52주 가격 위치 ${tq.pos_52w}` : '52주 가격 위치');
+                    const tFill = document.getElementById('tSliderFill');
+                    if (tFill && Number.isFinite(Number(tq.slider_fill_pct))) tFill.style.width = `${tq.slider_fill_pct}%`;
+                    const tDot = document.getElementById('tDotMarker');
+                    if (tDot && Number.isFinite(Number(tq.slider_fill_pct))) tDot.style.left = `${Math.min(99, Math.max(1, Number(tq.slider_fill_pct)))}%`;
 
-                        
-                    `;
+                    // 하단 세부 목록: 기존 movement_reason의 실제 근거를 그대로 표시.
+                    const trackDetailList = document.getElementById('trackDetailList');
+                    if (trackDetailList) {
+                        const iconForTrack = {
+                            '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂','시장':'⌁','업종·테마':'◇','기업 재료':'▤','거래량':'♧','시장 5일 흐름':'⌁'
+                        };
+                        trackDetailList.innerHTML = evidenceReasonsTrack.map(r => {
+                            const score = Number(r.score || 0);
+                            const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
+                            const statusClass = score > 0 ? 'status-pill-positive' : score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
+                            return `<div class="quant-row-item">
+                                <div class="quant-row-left">
+                                    <span class="quant-row-name">${iconForTrack[r.label] || '•'} ${r.label || '-'}</span>
+                                    <span class="quant-row-status ${statusClass}">${status}</span>
+                                </div>
+                                <div class="quant-row-right">
+                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
+                                    <div class="quant-row-subval">실제 확인 데이터</div>
+                                </div>
+                            </div>`;
+                        }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
+                    }
+
                 }
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링

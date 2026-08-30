@@ -2920,7 +2920,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 low_p=raw_price*0.95 if raw_price else 0; high_p=raw_price*1.05 if raw_price else 0
                 fill_pct=50; primary_val="실제 컨센서스 없음"; slider_mid="컨센서스 확인 필요"
             return {
-                "title":"실제 애널리스트 컨센서스", "gauge_val":str(len(reports)), "gauge_label":"확인 리포트",
+                "title":"애널리스트 컨센서스", "gauge_val":str(len(reports)), "gauge_label":"확인 리포트",
                 "status_label":"검증 데이터", "badge_text":"실제 데이터만 표시",
                 "dots": "" if not reports else f"확인 리포트 {len(reports)}건",
                 "primary_label":"평균 목표가" if target_p else "목표가", "primary_val":primary_val,

@@ -5161,6 +5161,91 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .calendar-widget .calendar-full-btn span { font-size: 0.9rem; color: #dfe2e2; }
         .calendar-widget .calendar-full-btn:hover { background: #252729; border-color: #383b3e; }
 
+
+        /* ============================================================
+           v11: 경제/실적 캘린더 공통 가로 그리드
+           시간 / 별표 / 일정내용 / 알람의 시작 위치를 항상 동일하게 유지
+           실적 캘린더 티커 박스(NVDA 등) 제거
+           ============================================================ */
+        .calendar-widget-list .cal-card-item {
+            display: grid !important;
+            grid-template-columns: 54px 52px minmax(0, 1fr) 30px !important;
+            column-gap: 8px !important;
+            align-items: center !important;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .calendar-widget-list .cal-time-col {
+            width: 54px !important;
+            min-width: 54px !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            align-self: center;
+        }
+        .calendar-widget-list .cal-stars {
+            width: 52px !important;
+            min-width: 52px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            display: block !important;
+            text-align: left !important;
+            white-space: nowrap !important;
+            font-size: 0.72rem !important;
+            line-height: 1.2 !important;
+            letter-spacing: -0.08em !important;
+        }
+        .calendar-widget-list .cal-detail-col {
+            min-width: 0 !important;
+            width: auto !important;
+            flex: none !important;
+            overflow: hidden;
+        }
+        .calendar-widget-list .cal-event-title {
+            margin: 0 0 3px !important;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: keep-all;
+        }
+        .calendar-widget-list .cal-event-meta {
+            margin: 0 !important;
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+        .calendar-widget-list .cal-event-topline {
+            display: contents !important;
+        }
+        .calendar-widget-list .cal-event-icon {
+            display: none !important;
+        }
+        .calendar-widget-list .cal-alarm-btn {
+            width: 30px !important;
+            min-width: 30px !important;
+            height: 30px !important;
+            flex: none !important;
+            justify-self: end;
+            margin: 0 !important;
+        }
+        @media (max-width: 520px) {
+            .calendar-widget-list .cal-card-item {
+                grid-template-columns: 50px 48px minmax(0, 1fr) 28px !important;
+                column-gap: 6px !important;
+            }
+            .calendar-widget-list .cal-time-col {
+                width: 50px !important;
+                min-width: 50px !important;
+            }
+            .calendar-widget-list .cal-stars {
+                width: 48px !important;
+                min-width: 48px !important;
+                font-size: 0.68rem !important;
+            }
+            .calendar-widget-list .cal-alarm-btn {
+                width: 28px !important;
+                min-width: 28px !important;
+                height: 28px !important;
+            }
+        }
+
     </style>
 </head>
 <body>
@@ -6059,17 +6144,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (ev.exp && ev.exp !== '-') metaParts.push(`예상 ${ev.exp}`);
             if (ev.prev && ev.prev !== '-') metaParts.push(`이전 ${ev.prev}`);
             const meta = metaParts.join('  ·  ');
-            const iconText = isEarn ? (ev.ticker || '?').slice(0, 4) : '';
+            // 실적 캘린더에서는 티커(NVDA 등)를 화면에 표시하지 않습니다.
+            const rawEventName = ev.name || (isEarn ? '실적 발표' : '경제지표');
+            const eventName = isEarn
+                ? String(rawEventName).replace(/\s*\([A-Za-z0-9.\-]+\)/g, '').trim()
+                : String(rawEventName);
 
             return `
                 <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
                     <div class="cal-time-col">${timeLabel}</div>
-                    ${isEarn ? `<div class="cal-event-icon" aria-hidden="true">${iconText}</div>` : ''}
+                    <div class="cal-stars">${stars}</div>
                     <div class="cal-detail-col">
-                        <div class="cal-event-topline">
-                            <span class="cal-stars">${stars}</span>
-                            <div class="cal-event-title">${ev.name || (isEarn ? '실적 발표' : '경제지표')}</div>
-                        </div>
+                        <div class="cal-event-title">${eventName}</div>
                         <div class="cal-event-meta">${status}${meta ? ` &nbsp;·&nbsp; ${meta}` : ''}</div>
                     </div>
                     <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"

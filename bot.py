@@ -6741,9 +6741,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
             };
         }
 
-        function findLatestEconomicOffset() {
-            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
+        // 경제 캘린더 이벤트 판별을 한 곳에서 통일합니다.
+        // 이전 배포본에서 type 값이 eco/economic으로 달라져도 대응합니다.
+        function isEconomicCalendarEvent(ev) {
+            if (!ev || !ev.date_key) return false;
+            const t = String(ev.type || '').toLowerCase();
+            return t === 'eco' || t === 'economic';
+        }
 
+        function getTodayKstDateKey() {
             const now = new Date();
             const kstString = new Intl.DateTimeFormat('en-CA', {
                 timeZone: 'Asia/Seoul',
@@ -6751,34 +6757,34 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 month: '2-digit',
                 day: '2-digit'
             }).format(now);
+            return kstString.replace(/-/g, '.');
+        }
 
-            const [yyyy, mm, dd] = kstString.split('-').map(Number);
+        function findLatestEconomicOffset() {
+            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
+            const todayKey = getTodayKstDateKey();
+            const [yyyy, mm, dd] = todayKey.split('.').map(Number);
             const today = new Date(Date.UTC(yyyy, mm - 1, dd));
 
             const economicDates = [...new Set(
                 all
-                    .filter(ev => ev.type === 'eco' && ev.date_key)
-                    .map(ev => ev.date_key)
+                    .filter(isEconomicCalendarEvent)
+                    .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
             )].sort();
 
-            // 오늘 경제 일정이 있으면 오늘을 그대로 보여줍니다.
-            const todayKey =
-                `${yyyy}.${String(mm).padStart(2, '0')}.${String(dd).padStart(2, '0')}`;
+            // 화면에 실제로 표시할 수 있는 오늘 일정이 있으면 오늘을 유지합니다.
+            const todayHasEvents = economicDates.includes(todayKey);
+            if (todayHasEvents) return 0;
 
-            if (economicDates.includes(todayKey)) {
-                return 0;
-            }
-
-            // 오늘 이전 날짜 중 가장 최근 발표일을 찾습니다.
+            // 오늘 이전의 가장 최근 경제 일정 날짜를 직접 찾습니다.
             let latestKey = null;
             for (const key of economicDates) {
-                const [y, m, d] = key.split('.').map(Number);
-                const candidate = new Date(Date.UTC(y, m - 1, d));
+                const parts = key.split('.').map(Number);
+                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
 
+                const candidate = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
                 if (candidate < today) {
                     latestKey = key;
-                } else {
-                    break;
                 }
             }
 
@@ -6807,13 +6813,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
 
             const info = getCalendarDateInfo(economicCalOffset);
+            info.dateKey = String(info.dateKey || '').replace(/[\\/]/g, '.');
             setTxt('ecoCalDisplayDate', info.display);
 
             const container = document.getElementById('ecoCalEventList');
             if (!container) return;
 
             let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => ev.type === 'eco' && ev.date_key === info.dateKey && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
+                .filter(ev => isEconomicCalendarEvent(ev)
+                    && String(ev.date_key).replace(/[\\/]/g, '.') === info.dateKey
+                    && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
 
             setTxt(
                 'ecoCalDayHeader',

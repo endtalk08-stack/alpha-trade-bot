@@ -4428,9 +4428,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .tsm-state{margin-top:8px;}
         .tsm-state-text{font-size:.76rem;color:var(--text-sub);line-height:1.5;}
         .tsm-backtest{margin-top:8px;padding:9px;}
-        .tsm-equity{height:70px;border-bottom:1px solid var(--border-line);position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(34,197,94,.04),transparent);}
-        .tsm-chart-line{position:absolute;left:3%;right:3%;bottom:13px;height:42px;border-top:2px solid #22c55e;transform:skewY(-9deg);opacity:.75;}
-        .tsm-equity span{position:absolute;left:8px;top:7px;font-size:.60rem;color:var(--text-muted);}
+        .tsm-equity{height:92px;border-bottom:1px solid var(--border-line);position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(34,197,94,.04),transparent);}
+        .tsm-equity-svg{width:100%;height:100%;display:block;}
+        .tsm-axis{stroke:var(--border-line);stroke-width:1;}
+        .tsm-gridline{stroke:var(--border-line);stroke-width:1;stroke-dasharray:3 4;opacity:.55;}
+        .tsm-equity-path{fill:none;stroke:#22c55e;stroke-width:3;vector-effect:non-scaling-stroke;}
+        .tsm-endpoint{fill:#22c55e;}
+        .tsm-equity span{position:absolute;left:9px;top:7px;font-size:.60rem;color:var(--text-muted);}
         .tsm-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:7px;}
         .tsm-stats div{text-align:center;}
         .tsm-stats b{display:block;font-size:.78rem;color:var(--text-title);}
@@ -6028,9 +6032,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <div class="tsm-backtest">
     <div class="tsm-section-title">⑦ 과거 성과</div>
-    <div class="tsm-equity">
-      <div class="tsm-chart-line"></div>
-      <span>누적수익률</span>
+    <div class="tsm-equity" aria-label="과거 성과 누적수익률 가상 차트">
+      <svg class="tsm-equity-svg" viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label="레이아웃 확인용 가상 누적수익률 차트">
+        <line x1="18" y1="132" x2="585" y2="132" class="tsm-axis"/>
+        <line x1="18" y1="25" x2="18" y2="132" class="tsm-axis"/>
+        <line x1="18" y1="105" x2="585" y2="105" class="tsm-gridline"/>
+        <line x1="18" y1="78" x2="585" y2="78" class="tsm-gridline"/>
+        <line x1="18" y1="51" x2="585" y2="51" class="tsm-gridline"/>
+        <polyline class="tsm-equity-path" points="18,126 55,121 92,124 129,110 166,114 203,96 240,102 277,84 314,88 351,67 388,73 425,52 462,58 499,40 536,46 575,28"/>
+        <circle cx="575" cy="28" r="4" class="tsm-endpoint"/>
+      </svg>
+      <span>누적수익률 · 레이아웃 확인용 가상 차트</span>
     </div>
     <div class="tsm-stats">
       <div><b id="tsmCagr">-</b><span>CAGR</span></div>

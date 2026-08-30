@@ -3951,30 +3951,47 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
         #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
 
-        /* 5행: 퀀트 분석(좌) & 캘린더(우) */
-        #rowQuant { grid-column: 1; grid-row: 5; height: 100%; }
-        #rowCalendar { grid-column: 2; grid-row: 5; height: 100%; }
+        /* 4행: 트랙 분석(좌) & 실적 일정(우) */
+        #rowTrack {
+            grid-column: 1;
+            grid-row: 4;
+            height: 100%;
+            min-height: 0;
+            align-self: stretch;
+        }
+        #rowEarningsCalendar {
+            grid-column: 2;
+            grid-row: 4;
+            height: 100%;
+            min-height: 0;
+            align-self: stretch;
+        }
 
-        /* 경제 일정 / 실적 일정 분리 위젯 */
-        #rowCalendar.calendar-stack {
+        /* 5행: 퀀트 분석(좌) & 경제 일정(우) */
+        #rowQuant {
+            grid-column: 1;
+            grid-row: 5;
+            height: 100%;
+            min-height: 0;
+            align-self: stretch;
+        }
+        #rowEconomicCalendar {
             grid-column: 2;
             grid-row: 5;
             height: 100%;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            background: transparent;
-            border: 0;
-            padding: 0;
-            min-width: 0;
+            min-height: 0;
+            align-self: stretch;
         }
 
+        /* 같은 행의 좌/우 카드가 항상 1:1 높이가 되도록 그리드 행을 채운다. */
         .calendar-widget {
             min-height: 0;
-            flex: 1 1 0;
+            height: 100%;
             display: flex;
             flex-direction: column;
             overflow: hidden;
+            align-self: stretch;
+            box-sizing: border-box;
         }
 
         .calendar-widget-title {
@@ -4050,10 +4067,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         @media (max-width: 1100px) {
-            #rowCalendar.calendar-stack {
-                grid-column: 1;
-                grid-row: auto;
-            }
+            #rowEarningsCalendar { order: 4; width: 100%; max-width: 832px; }
+            #rowQuant { order: 5; }
+            #rowEconomicCalendar { order: 6; width: 100%; max-width: 832px; }
         }
 
 
@@ -4580,7 +4596,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowChart { order: 1; }
             #rowNews { order: 2; }
             #rowTrack { order: 3; }
-            #rowQuant { order: 4; }
+            #rowEarningsCalendar { order: 4; }
+            #rowQuant { order: 5; }
+            #rowEconomicCalendar { order: 6; }
             #rowConsensus { order: 4; }
             #rowVote { order: 5; }
             #rowComment { order: 6; }
@@ -4588,7 +4606,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowSignal { order: 8; }
             #rowTelegram { order: 9; }
             #rowWorld { order: 10; width: 100%; max-width: 832px; }
-            #rowCalendar { order: 11; width: 100%; max-width: 832px; }
             #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
 
             .bottom-bar-grid-wrapper {
@@ -4841,35 +4858,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         
 
-                        <!-- 5행 우측: 경제 일정 + 실적 일정 (독립 위젯 2개) -->
-                        <div id="rowCalendar" class="calendar-stack">
-
-                            <!-- 경제 일정 -->
-                            <div class="card calendar-widget" id="rowEconomicCalendar">
-                                <div class="calendar-widget-title">
-                                    <span>경제 일정</span>
-                                    <span class="calendar-widget-badge">ECONOMY</span>
-                                </div>
-
-                                <div class="calendar-widget-nav">
-                                    <div class="cal-date-ctrl">
-                                        <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(-1)">&#10094;</button>
-                                        <span class="cal-current-date" id="ecoCalDisplayDate">--</span>
-                                        <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(1)">&#10095;</button>
-                                    </div>
-                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()">오늘</button>
-                                </div>
-
-                                <div class="calendar-widget-subtitle" id="ecoCalDayHeader">경제지표 발표 일정</div>
-                                <div class="cal-event-list-wrap calendar-widget-list" id="ecoCalEventList"></div>
-
-                                <div class="cal-pagination-bar">
-                                    <button class="cal-page-btn" id="btnEcoCalPrev" onclick="changeEconomicCalendarPage(-1)">&#10094;</button>
-                                    <span class="cal-page-txt" id="ecoCalPageIndicator">1 / 1</span>
-                                    <button class="cal-page-btn" id="btnEcoCalNext" onclick="changeEconomicCalendarPage(1)">&#10095;</button>
-                                </div>
-                            </div>
-
+                        <!-- 4행 우측: 실적 일정 (트랙 분석과 1:1 높이) -->
                             <!-- 실적 일정 -->
                             <div class="card calendar-widget" id="rowEarningsCalendar">
                                 <div class="calendar-widget-title">
@@ -4896,7 +4885,32 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                             </div>
 
-                        </div>
+                        <!-- 5행 우측: 경제 일정 (퀀트 분석과 1:1 높이) -->
+                            <!-- 경제 일정 -->
+                            <div class="card calendar-widget" id="rowEconomicCalendar">
+                                <div class="calendar-widget-title">
+                                    <span>경제 일정</span>
+                                    <span class="calendar-widget-badge">ECONOMY</span>
+                                </div>
+
+                                <div class="calendar-widget-nav">
+                                    <div class="cal-date-ctrl">
+                                        <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(-1)">&#10094;</button>
+                                        <span class="cal-current-date" id="ecoCalDisplayDate">--</span>
+                                        <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(1)">&#10095;</button>
+                                    </div>
+                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()">오늘</button>
+                                </div>
+
+                                <div class="calendar-widget-subtitle" id="ecoCalDayHeader">경제지표 발표 일정</div>
+                                <div class="cal-event-list-wrap calendar-widget-list" id="ecoCalEventList"></div>
+
+                                <div class="cal-pagination-bar">
+                                    <button class="cal-page-btn" id="btnEcoCalPrev" onclick="changeEconomicCalendarPage(-1)">&#10094;</button>
+                                    <span class="cal-page-txt" id="ecoCalPageIndicator">1 / 1</span>
+                                    <button class="cal-page-btn" id="btnEcoCalNext" onclick="changeEconomicCalendarPage(1)">&#10095;</button>
+                                </div>
+                            </div>
 
                         <!-- 3행 좌측: 종목 뉴스 (832px) -->
                         <div class="card" id="rowNews">

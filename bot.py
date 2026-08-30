@@ -1298,8 +1298,7 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
 
     now_utc = datetime.now(timezone.utc)
     has_actual = actual_eps is not None or actual_rev is not None
-    is_past_date = kst_dt.date() < datetime.now(timezone(timedelta(hours=9))).date()
-    if has_actual or is_past_date:
+    if has_actual:
         val_str = "발표완료"
     elif dt_utc <= now_utc:
         val_str = "발표확인중"
@@ -1340,9 +1339,7 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
             else "★☆☆"
         ),
         "type": "earn",
-        # 기업명과 발표 시점은 화면에서 두 줄로 표시할 수 있도록 분리합니다.
-        "name": f"{ko_name} ({sym}) 실적".strip(),
-        "timing_label": hour_label,
+        "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
         "ticker": sym,
         "val": val_str,
         "exp": eps_str,
@@ -1428,21 +1425,20 @@ def fetch_all_real_earnings():
     국내 + 미국 주요기업 실적 캘린더 수집기.
 
     설계 원칙
-    - 과거 30일 + 오늘 + 앞으로 30일의 실적을 KST 기준으로 표시한다.
+    - 오늘부터 앞으로 30일의 '예정 실적'을 KST 기준으로 표시한다.
     - Finnhub의 국제 실적 캘린더를 사용하되, 무작위 소형/해외 종목이
       화면에 섞이지 않도록 사이트에서 추적하는 주요 미국/한국 기업만 허용한다.
     - 미국: Finnhub + Yahoo timestamp 보정.
     - 한국: Finnhub international=true + Yahoo timestamp 보정.
     - DART는 '미래 발표 예정일'을 제공하는 API가 아니므로 예정일 생성에
       가상 날짜를 만들지 않는다. DART는 기존 공시 기능에서 실제 발표/공시 확인용으로 사용한다.
-    - API가 주는 날짜가 과거 30일~미래 30일 범위를 벗어나면 표시하지 않는다.
+    - API가 주는 날짜가 미래 30일 범위를 벗어나면 표시하지 않는다.
     - 같은 기업/같은 날짜/같은 시간은 1건으로 합친다.
     """
 
     events = []
     now_kst = datetime.now(timezone(timedelta(hours=9)))
     today_kst = now_kst.date()
-    history_start = today_kst - timedelta(days=30)
     future_end = today_kst + timedelta(days=30)
 
     # ----------------------------------------------------
@@ -1635,9 +1631,9 @@ def fetch_all_real_earnings():
         except Exception:
             return
 
-        # 과거 30일 + 오늘 + 앞으로 30일의 실적을 표시한다.
-        # 과거 날짜는 실제 발표가 끝난 실적으로 표시할 수 있다.
-        if source_date < history_start or source_date > future_end:
+        # 오늘부터 앞으로 30일만 표시.
+        # 발표 완료 과거 데이터는 이 캘린더의 '예정' 목록에서 제외한다.
+        if source_date < today_kst or source_date > future_end:
             return
 
         raw_sym = str(it.get("symbol", "")).upper().strip()
@@ -1662,7 +1658,7 @@ def fetch_all_real_earnings():
 
         # KST 날짜가 실제 화면 기준 범위를 벗어나면 제외.
         kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-        if kst_dt.date() < history_start or kst_dt.date() > future_end:
+        if kst_dt.date() < today_kst or kst_dt.date() > future_end:
             return
 
         eps_est = it.get("epsEstimate")
@@ -1725,7 +1721,7 @@ def fetch_all_real_earnings():
     # 기존 코드의 기본값(false)은 미국 중심 데이터만 반환한다.
     # ----------------------------------------------------
     if FINNHUB_API_KEY:
-        from_d = history_start.strftime("%Y-%m-%d")
+        from_d = today_kst.strftime("%Y-%m-%d")
         to_d = future_end.strftime("%Y-%m-%d")
 
         for international in (False, True):
@@ -1778,7 +1774,7 @@ def fetch_all_real_earnings():
         captured.add((ticker, date_key))
 
     # Yahoo quote endpoint에서 이미 가져온 timestamp를 활용한다.
-    # Yahoo quote timestamp는 현재/다음 실적용이므로 미래 보완에만 사용한다.
+    # timestamp가 오늘~30일이면 Finnhub 누락 종목에만 추가한다.
     for us_sym in sorted(allowed_us):
         dt_utc = get_yahoo_time(us_sym, "US")
         if dt_utc is None:
@@ -1926,7 +1922,7 @@ def fetch_all_real_earnings():
     )
 
     # ----------------------------------------------------
-    # 디버그: 과거 30일 + 오늘 + 앞으로 30일 날짜별 건수
+    # 디버그: 앞으로 30일 날짜별 건수
     # ----------------------------------------------------
     date_counts = {}
     market_counts = {"KR": 0, "US": 0}
@@ -1941,7 +1937,7 @@ def fetch_all_real_earnings():
             market_counts[market] += 1
 
     print(
-        f"[EARNINGS FINAL] 과거30일~미래30일: {len(final_events)}건 / "
+        f"[EARNINGS FINAL] 오늘~30일: {len(final_events)}건 / "
         f"국내={market_counts['KR']}건 / 미국={market_counts['US']}건 / "
         f"일정있는날={len(date_counts)}일"
     )
@@ -3304,9 +3300,51 @@ def run_real_vectorized_backtest(df):
     except Exception:
         return 72.0, 78.0, 2.4
 
+
+def calculate_institutional_trend_following(raw_price, df, is_krw=True):
+    """기관형 추세추종 7단계 계산. 공개적으로 검증 가능한 TSMOM 구조."""
+    empty={"available":False,"momentum":{"1M":None,"3M":None,"6M":None,"12M":None},"trend_score":None,"trend_direction":"데이터 부족","trend_alignment":"0/4","volatility":None,"volatility_state":"데이터 부족","signal":"데이터 부족","signal_color":"neutral","position_size":None,"backtest":{"cagr":None,"win_rate":None,"mdd":None,"sharpe":None,"avg_holding_days":None,"trades":0,"years":None},"judgment":"추세추종 판단에 필요한 데이터가 부족합니다.","detail":[]}
+    if df is None or df.empty or "Close" not in df.columns or raw_price is None: return empty
+    closes=pd.to_numeric(df["Close"],errors="coerce").dropna()
+    if len(closes)<260: return empty
+    lb={"1M":21,"3M":63,"6M":126,"12M":252}; mom={}
+    for k,b in lb.items():
+        base=float(closes.iloc[-b-1]); mom[k]=((float(raw_price)/base)-1)*100 if base>0 else None
+    if any(mom[k] is None for k in lb): return empty
+    weights={"1M":.10,"3M":.20,"6M":.30,"12M":.40}
+    weighted=sum((1 if mom[k]>0 else -1 if mom[k]<0 else 0)*weights[k] for k in weights)
+    score=max(0,min(100,int(round(50+weighted*50))))
+    pos=sum(mom[k]>0 for k in weights); neg=sum(mom[k]<0 for k in weights)
+    if pos>=3 and score>=65: direction="LONG"; signal="상승 추세"; color="positive"
+    elif neg>=3 and score<=35: direction="SHORT"; signal="하락 추세"; color="negative"
+    else: direction="NEUTRAL"; signal="혼조/대기"; color="neutral"
+    rets=closes.pct_change().dropna(); vol=float(rets.tail(20).std()*np.sqrt(250)*100)
+    if not np.isfinite(vol): vol=None
+    vstate="고변동성" if vol is not None and vol>=40 else "보통 변동성" if vol is not None and vol>=20 else "낮은 변동성" if vol is not None else "데이터 부족"
+    position=max(0,min(100,10/vol*100)) if vol and vol>0 else None
+    # 당일 종가로 신호를 만들고 다음 날 수익률에 적용
+    s=closes.pct_change(); ms={k:closes.pct_change(b) for k,b in lb.items()}
+    rawsig=.10*np.sign(ms["1M"])+.20*np.sign(ms["3M"])+.30*np.sign(ms["6M"])+.40*np.sign(ms["12M"])
+    positions=pd.Series(np.sign(rawsig),index=closes.index).shift(1).fillna(0)
+    daily_vol=s.rolling(20).std(); target_daily=.10/np.sqrt(250)
+    exposure=(target_daily/daily_vol.replace(0,np.nan)).clip(upper=1).fillna(0)
+    strat=(positions*exposure*s).dropna()
+    bt=empty["backtest"].copy()
+    if len(strat)>=250:
+        equity=(1+strat).cumprod(); years=len(strat)/250; cagr=(float(equity.iloc[-1])**(1/years)-1)*100
+        dd=equity/equity.cummax()-1; mdd=float(dd.min())*100; sd=float(strat.std()); sharpe=float(strat.mean()/sd*np.sqrt(250)) if sd>0 else None
+        active=positions.loc[strat.index]; changes=active.diff().fillna(active).ne(0); trades=int(changes.sum()); win=float((strat>0).mean()*100)
+        ai=active[active!=0]; avg=None
+        if len(ai): avg=float(ai.groupby((ai!=ai.shift()).cumsum()).size().mean())
+        bt={"cagr":cagr,"win_rate":win,"mdd":mdd,"sharpe":sharpe,"avg_holding_days":avg,"trades":trades,"years":years}
+    judgment=("여러 기간의 추세가 상승 방향으로 정렬되어 추세추종에 우호적인 상태입니다." if direction=="LONG" else "여러 기간의 추세가 하락 방향으로 정렬되어 하락 추세 추종에 우호적인 상태입니다." if direction=="SHORT" else "기간별 추세 방향이 엇갈려 추세추종 진입보다 방향 확인이 우선입니다.")
+    return {"available":True,"momentum":mom,"trend_score":score,"trend_direction":direction,"trend_alignment":f"{max(pos,neg)}/4","volatility":vol,"volatility_state":vstate,"signal":signal,"signal_color":color,"position_size":position,"backtest":bt,"judgment":judgment,"detail":[f"1M {mom['1M']:+.1f}%",f"3M {mom['3M']:+.1f}%",f"6M {mom['6M']:+.1f}%",f"12M {mom['12M']:+.1f}%",f"추세 방향 일치 {max(pos,neg)}/4",f"최근 20D 연환산 변동성 {vol:.1f}%" if vol is not None else "변동성 데이터 부족"]}
+
 def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if df is None or len(df) < 10:
         return None
+
+    institutional_tsm = calculate_institutional_trend_following(raw_price, df, is_krw=is_krw)
 
     round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"{round(float(v), 2):,.2f} 달러")
     closes = df['Close']
@@ -3564,7 +3602,8 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "target1": target1, "target2": target2, "stop_p": stop_p,
         "sig_fill_pct": sig_fill_pct, "guide_text": guide_text,
         "bt_1y": f"1년 실측 {win_1y}%", "bt_2y": f"2년 실측 {win_2y}%",
-        "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}"
+        "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}",
+        "institutional_tsm": institutional_tsm
     }
 
 def _movement_rate_to_float(value):
@@ -4791,6 +4830,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
 
+        .tsm-section{padding:9px 10px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:9px;min-width:0;} .tsm-step{font-size:.68rem;color:var(--text-muted);margin-bottom:4px;font-weight:700;} .tsm-section b{font-size:.84rem;color:var(--text-title);} .tsm-mini,.tsm-stat{padding:7px 4px;text-align:center;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;} .tsm-mini b,.tsm-stat b{display:block;font-size:.76rem;color:var(--text-title);line-height:1.2;} .tsm-mini span,.tsm-stat span{display:block;font-size:.60rem;color:var(--text-muted);margin-top:3px;}
         /* [핵심 마스터 그리드] PC: 832px(좌) + 348px(우) 완벽 대칭 구조 */
         .dashboard-master-grid {
             display: grid;
@@ -5009,40 +5049,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .calendar-widget .cal-event-meta {
             color: var(--text-sub);
         }
-        /* 실적 캘린더: 기업명 아래에 미국 장 발표 시점을 한 줄로 표시 */
-        /* 실적 카드 표시 순서 고정:
-           별점/발표상태 → 기업명 → (미국 장 마감 후) → 예상 EPS/매출 */
-        .calendar-widget .cal-earn-item .cal-detail-col {
-            display: flex !important;
-            flex-direction: column !important;
-            min-width: 0 !important;
-        }
-        .calendar-widget .cal-earn-item .cal-event-topline {
-            order: 1 !important;
-            display: flex !important;
-        }
-        .calendar-widget .cal-earn-item .cal-event-title {
-            order: 2 !important;
-            display: block !important;
-            width: 100% !important;
-            margin-top: 1px !important;
-            margin-bottom: 0 !important;
-        }
-        .calendar-widget .cal-earn-item .cal-earn-timing {
-            order: 3 !important;
-            display: block !important;
-            width: 100% !important;
-            margin-top: 1px !important;
-            font-size: 0.70rem !important;
-            line-height: 1.25 !important;
-            font-weight: 700 !important;
-            color: var(--text-sub) !important;
-            white-space: normal !important;
-        }
-        .calendar-widget .cal-earn-item .cal-event-meta {
-            order: 4 !important;
-        }
-
 
         .calendar-widget .cal-date-ctrl {
             display: flex;
@@ -6343,67 +6349,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
+                        <!-- 4행 좌측: 기관형 추세추종 분석 -->
                         <div class="card" id="rowTrack" style="justify-content:flex-start;">
-                            <div style="margin-bottom:14px;">
-                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
-                            </div>
-
-                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--border-line);">
-                                <div class="gauge-inner-box" style="border-color:#38bdf8;">
-                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="tEvidenceCountVal">-</span>
-                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">근거</span>
-                                </div>
-                                <div style="min-width:0;">
-                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                        <span style="font-size:0.78rem; color:var(--text-muted);">데이터 상태</span>
-                                        <span style="background:rgba(56,189,248,0.15); color:#38bdf8; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="tStatusBadge">-</span>
-                                    </div>
-                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="tStatusDots">실제 확인된 데이터 기준</div>
-                                </div>
-                            </div>
-
-                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
-                                <div>
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재 주가</div>
-                                    <div style="font-size:1.15rem; font-weight:800; color:var(--text-title);" id="tPriceVal">-</div>
-                                </div>
-                                <div style="text-align:right;">
-                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">오늘 등락률</div>
-                                    <div style="font-size:1.1rem; font-weight:700; color:var(--text-title);" id="tChangeVal">-</div>
-                                </div>
-                            </div>
-
-                            <!-- 상단 그래프: 실제 종목 최근 60거래일 주가 흐름 -->
-                            <div style="margin:16px 0 12px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                                    <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 주가 흐름</span>
-                                    <span style="font-size:0.7rem; color:#38bdf8; font-weight:800;" id="tPriceTrendTxt">현재 -</span>
-                                </div>
-                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
-                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
-                                </div>
-                            </div>
-
-                            <!-- 하단 그래프: 실제 52주 가격 위치 -->
-                            <div style="margin:12px 0 12px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
-                                    <span style="color:var(--text-muted);" id="tLow52w"></span>
-                                    <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
-                                    <span style="color:var(--text-muted);" id="tHigh52w"></span>
-                                </div>
-                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="tSliderFill"></div>
-                                    <div class="dot-marker-style" id="tDotMarker"></div>
-                                </div>
-                            </div>
-
-                            <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
-                                <div id="trackDetailList"></div>
-                            </div>
+                            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"><div><span style="font-size:1.05rem;font-weight:800;color:var(--text-title);">기관형 추세추종 분석</span><span style="font-size:.66rem;color:#38bdf8;font-weight:800;margin-left:6px;">7 STEP</span></div><span id="tsmSignalBadge" style="font-size:.70rem;font-weight:800;padding:3px 8px;border-radius:10px;background:rgba(56,189,248,.12);color:#38bdf8;border:1px solid rgba(56,189,248,.22);">분석 대기</span></div>
+                            <div style="display:grid;grid-template-columns:150px 1fr;gap:14px;padding-bottom:12px;border-bottom:1px solid var(--border-line);"><div style="display:flex;align-items:center;justify-content:center;"><div style="width:112px;height:112px;border-radius:50%;border:8px solid rgba(56,189,248,.16);display:flex;flex-direction:column;align-items:center;justify-content:center;"><span id="tsmScore" style="font-size:1.75rem;font-weight:900;color:var(--text-title);line-height:1;">-</span><span style="font-size:.62rem;color:var(--text-muted);margin-top:4px;">추세점수</span></div></div><div><div style="font-size:.72rem;color:var(--text-muted);">① 모멘텀 · 1M / 3M / 6M / 12M</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:7px;"><div class="tsm-mini"><b id="tsmM1">-</b><span>1M</span></div><div class="tsm-mini"><b id="tsmM3">-</b><span>3M</span></div><div class="tsm-mini"><b id="tsmM6">-</b><span>6M</span></div><div class="tsm-mini"><b id="tsmM12">-</b><span>12M</span></div></div><div style="font-size:.72rem;color:var(--text-muted);margin-top:10px;">② 추세 방향 & 강도</div><div style="display:flex;align-items:center;gap:8px;margin-top:4px;"><b id="tsmDirection" style="font-size:1rem;color:var(--text-title);">-</b><span id="tsmAlignment" style="font-size:.72rem;color:var(--text-muted);">-</span></div></div></div>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;"><div class="tsm-section"><div class="tsm-step">③ 변동성</div><div><b id="tsmVol">-</b> <span id="tsmVolState">-</span></div></div><div class="tsm-section"><div class="tsm-step">④ 매매신호</div><div><b id="tsmSignal">-</b></div></div></div>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;"><div class="tsm-section"><div class="tsm-step">⑤ 포지션 참고</div><div><b id="tsmPosition">-</b></div></div><div class="tsm-section"><div class="tsm-step">⑥ 종합 판단</div><div><b id="tsmJudgmentShort">-</b></div></div></div>
+                            <div class="tsm-section" style="margin-top:10px;"><div class="tsm-step">⑦ 과거 백테스트 · 실제 계산값</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:7px;"><div class="tsm-stat"><b id="tsmCagr">-</b><span>CAGR</span></div><div class="tsm-stat"><b id="tsmWin">-</b><span>승률</span></div><div class="tsm-stat"><b id="tsmMdd">-</b><span>MDD</span></div><div class="tsm-stat"><b id="tsmSharpe">-</b><span>Sharpe</span></div></div><div style="font-size:.69rem;color:var(--text-muted);margin-top:7px;" id="tsmBtMeta">-</div></div>
+                            <div style="margin-top:10px;padding:10px 11px;border-radius:9px;background:var(--bg-subcard);border:1px solid var(--border-line);"><div style="font-size:.70rem;color:var(--text-muted);margin-bottom:4px;">상세 판단 근거</div><div id="tsmDetail" style="font-size:.76rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;">데이터를 분석하는 중입니다.</div></div>
                         </div>
-
-                        
 
                         <!-- 4행 우측: 실적 일정 (트랙 분석과 1:1 높이) -->
                             <!-- 실적 일정 -->
@@ -7043,8 +6997,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let earningsCalendarAutoJumped = false;
 
         // 경제 캘린더는 오늘 발표가 없을 때 최초 1회만
-        // '오늘 이후 가장 가까운 예정 일정'으로 이동합니다.
-        // 앞으로 일정이 없으면 오늘 이전 가장 최근 일정으로 이동합니다.
+        // '오늘 이전의 가장 최근 발표일'로 이동합니다.
         // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
         let economicCalendarAutoJumped = false;
 
@@ -7093,19 +7046,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             // 실적 캘린더에서는 티커(NVDA 등)와 기업 마크를 표시하지 않습니다.
             const rawEventName = ev.name || (isEarn ? '실적 발표' : '경제지표');
-            let eventName = isEarn
+            const eventName = isEarn
                 ? String(rawEventName).replace(/\s*\([A-Za-z0-9.\-]+\)/g, '').trim()
                 : String(rawEventName);
-
-            // 이전 데이터 형식에서 이름에 발표시점이 붙어 있어도 화면에서는 분리합니다.
-            let timingLabel = isEarn ? String(ev.timing_label || '').trim() : '';
-            if (isEarn && !timingLabel) {
-                const timingMatch = eventName.match(/\s*(\((?:미국 )?장 (?:마감 후|시작 전)\))\s*$/);
-                if (timingMatch) {
-                    timingLabel = timingMatch[1];
-                    eventName = eventName.slice(0, timingMatch.index).trim();
-                }
-            }
 
             return `
                 <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
@@ -7116,7 +7059,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <span class="cal-event-status">${status}</span>
                         </div>
                         <div class="cal-event-title">${eventName}</div>
-                        ${isEarn && timingLabel ? `<div class="cal-earn-timing">${timingLabel}</div>` : ''}
                         ${meta ? `<div class="cal-event-meta">${meta}</div>` : ''}
                     </div>
                     <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
@@ -7171,7 +7113,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             return kstString.replace(/-/g, '.');
         }
 
-        function findNearestEconomicOffset() {
+        function findLatestEconomicOffset() {
             const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
             const todayKey = getTodayKstDateKey();
             const [yyyy, mm, dd] = todayKey.split('.').map(Number);
@@ -7183,38 +7125,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
             )].sort();
 
-            if (!economicDates.length) return 0;
+            // 화면에 실제로 표시할 수 있는 오늘 일정이 있으면 오늘을 유지합니다.
+            const todayHasEvents = economicDates.includes(todayKey);
+            if (todayHasEvents) return 0;
 
-            // 1. 오늘 경제 일정이 있으면 오늘을 그대로 유지합니다.
-            if (economicDates.includes(todayKey)) {
-                return 0;
-            }
-
-            // 2. 오늘 이후 가장 가까운 경제 일정 날짜를 먼저 찾습니다.
-            //    주말/공휴일처럼 오늘 일정이 없는 경우 예정된 다음 일정으로 이동합니다.
-            for (const key of economicDates) {
-                const parts = key.split('.').map(Number);
-                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
-
-                const candidate = new Date(
-                    Date.UTC(parts[0], parts[1] - 1, parts[2])
-                );
-
-                if (candidate >= today) {
-                    return Math.round((candidate - today) / 86400000);
-                }
-            }
-
-            // 3. 미래 일정도 없으면 오늘 이전의 가장 최근 일정으로 이동합니다.
+            // 오늘 이전의 가장 최근 경제 일정 날짜를 직접 찾습니다.
             let latestKey = null;
             for (const key of economicDates) {
                 const parts = key.split('.').map(Number);
                 if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
 
-                const candidate = new Date(
-                    Date.UTC(parts[0], parts[1] - 1, parts[2])
-                );
-
+                const candidate = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
                 if (candidate < today) {
                     latestKey = key;
                 }
@@ -7236,9 +7157,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                 // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
                 if (hasEconomicData) {
-                    const nearestOffset = findNearestEconomicOffset();
-                    if (nearestOffset !== 0) {
-                        economicCalOffset = nearestOffset;
+                    const latestOffset = findLatestEconomicOffset();
+                    if (latestOffset < 0) {
+                        economicCalOffset = latestOffset;
                     }
                     economicCalendarAutoJumped = true;
                 }
@@ -7355,7 +7276,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 container.innerHTML = `
                     <div style="display:flex;align-items:center;justify-content:center;height:100%;
                                 color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        이 날짜에 실적 일정이 없습니다.
+                        이 날짜에 예정된 실적 일정이 없습니다.
                     </div>
                 `;
                 scheduleCalendarHeightSync();
@@ -7404,11 +7325,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function resetEarningsCalendarDate() {
-            // [오늘]을 누르면 단순히 오늘 날짜(실적이 없을 수 있음)로 가지 않고
-            // 초기 화면과 동일하게 '오늘 이후 가장 가까운 실적 발표일'로 돌아갑니다.
-            // 예: 오늘 8/30이고 다음 실적이 9/2라면 [오늘] → 9/2
-            const nearestOffset = findNearestEarningsOffset();
-            earningsCalOffset = nearestOffset;
+            earningsCalOffset = 0;
             earningsCalPage = 1;
             earningsCalendarAutoJumped = true;
             renderEarningsCalendarView();
@@ -7961,143 +7878,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
                     `;
 
-                    // 트랙 분석: 퀀트 분석과 동일한 카드형 레이아웃을 사용한다.
-                    const trackPriceVal = document.getElementById('tPriceVal');
-                    const trackChangeVal = document.getElementById('tChangeVal');
-                    const trackEvidenceVal = document.getElementById('tEvidenceCountVal');
-                    const trackStatusBadge = document.getElementById('tStatusBadge');
-                    const trackStatusDots = document.getElementById('tStatusDots');
-                    const trackPriceTrendTxt = document.getElementById('tPriceTrendTxt');
-
-                    if (trackPriceVal) trackPriceVal.innerText = data.price_str || '-';
-
-                    const cp = Number(data.current_change_pct);
-                    if (trackChangeVal) {
-                        trackChangeVal.innerText = Number.isFinite(cp) ? `${cp >= 0 ? '+' : ''}${cp.toFixed(2)}%` : '-';
-                        trackChangeVal.style.color =
-                            Number.isFinite(cp) && cp > 0 ? '#10b981' :
-                            (Number.isFinite(cp) && cp < 0 ? '#ef4444' : 'var(--text-title)');
-                    }
-
-                    if (trackEvidenceVal) {
-                        trackEvidenceVal.innerText = `${evidenceCount}/8`;
-                    }
-                    if (trackStatusBadge) {
-                        trackStatusBadge.innerText = mr.confidence || '-';
-                        trackStatusBadge.style.cssText = confidenceStyle;
-                    }
-                    if (trackStatusDots) {
-                        trackStatusDots.innerText =
-                            evidenceCount > 0
-                                ? `확인된 근거 ${evidenceCount}개 · 실제 데이터 기준`
-                                : '확인된 근거 부족 · 추가 확인 필요';
-                    }
-
-                    // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
-                    const tPriceChart = document.getElementById('tPriceChart');
-                    const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
-
-                    // 서버가 보내는 candles 필드는 open/high/low/close 형식이다.
-                    // 기존 코드가 x.c를 읽고 있어 차트 값이 전부 비어 있던 문제를 수정한다.
-                    // close를 우선 사용하고, 혹시 다른 응답 형식이 들어와도 c를 보조로 사용한다.
-                    const trackVals = candleRows
-                        .map(x => {
-                            const close = Number(x && x.close);
-                            if (Number.isFinite(close)) return close;
-                            const legacyClose = Number(x && x.c);
-                            return Number.isFinite(legacyClose) ? legacyClose : NaN;
-                        })
-                        .filter(Number.isFinite);
-
-                    if (tPriceChart && trackVals.length > 1) {
-                        const first = trackVals[0];
-                        const normalized = first !== 0 ? trackVals.map(v => ((v / first) - 1) * 100) : [];
-                        if (normalized.length > 1 && normalized.every(Number.isFinite)) {
-                            const W = 600, H = 120, pad = 8;
-                            const minV = Math.min(...normalized), maxV = Math.max(...normalized);
-                            const span = Math.max(0.01, maxV - minV);
-                            const x = i => pad + i * ((W - pad * 2) / Math.max(1, normalized.length - 1));
-                            const y = v => pad + ((maxV - v) / span) * (H - pad * 2);
-                            const coords = normalized.map((v,i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
-                            const linePath = 'M ' + coords.join(' L ');
-                            const baseY = y(0);
-                            const areaPath = `M ${coords[0].split(',')[0]},${baseY.toFixed(1)} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${baseY.toFixed(1)} Z`;
-                            const last = normalized[normalized.length - 1];
-                            const stroke = last >= 0 ? '#10b981' : '#ef4444';
-
-                            tPriceChart.innerHTML = `
-                                <defs>
-                                    <linearGradient id="tPriceFill" x1="0" x2="0" y1="0" y2="1">
-                                        <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"/>
-                                        <stop offset="100%" stop-color="${stroke}" stop-opacity="0.02"/>
-                                    </linearGradient>
-                                </defs>
-                                <line x1="0" y1="${baseY.toFixed(1)}" x2="600" y2="${baseY.toFixed(1)}"
-                                      stroke="rgba(148,163,184,0.20)" stroke-width="1" stroke-dasharray="4 4"/>
-                                <path d="${areaPath}" fill="url(#tPriceFill)"/>
-                                <path d="${linePath}" fill="none" stroke="${stroke}" stroke-width="3"
-                                      vector-effect="non-scaling-stroke"/>
-                                <circle cx="${coords[coords.length-1].split(',')[0]}"
-                                        cy="${coords[coords.length-1].split(',')[1]}"
-                                        r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2"
-                                        vector-effect="non-scaling-stroke"/>
-                            `;
-
-                            if (trackPriceTrendTxt) {
-                                const p = normalized[normalized.length - 1];
-                                trackPriceTrendTxt.innerText =
-                                    `최근 60D ${p >= 0 ? '+' : ''}${p.toFixed(2)}%`;
-                            }
-                        }
-                    } else if (trackPriceTrendTxt) {
-                        trackPriceTrendTxt.innerText =
-                            trackVals.length === 0 ? '데이터 부족' : '주가 흐름 데이터 부족';
-                    }
-
-                    // 52주 가격 위치: 현재 퀀트 데이터와 동일한 실제 값 사용.
-                    const tq = data.quant || {};
-                    setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
-                    setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
-                    setTxt('tPos52wLabel', tq.pos_52w ? `52주 가격 위치 ${tq.pos_52w}` : '52주 가격 위치');
-
-                    const sliderPct = Number(tq.slider_fill_pct);
-                    const tFill = document.getElementById('tSliderFill');
-                    if (tFill && Number.isFinite(sliderPct)) tFill.style.width = `${sliderPct}%`;
-
-                    const tDot = document.getElementById('tDotMarker');
-                    if (tDot && Number.isFinite(sliderPct)) {
-                        tDot.style.left = `${Math.min(99, Math.max(1, sliderPct))}%`;
-                    }
-
-                    // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
-                    const trackDetailList = document.getElementById('trackDetailList');
-                    if (trackDetailList) {
-                        const iconForTrack = {
-                            '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂',
-                            '시장':'⌁','업종·테마':'◇','기업 재료':'▤',
-                            '거래량':'♧','시장 5일 흐름':'⌁'
-                        };
-
-                        trackDetailList.innerHTML = evidenceReasons.map(r => {
-                            const score = Number(r.score || 0);
-                            const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
-                            const statusClass =
-                                score > 0 ? 'status-pill-positive' :
-                                score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
-
-                            return `<div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">${iconForTrack[r.label] || '•'} ${r.label || '-'}</span>
-                                    <span class="quant-row-status ${statusClass}">${status}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
-                                    <div class="quant-row-subval">실제 확인 데이터</div>
-                                </div>
-                            </div>`;
-                        }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
-                    }
-                }
+                    // 기관형 추세추종 7단계 렌더링
+                    const tsm=(data.quant&&data.quant.institutional_tsm)||{}; const bt=tsm.backtest||{};
+                    const setT=(id,v,c)=>{const e=document.getElementById(id);if(e){e.innerText=v;if(c)e.style.color=c;}};
+                    const pct=v=>Number.isFinite(Number(v))?`${Number(v)>=0?'+':''}${Number(v).toFixed(1)}%`:'-';
+                    const dir=String(tsm.trend_direction||'-'), score=Number(tsm.trend_score); const col=tsm.signal_color==='positive'?'#10b981':tsm.signal_color==='negative'?'#ef4444':'#f59e0b';
+                    setT('tsmScore',Number.isFinite(score)?String(score):'-'); setT('tsmM1',pct(tsm.momentum?.['1M']),Number(tsm.momentum?.['1M'])>=0?'#10b981':'#ef4444'); setT('tsmM3',pct(tsm.momentum?.['3M']),Number(tsm.momentum?.['3M'])>=0?'#10b981':'#ef4444'); setT('tsmM6',pct(tsm.momentum?.['6M']),Number(tsm.momentum?.['6M'])>=0?'#10b981':'#ef4444'); setT('tsmM12',pct(tsm.momentum?.['12M']),Number(tsm.momentum?.['12M'])>=0?'#10b981':'#ef4444');
+                    setT('tsmDirection',dir,dir==='LONG'?'#10b981':dir==='SHORT'?'#ef4444':'#f59e0b'); setT('tsmAlignment',`기간 일치 ${tsm.trend_alignment||'-'}`); setT('tsmVol',Number.isFinite(Number(tsm.volatility))?`${Number(tsm.volatility).toFixed(1)}%`:'-'); setT('tsmVolState',tsm.volatility_state||'-'); setT('tsmSignal',tsm.signal||'-',col); setT('tsmPosition',Number.isFinite(Number(tsm.position_size))?`참고 ${Number(tsm.position_size).toFixed(0)}%`:'-'); setT('tsmJudgmentShort',dir==='LONG'?'추세추종 우호적':dir==='SHORT'?'하락 추세 우호적':'방향 확인 필요',col);
+                    setT('tsmCagr',Number.isFinite(Number(bt.cagr))?`${Number(bt.cagr).toFixed(1)}%`:'-'); setT('tsmWin',Number.isFinite(Number(bt.win_rate))?`${Number(bt.win_rate).toFixed(1)}%`:'-'); setT('tsmMdd',Number.isFinite(Number(bt.mdd))?`${Number(bt.mdd).toFixed(1)}%`:'-'); setT('tsmSharpe',Number.isFinite(Number(bt.sharpe))?Number(bt.sharpe).toFixed(2):'-'); setT('tsmBtMeta',bt.trades?`기간 약 ${Number(bt.years||0).toFixed(1)}년 · 신호전환 ${bt.trades}회 · 평균 보유 ${Number(bt.avg_holding_days||0).toFixed(0)}거래일`:'백테스트 데이터 부족'); setT('tsmJudgmentShort',tsm.judgment||'-');
+                    const badge=document.getElementById('tsmSignalBadge'); if(badge){badge.innerText=tsm.signal||'분석 대기';badge.style.color=col;badge.style.borderColor=col+'55';badge.style.background=col+'18';}
+                    const detail=document.getElementById('tsmDetail'); if(detail){detail.innerHTML=Array.isArray(tsm.detail)&&tsm.detail.length?tsm.detail.map(x=>`<span style="display:inline-block;margin:2px 5px 2px 0;padding:3px 7px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border-line);">${x}</span>`).join('')+`<div style="margin-top:5px;">${tsm.judgment||''}</div>`:'추세추종 계산에 필요한 데이터가 부족합니다.';}
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
                 const sNews = document.getElementById('stockNewsList');
@@ -8630,3 +8420,4 @@ print("[경제 고정 문장]", build_market_event_fixed(_e["topic"]))
 # 10. 중복 제거 후 내용이 완전히 겹치면 경제 이벤트만 출력한다.
 # 11. 시장/업종/종목/수급/마무리 고정 문장은 이 규칙의 영향을 받지 않는다.
 # 12. 이 영역에서는 AI가 임의로 설명을 덧붙이지 않는다.
+

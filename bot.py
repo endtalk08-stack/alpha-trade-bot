@@ -1226,7 +1226,7 @@ MAJOR_KR_EARNINGS = {
 # ----------------------------------------------------
 # 3. 3단계 하이브리드 실적 일정 수집기 (한국/미국 완벽 대응)
 # ----------------------------------------------------
-def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None):
+def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None, us_date_key=None):
     """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
@@ -1250,7 +1250,15 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
 
     kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
 
+    # 화면의 날짜 이동 기준은 한국시간(KST)을 유지합니다.
+    # 동시에 미국 현지 날짜도 별도로 보존해 날짜 경계를 잃지 않게 합니다.
     date_key = kst_dt.strftime("%Y.%m.%d")
+
+    if not us_date_key:
+        try:
+            us_date_key = dt_utc.astimezone(ZoneInfo("America/New_York")).strftime("%Y.%m.%d") if ZoneInfo is not None else kst_dt.strftime("%Y.%m.%d")
+        except Exception:
+            us_date_key = kst_dt.strftime("%Y.%m.%d")
     weekday = days_map[int(kst_dt.strftime('%w'))]
     date_str = f"{kst_dt.month}.{kst_dt.day} ({weekday})"
     date_header = f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일"
@@ -1270,6 +1278,7 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
     return [{
         "ts": dt_utc.timestamp(),
         "date_key": date_key,
+        "us_date_key": us_date_key,
         "date_str": date_str,
         "date_header": date_header,
         "time": time_str,
@@ -1679,7 +1688,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
     now_kst = datetime.now(timezone(timedelta(hours=9)))
     from_d = (now_kst - timedelta(days=days_back)).strftime("%Y-%m-%d")
     to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
-    cache_key = f"earn_history_v20:{from_d}:{to_d}"
+    cache_key = f"earn_history_v21:{from_d}:{to_d}"
     cached = _cache_get(ALPHA_EARNINGS_CACHE, cache_key, 1800)
     if cached is not None:
         return cached
@@ -1722,18 +1731,19 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                 if dt_utc is None and ZoneInfo is not None:
                     try:
                         et_zone = ZoneInfo("America/New_York")
-                        hhmm = "16:00" if hour == "amc" else ("06:00" if hour == "bmo" else "09:30")
+                        hhmm = "17:00" if hour == "amc" else ("06:00" if hour == "bmo" else "09:30")
                         local_time = datetime.strptime(f"{raw_date} {hhmm}", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
                         dt_utc = local_time.astimezone(timezone.utc)
                     except Exception:
                         dt_utc = None
                 if dt_utc is None:
-                    dt_utc = us_dt + (timedelta(hours=20) if hour == "amc" else timedelta(hours=10) if hour == "bmo" else timedelta(hours=13, minutes=30))
+                    dt_utc = us_dt + (timedelta(hours=21) if hour == "amc" else timedelta(hours=10) if hour == "bmo" else timedelta(hours=13, minutes=30))
 
                 events.extend(build_earnings_event(
                     sym, sym_to_ko[sym], dt_utc, eps_str, rev_str, hour,
                     actual_eps=eps_actual, actual_rev=rev_actual,
                     expected_eps=eps_est, expected_rev=rev_est,
+                    us_date_key=raw_date.replace("-", "."),
                 ))
                 captured.add((sym, raw_date))
 
@@ -1913,9 +1923,19 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                         if eps_f is not None else "예상치 집계중"
                     )
 
+                    try:
+                        yahoo_us_date = (
+                            dt_utc.astimezone(ZoneInfo("America/New_York")).strftime("%Y.%m.%d")
+                            if ZoneInfo is not None
+                            else dt_utc.strftime("%Y.%m.%d")
+                        )
+                    except Exception:
+                        yahoo_us_date = dt_utc.strftime("%Y.%m.%d")
+
                     events.extend(build_earnings_event(
                         ysym, sym_to_ko[ysym], dt_utc,
-                        eps_str, "-", hour
+                        eps_str, "-", hour,
+                        us_date_key=yahoo_us_date
                     ))
                     future_captured.add(ysym)
 

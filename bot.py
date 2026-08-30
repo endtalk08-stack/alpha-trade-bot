@@ -1192,12 +1192,11 @@ ECO_TITLE_KO_MAP = {
     "Housing Starts": "주택착공건수",
     "Trade Balance": "무역수지",
     "Flash Manufacturing PMI": "제조업 PMI (속보치)",
-    "Flash Services PMI": "서비스업 PMI (속보치)",
-    "FOMC Member Barr Speaks": "미 연준 바 이사 발언"
+    "Flash Services PMI": "서비스업 PMI (속보치)"
 }
 
 COUNTRY_PREFIX_MAP = {
-    "USD": "미 ", "EUR": "유로존 ", "GBP": "영국 ", "JPY": "일본 ",
+    "USD": "美 ", "EUR": "유로존 ", "GBP": "영국 ", "JPY": "일본 ",
     "CNY": "중국 ", "KRW": "한국 ", "CAD": "캐나다 ", "AUD": "호주 "
 }
 
@@ -1305,7 +1304,7 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
     else:
         val_str = "발표예정"
     hour_code = str(hour).lower().strip()
-    hour_label = "(미국 장 마감 후)" if hour_code == "amc" else ("(미국 장 시작 전)" if hour_code == "bmo" else "")
+    hour_label = "(美장마감후)" if hour_code == "amc" else ("(美장시작전)" if hour_code == "bmo" else "")
 
     return [{
         "ts": dt_utc.timestamp(),
@@ -1421,531 +1420,150 @@ def _fetch_yahoo_earnings_timestamps(symbols):
 
 
 def fetch_all_real_earnings():
-    """
-    국내 + 미국 주요기업 실적 캘린더 수집기.
-
-    설계 원칙
-    - 오늘부터 앞으로 30일의 '예정 실적'을 KST 기준으로 표시한다.
-    - Finnhub의 국제 실적 캘린더를 사용하되, 무작위 소형/해외 종목이
-      화면에 섞이지 않도록 사이트에서 추적하는 주요 미국/한국 기업만 허용한다.
-    - 미국: Finnhub + Yahoo timestamp 보정.
-    - 한국: Finnhub international=true + Yahoo timestamp 보정.
-    - DART는 '미래 발표 예정일'을 제공하는 API가 아니므로 예정일 생성에
-      가상 날짜를 만들지 않는다. DART는 기존 공시 기능에서 실제 발표/공시 확인용으로 사용한다.
-    - API가 주는 날짜가 미래 30일 범위를 벗어나면 표시하지 않는다.
-    - 같은 기업/같은 날짜/같은 시간은 1건으로 합친다.
-    """
-
     events = []
-    now_kst = datetime.now(timezone(timedelta(hours=9)))
-    today_kst = now_kst.date()
-    future_end = today_kst + timedelta(days=30)
-
-    # ----------------------------------------------------
-    # 추적 대상
-    # ----------------------------------------------------
-    us_name_map = {
-        str(sym).upper(): ko
-        for sym, ko in MAJOR_US_TECH_TICKERS
-    }
-
-    # 사이트 성격상 시장 영향력이 큰 미국 기업을 조금 더 보강한다.
-    extra_us = {
-        "PLTR": "팔란티어",
-        "CRWD": "크라우드스트라이크",
-        "INTU": "인튜이트",
-        "NOW": "서비스나우",
-        "AMGN": "암젠",
-        "GILD": "길리어드 사이언스",
-        "V": "비자",
-        "MA": "마스터카드",
-        "JPM": "JP모건",
-        "BAC": "뱅크오브아메리카",
-        "WMT": "월마트",
-        "HD": "홈디포",
-        "LOW": "로우스",
-        "PEP": "펩시코",
-        "KO": "코카콜라",
-        "MCD": "맥도날드",
-        "DIS": "디즈니",
-        "UBER": "우버",
-        "ABNB": "에어비앤비",
-        "SNPS": "시놉시스",
-        "CDNS": "케이던스",
-        "LRCX": "램리서치",
-        "KLAC": "KLA",
-        "TXN": "텍사스 인스트루먼트",
-        "ARM": "ARM",
-        "MRNA": "모더나",
-        "LLY": "일라이 릴리",
-    }
-    us_name_map.update(extra_us)
-
-    kr_name_map = {}
+    sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
     for k_code, k_name in MAJOR_KR_EARNINGS.items():
-        key = str(k_code).upper().strip()
-        kr_name_map[key] = k_name
-        if key.isdigit() and len(key) == 6:
-            kr_name_map[f"{key}.KS"] = k_name
-            kr_name_map[f"{key}.KQ"] = k_name
+        sym_to_ko[k_code] = k_name
 
-    # Finnhub/Yahoo가 국내 종목을 6자리 또는 .KS 형태로 줄 수 있으므로
-    # 두 형태를 모두 canonical 6자리로 맞춘다.
-    def normalize_kr_symbol(sym):
-        value = str(sym or "").upper().strip()
-        value = value.replace(".KS", "").replace(".KQ", "")
-        if value.isdigit() and len(value) == 6:
-            return value
-        return value
+    captured_syms = set()
+    now_kst = datetime.now(timezone(timedelta(hours=9)))
 
-    allowed_us = set(us_name_map.keys())
-    allowed_kr = set()
-    for key in kr_name_map:
-        canonical = normalize_kr_symbol(key)
-        if canonical.isdigit() and len(canonical) == 6:
-            allowed_kr.add(canonical)
+    # 주요 미국 종목은 Yahoo의 실제 earnings timestamp를 별도로 확보해
+    # Finnhub의 amc/bmo 같은 범주형 시간보다 우선 사용합니다.
+    us_symbols = [item[0] for item in MAJOR_US_TECH_TICKERS]
+    yahoo_times = _fetch_yahoo_earnings_timestamps(us_symbols)
 
-    # 중요도
-    us_tier3 = {
-        "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META",
-        "TSLA", "AVGO", "AMD", "ORCL", "MU", "PLTR",
-        "JPM", "LLY", "WMT"
-    }
-    us_tier2 = allowed_us - us_tier3
-
-    kr_tier3 = {
-        "005930", "000660", "005380", "000270",
-        "012450", "042660", "034020", "373220"
-    }
-    kr_tier2 = allowed_kr - kr_tier3
-
-    def star_info(sym, market):
-        if market == "US":
-            s = str(sym).upper()
-            if s in us_tier3:
-                return 3, "★★★"
-            if s in us_tier2:
-                return 2, "★★☆"
-            return 1, "★☆☆"
-
-        s = normalize_kr_symbol(sym)
-        if s in kr_tier3:
-            return 3, "★★★"
-        if s in kr_tier2:
-            return 2, "★★☆"
-        return 1, "★☆☆"
-
-    # ----------------------------------------------------
-    # Yahoo 실제 발표시각 조회
-    # ----------------------------------------------------
-    yahoo_symbols = list(allowed_us)
-    yahoo_symbols += [f"{code}.KS" for code in sorted(allowed_kr)]
-    yahoo_times = _fetch_yahoo_earnings_timestamps(yahoo_symbols)
-
-    def get_yahoo_time(sym, market):
-        candidates = [str(sym).upper().strip()]
-        if market == "KR":
-            canonical = normalize_kr_symbol(sym)
-            candidates.extend([canonical, f"{canonical}.KS", f"{canonical}.KQ"])
-        for candidate in candidates:
-            if candidate in yahoo_times:
-                return yahoo_times[candidate]
-        return None
-
-    # ----------------------------------------------------
-    # 날짜/시간 → UTC
-    # ----------------------------------------------------
-    def make_utc_datetime(raw_date, hour, market, sym):
-        try:
-            base_date = datetime.strptime(
-                str(raw_date).strip(), "%Y-%m-%d"
-            ).date()
-        except Exception:
-            return None, hour
-
-        hour = str(hour or "amc").lower().strip()
-
-        # Yahoo의 실제 timestamp가 있으면 우선 사용한다.
-        yahoo_dt = get_yahoo_time(sym, market)
-        if yahoo_dt is not None:
-            try:
-                if abs((yahoo_dt.date() - base_date).days) <= 1:
-                    normalized_dt, normalized_hour = _normalize_earnings_timestamp(
-                        str(sym).upper(), yahoo_dt
-                    )
-                    if normalized_dt is not None:
-                        return normalized_dt, normalized_hour
-            except Exception:
-                pass
-
-        # 미국: Finnhub amc/bmo/dmh → 미국 동부시간
-        if market == "US":
-            if ZoneInfo is not None:
-                try:
-                    et = ZoneInfo("America/New_York")
-                    if hour == "bmo":
-                        local_text = f"{raw_date} 06:00"
-                    elif hour == "dmh":
-                        local_text = f"{raw_date} 09:30"
-                    else:
-                        local_text = f"{raw_date} 16:00"
-                    local_dt = datetime.strptime(
-                        local_text, "%Y-%m-%d %H:%M"
-                    ).replace(tzinfo=et)
-                    return local_dt.astimezone(timezone.utc), hour
-                except Exception:
-                    pass
-
-            base_utc = datetime.combine(
-                base_date,
-                datetime.min.time(),
-                tzinfo=timezone.utc
-            )
-            if hour == "bmo":
-                return base_utc + timedelta(hours=10), hour
-            return base_utc + timedelta(hours=20), hour
-
-        # 한국: Finnhub에 시간이 없으면 한국시간 16:00을 안전한 표시 기준으로 사용.
-        # '확정된 실제 발표시각'이라고 주장하지 않고 예정일만 정확히 표시한다.
-        kst = timezone(timedelta(hours=9))
-        local_dt = datetime.combine(
-            base_date,
-            datetime.min.time().replace(hour=16),
-            tzinfo=kst
-        )
-        return local_dt.astimezone(timezone.utc), "amc"
-
-    # ----------------------------------------------------
-    # 이벤트 추가
-    # ----------------------------------------------------
-    def append_event(it, market):
-        if not isinstance(it, dict):
-            return
-
-        raw_date = str(it.get("date", "")).strip()
-        if not raw_date:
-            return
-
-        try:
-            source_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
-        except Exception:
-            return
-
-        # 오늘부터 앞으로 30일만 표시.
-        # 발표 완료 과거 데이터는 이 캘린더의 '예정' 목록에서 제외한다.
-        if source_date < today_kst or source_date > future_end:
-            return
-
-        raw_sym = str(it.get("symbol", "")).upper().strip()
-        if not raw_sym:
-            return
-
-        if market == "US":
-            sym = raw_sym
-            if sym not in allowed_us:
-                return
-            ko_name = us_name_map.get(sym, sym)
-        else:
-            sym = normalize_kr_symbol(raw_sym)
-            if sym not in allowed_kr:
-                return
-            ko_name = kr_name_map.get(sym, sym)
-
-        hour = str(it.get("hour", "amc")).lower().strip()
-        dt_utc, hour = make_utc_datetime(raw_date, hour, market, raw_sym)
-        if dt_utc is None:
-            return
-
-        # KST 날짜가 실제 화면 기준 범위를 벗어나면 제외.
-        kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-        if kst_dt.date() < today_kst or kst_dt.date() > future_end:
-            return
-
-        eps_est = it.get("epsEstimate")
-        rev_est = it.get("revenueEstimate")
-        eps_actual = it.get("epsActual")
-        rev_actual = it.get("revenueActual")
-
-        try:
-            eps_str = (
-                f"예상 EPS ${float(eps_est):.2f}"
-                if eps_est is not None else "예상치 집계중"
-            )
-        except Exception:
-            eps_str = "예상치 집계중"
-
-        try:
-            rev_str = (
-                f"예상 매출 ${float(rev_est) / 1e9:.1f}B"
-                if rev_est is not None else "-"
-            )
-        except Exception:
-            rev_str = "-"
-
-        try:
-            built = build_earnings_event(
-                raw_sym if market == "US" else sym,
-                ko_name,
-                dt_utc,
-                eps_str,
-                rev_str,
-                hour,
-                actual_eps=eps_actual,
-                actual_rev=rev_actual,
-                expected_eps=eps_est,
-                expected_rev=rev_est
-            )
-        except Exception as exc:
-            print(
-                f"[CALENDAR][EARN] 이벤트 생성 실패 "
-                f"{market}/{raw_sym}/{raw_date}: {repr(exc)}"
-            )
-            return
-
-        stars, star_str = star_info(sym, market)
-        for ev in built:
-            ev["stars"] = stars
-            ev["star_str"] = star_str
-            ev["market"] = market
-            ev["source"] = "Finnhub"
-            ev["confirmed"] = False
-            ev["expected_revenue"] = rev_est
-            ev["expected_revenue_str"] = rev_str
-            events.append(ev)
-
-    # ----------------------------------------------------
-    # Finnhub
-    #
-    # 미국 + 국제시장(KR)을 한 번에 조회한다.
-    # international=true가 중요하다.
-    # 기존 코드의 기본값(false)은 미국 중심 데이터만 반환한다.
-    # ----------------------------------------------------
+    # Tier 1: Finnhub API
     if FINNHUB_API_KEY:
-        from_d = today_kst.strftime("%Y-%m-%d")
-        to_d = future_end.strftime("%Y-%m-%d")
-
-        for international in (False, True):
-            try:
-                url = (
-                    "https://finnhub.io/api/v1/calendar/earnings"
-                    f"?from={from_d}"
-                    f"&to={to_d}"
-                    f"&international={'true' if international else 'false'}"
-                    f"&token={FINNHUB_API_KEY}"
-                )
-
-                res = HTTP_SESSION.get(url, timeout=5.0).json()
-                items = res.get("earningsCalendar", []) or []
-
-                print(
-                    f"[EARNINGS DEBUG] Finnhub "
-                    f"international={international}: {len(items)}건"
-                )
-
-                for it in items:
-                    sym = str(it.get("symbol", "")).upper().strip()
-
-                    # 미국 주요 기업
-                    if sym in allowed_us:
-                        append_event(it, "US")
-                        continue
-
-                    # 한국 주요 기업
-                    if normalize_kr_symbol(sym) in allowed_kr:
-                        append_event(it, "KR")
-
-            except Exception as exc:
-                print(
-                    f"[CALENDAR][EARN] Finnhub "
-                    f"international={international} 오류: {repr(exc)}"
-                )
-
-    else:
-        print("[CALENDAR][EARN] FINNHUB_API_KEY가 없어 Finnhub 조회를 건너뜁니다.")
-
-    # ----------------------------------------------------
-    # Yahoo 보조 수집
-    # Finnhub이 놓친 '추적 대상' 종목만 보완한다.
-    # ----------------------------------------------------
-    captured = set()
-    for ev in events:
-        ticker = str(ev.get("ticker", "")).upper().strip()
-        date_key = str(ev.get("date_key", "")).strip()
-        captured.add((ticker, date_key))
-
-    # Yahoo quote endpoint에서 이미 가져온 timestamp를 활용한다.
-    # timestamp가 오늘~30일이면 Finnhub 누락 종목에만 추가한다.
-    for us_sym in sorted(allowed_us):
-        dt_utc = get_yahoo_time(us_sym, "US")
-        if dt_utc is None:
-            continue
-
         try:
-            kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-            if not (today_kst <= kst_dt.date() <= future_end):
-                continue
+            from_d = (now_kst - timedelta(days=180)).strftime("%Y-%m-%d")
+            to_d = (now_kst + timedelta(days=90)).strftime("%Y-%m-%d")
+            url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
+            res = HTTP_SESSION.get(url, timeout=3.0).json()
+            items = res.get("earningsCalendar", [])
 
-            date_key = kst_dt.strftime("%Y.%m.%d")
-            if (us_sym, date_key) in captured:
-                continue
+            for it in items:
+                sym = str(it.get("symbol", "")).upper()
+                if sym not in sym_to_ko:
+                    continue
 
-            normalized_dt, hour = _normalize_earnings_timestamp(us_sym, dt_utc)
-            if normalized_dt is None:
-                continue
+                raw_date = str(it.get("date", "")).strip()
+                if not raw_date:
+                    continue
 
-            built = build_earnings_event(
-                us_sym,
-                us_name_map.get(us_sym, us_sym),
-                normalized_dt,
-                "예상치 집계중",
-                "-",
-                hour
-            )
+                hour = str(it.get("hour", "amc")).lower().strip()
 
-            stars, star_str = star_info(us_sym, "US")
-            for ev in built:
-                ev["stars"] = stars
-                ev["star_str"] = star_str
-                ev["market"] = "US"
-                ev["source"] = "Yahoo"
-                ev["confirmed"] = False
-                events.append(ev)
+                eps_est = it.get("epsEstimate")
+                rev_est = it.get("revenueEstimate")
+                eps_actual = it.get("epsActual")
+                rev_actual = it.get("revenueActual")
+
+                eps_str = (
+                    f"예상 EPS ${eps_est:.2f}"
+                    if eps_est is not None else "예상치 집계중"
+                )
+                rev_str = (
+                    f"예상 매출 ${rev_est/1e9:.1f}B"
+                    if rev_est is not None else "-"
+                )
+
+                us_dt = datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+                # Finnhub은 날짜 + amc/bmo/dmh만 제공하므로,
+                # 우선 실제 Yahoo timestamp가 같은 발표일 근처에 있으면 사용합니다.
+                dt_utc = None
+                yahoo_dt = yahoo_times.get(sym)
+                if yahoo_dt is not None:
+                    day_gap = abs((yahoo_dt.date() - us_dt.date()).days)
+                    if day_gap <= 1:
+                        dt_utc, hour = _normalize_earnings_timestamp(sym, yahoo_dt)
+
+                # Yahoo timestamp가 없거나 날짜가 맞지 않을 때만
+                # 미국 동부시간의 표준 발표 시각을 안전한 fallback으로 사용합니다.
+                if dt_utc is None:
+                    if ZoneInfo is not None:
+                        try:
+                            et_zone = ZoneInfo("America/New_York")
+                            if hour == "amc":
+                                local_time = datetime.strptime(raw_date + " 16:00", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            elif hour == "bmo":
+                                local_time = datetime.strptime(raw_date + " 06:00", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            else:
+                                local_time = datetime.strptime(raw_date + " 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            dt_utc = local_time.astimezone(timezone.utc)
+                        except Exception:
+                            dt_utc = None
+
+                    if dt_utc is None:
+                        # 최종 fallback: 기존보다 DST 오차가 적은 UTC 기준값
+                        if hour == "amc":
+                            dt_utc = us_dt + timedelta(hours=20)
+                        elif hour == "bmo":
+                            dt_utc = us_dt + timedelta(hours=10)
+                        else:
+                            dt_utc = us_dt + timedelta(hours=13, minutes=30)
+
+                events.extend(
+                    build_earnings_event(
+                        sym, sym_to_ko[sym], dt_utc,
+                        eps_str, rev_str, hour,
+                        actual_eps=eps_actual, actual_rev=rev_actual,
+                        expected_eps=eps_est, expected_rev=rev_est
+                    )
+                )
+                captured_syms.add(sym)
 
         except Exception as exc:
-            print(
-                f"[CALENDAR][EARN] Yahoo US 보완 실패 {us_sym}: {repr(exc)}"
-            )
+            print("[CALENDAR][EARN] Finnhub 오류:", exc)
 
-    for kr_code in sorted(allowed_kr):
-        yahoo_candidates = [
-            f"{kr_code}.KS",
-            f"{kr_code}.KQ",
-            kr_code,
-        ]
-        dt_utc = None
-        for candidate in yahoo_candidates:
-            if candidate in yahoo_times:
-                dt_utc = yahoo_times[candidate]
-                break
-
-        if dt_utc is None:
-            continue
-
+    # Tier 2: Yahoo Finance
+    # Finnhub에서 못 받은 종목은 Yahoo timestamp를 직접 사용합니다.
+    missing = [s for s in us_symbols if s not in captured_syms]
+    if missing:
         try:
-            kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-            if not (today_kst <= kst_dt.date() <= future_end):
-                continue
+            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing)}"
+            res = HTTP_SESSION.get(url, timeout=2.5).json()
+            items = res.get("quoteResponse", {}).get("result", [])
 
-            date_key = kst_dt.strftime("%Y.%m.%d")
-            if (kr_code, date_key) in captured:
-                continue
+            for it in items:
+                sym = str(it.get("symbol", "")).upper()
+                raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
+                if sym in sym_to_ko and raw_ts:
+                    dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                    dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
+                    eps_f = it.get("epsForward")
+                    eps_str = (
+                        f"예상 EPS ${eps_f:.2f}"
+                        if eps_f is not None else "예상치 집계중"
+                    )
 
-            normalized_dt, hour = _normalize_earnings_timestamp(
-                f"{kr_code}.KS",
-                dt_utc
-            )
-            if normalized_dt is None:
-                continue
-
-            built = build_earnings_event(
-                kr_code,
-                kr_name_map.get(kr_code, kr_code),
-                normalized_dt,
-                "예상치 집계중",
-                "-",
-                hour
-            )
-
-            stars, star_str = star_info(kr_code, "KR")
-            for ev in built:
-                ev["ticker"] = kr_code
-                ev["stars"] = stars
-                ev["star_str"] = star_str
-                ev["market"] = "KR"
-                ev["source"] = "Yahoo"
-                ev["confirmed"] = False
-                events.append(ev)
+                    events.extend(
+                        build_earnings_event(
+                            sym, sym_to_ko[sym], dt_utc,
+                            eps_str, "-", hour
+                        )
+                    )
+                    captured_syms.add(sym)
 
         except Exception as exc:
-            print(
-                f"[CALENDAR][EARN] Yahoo KR 보완 실패 {kr_code}: {repr(exc)}"
-            )
+            print("[CALENDAR][EARN] Yahoo 오류:", exc)
 
-    # ----------------------------------------------------
-    # 중복 제거
-    # ----------------------------------------------------
+    # 국내 실적은 현재 가상 날짜를 만들지 않고,
+    # 실제 데이터가 들어오는 경우에만 표시합니다.
+
+    # 동일 종목 + 동일 KST 날짜 + 동일 시간이면 1건만 유지
     unique = {}
-    source_priority = {
-        "Finnhub": 2,
-        "Yahoo": 1,
-    }
-
     for ev in events:
-        ticker = str(ev.get("ticker", "")).upper().strip()
-        date_key = str(ev.get("date_key", "")).strip()
-        event_time = str(ev.get("time", "")).strip()
-        market = str(ev.get("market", "")).upper().strip()
-
-        if not ticker or not date_key:
-            continue
-
         key = (
-            market,
-            ticker,
-            date_key,
-            event_time,
+            ev.get("ticker", ""),
+            ev.get("date_key", ""),
+            ev.get("time", "")
         )
-
-        old = unique.get(key)
-        if old is None:
-            unique[key] = ev
-            continue
-
-        old_priority = source_priority.get(
-            str(old.get("source", "")), 0
-        )
-        new_priority = source_priority.get(
-            str(ev.get("source", "")), 0
-        )
-
-        if new_priority > old_priority:
+        if key not in unique:
             unique[key] = ev
 
-    final_events = sorted(
-        unique.values(),
-        key=lambda x: (
-            str(x.get("date_key", "")),
-            str(x.get("time", "")),
-            0 if str(x.get("market", "")) == "KR" else 1,
-            str(x.get("ticker", "")),
-        )
-    )
+    return sorted(unique.values(), key=lambda x: x.get("ts", 0))
 
-    # ----------------------------------------------------
-    # 디버그: 앞으로 30일 날짜별 건수
-    # ----------------------------------------------------
-    date_counts = {}
-    market_counts = {"KR": 0, "US": 0}
-
-    for ev in final_events:
-        dk = str(ev.get("date_key", ""))
-        if dk:
-            date_counts[dk] = date_counts.get(dk, 0) + 1
-
-        market = str(ev.get("market", "")).upper()
-        if market in market_counts:
-            market_counts[market] += 1
-
-    print(
-        f"[EARNINGS FINAL] 오늘~30일: {len(final_events)}건 / "
-        f"국내={market_counts['KR']}건 / 미국={market_counts['US']}건 / "
-        f"일정있는날={len(date_counts)}일"
-    )
-    print(
-        f"[EARNINGS FINAL] 날짜별: {date_counts}"
-    )
-
-    return final_events
 
 def _calendar_event_common(utc_dt, event_name, country, stars, star_str, event_type, actual, forecast, previous, ticker="", extra=None):
     """캘린더 이벤트 공통 포맷. 화면은 항상 한국시간(KST)으로 표시한다."""
@@ -2302,7 +1920,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 
                         prefix = COUNTRY_PREFIX_MAP.get(
                             "USD" if country.lower() == "united states" else country,
-                            "미 " if country.lower() == "united states" else "",
+                            "美 " if country.lower() == "united states" else "",
                         )
 
                         title_ko = ECO_TITLE_KO_MAP.get(
@@ -3300,51 +2918,9 @@ def run_real_vectorized_backtest(df):
     except Exception:
         return 72.0, 78.0, 2.4
 
-
-def calculate_institutional_trend_following(raw_price, df, is_krw=True):
-    """기관형 추세추종 7단계 계산. 공개적으로 검증 가능한 TSMOM 구조."""
-    empty={"available":False,"momentum":{"1M":None,"3M":None,"6M":None,"12M":None},"trend_score":None,"trend_direction":"데이터 부족","trend_alignment":"0/4","volatility":None,"volatility_state":"데이터 부족","signal":"데이터 부족","signal_color":"neutral","position_size":None,"backtest":{"cagr":None,"win_rate":None,"mdd":None,"sharpe":None,"avg_holding_days":None,"trades":0,"years":None},"judgment":"추세추종 판단에 필요한 데이터가 부족합니다.","detail":[]}
-    if df is None or df.empty or "Close" not in df.columns or raw_price is None: return empty
-    closes=pd.to_numeric(df["Close"],errors="coerce").dropna()
-    if len(closes)<260: return empty
-    lb={"1M":21,"3M":63,"6M":126,"12M":252}; mom={}
-    for k,b in lb.items():
-        base=float(closes.iloc[-b-1]); mom[k]=((float(raw_price)/base)-1)*100 if base>0 else None
-    if any(mom[k] is None for k in lb): return empty
-    weights={"1M":.10,"3M":.20,"6M":.30,"12M":.40}
-    weighted=sum((1 if mom[k]>0 else -1 if mom[k]<0 else 0)*weights[k] for k in weights)
-    score=max(0,min(100,int(round(50+weighted*50))))
-    pos=sum(mom[k]>0 for k in weights); neg=sum(mom[k]<0 for k in weights)
-    if pos>=3 and score>=65: direction="LONG"; signal="상승 추세"; color="positive"
-    elif neg>=3 and score<=35: direction="SHORT"; signal="하락 추세"; color="negative"
-    else: direction="NEUTRAL"; signal="혼조/대기"; color="neutral"
-    rets=closes.pct_change().dropna(); vol=float(rets.tail(20).std()*np.sqrt(250)*100)
-    if not np.isfinite(vol): vol=None
-    vstate="고변동성" if vol is not None and vol>=40 else "보통 변동성" if vol is not None and vol>=20 else "낮은 변동성" if vol is not None else "데이터 부족"
-    position=max(0,min(100,10/vol*100)) if vol and vol>0 else None
-    # 당일 종가로 신호를 만들고 다음 날 수익률에 적용
-    s=closes.pct_change(); ms={k:closes.pct_change(b) for k,b in lb.items()}
-    rawsig=.10*np.sign(ms["1M"])+.20*np.sign(ms["3M"])+.30*np.sign(ms["6M"])+.40*np.sign(ms["12M"])
-    positions=pd.Series(np.sign(rawsig),index=closes.index).shift(1).fillna(0)
-    daily_vol=s.rolling(20).std(); target_daily=.10/np.sqrt(250)
-    exposure=(target_daily/daily_vol.replace(0,np.nan)).clip(upper=1).fillna(0)
-    strat=(positions*exposure*s).dropna()
-    bt=empty["backtest"].copy()
-    if len(strat)>=250:
-        equity=(1+strat).cumprod(); years=len(strat)/250; cagr=(float(equity.iloc[-1])**(1/years)-1)*100
-        dd=equity/equity.cummax()-1; mdd=float(dd.min())*100; sd=float(strat.std()); sharpe=float(strat.mean()/sd*np.sqrt(250)) if sd>0 else None
-        active=positions.loc[strat.index]; changes=active.diff().fillna(active).ne(0); trades=int(changes.sum()); win=float((strat>0).mean()*100)
-        ai=active[active!=0]; avg=None
-        if len(ai): avg=float(ai.groupby((ai!=ai.shift()).cumsum()).size().mean())
-        bt={"cagr":cagr,"win_rate":win,"mdd":mdd,"sharpe":sharpe,"avg_holding_days":avg,"trades":trades,"years":years}
-    judgment=("여러 기간의 추세가 상승 방향으로 정렬되어 추세추종에 우호적인 상태입니다." if direction=="LONG" else "여러 기간의 추세가 하락 방향으로 정렬되어 하락 추세 추종에 우호적인 상태입니다." if direction=="SHORT" else "기간별 추세 방향이 엇갈려 추세추종 진입보다 방향 확인이 우선입니다.")
-    return {"available":True,"momentum":mom,"trend_score":score,"trend_direction":direction,"trend_alignment":f"{max(pos,neg)}/4","volatility":vol,"volatility_state":vstate,"signal":signal,"signal_color":color,"position_size":position,"backtest":bt,"judgment":judgment,"detail":[f"1M {mom['1M']:+.1f}%",f"3M {mom['3M']:+.1f}%",f"6M {mom['6M']:+.1f}%",f"12M {mom['12M']:+.1f}%",f"추세 방향 일치 {max(pos,neg)}/4",f"최근 20D 연환산 변동성 {vol:.1f}%" if vol is not None else "변동성 데이터 부족"]}
-
 def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if df is None or len(df) < 10:
         return None
-
-    institutional_tsm = calculate_institutional_trend_following(raw_price, df, is_krw=is_krw)
 
     round_fn = (lambda v: f"{int(round(v, 0)):,} 원") if is_krw else (lambda v: f"{round(float(v), 2):,.2f} 달러")
     closes = df['Close']
@@ -3602,8 +3178,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "target1": target1, "target2": target2, "stop_p": stop_p,
         "sig_fill_pct": sig_fill_pct, "guide_text": guide_text,
         "bt_1y": f"1년 실측 {win_1y}%", "bt_2y": f"2년 실측 {win_2y}%",
-        "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}",
-        "institutional_tsm": institutional_tsm
+        "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}"
     }
 
 def _movement_rate_to_float(value):
@@ -4830,7 +4405,68 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
 
-        .tsm-section{padding:9px 10px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:9px;min-width:0;} .tsm-step{font-size:.68rem;color:var(--text-muted);margin-bottom:4px;font-weight:700;} .tsm-section b{font-size:.84rem;color:var(--text-title);} .tsm-mini,.tsm-stat{padding:7px 4px;text-align:center;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;} .tsm-mini b,.tsm-stat b{display:block;font-size:.76rem;color:var(--text-title);line-height:1.2;} .tsm-mini span,.tsm-stat span{display:block;font-size:.60rem;color:var(--text-muted);margin-top:3px;}
+        /* 기관형 추세추종 레이아웃 전용 - 다른 카드/캘린더 스타일을 건드리지 않음 */
+        .tsm-card{min-width:0;overflow:hidden;}
+        .tsm-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;}
+        .tsm-title{font-size:1.05rem;font-weight:900;color:var(--text-title);}
+        .tsm-subtitle{font-size:.76rem;font-weight:700;color:var(--text-muted);}
+        .tsm-pro{display:inline-block;margin-left:5px;padding:2px 7px;border:1px solid #7c3aed;border-radius:9px;color:#a78bfa;font-size:.60rem;font-weight:900;}
+        .tsm-head-signal{padding:4px 9px;border:1px solid rgba(16,185,129,.35);border-radius:10px;color:#10b981;background:rgba(16,185,129,.08);font-size:.68rem;font-weight:900;white-space:nowrap;}
+        .tsm-overview{display:grid;grid-template-columns:145px minmax(0,1fr);gap:12px;padding-bottom:10px;border-bottom:1px solid var(--border-line);}
+        .tsm-score-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;}
+        .tsm-score-ring{width:106px;height:106px;border-radius:50%;border:8px solid rgba(16,185,129,.22);display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-title);font-size:1.65rem;font-weight:900;line-height:1;box-sizing:border-box;}
+        .tsm-score-ring small{font-size:.56rem;color:var(--text-muted);margin-top:4px;font-weight:700;}
+        .tsm-score-label{font-size:.64rem;color:var(--text-muted);margin-top:4px;}
+        .tsm-overview-main{min-width:0;}
+        .tsm-overview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-bottom:8px;}
+        .tsm-overview-grid>div{min-width:0;}
+        .tsm-overview-grid span,.tsm-state-grid span,.tsm-signal-meta span{display:block;color:var(--text-muted);font-size:.61rem;}
+        .tsm-overview-grid b{display:block;color:var(--text-title);font-size:.80rem;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .tsm-price-chart-box,.tsm-equity-box{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:8px;padding:6px;min-width:0;}
+        .tsm-chart-head{display:flex;justify-content:space-between;align-items:center;font-size:.61rem;color:var(--text-muted);margin-bottom:3px;}
+        .tsm-chart-head b{color:#38bdf8;font-size:.65rem;}
+        #tsmPriceChart,#tsmVolChart,#tsmEquityChart{display:block;width:100%;height:100%;}
+        #tsmPriceChart{height:55px;}
+        .tsm-section-title{font-size:.68rem;font-weight:900;color:var(--text-title);margin-bottom:7px;}
+        .tsm-section-title em{font-style:normal;color:var(--text-muted);font-weight:700;}
+        .tsm-momentum-row{margin-top:9px;padding:9px 10px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:8px;}
+        .tsm-bars{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;}
+        .tsm-bar-item{text-align:center;min-width:0;}
+        .tsm-bar-value{font-size:.68rem;font-weight:900;color:var(--text-title);margin-bottom:4px;white-space:nowrap;}
+        .tsm-bar-track{height:44px;background:rgba(148,163,184,.10);border-radius:4px;display:flex;align-items:flex-end;overflow:hidden;border:1px solid var(--border-line);}
+        .tsm-bar-track i{display:block;width:100%;height:8%;background:#10b981;border-radius:3px 3px 0 0;}
+        .tsm-bar-item span{display:block;color:var(--text-muted);font-size:.58rem;margin-top:3px;}
+        .tsm-grid-2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-top:8px;}
+        .tsm-panel{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:8px;padding:9px 10px;min-width:0;}
+        .tsm-direction-line{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+        .tsm-direction-line b{font-size:1rem;color:#10b981;}
+        .tsm-direction-line span{font-size:.65rem;color:var(--text-muted);}
+        .tsm-strength-track{height:7px;background:rgba(148,163,184,.15);border-radius:6px;overflow:hidden;margin-top:7px;border:1px solid var(--border-line);}
+        .tsm-strength-track i{display:block;width:0;height:100%;background:linear-gradient(90deg,#38bdf8,#10b981);border-radius:6px;}
+        .tsm-small-note{font-size:.61rem;line-height:1.45;color:var(--text-muted);margin-top:5px;word-break:keep-all;}
+        .tsm-vol-line{display:flex;align-items:baseline;gap:6px;margin-bottom:4px;}
+        .tsm-vol-line b{font-size:1rem;color:#f59e0b;}.tsm-vol-line span{font-size:.65rem;color:#f59e0b;}
+        #tsmVolChart{height:48px;}
+        .tsm-big-signal{font-size:1.05rem;font-weight:900;color:#10b981;margin-bottom:7px;}
+        .tsm-signal-meta{display:flex;justify-content:space-between;padding-top:5px;border-top:1px solid var(--border-line);margin-top:5px;}
+        .tsm-signal-meta b{font-size:.65rem;color:var(--text-title);}
+        .tsm-position-value{font-size:1.12rem;font-weight:900;color:#10b981;}
+        .tsm-state-panel{margin-top:8px;}
+        .tsm-state-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;}
+        .tsm-state-grid b{display:block;font-size:.68rem;color:var(--text-title);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+        .tsm-backtest{margin-top:8px;padding:10px;background:rgba(16,185,129,.035);border:1px solid rgba(16,185,129,.22);border-radius:9px;}
+        .tsm-backtest-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;}
+        .tsm-backtest-period{padding:3px 7px;border-radius:8px;background:rgba(56,189,248,.10);border:1px solid rgba(56,189,248,.22);color:#38bdf8;font-size:.59rem;font-weight:800;white-space:nowrap;}
+        .tsm-backtest-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(190px,1fr);gap:8px;}
+        .tsm-equity-box svg{height:125px;}
+        .tsm-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}
+        .tsm-stats>div{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:7px;min-width:0;}
+        .tsm-stats span{display:block;color:var(--text-muted);font-size:.58rem;}.tsm-stats b{display:block;color:var(--text-title);font-size:.82rem;margin-top:3px;}
+        .tsm-judgment{display:flex;align-items:flex-start;gap:8px;margin-top:8px;padding:9px 10px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:9px;}
+        .tsm-judgment-icon{font-size:1rem;}.tsm-judgment span{display:block;color:var(--text-muted);font-size:.61rem;}.tsm-judgment b{display:block;color:#10b981;font-size:.76rem;margin-top:2px;}.tsm-judgment p{margin:3px 0 0;color:var(--text-muted);font-size:.62rem;line-height:1.45;word-break:keep-all;}
+        @media(max-width:900px){.tsm-overview{grid-template-columns:100px minmax(0,1fr);}.tsm-score-ring{width:88px;height:88px;font-size:1.35rem}.tsm-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.tsm-backtest-layout{grid-template-columns:1fr;}.tsm-stats{grid-template-columns:repeat(3,minmax(0,1fr));}}
+        @media(max-width:600px){.tsm-head{align-items:flex-start}.tsm-subtitle{display:block;margin-top:2px}.tsm-overview{grid-template-columns:1fr;}.tsm-score-wrap{flex-direction:row;justify-content:flex-start;gap:9px}.tsm-score-label{margin-top:0}.tsm-bars{gap:4px}.tsm-grid-2{grid-template-columns:1fr}.tsm-state-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.tsm-stats{grid-template-columns:repeat(2,minmax(0,1fr));}.tsm-equity-box svg{height:110px;}}
+
         /* [핵심 마스터 그리드] PC: 832px(좌) + 348px(우) 완벽 대칭 구조 */
         .dashboard-master-grid {
             display: grid;
@@ -6349,14 +5985,114 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 4행 좌측: 기관형 추세추종 분석 -->
-                        <div class="card" id="rowTrack" style="justify-content:flex-start;">
-                            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;"><div><span style="font-size:1.05rem;font-weight:800;color:var(--text-title);">기관형 추세추종 분석</span><span style="font-size:.66rem;color:#38bdf8;font-weight:800;margin-left:6px;">7 STEP</span></div><span id="tsmSignalBadge" style="font-size:.70rem;font-weight:800;padding:3px 8px;border-radius:10px;background:rgba(56,189,248,.12);color:#38bdf8;border:1px solid rgba(56,189,248,.22);">분석 대기</span></div>
-                            <div style="display:grid;grid-template-columns:150px 1fr;gap:14px;padding-bottom:12px;border-bottom:1px solid var(--border-line);"><div style="display:flex;align-items:center;justify-content:center;"><div style="width:112px;height:112px;border-radius:50%;border:8px solid rgba(56,189,248,.16);display:flex;flex-direction:column;align-items:center;justify-content:center;"><span id="tsmScore" style="font-size:1.75rem;font-weight:900;color:var(--text-title);line-height:1;">-</span><span style="font-size:.62rem;color:var(--text-muted);margin-top:4px;">추세점수</span></div></div><div><div style="font-size:.72rem;color:var(--text-muted);">① 모멘텀 · 1M / 3M / 6M / 12M</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:7px;"><div class="tsm-mini"><b id="tsmM1">-</b><span>1M</span></div><div class="tsm-mini"><b id="tsmM3">-</b><span>3M</span></div><div class="tsm-mini"><b id="tsmM6">-</b><span>6M</span></div><div class="tsm-mini"><b id="tsmM12">-</b><span>12M</span></div></div><div style="font-size:.72rem;color:var(--text-muted);margin-top:10px;">② 추세 방향 & 강도</div><div style="display:flex;align-items:center;gap:8px;margin-top:4px;"><b id="tsmDirection" style="font-size:1rem;color:var(--text-title);">-</b><span id="tsmAlignment" style="font-size:.72rem;color:var(--text-muted);">-</span></div></div></div>
-                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;"><div class="tsm-section"><div class="tsm-step">③ 변동성</div><div><b id="tsmVol">-</b> <span id="tsmVolState">-</span></div></div><div class="tsm-section"><div class="tsm-step">④ 매매신호</div><div><b id="tsmSignal">-</b></div></div></div>
-                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;"><div class="tsm-section"><div class="tsm-step">⑤ 포지션 참고</div><div><b id="tsmPosition">-</b></div></div><div class="tsm-section"><div class="tsm-step">⑥ 종합 판단</div><div><b id="tsmJudgmentShort">-</b></div></div></div>
-                            <div class="tsm-section" style="margin-top:10px;"><div class="tsm-step">⑦ 과거 백테스트 · 실제 계산값</div><div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:7px;"><div class="tsm-stat"><b id="tsmCagr">-</b><span>CAGR</span></div><div class="tsm-stat"><b id="tsmWin">-</b><span>승률</span></div><div class="tsm-stat"><b id="tsmMdd">-</b><span>MDD</span></div><div class="tsm-stat"><b id="tsmSharpe">-</b><span>Sharpe</span></div></div><div style="font-size:.69rem;color:var(--text-muted);margin-top:7px;" id="tsmBtMeta">-</div></div>
-                            <div style="margin-top:10px;padding:10px 11px;border-radius:9px;background:var(--bg-subcard);border:1px solid var(--border-line);"><div style="font-size:.70rem;color:var(--text-muted);margin-bottom:4px;">상세 판단 근거</div><div id="tsmDetail" style="font-size:.76rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;">데이터를 분석하는 중입니다.</div></div>
+                        <!-- 기관형 추세추종 분석: 레이아웃 전용 / 기존 캘린더 영역은 수정하지 않음 -->
+                        <div class="card tsm-card" id="rowTrack" style="justify-content:flex-start;">
+                            <div class="tsm-head">
+                                <div>
+                                    <span class="tsm-title">기관형 추세추종 분석</span>
+                                    <span class="tsm-subtitle">(Time-Series Momentum)</span>
+                                    <span class="tsm-pro">PRO</span>
+                                </div>
+                                <div class="tsm-head-signal" id="tsmHeadSignal">분석 대기</div>
+                            </div>
+
+                            <div class="tsm-overview">
+                                <div class="tsm-score-wrap">
+                                    <div class="tsm-score-ring"><span id="tsmScore">-</span><small>/100</small></div>
+                                    <div class="tsm-score-label">추세 점수</div>
+                                </div>
+                                <div class="tsm-overview-main">
+                                    <div class="tsm-overview-grid">
+                                        <div><span>현재 주가</span><b id="tsmPrice">-</b></div>
+                                        <div><span>오늘 등락률</span><b id="tsmChange">-</b></div>
+                                        <div><span>추세 방향</span><b id="tsmDirection">-</b></div>
+                                        <div><span>기간 일치</span><b id="tsmAlignment">-</b></div>
+                                    </div>
+                                    <div class="tsm-price-chart-box">
+                                        <div class="tsm-chart-head"><span>최근 60거래일 가격 흐름</span><b id="tsm60d">-</b></div>
+                                        <svg id="tsmPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="tsm-momentum-row">
+                                <div class="tsm-section-title">1. 모멘텀 <em>(수익률)</em></div>
+                                <div class="tsm-bars">
+                                    <div class="tsm-bar-item"><div class="tsm-bar-value" id="tsmM1">-</div><div class="tsm-bar-track"><i id="tsmBar1"></i></div><span>1M</span></div>
+                                    <div class="tsm-bar-item"><div class="tsm-bar-value" id="tsmM3">-</div><div class="tsm-bar-track"><i id="tsmBar3"></i></div><span>3M</span></div>
+                                    <div class="tsm-bar-item"><div class="tsm-bar-value" id="tsmM6">-</div><div class="tsm-bar-track"><i id="tsmBar6"></i></div><span>6M</span></div>
+                                    <div class="tsm-bar-item"><div class="tsm-bar-value" id="tsmM12">-</div><div class="tsm-bar-track"><i id="tsmBar12"></i></div><span>12M</span></div>
+                                </div>
+                            </div>
+
+                            <div class="tsm-grid-2">
+                                <div class="tsm-panel">
+                                    <div class="tsm-section-title">2. 추세 방향 &amp; 강도</div>
+                                    <div class="tsm-direction-line"><b id="tsmDirection2">-</b><span id="tsmStrength">강도 -/100</span></div>
+                                    <div class="tsm-strength-track"><i id="tsmStrengthBar"></i></div>
+                                    <div class="tsm-small-note" id="tsmTrendNote">추세 데이터를 계산하면 표시됩니다.</div>
+                                </div>
+                                <div class="tsm-panel">
+                                    <div class="tsm-section-title">3. 변동성 <em>(20D)</em></div>
+                                    <div class="tsm-vol-line"><b id="tsmVol">-</b><span id="tsmVolState">-</span></div>
+                                    <svg id="tsmVolChart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
+                                </div>
+                            </div>
+
+                            <div class="tsm-grid-2">
+                                <div class="tsm-panel">
+                                    <div class="tsm-section-title">4. 매매신호</div>
+                                    <div class="tsm-big-signal" id="tsmSignal">-</div>
+                                    <div class="tsm-signal-meta"><span>신호 발생일</span><b id="tsmSignalDate">-</b></div>
+                                    <div class="tsm-signal-meta"><span>신호 유지</span><b id="tsmSignalDays">-</b></div>
+                                </div>
+                                <div class="tsm-panel">
+                                    <div class="tsm-section-title">5. 포지션 크기 <em>(참고 비중)</em></div>
+                                    <div class="tsm-position-value" id="tsmPosition">-</div>
+                                    <div class="tsm-strength-track"><i id="tsmPositionBar"></i></div>
+                                    <div class="tsm-small-note">변동성 기반 위험관리 참고치</div>
+                                </div>
+                            </div>
+
+                            <div class="tsm-panel tsm-state-panel">
+                                <div class="tsm-section-title">6. 전략 상태</div>
+                                <div class="tsm-state-grid">
+                                    <div><span>현재 포지션</span><b id="tsmStatePosition">-</b></div>
+                                    <div><span>추세 상태</span><b id="tsmStateTrend">-</b></div>
+                                    <div><span>위험 수준</span><b id="tsmStateRisk">-</b></div>
+                                    <div><span>다음 확인</span><b id="tsmStateNext">-</b></div>
+                                </div>
+                            </div>
+
+                            <!-- 7번을 핵심 영역으로 크게 확보: 실제 백테스트 값 연결 전 레이아웃 -->
+                            <div class="tsm-backtest">
+                                <div class="tsm-backtest-head">
+                                    <div>
+                                        <div class="tsm-section-title">7. 과거 성과 <em>(백테스트)</em></div>
+                                        <div class="tsm-small-note">실제 전략 백테스트 결과를 이 영역에 연결</div>
+                                    </div>
+                                    <span class="tsm-backtest-period" id="tsmBtPeriod">검증 예정</span>
+                                </div>
+                                <div class="tsm-backtest-layout">
+                                    <div class="tsm-equity-box">
+                                        <div class="tsm-chart-head"><span>누적 수익률</span><b id="tsmBtReturn">-</b></div>
+                                        <svg id="tsmEquityChart" viewBox="0 0 620 180" preserveAspectRatio="none"></svg>
+                                    </div>
+                                    <div class="tsm-stats">
+                                        <div><span>CAGR</span><b id="tsmCagr">-</b></div>
+                                        <div><span>승률</span><b id="tsmWin">-</b></div>
+                                        <div><span>최대 낙폭 MDD</span><b id="tsmMdd">-</b></div>
+                                        <div><span>Sharpe</span><b id="tsmSharpe">-</b></div>
+                                        <div><span>평균 보유</span><b id="tsmHold">-</b></div>
+                                        <div><span>총 거래</span><b id="tsmTrades">-</b></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="tsm-judgment">
+                                <div class="tsm-judgment-icon">🐜</div>
+                                <div><span>종합 판단</span><b id="tsmJudgment">기관형 추세추종 분석을 준비 중입니다.</b><p id="tsmJudgmentDetail">레이아웃 확정 후 실제 계산식과 백테스트 데이터를 연결합니다.</p></div>
+                            </div>
                         </div>
 
                         <!-- 4행 우측: 실적 일정 (트랙 분석과 1:1 높이) -->
@@ -7878,16 +7614,82 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
                     `;
 
-                    // 기관형 추세추종 7단계 렌더링
-                    const tsm=(data.quant&&data.quant.institutional_tsm)||{}; const bt=tsm.backtest||{};
-                    const setT=(id,v,c)=>{const e=document.getElementById(id);if(e){e.innerText=v;if(c)e.style.color=c;}};
-                    const tsmPct=v=>Number.isFinite(Number(v))?`${Number(v)>=0?'+':''}${Number(v).toFixed(1)}%`:'-';
-                    const dir=String(tsm.trend_direction||'-'), score=Number(tsm.trend_score); const col=tsm.signal_color==='positive'?'#10b981':tsm.signal_color==='negative'?'#ef4444':'#f59e0b';
-                    setT('tsmScore',Number.isFinite(score)?String(score):'-'); setT('tsmM1',tsmPct(tsm.momentum?.['1M']),Number(tsm.momentum?.['1M'])>=0?'#10b981':'#ef4444'); setT('tsmM3',tsmPct(tsm.momentum?.['3M']),Number(tsm.momentum?.['3M'])>=0?'#10b981':'#ef4444'); setT('tsmM6',tsmPct(tsm.momentum?.['6M']),Number(tsm.momentum?.['6M'])>=0?'#10b981':'#ef4444'); setT('tsmM12',tsmPct(tsm.momentum?.['12M']),Number(tsm.momentum?.['12M'])>=0?'#10b981':'#ef4444');
-                    setT('tsmDirection',dir,dir==='LONG'?'#10b981':dir==='SHORT'?'#ef4444':'#f59e0b'); setT('tsmAlignment',`기간 일치 ${tsm.trend_alignment||'-'}`); setT('tsmVol',Number.isFinite(Number(tsm.volatility))?`${Number(tsm.volatility).toFixed(1)}%`:'-'); setT('tsmVolState',tsm.volatility_state||'-'); setT('tsmSignal',tsm.signal||'-',col); setT('tsmPosition',Number.isFinite(Number(tsm.position_size))?`참고 ${Number(tsm.position_size).toFixed(0)}%`:'-'); setT('tsmJudgmentShort',dir==='LONG'?'추세추종 우호적':dir==='SHORT'?'하락 추세 우호적':'방향 확인 필요',col);
-                    setT('tsmCagr',Number.isFinite(Number(bt.cagr))?`${Number(bt.cagr).toFixed(1)}%`:'-'); setT('tsmWin',Number.isFinite(Number(bt.win_rate))?`${Number(bt.win_rate).toFixed(1)}%`:'-'); setT('tsmMdd',Number.isFinite(Number(bt.mdd))?`${Number(bt.mdd).toFixed(1)}%`:'-'); setT('tsmSharpe',Number.isFinite(Number(bt.sharpe))?Number(bt.sharpe).toFixed(2):'-'); setT('tsmBtMeta',bt.trades?`기간 약 ${Number(bt.years||0).toFixed(1)}년 · 신호전환 ${bt.trades}회 · 평균 보유 ${Number(bt.avg_holding_days||0).toFixed(0)}거래일`:'백테스트 데이터 부족'); setT('tsmJudgmentShort',tsm.judgment||'-');
-                    const badge=document.getElementById('tsmSignalBadge'); if(badge){badge.innerText=tsm.signal||'분석 대기';badge.style.color=col;badge.style.borderColor=col+'55';badge.style.background=col+'18';}
-                    const detail=document.getElementById('tsmDetail'); if(detail){detail.innerHTML=Array.isArray(tsm.detail)&&tsm.detail.length?tsm.detail.map(x=>`<span style="display:inline-block;margin:2px 5px 2px 0;padding:3px 7px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border-line);">${x}</span>`).join('')+`<div style="margin-top:5px;">${tsm.judgment||''}</div>`:'추세추종 계산에 필요한 데이터가 부족합니다.';}
+                    // 기관형 추세추종 레이아웃 렌더링
+                    // 주의: 이번 단계에서는 레이아웃만 교체한다. 기존 경제/실적 캘린더 및 백엔드 계산은 건드리지 않는다.
+                    const tq = data.quant || {};
+                    const setTsm = (id, value, color) => {
+                        const el = document.getElementById(id);
+                        if (!el) return;
+                        el.innerText = value;
+                        if (color) el.style.color = color;
+                    };
+                    const num = v => Number(v);
+                    const fmtPct = v => Number.isFinite(num(v)) ? `${num(v) >= 0 ? '+' : ''}${num(v).toFixed(1)}%` : '-';
+
+                    setTsm('tsmPrice', data.price_str || '-');
+                    const cpTsm = num(data.current_change_pct);
+                    setTsm('tsmChange', Number.isFinite(cpTsm) ? `${cpTsm >= 0 ? '+' : ''}${cpTsm.toFixed(2)}%` : '-', cpTsm > 0 ? '#10b981' : cpTsm < 0 ? '#ef4444' : 'var(--text-title)');
+
+                    // 기존 실제 60D candles를 그대로 사용하여 상단 가격 차트만 표시
+                    const tsmPriceChart = document.getElementById('tsmPriceChart');
+                    const candleRowsTsm = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
+                    const valsTsm = candleRowsTsm.map(x => num(x && x.c)).filter(Number.isFinite);
+                    if (tsmPriceChart && valsTsm.length > 1) {
+                        const first = valsTsm[0];
+                        const normalized = first !== 0 ? valsTsm.map(v => ((v / first) - 1) * 100) : [];
+                        const W=600,H=120,pad=8,minV=Math.min(...normalized),maxV=Math.max(...normalized),span=Math.max(.01,maxV-minV);
+                        const x=i=>pad+i*((W-pad*2)/Math.max(1,normalized.length-1));
+                        const y=v=>pad+((maxV-v)/span)*(H-pad*2);
+                        const coords=normalized.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+                        const stroke=normalized[normalized.length-1]>=0?'#10b981':'#ef4444';
+                        tsmPriceChart.innerHTML=`<path d="M ${coords.join(' L ')}" fill="none" stroke="${stroke}" stroke-width="3" vector-effect="non-scaling-stroke"/><circle cx="${coords.at(-1).split(',')[0]}" cy="${coords.at(-1).split(',')[1]}" r="4" fill="${stroke}"/>`;
+                        setTsm('tsm60d',`최근 60D ${normalized.at(-1)>=0?'+':''}${normalized.at(-1).toFixed(2)}%`,stroke);
+                    }
+
+                    // 레이아웃 확정 단계에서는 기존 데이터가 있는 경우에만 안전하게 표시
+                    const m1 = tq.mom_1m ?? tq.momentum_1m;
+                    const m3 = tq.mom_3m ?? tq.momentum_3m;
+                    const m6 = tq.mom_6m ?? tq.momentum_6m;
+                    const m12 = tq.mom_12m ?? tq.momentum_12m;
+                    [['1',m1],['3',m3],['6',m6],['12',m12]].forEach(([k,v])=>{
+                        setTsm('tsmM'+k, fmtPct(v));
+                        const bar=document.getElementById('tsmBar'+k);
+                        if(bar && Number.isFinite(num(v))){ bar.style.height=`${Math.min(100,Math.max(8,Math.abs(num(v))/3))}%`; bar.style.background=num(v)>=0?'#10b981':'#ef4444'; }
+                    });
+
+                    const scoreCandidate = tq.trend_score ?? tq.score;
+                    if (Number.isFinite(num(scoreCandidate))) {
+                        const score=Math.max(0,Math.min(100,num(scoreCandidate)));
+                        setTsm('tsmScore',Math.round(score));
+                        setTsm('tsmStrength',`강도 ${Math.round(score)}/100`);
+                        const sb=document.getElementById('tsmStrengthBar'); if(sb) sb.style.width=`${score}%`;
+                    }
+                    const trend=tq.trend_direction || tq.trend || '-';
+                    setTsm('tsmDirection',trend,trend==='LONG'?'#10b981':trend==='SHORT'?'#ef4444':'var(--text-title)');
+                    setTsm('tsmDirection2',trend,trend==='LONG'?'#10b981':trend==='SHORT'?'#ef4444':'var(--text-title)');
+                    setTsm('tsmAlignment',tq.trend_alignment || '-');
+                    setTsm('tsmTrendNote',tq.judgment || '추세 데이터 연결 후 상세 판단을 표시합니다.');
+                    setTsm('tsmHeadSignal',tq.signal || trend || '분석 대기',trend==='SHORT'?'#ef4444':'#10b981');
+                    setTsm('tsmSignal',tq.signal || trend || '-');
+                    setTsm('tsmVol',Number.isFinite(num(tq.volatility))?`${num(tq.volatility).toFixed(1)}%`:'-');
+                    setTsm('tsmVolState',tq.volatility_state || '-');
+                    setTsm('tsmPosition',Number.isFinite(num(tq.position_size))?`${num(tq.position_size).toFixed(0)}%`:'-');
+                    const pb=document.getElementById('tsmPositionBar'); if(pb && Number.isFinite(num(tq.position_size))) pb.style.width=`${Math.min(100,Math.max(0,num(tq.position_size)))}%`;
+                    setTsm('tsmStatePosition',trend || '-');
+                    setTsm('tsmStateTrend',tq.signal || '-');
+                    setTsm('tsmStateRisk',tq.volatility_state || '-');
+                    setTsm('tsmStateNext','조건 충족 여부 재확인');
+
+                    // 7번: 실제 백테스트 결과가 연결되기 전에는 절대로 임의 수치를 넣지 않는다.
+                    setTsm('tsmCagr','-'); setTsm('tsmWin','-'); setTsm('tsmMdd','-'); setTsm('tsmSharpe','-'); setTsm('tsmHold','-'); setTsm('tsmTrades','-');
+                    setTsm('tsmBtReturn','실제 백테스트 연결 전');
+                    setTsm('tsmBtPeriod','검증 예정');
+                    setTsm('tsmJudgment',tq.judgment || '기관형 추세추종 분석 준비 중');
+                    setTsm('tsmJudgmentDetail','현재는 레이아웃 단계입니다. 7번 과거 성과는 실제 백테스트 계산을 연결한 뒤 표시합니다.');
+
+                    // 변동성 차트는 실제 변동성 시계열이 연결되기 전까지 빈 상태로 유지
+                    const vc=document.getElementById('tsmVolChart'); if(vc) vc.innerHTML='';
+                    const ec=document.getElementById('tsmEquityChart'); if(ec) ec.innerHTML='';
                     }
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)

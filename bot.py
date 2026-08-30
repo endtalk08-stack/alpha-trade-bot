@@ -6687,14 +6687,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const timeLabel = ev.time || '--:--';
             const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료') ? '발표완료' : '발표대기';
             const metaParts = [];
-           if (ev.exp && ev.exp !== '-') {
-    const expText = String(ev.exp).trim();
-    metaParts.push(
-        expText.startsWith('예상')
-            ? expText
-            : `예상 ${expText}`
-    );
-}
+            if (ev.exp && ev.exp !== '-') metaParts.push(`예상 ${ev.exp}`);
             if (ev.prev && ev.prev !== '-') metaParts.push(`이전 ${ev.prev}`);
             const meta = metaParts.join('  ·  ');
 
@@ -6800,11 +6793,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
             // 첫 화면에서 오늘 경제 일정이 없으면
             // 오늘 이전의 가장 최근 발표일을 자동으로 보여줍니다.
             if (!economicCalendarAutoJumped && economicCalOffset === 0) {
-                const latestOffset = findLatestEconomicOffset();
-                if (latestOffset < 0) {
-                    economicCalOffset = latestOffset;
+                const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
+                const hasEconomicData = all.some(ev => ev.type === 'eco' && ev.date_key);
+
+                // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
+                if (hasEconomicData) {
+                    const latestOffset = findLatestEconomicOffset();
+                    if (latestOffset < 0) {
+                        economicCalOffset = latestOffset;
+                    }
+                    economicCalendarAutoJumped = true;
                 }
-                economicCalendarAutoJumped = true;
             }
 
             const info = getCalendarDateInfo(economicCalOffset);
@@ -7196,6 +7195,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 // 2. 캘린더 데이터 저장 및 렌더링
                 if (data.market_calendar) {
                     globalMarketCalendar = data.market_calendar;
+
+                    // 중요:
+                    // 최초 화면 렌더링 시에는 API 데이터가 아직 도착하지 않아
+                    // 경제 캘린더 자동 이동 플래그가 먼저 켜질 수 있습니다.
+                    // 실제 데이터가 도착한 뒤 다시 한 번 자동 이동을 판단합니다.
+                    economicCalendarAutoJumped = false;
+                    economicCalOffset = 0;
+                    economicCalPage = 1;
+
                     renderMarketCalendarView();
                 }
 

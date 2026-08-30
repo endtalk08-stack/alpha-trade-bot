@@ -1192,11 +1192,12 @@ ECO_TITLE_KO_MAP = {
     "Housing Starts": "주택착공건수",
     "Trade Balance": "무역수지",
     "Flash Manufacturing PMI": "제조업 PMI (속보치)",
-    "Flash Services PMI": "서비스업 PMI (속보치)"
+    "Flash Services PMI": "서비스업 PMI (속보치)",
+    "FOMC Member Barr Speaks": "미 연준 바 이사 발언"
 }
 
 COUNTRY_PREFIX_MAP = {
-    "USD": "美 ", "EUR": "유로존 ", "GBP": "영국 ", "JPY": "일본 ",
+    "USD": "미 ", "EUR": "유로존 ", "GBP": "영국 ", "JPY": "일본 ",
     "CNY": "중국 ", "KRW": "한국 ", "CAD": "캐나다 ", "AUD": "호주 "
 }
 
@@ -1304,7 +1305,7 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
     else:
         val_str = "발표예정"
     hour_code = str(hour).lower().strip()
-    hour_label = "(美장마감후)" if hour_code == "amc" else ("(美장시작전)" if hour_code == "bmo" else "")
+    hour_label = "(미국 장 마감 후)" if hour_code == "amc" else ("(미국 장 시작 전)" if hour_code == "bmo" else "")
 
     return [{
         "ts": dt_utc.timestamp(),
@@ -2301,7 +2302,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 
                         prefix = COUNTRY_PREFIX_MAP.get(
                             "USD" if country.lower() == "united states" else country,
-                            "美 " if country.lower() == "united states" else "",
+                            "미 " if country.lower() == "united states" else "",
                         )
 
                         title_ko = ECO_TITLE_KO_MAP.get(
@@ -7920,8 +7921,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
                     const tPriceChart = document.getElementById('tPriceChart');
                     const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
+
+                    // 서버가 보내는 candles 필드는 open/high/low/close 형식이다.
+                    // 기존 코드가 x.c를 읽고 있어 차트 값이 전부 비어 있던 문제를 수정한다.
+                    // close를 우선 사용하고, 혹시 다른 응답 형식이 들어와도 c를 보조로 사용한다.
                     const trackVals = candleRows
-                        .map(x => Number(x && x.c))
+                        .map(x => {
+                            const close = Number(x && x.close);
+                            if (Number.isFinite(close)) return close;
+                            const legacyClose = Number(x && x.c);
+                            return Number.isFinite(legacyClose) ? legacyClose : NaN;
+                        })
                         .filter(Number.isFinite);
 
                     if (tPriceChart && trackVals.length > 1) {
@@ -7965,7 +7975,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             }
                         }
                     } else if (trackPriceTrendTxt) {
-                        trackPriceTrendTxt.innerText = '데이터 부족';
+                        trackPriceTrendTxt.innerText =
+                            trackVals.length === 0 ? '데이터 부족' : '주가 흐름 데이터 부족';
                     }
 
                     // 52주 가격 위치: 현재 퀀트 데이터와 동일한 실제 값 사용.

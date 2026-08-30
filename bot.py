@@ -7007,7 +7007,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let earningsCalendarAutoJumped = false;
 
         // 경제 캘린더는 오늘 발표가 없을 때 최초 1회만
-        // '오늘 이전의 가장 최근 발표일'로 이동합니다.
+        // '오늘 이후 가장 가까운 예정 일정'으로 이동합니다.
+        // 앞으로 일정이 없으면 오늘 이전 가장 최근 일정으로 이동합니다.
         // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
         let economicCalendarAutoJumped = false;
 
@@ -7123,7 +7124,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             return kstString.replace(/-/g, '.');
         }
 
-        function findLatestEconomicOffset() {
+        function findNearestEconomicOffset() {
             const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
             const todayKey = getTodayKstDateKey();
             const [yyyy, mm, dd] = todayKey.split('.').map(Number);
@@ -7135,17 +7136,38 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
             )].sort();
 
-            // 화면에 실제로 표시할 수 있는 오늘 일정이 있으면 오늘을 유지합니다.
-            const todayHasEvents = economicDates.includes(todayKey);
-            if (todayHasEvents) return 0;
+            if (!economicDates.length) return 0;
 
-            // 오늘 이전의 가장 최근 경제 일정 날짜를 직접 찾습니다.
+            // 1. 오늘 경제 일정이 있으면 오늘을 그대로 유지합니다.
+            if (economicDates.includes(todayKey)) {
+                return 0;
+            }
+
+            // 2. 오늘 이후 가장 가까운 경제 일정 날짜를 먼저 찾습니다.
+            //    주말/공휴일처럼 오늘 일정이 없는 경우 예정된 다음 일정으로 이동합니다.
+            for (const key of economicDates) {
+                const parts = key.split('.').map(Number);
+                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
+
+                const candidate = new Date(
+                    Date.UTC(parts[0], parts[1] - 1, parts[2])
+                );
+
+                if (candidate >= today) {
+                    return Math.round((candidate - today) / 86400000);
+                }
+            }
+
+            // 3. 미래 일정도 없으면 오늘 이전의 가장 최근 일정으로 이동합니다.
             let latestKey = null;
             for (const key of economicDates) {
                 const parts = key.split('.').map(Number);
                 if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
 
-                const candidate = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+                const candidate = new Date(
+                    Date.UTC(parts[0], parts[1] - 1, parts[2])
+                );
+
                 if (candidate < today) {
                     latestKey = key;
                 }
@@ -7167,9 +7189,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                 // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
                 if (hasEconomicData) {
-                    const latestOffset = findLatestEconomicOffset();
-                    if (latestOffset < 0) {
-                        economicCalOffset = latestOffset;
+                    const nearestOffset = findNearestEconomicOffset();
+                    if (nearestOffset !== 0) {
+                        economicCalOffset = nearestOffset;
                     }
                     economicCalendarAutoJumped = true;
                 }

@@ -1687,6 +1687,10 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
     us_symbols = [item[0] for item in MAJOR_US_TECH_TICKERS]
     yahoo_times = _fetch_yahoo_earnings_timestamps(us_symbols)
     captured = set()
+    # "과거 실적은 있지만 앞으로 예정된 실적은 없는 종목"을 구분합니다.
+    # Finnhub 전체 캘린더가 일부 주요 종목의 미래 일정을 누락하는 경우
+    # 해당 종목만 symbol 단위로 다시 확인합니다.
+    future_captured = set()
 
     if FINNHUB_API_KEY:
         try:
@@ -1730,12 +1734,110 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                     expected_eps=eps_est, expected_rev=rev_est,
                 ))
                 captured.add((sym, raw_date))
+
+                # 미래 일정이 실제로 확보되었는지 별도로 기록합니다.
+                try:
+                    if raw_date >= now_kst.strftime("%Y-%m-%d"):
+                        future_captured.add(sym)
+                except Exception:
+                    pass
         except Exception as exc:
             print("[CALENDAR][EARN] Finnhub 기간 조회 실패:", exc)
 
+    # Finnhub 전체 기간 조회에서 미래 실적이 빠진 주요 미국 종목만
+    # symbol 단위로 재조회합니다. AVGO 같은 종목이 전체 캘린더에서
+    # 누락되어도 실적 캘린더에는 정상적으로 들어오도록 하는 보강 단계입니다.
+    if FINNHUB_API_KEY:
+        missing_future_symbols = [s for s in us_symbols if s not in future_captured]
+        for sym in missing_future_symbols:
+            try:
+                direct_res = HTTP_SESSION.get(
+                    "https://finnhub.io/api/v1/calendar/earnings",
+                    params={
+                        "from": from_d,
+                        "to": to_d,
+                        "symbol": sym,
+                        "token": FINNHUB_API_KEY,
+                    },
+                    timeout=5.0,
+                )
+                direct_items = direct_res.json().get("earningsCalendar", []) if direct_res.ok else []
+
+                for it in direct_items:
+                    direct_sym = str(it.get("symbol", sym)).upper()
+                    if direct_sym not in sym_to_ko:
+                        continue
+
+                    raw_date = str(it.get("date", "")).strip()
+                    if not raw_date:
+                        continue
+
+                    # 이미 지난 날짜만 반환된 경우에는 보강 대상으로 취급하지 않습니다.
+                    if raw_date < now_kst.strftime("%Y-%m-%d"):
+                        continue
+
+                    hour = str(it.get("hour", "amc")).lower().strip()
+                    eps_est = it.get("epsEstimate")
+                    rev_est = it.get("revenueEstimate")
+                    eps_actual = it.get("epsActual")
+                    rev_actual = it.get("revenueActual")
+
+                    eps_str = (
+                        f"예상 EPS ${eps_est:.2f}"
+                        if eps_est is not None else "예상치 집계중"
+                    )
+                    rev_str = (
+                        f"예상 매출 ${rev_est/1e9:.1f}B"
+                        if rev_est is not None else "-"
+                    )
+
+                    # 이 보강 단계에서는 Finnhub의 날짜 + 발표구분을 그대로 사용합니다.
+                    # Yahoo의 잘못된 예상일이 Finnhub 날짜를 덮어쓰지 않게 합니다.
+                    us_dt = datetime.strptime(
+                        raw_date, "%Y-%m-%d"
+                    ).replace(tzinfo=timezone.utc)
+
+                    dt_utc = None
+                    if ZoneInfo is not None:
+                        try:
+                            et_zone = ZoneInfo("America/New_York")
+                            hhmm = (
+                                "16:00" if hour == "amc"
+                                else "06:00" if hour == "bmo"
+                                else "09:30"
+                            )
+                            local_time = datetime.strptime(
+                                f"{raw_date} {hhmm}", "%Y-%m-%d %H:%M"
+                            ).replace(tzinfo=et_zone)
+                            dt_utc = local_time.astimezone(timezone.utc)
+                        except Exception:
+                            dt_utc = None
+
+                    if dt_utc is None:
+                        dt_utc = (
+                            us_dt + timedelta(hours=20)
+                            if hour == "amc"
+                            else us_dt + timedelta(hours=10)
+                            if hour == "bmo"
+                            else us_dt + timedelta(hours=13, minutes=30)
+                        )
+
+                    events.extend(build_earnings_event(
+                        direct_sym, sym_to_ko[direct_sym], dt_utc,
+                        eps_str, rev_str, hour,
+                        actual_eps=eps_actual,
+                        actual_rev=rev_actual,
+                        expected_eps=eps_est,
+                        expected_rev=rev_est,
+                    ))
+                    future_captured.add(direct_sym)
+
+            except Exception as exc:
+                print(f"[CALENDAR][EARN] {sym} 개별 보강 실패:", exc)
+
     # API가 없거나 일부 종목만 반환된 경우 Yahoo의 현재 예정 실적을 보강한다.
     # Yahoo는 historical 전체를 보장하지 않으므로 보강용으로만 사용한다.
-    if not events:
+    if not events or len(future_captured) < len(us_symbols):
         try:
             res = HTTP_SESSION.get(
                 f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(us_symbols)}",
@@ -1744,12 +1846,13 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
             for it in res.get("quoteResponse", {}).get("result", []):
                 sym = str(it.get("symbol", "")).upper()
                 raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
-                if sym in sym_to_ko and raw_ts:
+                if sym in sym_to_ko and raw_ts and sym not in future_captured:
                     dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
                     dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
                     events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc,
                         f"예상 EPS ${it.get('epsForward'):.2f}" if it.get('epsForward') is not None else "예상치 집계중",
                         "-", hour))
+                    future_captured.add(sym)
         except Exception as exc:
             print("[CALENDAR][EARN] Yahoo 보강 실패:", exc)
 

@@ -4917,6 +4917,254 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 max-width: 832px;
             }
         }
+
+        /* ============================================================
+           캘린더 최종 디자인 v8
+           - PC: 기존 832px : 348px 구조 유지
+           - 좌/우 카드 높이 동기화
+           - Pretendard/Noto Sans KR 계열의 큰 한글 가독성
+           - 경제/실적 캘린더 공통 디자인
+        ============================================================ */
+        .calendar-widget {
+            padding: 18px 16px 14px !important;
+            border-radius: 16px !important;
+            background: #1b1c1d !important;
+            border: 1px solid #2b2d30 !important;
+            box-shadow: none !important;
+            min-height: 0 !important;
+        }
+        .calendar-widget,
+        .calendar-widget * {
+            font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+        }
+        .calendar-widget-title {
+            font-size: 1.15rem !important;
+            line-height: 1.35 !important;
+            font-weight: 800 !important;
+            letter-spacing: -0.045em !important;
+            margin-bottom: 13px !important;
+            color: #f4f5f5 !important;
+        }
+        .calendar-widget-nav {
+            margin-bottom: 10px !important;
+            min-height: 36px;
+        }
+        .calendar-widget .cal-date-ctrl {
+            gap: 10px !important;
+        }
+        .calendar-widget .cal-arrow-btn {
+            width: 32px !important;
+            height: 32px !important;
+            border-radius: 9px !important;
+            font-size: 0.82rem !important;
+            background: #111213 !important;
+            border-color: #303235 !important;
+            color: #e8e9e9 !important;
+        }
+        .calendar-widget .cal-current-date {
+            min-width: 132px !important;
+            font-size: 0.94rem !important;
+            font-weight: 800 !important;
+            letter-spacing: -0.025em !important;
+            color: #f5f6f6 !important;
+        }
+        .calendar-widget .cal-today-btn {
+            font-size: 0.78rem !important;
+            padding: 6px 10px !important;
+            min-height: 32px;
+            border-radius: 9px !important;
+            background: #111213 !important;
+            border-color: #303235 !important;
+            color: #f0f1f1 !important;
+        }
+        .calendar-star-filter {
+            gap: 7px !important;
+            margin-bottom: 11px !important;
+            padding-bottom: 1px;
+        }
+        .calendar-star-btn {
+            min-width: 48px;
+            min-height: 30px;
+            padding: 5px 10px !important;
+            border-radius: 999px !important;
+            font-size: 0.72rem !important;
+            letter-spacing: -0.02em;
+            background: #202224 !important;
+            border-color: #2d3033 !important;
+            color: #b9bdbe !important;
+        }
+        .calendar-star-btn.active {
+            background: #f4f5f5 !important;
+            color: #111213 !important;
+            border-color: #f4f5f5 !important;
+        }
+        .calendar-widget-subtitle {
+            font-size: 0.78rem !important;
+            line-height: 1.35 !important;
+            font-weight: 750 !important;
+            margin: 1px 0 10px !important;
+            color: #aeb2b3 !important;
+        }
+        .calendar-widget-list {
+            gap: 9px !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            scrollbar-width: thin;
+            padding-right: 1px;
+        }
+        .calendar-widget-list .cal-card-item {
+            min-height: 78px !important;
+            padding: 11px 11px 11px 12px !important;
+            gap: 10px !important;
+            border-radius: 11px !important;
+            background: #202224 !important;
+            border: 1px solid #2b2e31 !important;
+            align-items: center !important;
+            transform: none !important;
+        }
+        .calendar-widget-list .cal-card-item::before {
+            top: 10px !important;
+            bottom: 10px !important;
+            width: 2px !important;
+            background: #00c78c !important;
+        }
+        .calendar-widget-list .cal-card-item:hover {
+            background: #232527 !important;
+            border-color: #383b3e !important;
+        }
+        .calendar-widget-list .cal-time-col {
+            min-width: 54px !important;
+            width: 54px !important;
+            font-family: 'Pretendard', 'Noto Sans KR', sans-serif !important;
+            font-size: 0.76rem !important;
+            font-weight: 800 !important;
+            line-height: 1.2 !important;
+            color: #eef0f0 !important;
+            letter-spacing: -0.025em !important;
+        }
+        .calendar-widget .cal-event-icon {
+            width: 34px !important;
+            height: 34px !important;
+            min-width: 34px !important;
+            border-radius: 9px !important;
+            background: #151718 !important;
+            border-color: #34373a !important;
+            font-size: 0.62rem !important;
+        }
+        .calendar-widget .cal-event-topline {
+            gap: 7px !important;
+            align-items: center !important;
+        }
+        .calendar-widget .cal-stars {
+            font-size: 0.72rem !important;
+            letter-spacing: -0.08em !important;
+            color: #ffb000 !important;
+        }
+        .calendar-widget .cal-event-title {
+            font-size: 0.86rem !important;
+            line-height: 1.38 !important;
+            font-weight: 800 !important;
+            letter-spacing: -0.045em !important;
+            color: #f3f4f4 !important;
+            margin-bottom: 3px !important;
+        }
+        .calendar-widget .cal-event-meta {
+            font-size: 0.68rem !important;
+            line-height: 1.35 !important;
+            color: #aeb2b3 !important;
+            letter-spacing: -0.025em !important;
+        }
+        .calendar-widget .cal-alarm-btn {
+            width: 30px !important;
+            height: 30px !important;
+            flex-basis: 30px !important;
+            border-radius: 8px !important;
+            color: #8d9293 !important;
+        }
+        .calendar-widget .cal-pagination-bar {
+            min-height: 36px;
+            padding-top: 9px !important;
+            margin-top: 9px !important;
+            border-top-color: #2a2c2e !important;
+        }
+        .calendar-widget .cal-page-btn {
+            width: 28px !important;
+            height: 28px !important;
+            border-radius: 8px !important;
+            background: #151718 !important;
+        }
+        .calendar-widget .cal-page-txt {
+            font-size: 0.7rem !important;
+            color: #9da1a2 !important;
+        }
+        /* 빈 상태도 중앙에 덩그러니 떠 보이지 않게 위계 조정 */
+        .calendar-widget-list > div[style*="height:100%"] {
+            min-height: 180px !important;
+            height: auto !important;
+            flex: 1 1 auto !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 0.78rem !important;
+            color: #8f9495 !important;
+        }
+        @media (min-width: 1201px) {
+            .dashboard-master-grid {
+                grid-template-columns: minmax(0, 832px) 348px !important;
+                column-gap: 16px !important;
+            }
+            #rowTrack, #rowEarningsCalendar,
+            #rowQuant, #rowEconomicCalendar {
+                min-height: 560px;
+            }
+        }
+        @media (max-width: 1200px) {
+            .calendar-widget {
+                padding: 18px 16px 14px !important;
+            }
+            .calendar-widget-list .cal-card-item {
+                min-height: 78px !important;
+            }
+        }
+        @media (max-width: 520px) {
+            .calendar-widget {
+                padding: 15px 14px 12px !important;
+                border-radius: 14px !important;
+            }
+            .calendar-widget-title { font-size: 1.08rem !important; }
+            .calendar-widget .cal-current-date {
+                min-width: 116px !important;
+                font-size: 0.88rem !important;
+            }
+            .calendar-widget .cal-arrow-btn { width: 30px !important; height: 30px !important; }
+            .calendar-widget .cal-today-btn { min-height: 30px; padding: 5px 9px !important; }
+            .calendar-star-btn { min-width: 46px; min-height: 29px; font-size: 0.69rem !important; }
+            .calendar-widget-list .cal-card-item { min-height: 74px !important; }
+            .calendar-widget-list .cal-time-col { min-width: 50px !important; width: 50px !important; font-size: 0.72rem !important; }
+            .calendar-widget .cal-event-icon { width: 32px !important; height: 32px !important; min-width: 32px !important; }
+            .calendar-widget .cal-event-title { font-size: 0.82rem !important; }
+        }
+
+
+        .calendar-widget .calendar-full-btn {
+            flex: 0 0 auto;
+            margin-top: 9px;
+            min-height: 42px;
+            border-radius: 10px;
+            background: #202224;
+            border: 1px solid #2b2e31;
+            color: #e9ebeb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-size: 0.76rem;
+            font-weight: 750;
+            letter-spacing: -0.025em;
+            cursor: pointer;
+        }
+        .calendar-widget .calendar-full-btn span { font-size: 0.9rem; color: #dfe2e2; }
+        .calendar-widget .calendar-full-btn:hover { background: #252729; border-color: #383b3e; }
+
     </style>
 </head>
 <body>
@@ -5186,6 +5434,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="calendar-widget-subtitle" id="earnCalDayHeader">주요 기업 실적</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="earnCalEventList"></div>
 
+                                <div class="calendar-full-btn" onclick="changeEarningsCalendarPage(1)">전체 실적 캘린더 보기 <span>&#10095;</span></div>
                                 <div class="cal-pagination-bar">
                                     <button class="cal-page-btn" id="btnEarnCalPrev" onclick="changeEarningsCalendarPage(-1)">&#10094;</button>
                                     <span class="cal-page-txt" id="earnCalPageIndicator">1 / 1</span>
@@ -5218,6 +5467,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="calendar-widget-subtitle" id="ecoCalDayHeader">주요 경제지표</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="ecoCalEventList"></div>
 
+                                <div class="calendar-full-btn" onclick="changeEconomicCalendarPage(1)">전체 경제 캘린더 보기 <span>&#10095;</span></div>
                                 <div class="cal-pagination-bar">
                                     <button class="cal-page-btn" id="btnEcoCalPrev" onclick="changeEconomicCalendarPage(-1)">&#10094;</button>
                                     <span class="cal-page-txt" id="ecoCalPageIndicator">1 / 1</span>
@@ -5891,6 +6141,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         이 날짜에 예정된 경제 일정이 없습니다.
                     </div>
                 `;
+                scheduleCalendarHeightSync();
                 return;
             }
 
@@ -5899,6 +6150,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 .slice(startIdx, startIdx + calendarItemsPerPage)
                 .map(renderCalendarEventCard)
                 .join('');
+            scheduleCalendarHeightSync();
         }
 
         function renderEarningsCalendarView() {
@@ -5934,6 +6186,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         이 날짜에 예정된 실적 일정이 없습니다.
                     </div>
                 `;
+                scheduleCalendarHeightSync();
                 return;
             }
 
@@ -5942,6 +6195,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 .slice(startIdx, startIdx + calendarItemsPerPage)
                 .map(renderCalendarEventCard)
                 .join('');
+            scheduleCalendarHeightSync();
         }
 
         function setCalendarStarFilter(type, value, btn) {
@@ -5993,6 +6247,34 @@ HTML_PAGE = r"""<!DOCTYPE html>
             renderEconomicCalendarView();
             renderEarningsCalendarView();
         }
+
+
+        // PC에서 같은 행의 좌/우 패널 높이를 항상 1:1로 맞춘다.
+        function syncCalendarRowHeights() {
+            if (window.innerWidth <= 1200) return;
+            const pairs = [
+                ['rowTrack', 'rowEarningsCalendar'],
+                ['rowQuant', 'rowEconomicCalendar']
+            ];
+            pairs.forEach(([leftId, rightId]) => {
+                const left = document.getElementById(leftId);
+                const right = document.getElementById(rightId);
+                if (!left || !right) return;
+                left.style.height = '';
+                right.style.height = '';
+                const h = Math.max(left.getBoundingClientRect().height, right.getBoundingClientRect().height, 560);
+                left.style.height = `${Math.ceil(h)}px`;
+                right.style.height = `${Math.ceil(h)}px`;
+            });
+        }
+        let calendarHeightSyncTimer = null;
+        function scheduleCalendarHeightSync() {
+            if (calendarHeightSyncTimer) clearTimeout(calendarHeightSyncTimer);
+            calendarHeightSyncTimer = setTimeout(syncCalendarRowHeights, 60);
+        }
+        window.addEventListener('resize', scheduleCalendarHeightSync);
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleCalendarHeightSync);
+        setTimeout(scheduleCalendarHeightSync, 300);
 
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;

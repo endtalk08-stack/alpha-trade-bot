@@ -1,4 +1,7 @@
 import os
+
+# 실적 캘린더 첫 화면에 보여줄 주요 예정 실적 수
+EARNINGS_PREVIEW_COUNT = 4
 import re
 import io
 import gc

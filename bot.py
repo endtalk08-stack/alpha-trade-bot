@@ -5584,20 +5584,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 max-width: 832px;
             }
             
-            #rowChart { order: 1; }
-            #rowNews { order: 2; }
-            #rowTrack { order: 3; }
-            #rowEarningsCalendar { order: 4; }
+            /* 모바일 위젯 표시 순서 — PC 그리드에는 영향 없음 */
+            #rowCause { order: 1; }
+            #rowChart { order: 2; }
+            #rowNews { order: 3; }
+            #rowTrack { order: 4; }
             #rowQuant { order: 5; }
-            #rowEconomicCalendar { order: 6; }
-            #rowConsensus { order: 4; }
-            #rowVote { order: 5; }
-            #rowComment { order: 6; }
-            #rowDart { order: 7; }
-            #rowSignal { order: 8; }
-            #rowTelegram { order: 9; }
-            #rowWorld { order: 10; width: 100%; max-width: 832px; }
+            #rowConsensus { order: 6; }
+            #rowVote { order: 7; }
+            #rowComment { order: 8; }
+            #rowSignal { order: 9; }
+            #rowTelegram { order: 10; }
+            #rowWorld { order: 11; width: 100%; max-width: 832px; }
             #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
+            #rowEarningsCalendar { order: 13; }
+            #rowEconomicCalendar { order: 14; }
+            #rowDart { order: 15; }
 
             .bottom-bar-grid-wrapper {
                 display: flex;
@@ -8072,11 +8074,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
                     const trackDetailList = document.getElementById('trackDetailList');
                     if (trackDetailList) {
-                        const trackOrder = ['시장 5일 흐름','시장','업종·테마','외국인 수급','기관 수급','기업 재료','거래량','거래대금'];
-                        const orderedEvidenceReasons = trackOrder
-                            .map(label => evidenceReasons.find(r => r && r.label === label))
-                            .filter(Boolean);
-                        trackDetailList.innerHTML = orderedEvidenceReasons.map(r => {
+                        trackDetailList.innerHTML = evidenceReasons.map(r => {
                             const score = Number(r.score || 0);
                             const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
                             const statusClass =

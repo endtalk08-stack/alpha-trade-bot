@@ -1675,7 +1675,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
     return _cache_set(ALPHA_NEWS_CACHE, cache_key, sorted(unique.values(), key=lambda x: x.get("ts", 0)))
 
 
-def fetch_all_real_earnings_history(days_back=180, days_forward=90):
+def fetch_all_real_earnings_history(days_back=180, days_forward=30):
     """주요 기업 실적을 과거/현재/미래 범위로 확보한다.
     기존 fetch_all_real_earnings()는 다른 분석 로직에서도 사용하므로 그대로 두고,
     캘린더 전용으로 기간을 넓힌 버전만 추가한다.
@@ -1688,7 +1688,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
     now_kst = datetime.now(timezone(timedelta(hours=9)))
     from_d = (now_kst - timedelta(days=days_back)).strftime("%Y-%m-%d")
     to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
-    cache_key = f"earn_history_v21:{from_d}:{to_d}"
+    cache_key = f"earn_history_v22:{from_d}:{to_d}"
     cached = _cache_get(ALPHA_EARNINGS_CACHE, cache_key, 1800)
     if cached is not None:
         return cached
@@ -1951,7 +1951,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
 
 
 def fetch_real_market_calendar_live():
-    """캘린더 전용 데이터: 과거 180일 + 미래 90일.
+    """캘린더 전용 데이터: 과거 180일 + 미래 30일.
     원천 데이터는 메모리 캐시하고 화면에서는 날짜별로만 잘라서 보여준다.
     """
     combined_events = []
@@ -1960,7 +1960,7 @@ def fetch_real_market_calendar_live():
     except Exception as exc:
         print("[CALENDAR][ECO] 기간 데이터 실패:", exc)
     try:
-        combined_events.extend(fetch_all_real_earnings_history(180, 90))
+        combined_events.extend(fetch_all_real_earnings_history(180, 30))
     except Exception as exc:
         print("[CALENDAR][EARN] 기간 데이터 실패:", exc)
 

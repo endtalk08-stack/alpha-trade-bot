@@ -1527,6 +1527,9 @@ def fetch_all_real_earnings():
             url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing)}"
             res = HTTP_SESSION.get(url, timeout=2.5).json()
             items = res.get("quoteResponse", {}).get("result", [])
+            
+            print(f"[YAHOO DEBUG] 원본: {len(items)}건")
+            print(f"[YAHOO DEBUG] 종목: {[str(x.get('symbol','')).upper() for x in items]}")
 
             for it in items:
                 sym = str(it.get("symbol", "")).upper()

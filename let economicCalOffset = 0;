@@ -1257,56 +1257,42 @@ MAJOR_KR_EARNINGS = {
 # ----------------------------------------------------
 # 3. 3단계 하이브리드 실적 일정 수집기 (한국/미국 완벽 대응)
 # ----------------------------------------------------
-def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None, us_date_key=None, is_kr=False):
-    """실적 1건을 미국 현지 시간(US Date) 기준으로 그룹핑하기 위해 date_key를 재설정합니다."""
+def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None, us_date_key=None):
+    """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
     # 최종 안전장치:
     # 미국 기업 실적이 장중(특히 09:30 ET = 한국시간 22:30)으로
     # 들어온 경우에는 장마감 후 실적 발표 관행에 맞춰 16:00 ET로 정규화합니다.
-    if not is_kr:
-        try:
-            if ZoneInfo is not None:
-                et_zone = ZoneInfo("America/New_York")
-                et_dt = dt_utc.astimezone(et_zone)
-                et_minutes = et_dt.hour * 60 + et_dt.minute
-                if 9 * 60 + 30 <= et_minutes < 16 * 60:
-                    et_dt = et_dt.replace(
-                        hour=16, minute=0, second=0, microsecond=0
-                    )
-                    dt_utc = et_dt.astimezone(timezone.utc)
-                    hour = "amc"
-        except Exception:
-            pass
+    # 이 검사는 Finnhub/Yahoo 어느 경로로 들어왔는지와 무관하게 마지막에 한 번 더 적용됩니다.
+    try:
+        if ZoneInfo is not None:
+            et_zone = ZoneInfo("America/New_York")
+            et_dt = dt_utc.astimezone(et_zone)
+            et_minutes = et_dt.hour * 60 + et_dt.minute
+            if 9 * 60 + 30 <= et_minutes < 16 * 60:
+                et_dt = et_dt.replace(
+                    hour=16, minute=0, second=0, microsecond=0
+                )
+                dt_utc = et_dt.astimezone(timezone.utc)
+                hour = "amc"
+    except Exception:
+        pass
 
     kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-    
-    if is_kr:
-        # 한국 주식은 KST 그대로 그룹핑합니다.
-        display_date_dt = kst_dt
-    else:
-        # 미국 주식은 KST로 변환하면 날짜가 익일로 넘어가므로(예: 목요일 마감 후 발표가 금요일 새벽이 됨)
-        # 날짜 자체는 미국 현지 날짜(New York)를 기준으로 하여 "해당 현지 날짜에 발표하는 기업"으로 묶습니다.
+
+    # 화면의 날짜 이동 기준은 한국시간(KST)을 유지합니다.
+    # 동시에 미국 현지 날짜도 별도로 보존해 날짜 경계를 잃지 않게 합니다.
+    date_key = kst_dt.strftime("%Y.%m.%d")
+
+    if not us_date_key:
         try:
-            if ZoneInfo is not None:
-                et_zone = ZoneInfo("America/New_York")
-                display_date_dt = dt_utc.astimezone(et_zone)
-            else:
-                display_date_dt = dt_utc - timedelta(hours=4) # 대략적인 미동부시간
+            us_date_key = dt_utc.astimezone(ZoneInfo("America/New_York")).strftime("%Y.%m.%d") if ZoneInfo is not None else kst_dt.strftime("%Y.%m.%d")
         except Exception:
-            display_date_dt = kst_dt
-
-    date_key = display_date_dt.strftime("%Y.%m.%d")
-    weekday = days_map[int(display_date_dt.strftime('%w'))]
-    date_str = f"{display_date_dt.month}.{display_date_dt.day} ({weekday})"
-    
-    # 헤더는 사용자 혼동을 피하기 위해 현지 날짜와 한국 시간 안내를 함께 노출합니다.
-    if is_kr:
-        date_header = f"{display_date_dt.month}월 {display_date_dt.day}일 {weekday}요일"
-    else:
-        date_header = f"미국 {display_date_dt.month}월 {display_date_dt.day}일 {weekday}요일 현지 기준"
-
-    # 시간 표시(time_str)는 한국 사용자 편의를 위해 KST 시간을 그대로 유지합니다 (예: 05:00)
+            us_date_key = kst_dt.strftime("%Y.%m.%d")
+    weekday = days_map[int(kst_dt.strftime('%w'))]
+    date_str = f"{kst_dt.month}.{kst_dt.day} ({weekday})"
+    date_header = f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일"
     time_str = kst_dt.strftime("%H:%M")
 
     now_utc = datetime.now(timezone.utc)
@@ -1317,15 +1303,13 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         val_str = "발표확인중"
     else:
         val_str = "발표예정"
-        
     hour_code = str(hour).lower().strip()
-    hour_label = ""
-    if not is_kr:
-        hour_label = "(장마감후)" if hour_code == "amc" else ("(장시작전)" if hour_code == "bmo" else "")
+    hour_label = "(美장마감후)" if hour_code == "amc" else ("(美장시작전)" if hour_code == "bmo" else "")
 
     return [{
         "ts": dt_utc.timestamp(),
         "date_key": date_key,
+        "us_date_key": us_date_key,
         "date_str": date_str,
         "date_header": date_header,
         "time": time_str,
@@ -1354,7 +1338,7 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
             else "★☆☆"
         ),
         "type": "earn",
-        "name": f"{ko_name} ({sym}) {hour_label}".strip(),
+        "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
         "ticker": sym,
         "val": val_str,
         "exp": eps_str,
@@ -1411,13 +1395,6 @@ def _normalize_earnings_timestamp(sym, dt_utc):
         return dt_utc, _classify_earnings_hour(dt_utc)
 
 
-
-def _format_yahoo_symbol(sym):
-    sym = str(sym).strip().upper()
-    if sym.isdigit() and len(sym) == 6:
-        return f"{sym}.KS"  # Default to KOSPI for Yahoo query if unknown, better than no suffix
-    return sym
-
 def _fetch_yahoo_earnings_timestamps(symbols):
     """주요 종목의 Yahoo earnings timestamp를 가져옵니다."""
     result = {}
@@ -1425,12 +1402,11 @@ def _fetch_yahoo_earnings_timestamps(symbols):
         return result
 
     try:
-        formatted_symbols = [_format_yahoo_symbol(s) for s in symbols]
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(formatted_symbols)}"
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(symbols)}"
         res = HTTP_SESSION.get(url, timeout=2.5).json()
         items = res.get("quoteResponse", {}).get("result", [])
         for it in items:
-            sym = str(it.get("symbol", "")).upper().replace(".KS", "").replace(".KQ", "")
+            sym = str(it.get("symbol", "")).upper()
             raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
             if sym and raw_ts:
                 try:
@@ -1443,168 +1419,18 @@ def _fetch_yahoo_earnings_timestamps(symbols):
     return result
 
 
-
-def fetch_kr_earnings_from_naver(code, name):
-    if not code or not str(code).isdigit() or len(str(code)) != 6:
-        return []
-    
-    events = []
-    try:
-        url = f"https://m.stock.naver.com/api/stock/{code}/disclosure?page=1&pageSize=15"
-        res = HTTP_SESSION.get(url, timeout=2.0).json()
-        items = res.get("items", []) or res.get("disclosures", [])
-        
-        for it in items:
-            title = str(it.get("reportTitle") or it.get("title") or "")
-            if not any(k in title for k in ["실적", "분기보고서", "반기보고서", "사업보고서", "손익구조"]):
-                continue
-            
-            date_raw = str(it.get("rceptDt") or it.get("date") or "")[:10].replace(".", "-").replace("/", "-")
-            if not date_raw or len(date_raw) < 10:
-                continue
-                
-            try:
-                dt_kst = datetime.strptime(date_raw + " 15:30", "%Y-%m-%d %H:%M").replace(
-                    tzinfo=timezone(timedelta(hours=9))
-                )
-                dt_utc = dt_kst.astimezone(timezone.utc)
-            except Exception:
-                continue
-
-            clean_title = title
-            for prefix in ["[기재정정]", "[정정]", "(공정공시)", "연결재무제표기준"]:
-                clean_title = clean_title.replace(prefix, "").strip()
-
-            stars = 3 if code in ["005930", "000660", "005380", "000270", "035420", "035720", "373220"] else 2
-            star_str = "★★★" if stars == 3 else "★★☆"
-
-            days_map = ["일", "월", "화", "수", "목", "금", "토"]
-            kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-            date_key = kst_dt.strftime("%Y.%m.%d")
-            weekday = days_map[int(kst_dt.strftime('%w'))]
-            date_str_fmt = f"{kst_dt.month}.{kst_dt.day} ({weekday})"
-            date_header = f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일"
-            time_str = kst_dt.strftime("%H:%M")
-
-            now_utc = datetime.now(timezone.utc)
-            val_str = "발표완료" if dt_utc <= now_utc else "발표예정"
-
-            events.append({
-                "ts": dt_utc.timestamp(),
-                "date_key": date_key,
-                "date_str": date_str_fmt,
-                "date_header": date_header,
-                "time": time_str,
-                "stars": stars,
-                "star_str": star_str,
-                "type": "earn",
-                "name": f"{name} ({code}) {clean_title}",
-                "ticker": code,
-                "val": val_str,
-                "exp": "공시 보고서",
-                "prev": "-",
-                "actual_eps": None,
-                "expected_eps": None,
-                "actual_revenue": None,
-                "expected_revenue": None,
-                "expected_revenue_str": "-"
-            })
-    except Exception as exc:
-        print(f"[CALENDAR][KR_EARN] {code} failed: {exc}")
-        
-    return events
-
-
-def fetch_opendart_earnings(bgn_days=90):
-    if not DART_API_KEY:
-        return []
-    
-    events = []
-    try:
-        now_dt = datetime.now(timezone(timedelta(hours=9)))
-        bgn_de = (now_dt - timedelta(days=bgn_days)).strftime("%Y%m%d")
-        end_de = now_dt.strftime("%Y%m%d")
-        
-        url = f"https://opendart.fss.or.kr/api/list.json?crtfc_key={DART_API_KEY}&bgn_de={bgn_de}&end_de={end_de}&pblntf_ty=F&page_count=60"
-        res = HTTP_SESSION.get(url, timeout=3.0).json()
-        
-        if res.get("status") == "000" and res.get("list"):
-            for it in res.get("list"):
-                corp_code = str(it.get("stock_code") or "").strip()
-                corp_name = str(it.get("corp_name") or "").strip()
-                report_nm = str(it.get("report_nm") or "").strip()
-                rcept_dt = str(it.get("rcept_dt") or "").strip()
-                
-                if not corp_code or len(corp_code) != 6 or not rcept_dt or len(rcept_dt) < 8:
-                    continue
-                    
-                if not any(k in report_nm for k in ["사업보고서", "분기보고서", "반기보고서", "실적", "손익"]):
-                    continue
-                    
-                date_formatted = f"{rcept_dt[:4]}-{rcept_dt[4:6]}-{rcept_dt[6:8]}"
-                try:
-                    dt_kst = datetime.strptime(date_formatted + " 15:30", "%Y-%m-%d %H:%M").replace(
-                        tzinfo=timezone(timedelta(hours=9))
-                    )
-                    dt_utc = dt_kst.astimezone(timezone.utc)
-                except Exception:
-                    continue
-
-                clean_nm = report_nm
-                for p in ["[기재정정]", "[정정]", "(공정공시)"]:
-                    clean_nm = clean_nm.replace(p, "").strip()
-
-                stars = 3 if corp_code in ["005930", "000660", "005380", "000270", "035420", "035720", "373220"] else 2
-                star_str = "★★★" if stars == 3 else "★★☆"
-
-                days_map = ["일", "월", "화", "수", "목", "금", "토"]
-                kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-                date_key = kst_dt.strftime("%Y.%m.%d")
-                weekday = days_map[int(kst_dt.strftime('%w'))]
-
-                events.append({
-                    "ts": dt_utc.timestamp(),
-                    "date_key": date_key,
-                    "date_str": f"{kst_dt.month}.{kst_dt.day} ({weekday})",
-                    "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {weekday}요일",
-                    "time": kst_dt.strftime("%H:%M"),
-                    "stars": stars,
-                    "star_str": star_str,
-                    "type": "earn",
-                    "name": f"{corp_name} ({corp_code}) {clean_nm}",
-                    "ticker": corp_code,
-                    "val": "공시완료",
-                    "exp": "정기 공시",
-                    "prev": "-",
-                    "actual_eps": None,
-                    "expected_eps": None,
-                    "actual_revenue": None,
-                    "expected_revenue": None,
-                    "expected_revenue_str": "-"
-                })
-    except Exception as exc:
-        print(f"[CALENDAR][DART] failed: {exc}")
-        
-    return events
-
-
-def fetch_all_real_earnings(target_symbol=None, target_name=None):
+def fetch_all_real_earnings():
     events = []
     sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
     for k_code, k_name in MAJOR_KR_EARNINGS.items():
         sym_to_ko[k_code] = k_name
-
-    if target_symbol:
-        sym_upper = str(target_symbol).upper().strip()
-        if sym_upper not in sym_to_ko:
-            sym_to_ko[sym_upper] = target_name or sym_upper
 
     captured_syms = set()
     now_kst = datetime.now(timezone(timedelta(hours=9)))
 
     # 주요 미국 종목은 Yahoo의 실제 earnings timestamp를 별도로 확보해
     # Finnhub의 amc/bmo 같은 범주형 시간보다 우선 사용합니다.
-    us_symbols = list(set([item[0] for item in MAJOR_US_TECH_TICKERS] + ([str(target_symbol).upper().strip()] if target_symbol else [])))
+    us_symbols = [item[0] for item in MAJOR_US_TECH_TICKERS]
     yahoo_times = _fetch_yahoo_earnings_timestamps(us_symbols)
 
     # Tier 1: Finnhub API
@@ -1621,11 +1447,13 @@ def fetch_all_real_earnings(target_symbol=None, target_name=None):
 
             for it in items:
                 sym = str(it.get("symbol", "")).upper()
+                if sym not in sym_to_ko:
+                    continue
+
                 raw_date = str(it.get("date", "")).strip()
                 if not raw_date:
                     continue
 
-                ko_name = sym_to_ko.get(sym, sym)
                 hour = str(it.get("hour", "amc")).lower().strip()
 
                 eps_est = it.get("epsEstimate")
@@ -1680,11 +1508,10 @@ def fetch_all_real_earnings(target_symbol=None, target_name=None):
 
                 events.extend(
                     build_earnings_event(
-                        sym, ko_name, dt_utc,
+                        sym, sym_to_ko[sym], dt_utc,
                         eps_str, rev_str, hour,
                         actual_eps=eps_actual, actual_rev=rev_actual,
-                        expected_eps=eps_est, expected_rev=rev_est,
-                        is_kr=False
+                        expected_eps=eps_est, expected_rev=rev_est
                     )
                 )
                 captured_syms.add(sym)
@@ -1707,7 +1534,7 @@ def fetch_all_real_earnings(target_symbol=None, target_name=None):
             for it in items:
                 sym = str(it.get("symbol", "")).upper()
                 raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
-                if raw_ts:
+                if sym in sym_to_ko and raw_ts:
                     dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
                     dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
                     eps_f = it.get("epsForward")
@@ -1716,12 +1543,10 @@ def fetch_all_real_earnings(target_symbol=None, target_name=None):
                         if eps_f is not None else "예상치 집계중"
                     )
 
-                    ko_name = sym_to_ko.get(sym, sym)
                     events.extend(
                         build_earnings_event(
-                            sym, ko_name, dt_utc,
-                            eps_str, "-", hour,
-                            is_kr=False
+                            sym, sym_to_ko[sym], dt_utc,
+                            eps_str, "-", hour
                         )
                     )
                     captured_syms.add(sym)
@@ -1729,38 +1554,8 @@ def fetch_all_real_earnings(target_symbol=None, target_name=None):
         except Exception as exc:
             print("[CALENDAR][EARN] Yahoo 오류:", exc)
 
-    # Tier 3: 국내 실적 공시 수집 (DART Open API + 네이버 금융 실적 공시)
-    kr_targets = {}
-    for k_code, k_name in MAJOR_KR_EARNINGS.items():
-        clean_code = k_code.replace(".KS", "").replace(".KQ", "")
-        kr_targets[clean_code] = k_name
-        
-    if target_symbol and str(target_symbol).isdigit() and len(str(target_symbol)) == 6:
-        kr_targets[str(target_symbol)] = target_name or str(target_symbol)
-
-    if DART_API_KEY:
-        try:
-            dart_evs = fetch_opendart_earnings(bgn_days=90)
-            if dart_evs:
-                events.extend(dart_evs)
-        except Exception as exc:
-            print("[CALENDAR][EARN] DART 오류:", exc)
-
-    try:
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            futures = [
-                executor.submit(fetch_kr_earnings_from_naver, code, name)
-                for code, name in kr_targets.items()
-            ]
-            for f in futures:
-                try:
-                    res = f.result()
-                    if res:
-                        events.extend(res)
-                except Exception:
-                    pass
-    except Exception as exc:
-        print("[CALENDAR][EARN] Naver KR 공시 수집 오류:", exc)
+    # 국내 실적은 현재 가상 날짜를 만들지 않고,
+    # 실제 데이터가 들어오는 경우에만 표시합니다.
 
     # 동일 종목 + 동일 KST 날짜 + 동일 시간이면 1건만 유지
     unique = {}
@@ -1868,12 +1663,16 @@ def _filter_kr_us_economic_events(events):
     ]
 
 
-def fetch_real_market_calendar_live(target_symbol=None, target_name=None):
+def fetch_real_market_calendar_live():
     """실적 + 경제 캘린더를 실제 API에서 가져와 화면용 단일 배열로 합칩니다."""
     global CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
 
     now = time.time()
 
+    # 실적 데이터만 캐시되어 있는 경우에는 그대로 반환하면 안 됩니다.
+    # 경제 캘린더도 반드시 함께 확인해야 합니다.
+    # 기존 코드에서는 실적이 먼저 들어오면 CACHED_MARKET_CALENDAR가 truthy가 되어
+    # 경제 API 호출 자체가 건너뛰어지는 문제가 있었습니다.
     if CACHED_MARKET_CALENDAR and (now - LAST_CALENDAR_FETCH_TIME) < 600:
         has_earnings = any(
             isinstance(ev, dict) and ev.get("type") == "earn"
@@ -1884,32 +1683,13 @@ def fetch_real_market_calendar_live(target_symbol=None, target_name=None):
             for ev in CACHED_MARKET_CALENDAR
         )
         if has_earnings and has_economic:
-            if target_symbol:
-                sym_upper = str(target_symbol).upper().strip()
-                found = any(ev.get("ticker") == sym_upper for ev in CACHED_MARKET_CALENDAR if ev.get("type") == "earn")
-                if not found:
-                    try:
-                        if sym_upper.isdigit() and len(sym_upper) == 6:
-                            kr_ev = fetch_kr_earnings_from_naver(sym_upper, target_name or sym_upper)
-                            if kr_ev:
-                                CACHED_MARKET_CALENDAR.extend(kr_ev)
-                                CACHED_MARKET_CALENDAR = sorted(CACHED_MARKET_CALENDAR, key=lambda x: x.get("ts", 0))
-                        else:
-                            times = _fetch_yahoo_earnings_timestamps([sym_upper])
-                            if sym_upper in times:
-                                dt_utc, hour = _normalize_earnings_timestamp(sym_upper, times[sym_upper])
-                                new_ev = build_earnings_event(sym_upper, target_name or sym_upper, dt_utc, "예상치 집계중", "-", hour)
-                                CACHED_MARKET_CALENDAR.extend(new_ev)
-                                CACHED_MARKET_CALENDAR = sorted(CACHED_MARKET_CALENDAR, key=lambda x: x.get("ts", 0))
-                    except Exception:
-                        pass
             return CACHED_MARKET_CALENDAR
 
     earnings = []
     economic = []
 
     try:
-        earnings = fetch_all_real_earnings(target_symbol, target_name) or []
+        earnings = fetch_all_real_earnings() or []
     except Exception as exc:
         print("[MARKET CALENDAR] 실적 캘린더 조회 실패:", repr(exc))
 
@@ -4279,11 +4059,14 @@ def run_full_pipeline(query):
             print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
             world_board = []
 
-    try:
-        market_calendar = fetch_real_market_calendar_live(symbol, formal_name) or []
-    except Exception as exc:
-        print("[MARKET CALENDAR] 조회 실패:", repr(exc))
-        market_calendar = CACHED_MARKET_CALENDAR or []
+    if CACHED_MARKET_CALENDAR:
+        market_calendar = CACHED_MARKET_CALENDAR
+    else:
+        try:
+            market_calendar = fetch_real_market_calendar_live() or []
+        except Exception as exc:
+            print("[MARKET CALENDAR] 조회 실패:", repr(exc))
+            market_calendar = []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 
@@ -4697,39 +4480,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             padding: 16px;
         }
 
-        .cal-tab-filter {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin-bottom: 9px;
-            padding-bottom: 6px;
-            border-bottom: 1px solid var(--border-line);
-        }
-        .cal-tab-btn {
-            border: 1px solid transparent;
-            background: transparent;
-            color: var(--text-muted);
-            padding: 3px 9px;
-            font-size: 0.72rem;
-            font-weight: 800;
-            cursor: pointer;
-            border-radius: 6px;
-            transition: all 0.15s ease;
-        }
-        .cal-tab-btn:hover {
-            color: var(--text-title);
-            background: var(--btn-hover);
-        }
-        .cal-tab-btn.active {
-            background: rgba(16, 185, 129, 0.15);
-            color: #10b981;
-            border-color: rgba(16, 185, 129, 0.35);
-        }
-        body.light-theme .cal-tab-btn.active {
-            background: rgba(16, 185, 129, 0.12);
-            color: #059669;
-            border-color: rgba(16, 185, 129, 0.4);
-        }
         .calendar-widget-title {
             display: flex;
             align-items: center;
@@ -5461,39 +5211,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .calendar-widget * {
             font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
         }
-        .cal-tab-filter {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin-bottom: 9px;
-            padding-bottom: 6px;
-            border-bottom: 1px solid var(--border-line);
-        }
-        .cal-tab-btn {
-            border: 1px solid transparent;
-            background: transparent;
-            color: var(--text-muted);
-            padding: 3px 9px;
-            font-size: 0.72rem;
-            font-weight: 800;
-            cursor: pointer;
-            border-radius: 6px;
-            transition: all 0.15s ease;
-        }
-        .cal-tab-btn:hover {
-            color: var(--text-title);
-            background: var(--btn-hover);
-        }
-        .cal-tab-btn.active {
-            background: rgba(16, 185, 129, 0.15);
-            color: #10b981;
-            border-color: rgba(16, 185, 129, 0.35);
-        }
-        body.light-theme .cal-tab-btn.active {
-            background: rgba(16, 185, 129, 0.12);
-            color: #059669;
-            border-color: rgba(16, 185, 129, 0.4);
-        }
         .calendar-widget-title {
             font-size: 1.15rem !important;
             line-height: 1.35 !important;
@@ -5687,40 +5404,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 padding: 15px 14px 12px !important;
                 border-radius: 14px !important;
             }
-            .cal-tab-filter {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin-bottom: 9px;
-            padding-bottom: 6px;
-            border-bottom: 1px solid var(--border-line);
-        }
-        .cal-tab-btn {
-            border: 1px solid transparent;
-            background: transparent;
-            color: var(--text-muted);
-            padding: 3px 9px;
-            font-size: 0.72rem;
-            font-weight: 800;
-            cursor: pointer;
-            border-radius: 6px;
-            transition: all 0.15s ease;
-        }
-        .cal-tab-btn:hover {
-            color: var(--text-title);
-            background: var(--btn-hover);
-        }
-        .cal-tab-btn.active {
-            background: rgba(16, 185, 129, 0.15);
-            color: #10b981;
-            border-color: rgba(16, 185, 129, 0.35);
-        }
-        body.light-theme .cal-tab-btn.active {
-            background: rgba(16, 185, 129, 0.12);
-            color: #059669;
-            border-color: rgba(16, 185, 129, 0.4);
-        }
-        .calendar-widget-title { font-size: 1.08rem !important; }
+            .calendar-widget-title { font-size: 1.08rem !important; }
             .calendar-widget .cal-current-date {
                 min-width: 116px !important;
                 font-size: 0.88rem !important;
@@ -6314,13 +5998,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <span>실적 캘린더</span>
                                 </div>
 
-                                <div class="cal-tab-filter" role="tablist" style="flex-wrap: nowrap; overflow-x: auto; white-space: nowrap;">
-                                    <button class="cal-tab-btn active" data-cal-type="earn" data-mode="day" onclick="setCalendarViewMode('earn','day',this)">일간</button>
-                                    <button class="cal-tab-btn" data-cal-type="earn" data-mode="week" onclick="setCalendarViewMode('earn','week',this)">주간</button>
-                                    <button class="cal-tab-btn" data-cal-type="earn" data-mode="upcoming" onclick="setCalendarViewMode('earn','upcoming',this)">예정 전체</button>
-                                    <button class="cal-tab-btn" data-cal-type="earn" data-mode="past" onclick="setCalendarViewMode('earn','past',this)">과거 1달</button>
-                                </div>
-
                                 <div class="calendar-widget-nav">
                                     <div class="cal-date-ctrl">
                                         <button class="cal-arrow-btn" onclick="shiftEarningsCalendarDate(-1)">&#10094;</button>
@@ -6351,13 +6028,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div class="card calendar-widget" id="rowEconomicCalendar">
                                 <div class="calendar-widget-title">
                                     <span>경제 캘린더</span>
-                                </div>
-
-                                <div class="cal-tab-filter" role="tablist" style="flex-wrap: nowrap; overflow-x: auto; white-space: nowrap;">
-                                    <button class="cal-tab-btn active" data-cal-type="eco" data-mode="day" onclick="setCalendarViewMode('eco','day',this)">일간</button>
-                                    <button class="cal-tab-btn" data-cal-type="eco" data-mode="week" onclick="setCalendarViewMode('eco','week',this)">주간</button>
-                                    <button class="cal-tab-btn" data-cal-type="eco" data-mode="upcoming" onclick="setCalendarViewMode('eco','upcoming',this)">예정 전체</button>
-                                    <button class="cal-tab-btn" data-cal-type="eco" data-mode="past" onclick="setCalendarViewMode('eco','past',this)">과거 1달</button>
                                 </div>
 
                                 <div class="calendar-widget-nav">
@@ -6954,62 +6624,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let earningsCalOffset = 0;
         let economicCalPage = 1;
         let earningsCalPage = 1;
-        let economicCalViewMode = 'day'; // 'day' | 'week' | 'upcoming'
-        let earningsCalViewMode = 'day'; // 'day' | 'week' | 'upcoming'
-
+        // 실적 캘린더는 오늘 실적이 없을 때 최초 1회만 '가장 가까운 예정 실적일'로 이동합니다.
+        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
         let earningsCalendarAutoJumped = false;
+
+        // 경제 캘린더는 오늘 발표가 없을 때 최초 1회만
+        // '오늘 이전의 가장 최근 발표일'로 이동합니다.
+        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
         let economicCalendarAutoJumped = false;
 
         let economicCalStarFilter = 'all';
         let earningsCalStarFilter = 'all';
         const calendarItemsPerPage = 4;
 
-        function setCalendarViewMode(type, mode, btn) {
-            if (type === 'earn') {
-                earningsCalViewMode = mode;
-                earningsCalPage = 1;
-                const root = document.getElementById('rowEarningsCalendar');
-                if (root) {
-                    root.querySelectorAll('.cal-tab-btn').forEach(b => b.classList.remove('active'));
-                    if (btn) btn.classList.add('active');
-                }
-                renderEarningsCalendarView();
-            } else {
-                economicCalViewMode = mode;
-                economicCalPage = 1;
-                const root = document.getElementById('rowEconomicCalendar');
-                if (root) {
-                    root.querySelectorAll('.cal-tab-btn').forEach(b => b.classList.remove('active'));
-                    if (btn) btn.classList.add('active');
-                }
-                renderEconomicCalendarView();
-            }
-        }
-
-        function getWeekRangeDateKeys(offset) {
-            const now = new Date();
-            const kstString = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
-            }).format(now);
-            const [yyyy, mm, dd] = kstString.split('-').map(Number);
-            const centerDate = new Date(Date.UTC(yyyy, mm - 1, dd + Number(offset || 0)));
-            
-            const dayOfWeek = centerDate.getUTCDay();
-            const diffToMon = (dayOfWeek === 0 ? -6 : 1 - dayOfWeek);
-            const monDate = new Date(centerDate.getTime() + diffToMon * 86400000);
-            
-            const weekKeys = [];
-            for (let i = 0; i < 7; i++) {
-                const d = new Date(monDate.getTime() + i * 86400000);
-                weekKeys.push(`${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`);
-            }
-            const sunDate = new Date(monDate.getTime() + 6 * 86400000);
-            const display = `${monDate.getUTCMonth() + 1}.${monDate.getUTCDate()} ~ ${sunDate.getUTCMonth() + 1}.${sunDate.getUTCDate()} (주간)`;
-            const header = `${monDate.getUTCFullYear()}년 ${monDate.getUTCMonth() + 1}월 ${Math.ceil(monDate.getUTCDate() / 7)}주차`;
-            return { weekKeys, display, header };
-        }
-
-        function renderCalendarEventCard(ev, isMultiDayView = false) {
+        function renderCalendarEventCard(ev) {
             const isEarn = ev.type === 'earn';
             const clickAttr = isEarn && ev.ticker
                 ? `onclick="doSearch('${String(ev.ticker).replace(/'/g, "\\'")}')"`
@@ -7017,25 +6645,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const alarmKey = getCalendarEventKey(ev);
             const alarmActive = !!getCalendarAlarms()[alarmKey];
             const stars = ev.star_str || (ev.stars === 3 ? '★★★' : ev.stars === 2 ? '★★☆' : '★☆☆');
-            const timeStr = ev.time || '--:--';
-            
-            let timeColHtml = timeStr;
-            if (isMultiDayView && ev.date_str) {
-                const shortDate = ev.date_str.split(' ')[0];
-                timeColHtml = `<div style="font-size:0.62rem;color:#10b981;font-weight:800;line-height:1.1;margin-bottom:2px;">${shortDate}</div><div>${timeStr}</div>`;
-            }
-
-            const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료' || ev.val === '공시완료') ? '발표완료' : '발표대기';
+            const timeLabel = ev.time || '--:--';
+            const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료') ? '발표완료' : '발표대기';
             const metaParts = [];
             if (ev.exp && ev.exp !== '-') {
                 const expText = String(ev.exp).trim();
                 metaParts.push(
-                    expText.startsWith('예상') || expText.startsWith('정기') || expText.startsWith('공시')
+                    expText.startsWith('예상')
                         ? expText
                         : `예상 ${expText}`
                 );
             }
 
+            // 실적 캘린더의 두 번째 값은 '이전'이 아니라 '예상 매출'입니다.
+            // 경제 캘린더에서만 ev.prev를 '이전'으로 표시합니다.
             if (isEarn) {
                 const revenueText = String(
                     ev.expected_revenue_str || ''
@@ -7053,6 +6676,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             const meta = metaParts.join('  ·  ');
 
+            // 실적 캘린더에서는 티커(NVDA 등)와 기업 마크를 표시하지 않습니다.
             const rawEventName = ev.name || (isEarn ? '실적 발표' : '경제지표');
             const eventName = isEarn
                 ? String(rawEventName).replace(/\s*\([A-Za-z0-9.\-]+\)/g, '').trim()
@@ -7060,7 +6684,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             return `
                 <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
-                    <div class="cal-time-col">${timeColHtml}</div>
+                    <div class="cal-time-col">${timeLabel}</div>
                     <div class="cal-detail-col">
                         <div class="cal-event-topline">
                             <span class="cal-stars">${stars}</span>
@@ -7102,6 +6726,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
             };
         }
 
+        // 경제 캘린더 이벤트 판별을 한 곳에서 통일합니다.
+        // 이전 배포본에서 type 값이 eco/economic으로 달라져도 대응합니다.
         function isEconomicCalendarEvent(ev) {
             if (!ev || !ev.date_key) return false;
             const t = String(ev.type || '').toLowerCase();
@@ -7131,9 +6757,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
             )].sort();
 
+            // 화면에 실제로 표시할 수 있는 오늘 일정이 있으면 오늘을 유지합니다.
             const todayHasEvents = economicDates.includes(todayKey);
             if (todayHasEvents) return 0;
 
+            // 오늘 이전의 가장 최근 경제 일정 날짜를 직접 찾습니다.
             let latestKey = null;
             for (const key of economicDates) {
                 const parts = key.split('.').map(Number);
@@ -7153,83 +6781,40 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function renderEconomicCalendarView() {
-            const isUpcoming = (economicCalViewMode === 'upcoming');
-            const isWeek = (economicCalViewMode === 'week');
-            const isPast = (economicCalViewMode === 'past');
-            const isMultiDay = isUpcoming || isWeek || isPast;
+            // 첫 화면에서 오늘 경제 일정이 없으면
+            // 오늘 이전의 가장 최근 발표일을 자동으로 보여줍니다.
+            if (!economicCalendarAutoJumped && economicCalOffset === 0) {
+                const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
+                const hasEconomicData = all.some(ev => isEconomicCalendarEvent(ev));
 
-            let filtered = [];
-            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-            const baseList = all.filter(ev => isEconomicCalendarEvent(ev) && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
-            const todayKey = getTodayKstDateKey();
-
-            // 당일 실적 없을 시 자동 점프 처리
-            if (!economicCalendarAutoJumped && economicCalOffset === 0 && economicCalViewMode === 'day') {
-                const todayEvents = baseList.filter(ev => String(ev.date_key).replace(/[\\/]/g, '.') === todayKey);
-                if (todayEvents.length === 0 && baseList.length > 0) {
-                    economicCalViewMode = 'upcoming';
-                    const root = document.getElementById('rowEconomicCalendar');
-                    if (root) {
-                        root.querySelectorAll('.cal-tab-btn').forEach(b => b.classList.remove('active'));
-                        const upcomingBtn = root.querySelector('.cal-tab-btn[data-mode="upcoming"]');
-                        if (upcomingBtn) upcomingBtn.classList.add('active');
+                // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
+                if (hasEconomicData) {
+                    const latestOffset = findLatestEconomicOffset();
+                    if (latestOffset < 0) {
+                        economicCalOffset = latestOffset;
                     }
                     economicCalendarAutoJumped = true;
-                    // 다시 함수 실행
-                    return renderEconomicCalendarView();
                 }
-                economicCalendarAutoJumped = true;
             }
 
-            if (economicCalViewMode === 'upcoming') {
-                setTxt('ecoCalDisplayDate', '다가오는 경제지표');
-                setTxt('ecoCalDayHeader', '예정된 주요 경제지표 (다가오는 순)');
-                filtered = baseList.filter(ev => {
-                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
-                    return evKey >= todayKey;
-                });
-                filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
-            } else if (economicCalViewMode === 'past') {
-                setTxt('ecoCalDisplayDate', '과거 1달 경제지표');
-                setTxt('ecoCalDayHeader', '완료된 경제지표 (최근 순)');
-                
-                const now = new Date();
-                const pastDate = new Date(now.getTime() - (30 * 86400000));
-                const kstString = new Intl.DateTimeFormat('en-CA', {
-                    timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
-                }).format(pastDate);
-                const limitKey = kstString.replace(/-/g, '.');
+            const info = getCalendarDateInfo(economicCalOffset);
+            info.dateKey = String(info.dateKey || '').replace(/[\\/]/g, '.');
+            setTxt('ecoCalDisplayDate', info.display);
 
-                filtered = baseList.filter(ev => {
-                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
-                    return evKey < todayKey && evKey >= limitKey;
-                });
-                // 과거 탭은 최근 발표된 것이 먼저 보이도록 내림차순 정렬
-                filtered.sort((a,b) => (b.ts || 0) - (a.ts || 0));
-            } else if (isWeek) {
-                const weekInfo = getWeekRangeDateKeys(economicCalOffset);
-                setTxt('ecoCalDisplayDate', weekInfo.display);
-                setTxt('ecoCalDayHeader', `${weekInfo.header} · 주간 경제지표`);
-                const weekSet = new Set(weekInfo.weekKeys.map(k => k.replace(/[\\/]/g, '.')));
-                filtered = baseList.filter(ev => {
-                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
-                    return weekSet.has(evKey);
-                });
-                filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
-            } else {
-                const info = getCalendarDateInfo(economicCalOffset);
-                info.dateKey = String(info.dateKey || '').replace(/[\\/]/g, '.');
-                setTxt('ecoCalDisplayDate', info.display);
+            const container = document.getElementById('ecoCalEventList');
+            if (!container) return;
 
-                filtered = baseList.filter(ev => String(ev.date_key).replace(/[\\/]/g, '.') === info.dateKey);
+            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
+                .filter(ev => isEconomicCalendarEvent(ev)
+                    && String(ev.date_key).replace(/[\\/]/g, '.') === info.dateKey
+                    && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
 
-                setTxt(
-                    'ecoCalDayHeader',
-                    filtered.length && filtered[0].date_header
-                        ? filtered[0].date_header
-                        : `${info.header} · 주요 경제지표`
-                );
-            }
+            setTxt(
+                'ecoCalDayHeader',
+                filtered.length && filtered[0].date_header
+                    ? filtered[0].date_header
+                    : `${info.header} · 주요 경제지표`
+            );
 
             const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
             economicCalPage = Math.max(1, Math.min(economicCalPage, totalPages));
@@ -7240,18 +6825,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (next) next.disabled = economicCalPage >= totalPages;
             setTxt('ecoCalPageIndicator', `${economicCalPage} / ${totalPages}`);
 
-            const container = document.getElementById('ecoCalEventList');
-            if (!container) return;
-
             if (!filtered.length) {
-                const emptyMsg = (economicCalViewMode === 'upcoming')
-                    ? '예정된 경제 일정이 없습니다.'
-                    : (economicCalViewMode === 'past')
-                        ? '과거 1달간 경제 일정이 없습니다.'
-                        : isWeek
-                            ? '이번 주에 예정된 경제 일정이 없습니다.'
-                            : '이 날짜에 예정된 경제 일정이 없습니다.';
-                container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">${emptyMsg}</div>`;
+                container.innerHTML = `
+                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
+                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
+                        이 날짜에 예정된 경제 일정이 없습니다.
+                    </div>
+                `;
                 scheduleCalendarHeightSync();
                 return;
             }
@@ -7259,7 +6839,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const startIdx = (economicCalPage - 1) * calendarItemsPerPage;
             container.innerHTML = filtered
                 .slice(startIdx, startIdx + calendarItemsPerPage)
-                .map(ev => renderCalendarEventCard(ev, isMultiDay))
+                .map(renderCalendarEventCard)
                 .join('');
             scheduleCalendarHeightSync();
         }
@@ -7289,82 +6869,31 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function renderEarningsCalendarView() {
-            const isUpcoming = (earningsCalViewMode === 'upcoming');
-            const isWeek = (earningsCalViewMode === 'week');
-            const isPast = (earningsCalViewMode === 'past');
-            const isMultiDay = isUpcoming || isWeek || isPast;
-
-            let filtered = [];
-            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-            const baseList = all.filter(ev => ev.type === 'earn' && (earningsCalStarFilter === 'all' || String(ev.stars) === earningsCalStarFilter));
-            const todayKey = getTodayKstDateKey();
-
-            // 당일 실적 없을 시 자동 점프 처리
-            if (!earningsCalendarAutoJumped && earningsCalOffset === 0 && earningsCalViewMode === 'day') {
-                const todayEvents = baseList.filter(ev => String(ev.date_key).replace(/[\\/]/g, '.') === todayKey);
-                if (todayEvents.length === 0 && baseList.length > 0) {
-                    earningsCalViewMode = 'upcoming';
-                    const root = document.getElementById('rowEarningsCalendar');
-                    if (root) {
-                        root.querySelectorAll('.cal-tab-btn').forEach(b => b.classList.remove('active'));
-                        const upcomingBtn = root.querySelector('.cal-tab-btn[data-mode="upcoming"]');
-                        if (upcomingBtn) upcomingBtn.classList.add('active');
-                    }
-                    earningsCalendarAutoJumped = true;
-                    // 다시 함수 실행
-                    return renderEarningsCalendarView();
+            // 첫 화면에서 오늘 실적이 비어 있으면 가장 가까운 예정 실적일을 보여줍니다.
+            // 날짜 이동 버튼과 [오늘] 버튼은 이후 정상적으로 하루 단위로 작동합니다.
+            if (!earningsCalendarAutoJumped && earningsCalOffset === 0) {
+                const nearestOffset = findNearestEarningsOffset();
+                if (nearestOffset > 0) {
+                    earningsCalOffset = nearestOffset;
                 }
                 earningsCalendarAutoJumped = true;
             }
 
-            if (earningsCalViewMode === 'upcoming') {
-                setTxt('earnCalDisplayDate', '다가오는 주요 실적');
-                setTxt('earnCalDayHeader', '예정된 기업 실적 전체 (다가오는 순)');
-                filtered = baseList.filter(ev => {
-                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
-                    return evKey >= todayKey;
-                });
-                filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
-            } else if (earningsCalViewMode === 'past') {
-                setTxt('earnCalDisplayDate', '과거 1달 주요 실적');
-                setTxt('earnCalDayHeader', '완료된 기업 실적 (최근 순)');
-                
-                const now = new Date();
-                const pastDate = new Date(now.getTime() - (30 * 86400000));
-                const kstString = new Intl.DateTimeFormat('en-CA', {
-                    timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
-                }).format(pastDate);
-                const limitKey = kstString.replace(/-/g, '.');
+            const info = getCalendarDateInfo(earningsCalOffset);
+            setTxt('earnCalDisplayDate', info.display);
 
-                filtered = baseList.filter(ev => {
-                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
-                    return evKey < todayKey && evKey >= limitKey;
-                });
-                // 과거 탭은 최근 발표된 것이 먼저 보이도록 내림차순 정렬
-                filtered.sort((a,b) => (b.ts || 0) - (a.ts || 0));
-            } else if (isWeek) {
-                const weekInfo = getWeekRangeDateKeys(earningsCalOffset);
-                setTxt('earnCalDisplayDate', weekInfo.display);
-                setTxt('earnCalDayHeader', `${weekInfo.header} · 주간 기업 실적`);
-                const weekSet = new Set(weekInfo.weekKeys.map(k => k.replace(/[\\/]/g, '.')));
-                filtered = baseList.filter(ev => {
-                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
-                    return weekSet.has(evKey);
-                });
-                filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
-            } else {
-                const info = getCalendarDateInfo(earningsCalOffset);
-                setTxt('earnCalDisplayDate', info.display);
+            const container = document.getElementById('earnCalEventList');
+            if (!container) return;
 
-                filtered = baseList.filter(ev => String(ev.date_key).replace(/[\\/]/g, '.') === info.dateKey);
+            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
+                .filter(ev => ev.type === 'earn' && ev.date_key === info.dateKey && (earningsCalStarFilter === 'all' || String(ev.stars) === earningsCalStarFilter));
 
-                setTxt(
-                    'earnCalDayHeader',
-                    filtered.length && filtered[0].date_header
-                        ? filtered[0].date_header
-                        : `${info.header} · 주요 기업 실적`
-                );
-            }
+            setTxt(
+                'earnCalDayHeader',
+                filtered.length && filtered[0].date_header
+                    ? filtered[0].date_header
+                    : `${info.header} · 주요 기업 실적`
+            );
 
             const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
             earningsCalPage = Math.max(1, Math.min(earningsCalPage, totalPages));
@@ -7375,18 +6904,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (next) next.disabled = earningsCalPage >= totalPages;
             setTxt('earnCalPageIndicator', `${earningsCalPage} / ${totalPages}`);
 
-            const container = document.getElementById('earnCalEventList');
-            if (!container) return;
-
             if (!filtered.length) {
-                const emptyMsg = (earningsCalViewMode === 'upcoming')
-                    ? '예정된 실적 일정이 없습니다.'
-                    : (earningsCalViewMode === 'past')
-                        ? '과거 1달간 실적 일정이 없습니다.'
-                        : isWeek
-                            ? '이번 주에 예정된 실적 일정이 없습니다.'
-                            : '이 날짜에 예정된 실적 일정이 없습니다.';
-                container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">${emptyMsg}</div>`;
+                container.innerHTML = `
+                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
+                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
+                        이 날짜에 예정된 실적 일정이 없습니다.
+                    </div>
+                `;
                 scheduleCalendarHeightSync();
                 return;
             }
@@ -7394,7 +6918,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const startIdx = (earningsCalPage - 1) * calendarItemsPerPage;
             container.innerHTML = filtered
                 .slice(startIdx, startIdx + calendarItemsPerPage)
-                .map(ev => renderCalendarEventCard(ev, isMultiDay))
+                .map(renderCalendarEventCard)
                 .join('');
             scheduleCalendarHeightSync();
         }
@@ -7410,8 +6934,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function shiftEconomicCalendarDate(delta) {
-            const step = (economicCalViewMode === 'week') ? 7 : 1;
-            economicCalOffset += Number(delta || 0) * step;
+            economicCalOffset += Number(delta || 0);
             economicCalPage = 1;
             renderEconomicCalendarView();
         }
@@ -7428,8 +6951,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function shiftEarningsCalendarDate(delta) {
-            const step = (earningsCalViewMode === 'week') ? 7 : 1;
-            earningsCalOffset += Number(delta || 0) * step;
+            earningsCalOffset += Number(delta || 0);
             earningsCalPage = 1;
             renderEarningsCalendarView();
         }

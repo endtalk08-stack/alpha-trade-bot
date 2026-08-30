@@ -6314,10 +6314,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <span>실적 캘린더</span>
                                 </div>
 
-                                <div class="cal-tab-filter" role="tablist">
+                                <div class="cal-tab-filter" role="tablist" style="flex-wrap: nowrap; overflow-x: auto; white-space: nowrap;">
                                     <button class="cal-tab-btn active" data-cal-type="earn" data-mode="day" onclick="setCalendarViewMode('earn','day',this)">일간</button>
                                     <button class="cal-tab-btn" data-cal-type="earn" data-mode="week" onclick="setCalendarViewMode('earn','week',this)">주간</button>
                                     <button class="cal-tab-btn" data-cal-type="earn" data-mode="upcoming" onclick="setCalendarViewMode('earn','upcoming',this)">예정 전체</button>
+                                    <button class="cal-tab-btn" data-cal-type="earn" data-mode="past" onclick="setCalendarViewMode('earn','past',this)">과거 1달</button>
                                 </div>
 
                                 <div class="calendar-widget-nav">
@@ -6352,10 +6353,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <span>경제 캘린더</span>
                                 </div>
 
-                                <div class="cal-tab-filter" role="tablist">
+                                <div class="cal-tab-filter" role="tablist" style="flex-wrap: nowrap; overflow-x: auto; white-space: nowrap;">
                                     <button class="cal-tab-btn active" data-cal-type="eco" data-mode="day" onclick="setCalendarViewMode('eco','day',this)">일간</button>
                                     <button class="cal-tab-btn" data-cal-type="eco" data-mode="week" onclick="setCalendarViewMode('eco','week',this)">주간</button>
                                     <button class="cal-tab-btn" data-cal-type="eco" data-mode="upcoming" onclick="setCalendarViewMode('eco','upcoming',this)">예정 전체</button>
+                                    <button class="cal-tab-btn" data-cal-type="eco" data-mode="past" onclick="setCalendarViewMode('eco','past',this)">과거 1달</button>
                                 </div>
 
                                 <div class="calendar-widget-nav">
@@ -7153,21 +7155,57 @@ HTML_PAGE = r"""<!DOCTYPE html>
         function renderEconomicCalendarView() {
             const isUpcoming = (economicCalViewMode === 'upcoming');
             const isWeek = (economicCalViewMode === 'week');
-            const isMultiDay = isUpcoming || isWeek;
+            const isPast = (economicCalViewMode === 'past');
+            const isMultiDay = isUpcoming || isWeek || isPast;
 
             let filtered = [];
             const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
             const baseList = all.filter(ev => isEconomicCalendarEvent(ev) && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
+            const todayKey = getTodayKstDateKey();
 
-            if (isUpcoming) {
+            // 당일 실적 없을 시 자동 점프 처리
+            if (!economicCalendarAutoJumped && economicCalOffset === 0 && economicCalViewMode === 'day') {
+                const todayEvents = baseList.filter(ev => String(ev.date_key).replace(/[\\/]/g, '.') === todayKey);
+                if (todayEvents.length === 0 && baseList.length > 0) {
+                    economicCalViewMode = 'upcoming';
+                    const root = document.getElementById('rowEconomicCalendar');
+                    if (root) {
+                        root.querySelectorAll('.cal-tab-btn').forEach(b => b.classList.remove('active'));
+                        const upcomingBtn = root.querySelector('.cal-tab-btn[data-mode="upcoming"]');
+                        if (upcomingBtn) upcomingBtn.classList.add('active');
+                    }
+                    economicCalendarAutoJumped = true;
+                    // 다시 함수 실행
+                    return renderEconomicCalendarView();
+                }
+                economicCalendarAutoJumped = true;
+            }
+
+            if (economicCalViewMode === 'upcoming') {
                 setTxt('ecoCalDisplayDate', '다가오는 경제지표');
                 setTxt('ecoCalDayHeader', '예정된 주요 경제지표 (다가오는 순)');
-                const todayKey = getTodayKstDateKey();
                 filtered = baseList.filter(ev => {
                     const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
                     return evKey >= todayKey;
                 });
                 filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
+            } else if (economicCalViewMode === 'past') {
+                setTxt('ecoCalDisplayDate', '과거 1달 경제지표');
+                setTxt('ecoCalDayHeader', '완료된 경제지표 (최근 순)');
+                
+                const now = new Date();
+                const pastDate = new Date(now.getTime() - (30 * 86400000));
+                const kstString = new Intl.DateTimeFormat('en-CA', {
+                    timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
+                }).format(pastDate);
+                const limitKey = kstString.replace(/-/g, '.');
+
+                filtered = baseList.filter(ev => {
+                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
+                    return evKey < todayKey && evKey >= limitKey;
+                });
+                // 과거 탭은 최근 발표된 것이 먼저 보이도록 내림차순 정렬
+                filtered.sort((a,b) => (b.ts || 0) - (a.ts || 0));
             } else if (isWeek) {
                 const weekInfo = getWeekRangeDateKeys(economicCalOffset);
                 setTxt('ecoCalDisplayDate', weekInfo.display);
@@ -7179,17 +7217,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 });
                 filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
             } else {
-                if (!economicCalendarAutoJumped && economicCalOffset === 0) {
-                    const hasEconomicData = all.some(ev => isEconomicCalendarEvent(ev));
-                    if (hasEconomicData) {
-                        const latestOffset = findLatestEconomicOffset();
-                        if (latestOffset < 0) {
-                            economicCalOffset = latestOffset;
-                        }
-                        economicCalendarAutoJumped = true;
-                    }
-                }
-
                 const info = getCalendarDateInfo(economicCalOffset);
                 info.dateKey = String(info.dateKey || '').replace(/[\\/]/g, '.');
                 setTxt('ecoCalDisplayDate', info.display);
@@ -7217,17 +7244,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (!container) return;
 
             if (!filtered.length) {
-                const emptyMsg = isUpcoming
+                const emptyMsg = (economicCalViewMode === 'upcoming')
                     ? '예정된 경제 일정이 없습니다.'
-                    : isWeek
-                        ? '이번 주에 예정된 경제 일정이 없습니다.'
-                        : '이 날짜에 예정된 경제 일정이 없습니다.';
-                container.innerHTML = `
-                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
-                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        ${emptyMsg}
-                    </div>
-                `;
+                    : (economicCalViewMode === 'past')
+                        ? '과거 1달간 경제 일정이 없습니다.'
+                        : isWeek
+                            ? '이번 주에 예정된 경제 일정이 없습니다.'
+                            : '이 날짜에 예정된 경제 일정이 없습니다.';
+                container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">${emptyMsg}</div>`;
                 scheduleCalendarHeightSync();
                 return;
             }
@@ -7267,21 +7291,57 @@ HTML_PAGE = r"""<!DOCTYPE html>
         function renderEarningsCalendarView() {
             const isUpcoming = (earningsCalViewMode === 'upcoming');
             const isWeek = (earningsCalViewMode === 'week');
-            const isMultiDay = isUpcoming || isWeek;
+            const isPast = (earningsCalViewMode === 'past');
+            const isMultiDay = isUpcoming || isWeek || isPast;
 
             let filtered = [];
             const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
             const baseList = all.filter(ev => ev.type === 'earn' && (earningsCalStarFilter === 'all' || String(ev.stars) === earningsCalStarFilter));
+            const todayKey = getTodayKstDateKey();
 
-            if (isUpcoming) {
+            // 당일 실적 없을 시 자동 점프 처리
+            if (!earningsCalendarAutoJumped && earningsCalOffset === 0 && earningsCalViewMode === 'day') {
+                const todayEvents = baseList.filter(ev => String(ev.date_key).replace(/[\\/]/g, '.') === todayKey);
+                if (todayEvents.length === 0 && baseList.length > 0) {
+                    earningsCalViewMode = 'upcoming';
+                    const root = document.getElementById('rowEarningsCalendar');
+                    if (root) {
+                        root.querySelectorAll('.cal-tab-btn').forEach(b => b.classList.remove('active'));
+                        const upcomingBtn = root.querySelector('.cal-tab-btn[data-mode="upcoming"]');
+                        if (upcomingBtn) upcomingBtn.classList.add('active');
+                    }
+                    earningsCalendarAutoJumped = true;
+                    // 다시 함수 실행
+                    return renderEarningsCalendarView();
+                }
+                earningsCalendarAutoJumped = true;
+            }
+
+            if (earningsCalViewMode === 'upcoming') {
                 setTxt('earnCalDisplayDate', '다가오는 주요 실적');
                 setTxt('earnCalDayHeader', '예정된 기업 실적 전체 (다가오는 순)');
-                const todayKey = getTodayKstDateKey();
                 filtered = baseList.filter(ev => {
                     const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
                     return evKey >= todayKey;
                 });
                 filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
+            } else if (earningsCalViewMode === 'past') {
+                setTxt('earnCalDisplayDate', '과거 1달 주요 실적');
+                setTxt('earnCalDayHeader', '완료된 기업 실적 (최근 순)');
+                
+                const now = new Date();
+                const pastDate = new Date(now.getTime() - (30 * 86400000));
+                const kstString = new Intl.DateTimeFormat('en-CA', {
+                    timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
+                }).format(pastDate);
+                const limitKey = kstString.replace(/-/g, '.');
+
+                filtered = baseList.filter(ev => {
+                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
+                    return evKey < todayKey && evKey >= limitKey;
+                });
+                // 과거 탭은 최근 발표된 것이 먼저 보이도록 내림차순 정렬
+                filtered.sort((a,b) => (b.ts || 0) - (a.ts || 0));
             } else if (isWeek) {
                 const weekInfo = getWeekRangeDateKeys(earningsCalOffset);
                 setTxt('earnCalDisplayDate', weekInfo.display);
@@ -7293,14 +7353,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 });
                 filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
             } else {
-                if (!earningsCalendarAutoJumped && earningsCalOffset === 0) {
-                    const nearestOffset = findNearestEarningsOffset();
-                    if (nearestOffset > 0) {
-                        earningsCalOffset = nearestOffset;
-                    }
-                    earningsCalendarAutoJumped = true;
-                }
-
                 const info = getCalendarDateInfo(earningsCalOffset);
                 setTxt('earnCalDisplayDate', info.display);
 
@@ -7327,17 +7379,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (!container) return;
 
             if (!filtered.length) {
-                const emptyMsg = isUpcoming
+                const emptyMsg = (earningsCalViewMode === 'upcoming')
                     ? '예정된 실적 일정이 없습니다.'
-                    : isWeek
-                        ? '이번 주에 예정된 실적 일정이 없습니다.'
-                        : '이 날짜에 예정된 실적 일정이 없습니다.';
-                container.innerHTML = `
-                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
-                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        ${emptyMsg}
-                    </div>
-                `;
+                    : (earningsCalViewMode === 'past')
+                        ? '과거 1달간 실적 일정이 없습니다.'
+                        : isWeek
+                            ? '이번 주에 예정된 실적 일정이 없습니다.'
+                            : '이 날짜에 예정된 실적 일정이 없습니다.';
+                container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">${emptyMsg}</div>`;
                 scheduleCalendarHeightSync();
                 return;
             }

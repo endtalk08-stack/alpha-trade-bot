@@ -1811,7 +1811,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                         try:
                             et_zone = ZoneInfo("America/New_York")
                             hhmm = (
-                                "16:00" if hour == "amc"
+                                "17:00" if hour == "amc"
                                 else "06:00" if hour == "bmo"
                                 else "09:30"
                             )
@@ -1824,7 +1824,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
 
                     if dt_utc is None:
                         dt_utc = (
-                            us_dt + timedelta(hours=20)
+                            us_dt + timedelta(hours=21)
                             if hour == "amc"
                             else us_dt + timedelta(hours=10)
                             if hour == "bmo"

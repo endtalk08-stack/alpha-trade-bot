@@ -4406,59 +4406,127 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
 
 
-        .tsm-summary{display:grid;grid-template-columns:125px 1fr;gap:14px;align-items:center;padding:8px 0 11px;border-bottom:1px solid var(--border-line);}
-        .tsm-score-ring{width:96px;height:96px;border-radius:50%;border:7px solid rgba(34,197,94,.18);box-sizing:border-box;display:flex;flex-direction:column;align-items:center;justify-content:center;}
-        .tsm-score-ring b{font-size:1.65rem;line-height:1;color:var(--text-title);}
-        .tsm-score-ring span,.tsm-label,.tsm-muted{font-size:.65rem;color:var(--text-muted);}
-        .tsm-direction{font-size:1.15rem;font-weight:900;color:var(--text-title);margin:4px 0;}
-        .tsm-section-title{font-size:.70rem;font-weight:800;color:var(--text-muted);margin:8px 0 6px;}
-        .tsm-momentum{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;}
-        .tsm-barbox,.tsm-box,.tsm-backtest,.tsm-info,.tsm-judgment{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:9px;}
-        .tsm-barbox{padding:7px 5px;text-align:center;min-width:0;}
-        .tsm-barbox span{display:block;font-size:.60rem;color:var(--text-muted);}
-        .tsm-barbox b{display:block;font-size:.76rem;color:var(--text-title);margin:3px 0 5px;}
-        .tsm-minibars{height:38px;display:flex;align-items:flex-end;justify-content:center;gap:3px;padding:0 3px;border-bottom:1px solid var(--border-line);}
-        .tsm-minibars i{display:block;width:6px;min-height:3px;border-radius:2px 2px 0 0;background:#22c55e;opacity:.9;}
-        .tsm-vol-row{display:grid;grid-template-columns:88px 1fr;gap:8px;align-items:center;}
-        .tsm-vol-svg{width:100%;height:45px;}
-        .tsm-vol-path{fill:none;stroke:#f59e0b;stroke-width:2.5;vector-effect:non-scaling-stroke;}
-        .tsm-grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
-        .tsm-box{padding:8px 9px;}
-        .tsm-big{font-size:.92rem;font-weight:850;color:var(--text-title);}
-        .tsm-progress{height:8px;border-radius:8px;background:var(--border-line);overflow:hidden;}
-        .tsm-progress span{display:block;height:100%;width:0;background:#22c55e;border-radius:8px;}
-        .tsm-progress-label{display:flex;justify-content:space-between;margin-top:3px;font-size:.58rem;color:var(--text-muted);}
-        .tsm-progress-label b{color:var(--text-title);}
-        .tsm-state{margin-top:8px;}
-        .tsm-state-text{font-size:.76rem;color:var(--text-sub);line-height:1.5;}
-        .tsm-backtest{margin-top:8px;padding:9px;}
-        .tsm-equity{height:92px;border-bottom:1px solid var(--border-line);position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(34,197,94,.04),transparent);}
-        .tsm-equity-svg{width:100%;height:100%;display:block;}
-        .tsm-axis{stroke:var(--border-line);stroke-width:1;}
-        .tsm-gridline{stroke:var(--border-line);stroke-width:1;stroke-dasharray:3 4;opacity:.55;}
-        .tsm-equity-path{fill:none;stroke:#22c55e;stroke-width:3;vector-effect:non-scaling-stroke;}
+        
+        /* ===== 기관형 추세추종 전문 레이아웃 ===== */
+        #rowTrack{font-family:Inter,Pretendard,"Noto Sans KR",Arial,sans-serif;background:var(--bg-card);border-color:rgba(255,255,255,.07);overflow:hidden;}
+        #rowTrack *{box-sizing:border-box;}
+        .tsm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:2px 2px 13px;border-bottom:1px solid var(--border-line);}
+        .tsm-kicker{font-family:"JetBrains Mono",Consolas,monospace;font-size:.54rem;letter-spacing:.12em;color:#38bdf8;margin-bottom:2px;}
+        .tsm-title{font-size:1.08rem;font-weight:850;letter-spacing:-.035em;color:var(--text-title);}
+        .tsm-subtitle{max-width:680px;margin-top:4px;font-size:.60rem;line-height:1.45;color:var(--text-muted);}
+        .tsm-head-status{flex:none;font-family:"JetBrains Mono",Consolas,monospace;font-size:.54rem;color:#f59e0b;border:1px solid rgba(245,158,11,.28);padding:5px 8px;border-radius:5px;}
+        .tsm-hero{display:grid;grid-template-columns:112px 185px minmax(0,1fr);gap:13px;padding:13px 0;border-bottom:1px solid var(--border-line);}
+        .tsm-score-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;}
+        .tsm-score-ring{width:94px;height:94px;border-radius:50%;padding:6px;background:conic-gradient(#22c55e 0 82%,rgba(255,255,255,.08) 82% 100%);display:grid;place-items:center;}
+        .tsm-score-inner{width:100%;height:100%;border-radius:50%;background:#111416;display:flex;align-items:center;justify-content:center;flex-direction:column;}
+        .tsm-score-inner strong{font-family:"JetBrains Mono",Consolas,monospace;font-size:1.65rem;line-height:1;color:var(--text-title);}
+        .tsm-score-inner span{font-size:.50rem;color:var(--text-muted);margin-top:3px;}
+        .tsm-score-label{font-size:.57rem;color:var(--text-muted);margin-top:5px;}
+        .tsm-mini-label{font-size:.58rem;color:var(--text-muted);}
+        .tsm-direction{font-family:"JetBrains Mono",Consolas,monospace;font-size:1.38rem;font-weight:900;color:#22c55e;margin-top:3px;}
+        .tsm-align{font-size:.58rem;color:#38bdf8;margin-top:2px;}
+        .tsm-hero-metrics{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:13px;}
+        .tsm-hero-metrics div{padding-top:6px;border-top:1px solid var(--border-line);}
+        .tsm-hero-metrics span{display:block;font-size:.50rem;color:var(--text-muted);}
+        .tsm-hero-metrics b{display:block;font-family:"JetBrains Mono",Consolas,monospace;font-size:.70rem;color:var(--text-title);margin-top:2px;}
+        .tsm-hero-metrics .up{color:#22c55e}.tsm-hero-metrics .warn{color:#f59e0b}
+        .tsm-hero-chart{min-width:0;background:#111416;border:1px solid var(--border-line);border-radius:8px;padding:8px 9px;}
+        .tsm-chart-head{display:flex;justify-content:space-between;font-size:.57rem;color:var(--text-sub);margin-bottom:4px;}
+        .tsm-chart-head b{font-family:"JetBrains Mono",Consolas,monospace;color:#22c55e;font-size:.55rem;}
+        .tsm-main-svg{width:100%;height:105px;display:block;}
+        .tsm-grid{stroke:var(--border-line);stroke-width:1;stroke-dasharray:3 4;opacity:.65;}
+        .tsm-main-line{fill:none;stroke:#22c55e;stroke-width:2.2;vector-effect:non-scaling-stroke;}
+        .tsm-main-dot{fill:#22c55e;}
+        .tsm-axis-labels{display:flex;justify-content:space-between;font-family:"JetBrains Mono",Consolas,monospace;font-size:.46rem;color:var(--text-muted);}
+        .tsm-block-title{font-size:.67rem;font-weight:850;color:var(--text-title);letter-spacing:-.01em;margin:10px 0 6px;}
+        .tsm-momentum-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;}
+        .tsm-momentum-card{background:#111416;border:1px solid var(--border-line);border-radius:7px;padding:7px 7px 6px;}
+        .tsm-card-top{display:flex;justify-content:space-between;align-items:center;}
+        .tsm-card-top span{font-family:"JetBrains Mono",Consolas,monospace;font-size:.52rem;color:var(--text-muted);}
+        .tsm-card-top b{font-family:"JetBrains Mono",Consolas,monospace;font-size:.68rem;color:#22c55e;}
+        .tsm-bars{height:42px;margin-top:5px;display:flex;align-items:flex-end;gap:3px;border-bottom:1px solid rgba(255,255,255,.07);padding:0 3px;}
+        .tsm-bars i{flex:1;max-width:9px;min-height:4px;border-radius:2px 2px 0 0;background:#22c55e;opacity:.9;}
+        .tsm-momentum-card small{display:block;font-size:.48rem;color:var(--text-muted);margin-top:4px;}
+        .tsm-analysis-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px;}
+        .tsm-panel{background:#111416;border:1px solid var(--border-line);border-radius:7px;padding:9px 10px;min-width:0;}
+        .tsm-panel-title{font-size:.60rem;font-weight:800;color:var(--text-sub);margin-bottom:7px;}
+        .tsm-strength-row{display:flex;justify-content:space-between;align-items:center;}
+        .tsm-strength-row strong{font-family:"JetBrains Mono",Consolas,monospace;font-size:.82rem;color:#22c55e;}
+        .tsm-strength-row span{font-family:"JetBrains Mono",Consolas,monospace;font-size:.58rem;color:var(--text-muted);}
+        .tsm-strength-track{height:7px;background:rgba(255,255,255,.08);border-radius:8px;margin-top:7px;overflow:hidden;}
+        .tsm-strength-track i{display:block;height:100%;width:82%;background:linear-gradient(90deg,#38bdf8,#22c55e);border-radius:8px;}
+        .tsm-scale{display:flex;justify-content:space-between;font-size:.45rem;color:var(--text-muted);margin-top:3px;}
+        .tsm-period-row{display:grid;grid-template-columns:1fr auto 1fr auto;gap:6px;margin-top:8px;padding-top:7px;border-top:1px solid var(--border-line);font-size:.50rem;color:var(--text-muted);}
+        .tsm-period-row b{color:var(--text-title);font-family:"JetBrains Mono",Consolas,monospace;}
+        .tsm-vol-layout{display:grid;grid-template-columns:90px 1fr;gap:7px;align-items:center;}
+        .tsm-vol-number{display:block;font-family:"JetBrains Mono",Consolas,monospace;font-size:1rem;color:#f59e0b;}
+        .tsm-vol-layout span{font-size:.49rem;color:var(--text-muted);}
+        .tsm-vol-svg{width:100%;height:52px;}
+        .tsm-vol-line{fill:none;stroke:#f59e0b;stroke-width:2.2;vector-effect:non-scaling-stroke;}
+        .tsm-signal-main{font-family:"JetBrains Mono",Consolas,monospace;font-size:1rem;font-weight:900;color:#22c55e;margin:4px 0 8px;}
+        .tsm-signal-meta{display:grid;grid-template-columns:1fr auto 1fr auto;gap:6px;padding-top:7px;border-top:1px solid var(--border-line);font-size:.49rem;color:var(--text-muted);}
+        .tsm-signal-meta b{font-family:"JetBrains Mono",Consolas,monospace;color:var(--text-title);}
+        .tsm-position-number{font-family:"JetBrains Mono",Consolas,monospace;font-size:1rem;font-weight:900;color:#38bdf8;}
+        .tsm-position-track{height:7px;background:rgba(255,255,255,.08);border-radius:7px;margin:8px 0 3px;overflow:hidden;}
+        .tsm-position-track i{display:block;height:100%;background:#38bdf8;border-radius:7px;}
+        .tsm-position-meta{display:flex;justify-content:space-between;font-size:.43rem;color:var(--text-muted);}
+        .tsm-panel small{display:block;font-size:.47rem;color:var(--text-muted);margin-top:7px;}
+        .tsm-mid-grid{margin-top:7px;}
+        .tsm-state-line{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.055);font-size:.52rem;}
+        .tsm-state-line:last-child{border-bottom:0}.tsm-state-line b{color:var(--text-muted)}.tsm-state-line span{color:var(--text-title);}
+        .tsm-score-row{display:grid;grid-template-columns:72px 1fr 48px;gap:6px;align-items:center;margin:5px 0;font-size:.49rem;color:var(--text-muted);}
+        .tsm-score-row i{height:5px;background:rgba(255,255,255,.08);border-radius:5px;overflow:hidden;}
+        .tsm-score-row i b{display:block;height:100%;background:#38bdf8;border-radius:5px;}
+        .tsm-score-row em{font-family:"JetBrains Mono",Consolas,monospace;font-style:normal;text-align:right;color:var(--text-title);}
+        .tsm-total{display:flex;justify-content:space-between;border-top:1px solid var(--border-line);margin-top:7px;padding-top:7px;color:var(--text-sub);font-size:.56rem;}
+        .tsm-total strong{font-family:"JetBrains Mono",Consolas,monospace;font-size:.80rem;color:#22c55e;}
+        .tsm-backtest{margin-top:7px;background:#101314;border:1px solid rgba(56,189,248,.18);border-radius:8px;padding:10px;}
+        .tsm-backtest-head{display:flex;justify-content:space-between;align-items:flex-end;}
+        .tsm-backtest-head .tsm-block-title{margin:0;}
+        .tsm-backtest-head span{display:block;font-size:.47rem;color:var(--text-muted);margin-top:2px;}
+        .tsm-backtest-period{font-family:"JetBrains Mono",Consolas,monospace;font-size:.50rem;color:#38bdf8;border:1px solid rgba(56,189,248,.2);padding:4px 7px;border-radius:4px;}
+        .tsm-performance-grid{display:grid;grid-template-columns:minmax(0,1fr) 215px;gap:10px;margin-top:7px;}
+        .tsm-equity-large{background:#0e1011;border:1px solid var(--border-line);border-radius:6px;padding:7px 8px;}
+        .tsm-chart-caption{font-size:.51rem;color:var(--text-muted);margin-bottom:3px;}
+        .tsm-equity-svg{width:100%;height:135px;display:block;}
+        .tsm-area{fill:rgba(34,197,94,.10);}
+        .tsm-equity-line{fill:none;stroke:#22c55e;stroke-width:2.4;vector-effect:non-scaling-stroke;}
         .tsm-endpoint{fill:#22c55e;}
-        .tsm-equity span{position:absolute;left:9px;top:7px;font-size:.60rem;color:var(--text-muted);}
-        .tsm-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:7px;}
-        .tsm-stats div{text-align:center;}
-        .tsm-stats b{display:block;font-size:.78rem;color:var(--text-title);}
-        .tsm-stats span{font-size:.58rem;color:var(--text-muted);}
-        .tsm-info{margin-top:8px;padding:9px 10px;}
-        .tsm-info b{font-size:.76rem;color:var(--text-title);}
-        .tsm-info p{font-size:.68rem;line-height:1.45;color:var(--text-sub);margin:4px 0 0;}
-        .tsm-judgment{margin-top:8px;padding:9px 10px;}
-        .tsm-judgment #tsmJudgment{font-size:.76rem;line-height:1.5;color:var(--text-sub);}
+        .tsm-chart-x{display:flex;justify-content:space-between;font-family:"JetBrains Mono",Consolas,monospace;font-size:.43rem;color:var(--text-muted);}
+        .tsm-performance-stats{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+        .tsm-performance-stats div{background:#111416;border:1px solid var(--border-line);border-radius:6px;padding:8px;}
+        .tsm-performance-stats span{display:block;font-size:.48rem;color:var(--text-muted);}
+        .tsm-performance-stats strong{display:block;font-family:"JetBrains Mono",Consolas,monospace;font-size:.90rem;color:#22c55e;margin-top:5px;}
+        .tsm-performance-stats strong.down{color:#ef4444;}
+        .tsm-performance-stats small{display:block;font-size:.43rem;color:var(--text-muted);margin-top:3px;}
+        .tsm-distribution{margin-top:8px;padding-top:8px;border-top:1px solid var(--border-line);}
+        .tsm-dist-bars{height:75px;display:flex;align-items:flex-end;gap:7px;padding:0 4px;border-bottom:1px solid var(--border-line);}
+        .tsm-dist-bars div{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;position:relative;}
+        .tsm-dist-bars b{font-family:"JetBrains Mono",Consolas,monospace;font-size:.46rem;color:var(--text-title);margin-bottom:2px;}
+        .tsm-dist-bars i{display:block;width:70%;min-height:4px;border-radius:2px 2px 0 0;background:#38bdf8;}
+        .tsm-dist-bars div:nth-child(4) i,.tsm-dist-bars div:nth-child(5) i{background:#22c55e;}
+        .tsm-dist-bars span{font-size:.43rem;color:var(--text-muted);margin-top:3px;white-space:nowrap;}
+        .tsm-backtest-meta{font-family:"JetBrains Mono",Consolas,monospace;font-size:.47rem;color:var(--text-muted);margin-top:7px;}
+        .tsm-bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:7px;}
+        .tsm-info,.tsm-judgment{background:#111416;border:1px solid var(--border-line);border-radius:7px;padding:9px 10px;}
+        .tsm-info p,.tsm-judgment p{font-size:.54rem;line-height:1.5;color:var(--text-sub);margin:4px 0 0;}
+        .tsm-info .tsm-research-lead{color:var(--text-title);font-weight:650;}
+        .tsm-judgment strong{display:block;font-family:"JetBrains Mono",Consolas,monospace;font-size:.82rem;color:#22c55e;margin-top:2px;}
+        @media(max-width:900px){
+          .tsm-hero{grid-template-columns:100px 160px 1fr;}
+          .tsm-performance-grid{grid-template-columns:1fr 190px;}
+        }
         @media(max-width:700px){
-          .tsm-summary{grid-template-columns:100px 1fr;}
-          .tsm-score-ring{width:82px;height:82px;}
-          .tsm-score-ring b{font-size:1.4rem;}
-          .tsm-grid2{grid-template-columns:1fr;}
-          .tsm-momentum{gap:4px;}
-          .tsm-barbox{padding:6px 3px;}
-          .tsm-stats{grid-template-columns:repeat(2,1fr);row-gap:8px;}
+          .tsm-head{display:block}.tsm-head-status{display:inline-block;margin-top:7px;}
+          .tsm-hero{grid-template-columns:90px 1fr;}.tsm-hero-chart{grid-column:1/-1;}
+          .tsm-momentum-grid{grid-template-columns:1fr 1fr;}
+          .tsm-analysis-grid,.tsm-bottom-grid{grid-template-columns:1fr;}
+          .tsm-performance-grid{grid-template-columns:1fr;}
+          .tsm-performance-stats{grid-template-columns:repeat(2,1fr);}
+          .tsm-title{font-size:.98rem}.tsm-subtitle{font-size:.54rem;}
         }
 
-        /* [핵심 마스터 그리드] PC: 832px(좌) + 348px(우) 완벽 대칭 구조 */
+/* [핵심 마스터 그리드] PC: 832px(좌) + 348px(우) 완벽 대칭 구조 */
         .dashboard-master-grid {
             display: grid;
             grid-template-columns: 832px 348px;
@@ -5978,101 +6046,198 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
                         
+
 <div class="card" id="rowTrack" style="justify-content:flex-start;">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-    <span style="font-size:1.05rem;font-weight:800;color:var(--text-title);">기관형 추세추종 분석</span>
-    <span id="tsmSignalBadge" style="font-size:.70rem;font-weight:800;padding:4px 9px;border-radius:10px;background:rgba(56,189,248,.10);color:#38bdf8;border:1px solid rgba(56,189,248,.20);">분석 대기</span>
-  </div>
-
-  <div class="tsm-summary">
-    <div class="tsm-score">
-      <div class="tsm-score-ring"><b id="tsmScore">-</b><span>추세점수</span></div>
-    </div>
+  <div class="tsm-head">
     <div>
-      <div class="tsm-label">현재 추세</div>
-      <div id="tsmDirection" class="tsm-direction">-</div>
-      <div id="tsmAlignment" class="tsm-muted">기간 일치 -</div>
+      <div class="tsm-kicker">TREND FOLLOWING ANALYSIS</div>
+      <div class="tsm-title">기관형 추세추종 분석</div>
+      <div class="tsm-subtitle">Moskowitz·Ooi·Pedersen의 25년 이상 데이터·58개 선물·선도 상품 연구를 기반으로 한 추세 분석 시스템</div>
+    </div>
+    <div class="tsm-head-status">레이아웃 테스트</div>
+  </div>
+
+  <div class="tsm-hero">
+    <div class="tsm-score-wrap">
+      <div class="tsm-score-ring">
+        <div class="tsm-score-inner">
+          <strong id="tsmScore">82</strong>
+          <span>/ 100</span>
+        </div>
+      </div>
+      <div class="tsm-score-label">추세점수</div>
+    </div>
+
+    <div class="tsm-hero-main">
+      <div class="tsm-mini-label">현재 추세</div>
+      <div class="tsm-direction" id="tsmDirection">LONG</div>
+      <div class="tsm-align" id="tsmAlignment">기간 일치 3 / 4</div>
+
+      <div class="tsm-hero-metrics">
+        <div><span>현재가</span><b>320,000원</b></div>
+        <div><span>오늘 등락률</span><b class="up">+2.73%</b></div>
+        <div><span>연환산 변동성</span><b class="warn">24.8%</b></div>
+        <div><span>위험 수준</span><b>보통</b></div>
+      </div>
+    </div>
+
+    <div class="tsm-hero-chart">
+      <div class="tsm-chart-head"><span>최근 60거래일 추세 흐름</span><b>현재 +0.62 σ</b></div>
+      <svg viewBox="0 0 520 150" preserveAspectRatio="none" class="tsm-main-svg">
+        <line x1="8" y1="128" x2="512" y2="128" class="tsm-grid"/>
+        <line x1="8" y1="94" x2="512" y2="94" class="tsm-grid"/>
+        <line x1="8" y1="60" x2="512" y2="60" class="tsm-grid"/>
+        <line x1="8" y1="26" x2="512" y2="26" class="tsm-grid"/>
+        <polyline class="tsm-main-line" points="8,111 28,101 48,108 68,87 88,94 108,76 128,81 148,68 168,73 188,55 208,62 228,48 248,57 268,43 288,50 308,38 328,45 348,32 368,40 388,26 408,36 428,22 448,30 468,18 488,25 512,12"/>
+        <circle cx="512" cy="12" r="4" class="tsm-main-dot"/>
+      </svg>
+      <div class="tsm-axis-labels"><span>60일 전</span><span>최근</span></div>
     </div>
   </div>
 
-  <div class="tsm-section-title">① 모멘텀</div>
-  <div class="tsm-momentum">
-    <div class="tsm-barbox"><span>1M</span><b id="tsmM1">-</b><div class="tsm-minibars" id="tsmChart1"></div></div>
-    <div class="tsm-barbox"><span>3M</span><b id="tsmM3">-</b><div class="tsm-minibars" id="tsmChart3"></div></div>
-    <div class="tsm-barbox"><span>6M</span><b id="tsmM6">-</b><div class="tsm-minibars" id="tsmChart6"></div></div>
-    <div class="tsm-barbox"><span>12M</span><b id="tsmM12">-</b><div class="tsm-minibars" id="tsmChart12"></div></div>
+  <div class="tsm-block-title">핵심 추세 지표</div>
+  <div class="tsm-momentum-grid">
+    <div class="tsm-momentum-card">
+      <div class="tsm-card-top"><span>1M</span><b id="tsmM1">+8.4%</b></div>
+      <div class="tsm-bars" id="tsmChart1"></div>
+      <small>단기 모멘텀</small>
+    </div>
+    <div class="tsm-momentum-card">
+      <div class="tsm-card-top"><span>3M</span><b id="tsmM3">+15.2%</b></div>
+      <div class="tsm-bars" id="tsmChart3"></div>
+      <small>중기 모멘텀</small>
+    </div>
+    <div class="tsm-momentum-card">
+      <div class="tsm-card-top"><span>6M</span><b id="tsmM6">+21.7%</b></div>
+      <div class="tsm-bars" id="tsmChart6"></div>
+      <small>중장기 모멘텀</small>
+    </div>
+    <div class="tsm-momentum-card">
+      <div class="tsm-card-top"><span>12M</span><b id="tsmM12">+34.6%</b></div>
+      <div class="tsm-bars" id="tsmChart12"></div>
+      <small>장기 모멘텀</small>
+    </div>
   </div>
 
-  <div class="tsm-grid2">
-    <div class="tsm-box">
-      <div class="tsm-section-title">② 추세 방향 & 강도</div>
-      <div class="tsm-progress"><span id="tsmProgress"></span></div>
-      <div class="tsm-progress-label"><span>0</span><b id="tsmStrength">-</b><span>100</span></div>
+  <div class="tsm-analysis-grid">
+    <div class="tsm-panel">
+      <div class="tsm-panel-title">추세 방향 & 강도</div>
+      <div class="tsm-strength-row">
+        <strong>LONG</strong><span>82 / 100</span>
+      </div>
+      <div class="tsm-strength-track"><i id="tsmProgress"></i></div>
+      <div class="tsm-scale"><span>약세</span><span>중립</span><span>강세</span></div>
+      <div class="tsm-period-row"><span>상승 기간</span><b>3 / 4</b><span>정렬 상태</span><b>우호적</b></div>
     </div>
-    <div class="tsm-box">
-      <div class="tsm-section-title">③ 변동성</div>
-      <div class="tsm-vol-row">
-        <div><div class="tsm-big" id="tsmVol">-</div><div class="tsm-muted" id="tsmVolState">-</div></div>
-        <svg class="tsm-vol-svg" viewBox="0 0 240 70" preserveAspectRatio="none" aria-label="변동성 가상 추이 차트">
-          <polyline class="tsm-vol-path" points="3,51 20,43 38,48 56,35 74,40 92,27 110,34 128,22 146,30 164,17 182,25 200,14 218,21 237,10"/>
+
+    <div class="tsm-panel">
+      <div class="tsm-panel-title">변동성</div>
+      <div class="tsm-vol-layout">
+        <div><strong class="tsm-vol-number" id="tsmVol">24.8%</strong><span id="tsmVolState">보통 변동성</span></div>
+        <svg viewBox="0 0 280 90" preserveAspectRatio="none" class="tsm-vol-svg">
+          <line x1="2" y1="78" x2="278" y2="78" class="tsm-grid"/>
+          <polyline class="tsm-vol-line" points="3,62 24,51 45,57 66,40 87,46 108,30 129,38 150,23 171,31 192,18 213,27 234,15 255,23 277,10"/>
         </svg>
       </div>
     </div>
+
+    <div class="tsm-panel">
+      <div class="tsm-panel-title">매매신호</div>
+      <div class="tsm-signal-main" id="tsmSignal">매수 우세</div>
+      <div class="tsm-signal-meta"><span>신호 강도</span><b>강함</b><span>유지 기간</span><b>12일</b></div>
+    </div>
+
+    <div class="tsm-panel">
+      <div class="tsm-panel-title">포지션 참고</div>
+      <div class="tsm-position-number" id="tsmPosition">40%</div>
+      <div class="tsm-position-track"><i style="width:40%;"></i></div>
+      <div class="tsm-position-meta"><span>보수적</span><span>기준</span><span>공격적</span></div>
+      <small>변동성 기반 위험관리 참고 비중</small>
+    </div>
   </div>
 
-  <div class="tsm-grid2">
-    <div class="tsm-box">
-      <div class="tsm-section-title">④ 매매신호</div>
-      <div class="tsm-big" id="tsmSignal">-</div>
-      <div class="tsm-muted">현재 추세 기반 신호</div>
+  <div class="tsm-analysis-grid tsm-mid-grid">
+    <div class="tsm-panel">
+      <div class="tsm-panel-title">전략 상태</div>
+      <div class="tsm-state-line"><b>현재 추세</b><span>상승 우세</span></div>
+      <div class="tsm-state-line"><b>모멘텀</b><span>4개 기간 중 4개 상승</span></div>
+      <div class="tsm-state-line"><b>변동성</b><span>보통 수준</span></div>
+      <div class="tsm-state-line"><b>다음 확인</b><span>추세 강도 유지 여부</span></div>
     </div>
-    <div class="tsm-box">
-      <div class="tsm-section-title">⑤ 포지션</div>
-      <div class="tsm-big" id="tsmPosition">-</div>
-      <div class="tsm-muted">변동성 기반 참고 비중</div>
-    </div>
-  </div>
 
-  <div class="tsm-box tsm-state">
-    <div class="tsm-section-title">⑥ 전략 상태</div>
-    <div id="tsmState" class="tsm-state-text">-</div>
+    <div class="tsm-panel">
+      <div class="tsm-panel-title">점수 구성</div>
+      <div class="tsm-score-row"><span>추세</span><i><b style="width:92%;"></b></i><em>23 / 25</em></div>
+      <div class="tsm-score-row"><span>가격 모멘텀</span><i><b style="width:84%;"></b></i><em>21 / 25</em></div>
+      <div class="tsm-score-row"><span>변동성</span><i><b style="width:75%;"></b></i><em>15 / 20</em></div>
+      <div class="tsm-score-row"><span>거래량</span><i><b style="width:67%;"></b></i><em>10 / 15</em></div>
+      <div class="tsm-total"><span>총점</span><strong>82 / 100</strong></div>
+    </div>
   </div>
 
   <div class="tsm-backtest">
-    <div class="tsm-section-title">⑦ 과거 성과</div>
-    <div class="tsm-equity" aria-label="과거 성과 누적수익률 가상 차트">
-      <svg class="tsm-equity-svg" viewBox="0 0 600 150" preserveAspectRatio="none" role="img" aria-label="레이아웃 확인용 가상 누적수익률 차트">
-        <line x1="18" y1="132" x2="585" y2="132" class="tsm-axis"/>
-        <line x1="18" y1="25" x2="18" y2="132" class="tsm-axis"/>
-        <line x1="18" y1="105" x2="585" y2="105" class="tsm-gridline"/>
-        <line x1="18" y1="78" x2="585" y2="78" class="tsm-gridline"/>
-        <line x1="18" y1="51" x2="585" y2="51" class="tsm-gridline"/>
-        <polyline class="tsm-equity-path" points="18,126 55,121 92,124 129,110 166,114 203,96 240,102 277,84 314,88 351,67 388,73 425,52 462,58 499,40 536,46 575,28"/>
-        <circle cx="575" cy="28" r="4" class="tsm-endpoint"/>
-      </svg>
-      <span>누적수익률 · 레이아웃 확인용 가상 차트</span>
+    <div class="tsm-backtest-head">
+      <div>
+        <div class="tsm-block-title">⑦ 과거 성과</div>
+        <span>레이아웃 확인용 가상 백테스트 데이터</span>
+      </div>
+      <div class="tsm-backtest-period">최근 5년</div>
     </div>
-    <div class="tsm-stats">
-      <div><b id="tsmCagr">-</b><span>CAGR</span></div>
-      <div><b id="tsmWin">-</b><span>승률</span></div>
-      <div><b id="tsmMdd">-</b><span>MDD</span></div>
-      <div><b id="tsmSharpe">-</b><span>Sharpe</span></div>
+
+    <div class="tsm-performance-grid">
+      <div class="tsm-equity-large">
+        <div class="tsm-chart-caption">누적수익률</div>
+        <svg viewBox="0 0 720 220" preserveAspectRatio="none" class="tsm-equity-svg">
+          <line x1="12" y1="196" x2="708" y2="196" class="tsm-grid"/>
+          <line x1="12" y1="150" x2="708" y2="150" class="tsm-grid"/>
+          <line x1="12" y1="104" x2="708" y2="104" class="tsm-grid"/>
+          <line x1="12" y1="58" x2="708" y2="58" class="tsm-grid"/>
+          <polygon class="tsm-area" points="12,187 48,180 84,184 120,166 156,172 192,151 228,157 264,137 300,143 336,119 372,127 408,101 444,109 480,86 516,94 552,70 588,78 624,52 660,59 708,30 708,196 12,196"/>
+          <polyline class="tsm-equity-line" points="12,187 48,180 84,184 120,166 156,172 192,151 228,157 264,137 300,143 336,119 372,127 408,101 444,109 480,86 516,94 552,70 588,78 624,52 660,59 708,30"/>
+          <circle cx="708" cy="30" r="5" class="tsm-endpoint"/>
+        </svg>
+        <div class="tsm-chart-x"><span>2021</span><span>2022</span><span>2023</span><span>2024</span><span>2025</span><span>현재</span></div>
+      </div>
+
+      <div class="tsm-performance-stats">
+        <div><span>CAGR</span><strong id="tsmCagr">18.6%</strong><small>연복리 수익률</small></div>
+        <div><span>승률</span><strong id="tsmWin">56.4%</strong><small>수익 거래 비율</small></div>
+        <div><span>최대 낙폭</span><strong class="down" id="tsmMdd">-12.8%</strong><small>MDD</small></div>
+        <div><span>Sharpe</span><strong id="tsmSharpe">1.31</strong><small>위험 대비 수익</small></div>
+      </div>
     </div>
-    <div id="tsmBtMeta" class="tsm-muted">-</div>
+
+    <div class="tsm-distribution">
+      <div class="tsm-chart-caption">기간별 전략 수익률 분포</div>
+      <div class="tsm-dist-bars">
+        <div><b>2.1%</b><i style="height:22%;"></i><span>손실</span></div>
+        <div><b>6.3%</b><i style="height:38%;"></i><span>0~10%</span></div>
+        <div><b>23.4%</b><i style="height:64%;"></i><span>10~20%</span></div>
+        <div><b>32.7%</b><i style="height:88%;"></i><span>20~30%</span></div>
+        <div><b>24.1%</b><i style="height:72%;"></i><span>30~40%</span></div>
+        <div><b>11.4%</b><i style="height:48%;"></i><span>40% 이상</span></div>
+      </div>
+    </div>
+
+    <div id="tsmBtMeta" class="tsm-backtest-meta">약 5.0년 · 신호전환 38회 · 평균 보유 42거래일</div>
   </div>
 
-  <div class="tsm-info">
-    <b>기관형 추세추종이란?</b>
-    <p>가격의 추세가 일정 기간 지속되는 경향을 분석하는 추세추종 방식입니다.</p>
-    <p>2012년 Moskowitz·Ooi·Pedersen 연구에서 25년 이상의 데이터와 58개 선물·선도 상품의 1~12개월 추세 지속성을 분석했습니다.</p>
-    <p>gaemiGTP는 이 개념을 참고해 여러 기간의 모멘텀·추세·변동성을 분석합니다.</p>
-  </div>
+  <div class="tsm-bottom-grid">
+    <div class="tsm-info">
+      <div class="tsm-panel-title">기관형 추세추종이란?</div>
+      <p class="tsm-research-lead">가격의 추세가 일정 기간 지속되는 경향을 분석하는 추세추종 방식입니다.</p>
+      <p>2012년 Moskowitz·Ooi·Pedersen 연구에서 25년 이상의 데이터와 58개 선물·선도 상품의 1~12개월 추세 지속성을 분석했습니다.</p>
+      <p>gaemiGTP는 이 개념을 참고해 여러 기간의 모멘텀·추세·변동성을 분석합니다.</p>
+    </div>
 
-  <div class="tsm-judgment">
-    <div class="tsm-section-title">종합 판단</div>
-    <div id="tsmJudgment">-</div>
+    <div class="tsm-judgment">
+      <div class="tsm-panel-title">종합 판단</div>
+      <strong id="tsmJudgmentTitle">상승 추세 우세</strong>
+      <p id="tsmJudgment">중장기 추세가 상승 방향으로 우세합니다. 단기 모멘텀도 함께 개선되어 현재는 상승 추세 추종에 우호적인 상태입니다.</p>
+    </div>
   </div>
 </div>
+
 
 
                         
@@ -7909,16 +8074,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </script>
 
 <script>
+<script>
 /* ===== 기관형 추세추종 레이아웃 테스트 모드 =====
-   실제 DB/API 미연결. 화면 디자인 확인용 가상 데이터.
+   실제 DB/API 미연결. 디자인/정보구조 확인용 가상 데이터.
 */
 document.addEventListener('DOMContentLoaded', function(){
   const T = {
-    score:82, direction:'LONG', alignment:'3/4',
-    vol:'24.8%', volState:'보통 변동성',
-    signal:'매수 우세', position:'40%',
+    score:82, direction:'LONG', alignment:'3 / 4',
+    vol:24.8, volState:'보통 변동성',
+    signal:'매수 우세', position:40,
     m:{m1:8.4,m3:15.2,m6:21.7,m12:34.6},
-    cagr:'18.6%', win:'56.4%', mdd:'-12.8%', sharpe:'1.31',
+    cagr:18.6, win:56.4, mdd:-12.8, sharpe:1.31,
     meta:'약 5.0년 · 신호전환 38회 · 평균 보유 42거래일',
     judgment:'중장기 추세가 상승 방향으로 우세합니다. 단기 모멘텀도 함께 개선되어 현재는 상승 추세 추종에 우호적인 상태입니다.'
   };
@@ -7929,16 +8095,14 @@ document.addEventListener('DOMContentLoaded', function(){
   set('tsmScore',T.score); set('tsmStrength',T.score);
   set('tsmDirection',T.direction,'#22c55e');
   set('tsmAlignment','기간 일치 '+T.alignment);
-  set('tsmVol',T.vol); set('tsmVolState',T.volState);
-  set('tsmSignal',T.signal,'#22c55e'); set('tsmPosition',T.position);
-  set('tsmState',T.judgment);
-  set('tsmCagr',T.cagr); set('tsmWin',T.win);
-  set('tsmMdd',T.mdd); set('tsmSharpe',T.sharpe);
+  set('tsmVol',T.vol.toFixed(1)+'%'); set('tsmVolState',T.volState);
+  set('tsmSignal',T.signal,'#22c55e'); set('tsmPosition',T.position+'%');
+  set('tsmCagr','+'+T.cagr.toFixed(1)+'%'); set('tsmWin',T.win.toFixed(1)+'%');
+  set('tsmMdd',T.mdd.toFixed(1)+'%'); set('tsmSharpe',T.sharpe.toFixed(2));
   set('tsmBtMeta',T.meta); set('tsmJudgment',T.judgment);
-  set('tsmM1','+'+T.m.m1.toFixed(1)+'%');
-  set('tsmM3','+'+T.m.m3.toFixed(1)+'%');
-  set('tsmM6','+'+T.m.m6.toFixed(1)+'%');
-  set('tsmM12','+'+T.m.m12.toFixed(1)+'%');
+
+  [['tsmM1',T.m.m1],['tsmM3',T.m.m3],['tsmM6',T.m.m6],['tsmM12',T.m.m12]]
+    .forEach(([id,v])=>set(id,(v>=0?'+':'')+v.toFixed(1)+'%',v>=0?'#22c55e':'#ef4444'));
 
   const p=document.getElementById('tsmProgress');
   if(p)p.style.width=T.score+'%';
@@ -7946,10 +8110,10 @@ document.addEventListener('DOMContentLoaded', function(){
   const makeBars=(id,base)=>{
     const box=document.getElementById(id);
     if(!box)return;
-    const shape=[0.52,0.68,0.44,0.78,0.61,0.88,0.72,1.00];
+    const shape=[.45,.60,.50,.72,.64,.82,.74,1];
     box.innerHTML=shape.map((n,i)=>{
-      const wobble=1+(i%3-1)*0.10;
-      const h=Math.max(6,Math.min(36,base*n*wobble*0.72));
+      const wobble=1+(i%3-1)*.09;
+      const h=Math.max(5,Math.min(40,base*n*wobble*.78));
       return '<i style="height:'+h+'px"></i>';
     }).join('');
   };
@@ -7957,9 +8121,6 @@ document.addEventListener('DOMContentLoaded', function(){
   makeBars('tsmChart3',T.m.m3);
   makeBars('tsmChart6',T.m.m6);
   makeBars('tsmChart12',T.m.m12);
-
-  const badge=document.getElementById('tsmSignalBadge');
-  if(badge){badge.textContent='테스트 · 매수 우세';badge.style.color='#22c55e';}
 });
 </script>
 

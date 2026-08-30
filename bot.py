@@ -1663,8 +1663,21 @@ def fetch_real_market_calendar_live():
 
     now = time.time()
 
+    # 실적 데이터만 캐시되어 있는 경우에는 그대로 반환하면 안 됩니다.
+    # 경제 캘린더도 반드시 함께 확인해야 합니다.
+    # 기존 코드에서는 실적이 먼저 들어오면 CACHED_MARKET_CALENDAR가 truthy가 되어
+    # 경제 API 호출 자체가 건너뛰어지는 문제가 있었습니다.
     if CACHED_MARKET_CALENDAR and (now - LAST_CALENDAR_FETCH_TIME) < 600:
-        return CACHED_MARKET_CALENDAR
+        has_earnings = any(
+            isinstance(ev, dict) and ev.get("type") == "earn"
+            for ev in CACHED_MARKET_CALENDAR
+        )
+        has_economic = any(
+            isinstance(ev, dict) and str(ev.get("type", "")).lower() in {"eco", "economic"}
+            for ev in CACHED_MARKET_CALENDAR
+        )
+        if has_earnings and has_economic:
+            return CACHED_MARKET_CALENDAR
 
     earnings = []
     economic = []
@@ -1683,7 +1696,13 @@ def fetch_real_market_calendar_live():
         print("[MARKET CALENDAR] 경제 캘린더 조회 실패:", repr(exc))
 
     # 경제 캘린더는 한국/미국만 허용합니다.
+    raw_economic_count = len(economic)
     economic = _filter_kr_us_economic_events(economic)
+
+    print(
+        f"[MARKET CALENDAR][ECO FILTER] "
+        f"raw={raw_economic_count}, kr_us={len(economic)}"
+    )
 
     combined = [
         ev for ev in (earnings + economic)
@@ -1738,7 +1757,9 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 
     cached = _cache_get(ALPHA_NEWS_CACHE, cache_key, 1800)
     if cached:
-        return cached
+        cached = _filter_kr_us_economic_events(cached)
+        if cached:
+            return cached
 
     events = []
 

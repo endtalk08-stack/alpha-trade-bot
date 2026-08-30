@@ -5010,7 +5010,26 @@ HTML_PAGE = r"""<!DOCTYPE html>
             color: var(--text-sub);
         }
         /* 실적 캘린더: 기업명 아래에 미국 장 발표 시점을 한 줄로 표시 */
-        .calendar-widget .cal-earn-timing {
+        /* 실적 카드 표시 순서 고정:
+           별점/발표상태 → 기업명 → (미국 장 마감 후) → 예상 EPS/매출 */
+        .calendar-widget .cal-earn-item .cal-detail-col {
+            display: flex !important;
+            flex-direction: column !important;
+            min-width: 0 !important;
+        }
+        .calendar-widget .cal-earn-item .cal-event-topline {
+            order: 1 !important;
+            display: flex !important;
+        }
+        .calendar-widget .cal-earn-item .cal-event-title {
+            order: 2 !important;
+            display: block !important;
+            width: 100% !important;
+            margin-top: 1px !important;
+            margin-bottom: 0 !important;
+        }
+        .calendar-widget .cal-earn-item .cal-earn-timing {
+            order: 3 !important;
             display: block !important;
             width: 100% !important;
             margin-top: 1px !important;
@@ -5020,9 +5039,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
             color: var(--text-sub) !important;
             white-space: normal !important;
         }
-        .calendar-widget .cal-earn-item .cal-event-title {
-            display: block !important;
-            width: 100% !important;
+        .calendar-widget .cal-earn-item .cal-event-meta {
+            order: 4 !important;
         }
 
 

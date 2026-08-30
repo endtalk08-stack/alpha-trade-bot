@@ -1199,10 +1199,40 @@ COUNTRY_PREFIX_MAP = {
     "CNY": "중국 ", "KRW": "한국 ", "CAD": "캐나다 ", "AUD": "호주 "
 }
 
+# 실적 캘린더에서 추적할 "주요 미국 기업" 목록
+# - 단순히 10개 종목만 조회하지 않고, 시장 영향도가 큰 주요 기업을 넓게 포함
+# - 실제 표시 여부는 실적 데이터가 존재하는 날짜와 별표 중요도 필터로 결정
 MAJOR_US_TECH_TICKERS = [
-    ("NVDA", "엔비디아"), ("TSLA", "테슬라"), ("AAPL", "애플"),
-    ("MSFT", "마이크로소프트"), ("AMZN", "아마존"), ("GOOGL", "구글"),
-    ("META", "메타"), ("AMD", "AMD"), ("PLTR", "팔란티어"), ("AVGO", "브로드컴")
+    ("NVDA", "엔비디아"),
+    ("AVGO", "브로드컴"),
+    ("TSLA", "테슬라"),
+    ("AAPL", "애플"),
+    ("MSFT", "마이크로소프트"),
+    ("AMZN", "아마존"),
+    ("GOOGL", "구글"),
+    ("META", "메타"),
+    ("AMD", "AMD"),
+    ("ORCL", "오라클"),
+    ("MU", "마이크론"),
+    ("COST", "코스트코"),
+    ("ADBE", "어도비"),
+    ("CRM", "세일즈포스"),
+    ("NFLX", "넷플릭스"),
+    ("INTC", "인텔"),
+    ("QCOM", "퀄컴"),
+    ("AMAT", "어플라이드 머티어리얼즈"),
+    ("CSCO", "시스코"),
+    ("PANW", "팔로알토 네트웍스"),
+    ("SNOW", "스노우플레이크"),
+    ("DELL", "델 테크놀로지스"),
+    ("HPE", "휴렛팩커드 엔터프라이즈"),
+    ("FDX", "페덱스"),
+    ("NKE", "나이키"),
+    ("ACN", "액센츄어"),
+    ("CTAS", "신타스"),
+    ("CIEN", "시에나"),
+    ("ADSK", "오토데스크"),
+    ("MRVL", "마벨 테크놀로지"),
 ]
 
 MAJOR_KR_EARNINGS = {
@@ -1282,8 +1312,30 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         "date_str": date_str,
         "date_header": date_header,
         "time": time_str,
-        "stars": 3,
-        "star_str": "★★★",
+        "stars": (
+            3 if sym in {
+                "NVDA", "AVGO", "AAPL", "MSFT", "AMZN",
+                "GOOGL", "META", "TSLA", "AMD", "ORCL", "MU", "COST"
+            }
+            else 2 if sym in {
+                "ADBE", "CRM", "NFLX", "INTC", "QCOM",
+                "AMAT", "CSCO", "PANW", "SNOW", "DELL", "HPE",
+                "FDX", "NKE", "ACN", "CTAS", "CIEN", "ADSK", "MRVL"
+            }
+            else 1
+        ),
+        "star_str": (
+            "★★★" if sym in {
+                "NVDA", "AVGO", "AAPL", "MSFT", "AMZN",
+                "GOOGL", "META", "TSLA", "AMD", "ORCL", "MU", "COST"
+            }
+            else "★★☆" if sym in {
+                "ADBE", "CRM", "NFLX", "INTC", "QCOM",
+                "AMAT", "CSCO", "PANW", "SNOW", "DELL", "HPE",
+                "FDX", "NKE", "ACN", "CTAS", "CIEN", "ADSK", "MRVL"
+            }
+            else "★☆☆"
+        ),
         "type": "earn",
         "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
         "ticker": sym,
@@ -1688,7 +1740,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=30):
     now_kst = datetime.now(timezone(timedelta(hours=9)))
     from_d = (now_kst - timedelta(days=days_back)).strftime("%Y-%m-%d")
     to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
-    cache_key = f"earn_history_v22:{from_d}:{to_d}"
+    cache_key = f"earn_history_v23:{from_d}:{to_d}"
     cached = _cache_get(ALPHA_EARNINGS_CACHE, cache_key, 1800)
     if cached is not None:
         return cached

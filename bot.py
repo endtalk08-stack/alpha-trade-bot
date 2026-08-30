@@ -6460,9 +6460,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <!-- 하단 그래프: 실제 52주 가격 위치 -->
                             <div style="margin:12px 0 12px; position:relative;">
                                 <div class="track-52w-head" style="margin-bottom:6px;">
-                                    <span style="color:var(--text-muted);" id="tLow52w"></span>
-                                    <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
-                                    <span style="color:var(--text-muted);" id="tHigh52w"></span>
+                                    <span style="display:none;" id="tLow52w"></span>
+                                    <span style="color:#38bdf8; font-weight:700; grid-column:1 / -1; text-align:center;" id="tPos52wLabel">52주 가격 위치</span>
+                                    <span style="display:none;" id="tHigh52w"></span>
                                 </div>
                                 <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
                                     <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="tSliderFill"></div>
@@ -6743,15 +6743,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
                             <div class="model-dropdown-menu" id="bottomDropdown">
                                 <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
-                                    <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                                    <div class="item-title">gaemi <span class="item-check"></span></div>
                                     <div class="item-sub">도움을 받으세요</div>
                                 </div>
                                 <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
-                                    <div class="item-title">info <span class="item-check">✓</span></div>
+                                    <div class="item-title">info <span class="item-check"></span></div>
                                     <div class="item-sub">정보를 확인하세요</div>
                                 </div>
                                 <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
-                                    <div class="item-title">pro <span class="item-check">✓</span></div>
+                                    <div class="item-title">pro <span class="item-check"></span></div>
                                     <div class="item-sub">실력을 키우세요</div>
                                 </div>
                             </div>
@@ -8126,7 +8126,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                                 <div class="quant-row-right">
                                     <div class="quant-row-val">${String(r.detail || '-')}</div>
-                                    <div class="quant-row-subval">실제 확인 데이터</div>
+                                    <div class="quant-row-subval"></div>
                                 </div>
                             </div>`;
                         }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;

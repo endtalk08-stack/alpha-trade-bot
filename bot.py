@@ -1340,7 +1340,9 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
             else "★☆☆"
         ),
         "type": "earn",
-        "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
+        # 기업명과 발표 시점은 화면에서 두 줄로 표시할 수 있도록 분리합니다.
+        "name": f"{ko_name} ({sym}) 실적".strip(),
+        "timing_label": hour_label,
         "ticker": sym,
         "val": val_str,
         "exp": eps_str,
@@ -5007,6 +5009,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .calendar-widget .cal-event-meta {
             color: var(--text-sub);
         }
+        /* 실적 캘린더: 기업명 아래에 미국 장 발표 시점을 한 줄로 표시 */
+        .calendar-widget .cal-earn-timing {
+            display: block !important;
+            width: 100% !important;
+            margin-top: 1px !important;
+            font-size: 0.70rem !important;
+            line-height: 1.25 !important;
+            font-weight: 700 !important;
+            color: var(--text-sub) !important;
+            white-space: normal !important;
+        }
+        .calendar-widget .cal-earn-item .cal-event-title {
+            display: block !important;
+            width: 100% !important;
+        }
+
 
         .calendar-widget .cal-date-ctrl {
             display: flex;
@@ -7057,9 +7075,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             // 실적 캘린더에서는 티커(NVDA 등)와 기업 마크를 표시하지 않습니다.
             const rawEventName = ev.name || (isEarn ? '실적 발표' : '경제지표');
-            const eventName = isEarn
+            let eventName = isEarn
                 ? String(rawEventName).replace(/\s*\([A-Za-z0-9.\-]+\)/g, '').trim()
                 : String(rawEventName);
+
+            // 이전 데이터 형식에서 이름에 발표시점이 붙어 있어도 화면에서는 분리합니다.
+            let timingLabel = isEarn ? String(ev.timing_label || '').trim() : '';
+            if (isEarn && !timingLabel) {
+                const timingMatch = eventName.match(/\s*(\((?:미국 )?장 (?:마감 후|시작 전)\))\s*$/);
+                if (timingMatch) {
+                    timingLabel = timingMatch[1];
+                    eventName = eventName.slice(0, timingMatch.index).trim();
+                }
+            }
 
             return `
                 <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
@@ -7070,6 +7098,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <span class="cal-event-status">${status}</span>
                         </div>
                         <div class="cal-event-title">${eventName}</div>
+                        ${isEarn && timingLabel ? `<div class="cal-earn-timing">${timingLabel}</div>` : ''}
                         ${meta ? `<div class="cal-event-meta">${meta}</div>` : ''}
                     </div>
                     <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"

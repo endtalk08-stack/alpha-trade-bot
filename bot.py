@@ -1677,7 +1677,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
                     if not actual:
                         actual = "발표완료" if dt <= datetime.now(timezone.utc) else "발표대기"
 
-                    events.append(_calendar_event_common(
+                    events.extend(_calendar_event_common(
                         dt, full_name, country, stars, star_str, "eco",
                         actual, estimate, previous,
                         extra={"unit": it.get("unit") or "", "source": "Finnhub"},
@@ -1711,7 +1711,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
                 full_name = f"{prefix}{title_ko}"
                 actual_raw = str(it.get("actual", "")).strip()
                 actual = actual_raw or ("발표완료" if dt <= datetime.now(timezone.utc) else "발표대기")
-                events.append(_calendar_event_common(
+                events.extend(_calendar_event_common(
                     dt, full_name, country, stars, star_str, "eco",
                     actual, str(it.get("forecast", "")).strip() or "-",
                     str(it.get("previous", "")).strip() or "-",
@@ -6807,7 +6807,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             // 오늘 이전의 가장 최근 발표일을 자동으로 보여줍니다.
             if (!economicCalendarAutoJumped && economicCalOffset === 0) {
                 const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-                const hasEconomicData = all.some(ev => ev.type === 'eco' && ev.date_key);
+                const hasEconomicData = all.some(ev => isEconomicCalendarEvent(ev));
 
                 // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
                 if (hasEconomicData) {

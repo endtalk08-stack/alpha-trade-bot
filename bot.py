@@ -5297,9 +5297,156 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     });
                     const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
 
+
+                    // 기존에 확정한 "왜 움직였을까?" 고정 코멘트 생성 로직을
+                    // 트랙 분석 디자인 변경과 분리해 그대로 유지한다.
+                    const scoreOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? Number(x.score||0) : 0; };
+                    const detailOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? String(x.detail||'') : ''; };
+                    const materialReason = evidenceReasons.find(r => r.key === 'material') || null;
+
+                    const priceText = data.price || data.price_str || '-';
+                    const pct = Number(data.current_change_pct);
+                    const topicParticle = (() => {
+                        const text = String(displayName || '').trim();
+                        const last = text.charCodeAt(text.length - 1);
+                        if (last >= 0xAC00 && last <= 0xD7A3) {
+                            return ((last - 0xAC00) % 28) === 0 ? '는' : '은';
+                        }
+                        return '은';
+                    })();
+
+                    const directionText =
+                        Number.isFinite(pct)
+                            ? (pct > 0 ? '상승' : pct < 0 ? '하락' : '보합')
+                            : (mr.direction === '하락' ? '하락' : mr.direction === '상승' ? '상승' : '보합');
+
+                    const boardItems = Array.isArray(data.world_board) ? data.world_board : [];
+                    const findBoard = (...names) => boardItems.find(item =>
+                        names.some(name => String(item?.name || '').toLowerCase() === String(name).toLowerCase())
+                    );
+                    const rateNumber = item => {
+                        if (!item) return null;
+                        const n = Number(String(item.rate ?? '').replace('%','').replace('+',''));
+                        return Number.isFinite(n) ? n : null;
+                    };
+                    const upDown = n => n > 0 ? '상승' : n < 0 ? '하락' : '보합';
+
+                    const marketType = String(data.market || data.market_name || data.market_type || '').toLowerCase();
+                    const isUSMarket = marketType.includes('미국주식') || marketType.includes('미국') || marketType.includes('us');
+                    const isCryptoMarket = marketType.includes('암호화폐') || marketType.includes('암호') || marketType.includes('crypto') || marketType.includes('코인');
+                    const selectedMarketName = isUSMarket
+                        ? '나스닥'
+                        : (String(data.market_index_name || '').toUpperCase() === 'KOSDAQ' ? '코스닥' : '코스피');
+                    const marketItem = isUSMarket
+                        ? findBoard('QQQ')
+                        : findBoard(selectedMarketName, selectedMarketName === '코스피' ? 'KOSPI' : 'KOSDAQ');
+                    const marketRate = rateNumber(marketItem);
+
+                    const newsBlob = [
+                        displayName,
+                        ...(Array.isArray(mr.news_evidence) ? mr.news_evidence.map(x => x?.title || '') : []),
+                        ...(Array.isArray(materialReason?.news_clusters) ? materialReason.news_clusters.flatMap(c => c?.keywords || []) : [])
+                    ].join(' ').toLowerCase();
+                    const semiconductorKeywords = ['반도체','hbm','hbm4','dram','nand','메모리','gpu','semiconductor'];
+                    const isSemiconductor = semiconductorKeywords.some(k => newsBlob.includes(k));
+                    const soxxItem = findBoard('SOXX');
+                    const soxxRate = rateNumber(soxxItem);
+
+                    const parts = [];
+                    if (!isCryptoMarket) {
+                        if (marketRate !== null) {
+                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이고`);
+                        } else {
+                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 현재 흐름을 확인 중이고`);
+                        }
+                        if (isSemiconductor && soxxRate !== null) {
+                            parts[parts.length - 1] += ` 반도체 업종 SOXX는 ${soxxRate >= 0 ? '+' : ''}${soxxRate.toFixed(2)}% ${upDown(soxxRate)}!`;
+                        }
+                    }
+
+                    parts.push(
+                        Number.isFinite(pct)
+                            ? `${displayName}${topicParticle} 현재 ${priceText}, ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
+                            : `${displayName}${topicParticle} 현재 ${priceText} ${directionText} 중이야.`
+                    );
+
+                    const domesticFlowValue = (movementReason, key) => {
+                        const r = Array.isArray(movementReason.reasons)
+                            ? movementReason.reasons.find(x => x.key === key)
+                            : null;
+                        if (!r) return null;
+                        const text = String(r.detail || '');
+                        const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
+                        if (!m) return null;
+                        const n = Number(m[2].replace(/,/g,''));
+                        if (!Number.isFinite(n)) return null;
+                        return m[1] === '순매도' ? -n : n;
+                    };
+
+                    const flowCandidates = [
+                        { key: 'foreign', label: '외국인', value: domesticFlowValue(mr, 'foreign') },
+                        { key: 'institution', label: '기관', value: domesticFlowValue(mr, 'institution') }
+                    ].filter(x => x.value !== null && Number.isFinite(x.value));
+
+                    if (flowCandidates.length) {
+                        const selectedFlow = flowCandidates.sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0];
+                        const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
+                        parts.push(`최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어.`);
+                    }
+
+                    if (materialReason && Array.isArray(materialReason.news_clusters)) {
+                        const cluster = materialReason.news_clusters[0] || null;
+                        const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
+                        const map = {
+                            'hbm4':'HBM4','hbm':'HBM','ai':'AI 수요','인공지능':'AI 수요','gpu':'GPU 수요',
+                            '수요':'수요 확대','공급':'공급 확대','공급망':'공급망 확대','증설':'증설',
+                            '실적':'실적','earnings':'실적','매출':'매출 성장','영업이익':'영업이익',
+                            '수주':'수주','계약':'계약','관세':'관세','aws':'AWS'
+                        };
+                        const mapped = kws.map(k => map[String(k).toLowerCase()] || String(k)).filter(Boolean);
+                        const generic = new Set(['주가','시장','관련','소식','전망','기대','확대','증가','감소','하락','상승']);
+                        const filtered = mapped.filter(x => !generic.has(x));
+                        const uniq = [...new Set(filtered)];
+                        if (uniq.length) materialText = uniq.slice(0, 2).join(' ');
+                    }
+
+                    let marketEventTopic = '';
+                    const calendarEvents = Array.isArray(data.market_calendar) ? data.market_calendar : [];
+                    const macroText = [
+                        ...(Array.isArray(data.global_news) ? data.global_news.map(x => x?.title || '') : []),
+                        ...(Array.isArray(data.stock_news) ? data.stock_news.map(x => x?.title || '') : []),
+                        ...(Array.isArray(calendarEvents) ? calendarEvents.map(x => JSON.stringify(x)) : [])
+                    ].join(' ').toLowerCase();
+
+                    if (/\bfomc\b|연준/.test(macroText)) marketEventTopic = 'FOMC·연준';
+                    else if (/\bcpi\b|소비자물가|물가/.test(macroText)) marketEventTopic = '미국 물가';
+                    else if (/고용|비농업|실업률/.test(macroText)) marketEventTopic = '미국 고용';
+                    else if (/관세|무역/.test(macroText)) marketEventTopic = '미국 관세 정책';
+                    else if (/금리인하|금리인상|기준금리/.test(macroText)) marketEventTopic = '미국 금리';
+
+                    if (materialText && marketEventTopic) {
+                        const macroWords = new Set(String(marketEventTopic).toLowerCase().split(/[^0-9a-z가-힣]+/).filter(Boolean));
+                        const materialWords = String(materialText).split(/\s+/).filter(Boolean);
+                        const dedupedMaterialWords = materialWords.filter(word => {
+                            const normalized = word.toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
+                            return normalized && !macroWords.has(normalized);
+                        });
+                        const dedupedMaterial = dedupedMaterialWords.join(' ').trim();
+                        parts.push(dedupedMaterial
+                            ? `${dedupedMaterial} ${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`
+                            : `${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                    } else if (materialText) {
+                        parts.push(`${materialText} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                    } else if (marketEventTopic) {
+                        parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                    }
+
+                    parts.push('🐜 오늘도 개미들 힘내자! 💪');
+                    const gaemiComment = parts.join('\n\n');
+
                     mrCard.innerHTML = `
                         <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;">
-                            ${(mr.summary || mr.main_reason || '확인된 데이터가 없습니다.')}
+                            ${gaemiComment}
                         </div>
                     `;
 

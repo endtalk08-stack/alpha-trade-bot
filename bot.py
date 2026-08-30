@@ -1740,7 +1740,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=30):
     now_kst = datetime.now(timezone(timedelta(hours=9)))
     from_d = (now_kst - timedelta(days=days_back)).strftime("%Y-%m-%d")
     to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
-    cache_key = f"earn_history_v23:{from_d}:{to_d}"
+    cache_key = f"earn_history_v24:{from_d}:{to_d}"
     cached = _cache_get(ALPHA_EARNINGS_CACHE, cache_key, 1800)
     if cached is not None:
         return cached
@@ -1928,14 +1928,12 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=30):
             except Exception as exc:
                 print(f"[CALENDAR][EARN] {sym} Finnhub 개별 보강 실패:", repr(exc))
 
-    # Yahoo도 "전체 일괄 조회"만 믿지 않고, 아직 미래 실적이 없는 종목은
-    # 종목별 quote 요청으로 다시 확인합니다.
-    if not events or len(future_captured) < len(us_symbols):
+    # Yahoo는 "누락 종목 전용"이 아니라 전체 주요 종목의 보조 소스로 사용합니다.
+    # Finnhub에 일부 종목만 들어오는 경우에도 다음 실적일을 보완할 수 있게 합니다.
+    if us_symbols:
         import time as _calendar_time
 
         for sym in us_symbols:
-            if sym in future_captured:
-                continue
 
             try:
                 _calendar_time.sleep(0.35)
@@ -1969,6 +1967,21 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=30):
 
                     dt_utc, hour = _normalize_earnings_timestamp(ysym, dt_utc)
 
+                    # 기본 조회 범위(오늘 ~ 오늘+30일) 밖의 Yahoo 일정은 넣지 않습니다.
+                    now_utc_check = datetime.now(timezone.utc)
+                    max_utc_check = now_utc_check + timedelta(days=days_forward)
+                    if dt_utc < now_utc_check or dt_utc > max_utc_check:
+                        continue
+
+                    # Finnhub에 같은 종목/미국 날짜가 이미 있으면 Yahoo는 중복으로 추가하지 않습니다.
+                    yahoo_kst_date = dt_utc.astimezone(timezone(timedelta(hours=9))).strftime("%Y.%m.%d")
+                    if any(
+                        str(ev.get("ticker", "")).upper() == ysym
+                        and ev.get("date_key") == yahoo_kst_date
+                        for ev in events
+                    ):
+                        continue
+
                     eps_f = it.get("epsForward")
                     eps_str = (
                         f"예상 EPS ${eps_f:.2f}"
@@ -1993,6 +2006,66 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=30):
 
             except Exception as exc:
                 print(f"[CALENDAR][EARN] {sym} Yahoo 개별 보강 실패:", repr(exc))
+
+            # quote endpoint가 earningsTimestamp를 주지 않는 종목은
+            # quoteSummary/calendarEvents로 한 번 더 확인합니다.
+            try:
+                _calendar_time.sleep(0.15)
+                qs_res = HTTP_SESSION.get(
+                    f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}",
+                    params={"modules": "calendarEvents"},
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=5.0,
+                )
+                if qs_res.ok:
+                    qs_items = qs_res.json().get("quoteSummary", {}).get("result", [])
+                    if qs_items:
+                        cal = qs_items[0].get("calendarEvents", {})
+                        ev_obj = cal.get("earnings", {})
+                        raw_list = ev_obj.get("earningsDate", []) if isinstance(ev_obj, dict) else []
+                        for raw_obj in raw_list:
+                            raw_ts = raw_obj.get("raw") if isinstance(raw_obj, dict) else raw_obj
+                            if not raw_ts:
+                                continue
+                            dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                            now_utc_check = datetime.now(timezone.utc)
+                            max_utc_check = now_utc_check + timedelta(days=days_forward)
+                            if dt_utc < now_utc_check or dt_utc > max_utc_check:
+                                continue
+                            dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
+                            yahoo_kst_date = dt_utc.astimezone(timezone(timedelta(hours=9))).strftime("%Y.%m.%d")
+                            if any(
+                                str(ev.get("ticker", "")).upper() == sym
+                                and ev.get("date_key") == yahoo_kst_date
+                                for ev in events
+                            ):
+                                continue
+
+                            eps_f = None
+                            eps_str = "예상치 집계중"
+                            try:
+                                eps_f_obj = cal.get("earnings", {}).get("earningsCallTime") if isinstance(cal.get("earnings"), dict) else None
+                            except Exception:
+                                eps_f_obj = None
+
+                            try:
+                                yahoo_us_date = (
+                                    dt_utc.astimezone(ZoneInfo("America/New_York")).strftime("%Y.%m.%d")
+                                    if ZoneInfo is not None
+                                    else dt_utc.strftime("%Y.%m.%d")
+                                )
+                            except Exception:
+                                yahoo_us_date = dt_utc.strftime("%Y.%m.%d")
+
+                            events.extend(build_earnings_event(
+                                sym, sym_to_ko[sym], dt_utc,
+                                eps_str, "-", hour,
+                                us_date_key=yahoo_us_date
+                            ))
+                            future_captured.add(sym)
+                            break
+            except Exception as exc:
+                print(f"[CALENDAR][EARN] {sym} Yahoo calendarEvents 보강 실패:", repr(exc))
 
     unique = {}
     for ev in events:

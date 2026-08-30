@@ -1443,7 +1443,7 @@ def fetch_all_real_earnings():
             items = res.get("earningsCalendar", [])
             
             print(f"[EARNINGS DEBUG] Finnhub 원본: {len(items)}건")
-            print(f"[EARNINGS DEBUG] Finnhub 종목: {[str(x.get('symbol','')).upper() for x in items]}")
+            print(f"[EARNINGS DEBUG] Finnhub 종목: {[str(x.get('symbol','')).upper() for x in items]}"
 
             for it in items:
                 sym = str(it.get("symbol", "")).upper()

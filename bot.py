@@ -1225,7 +1225,7 @@ MAJOR_KR_EARNINGS = {
 # ----------------------------------------------------
 # 실적 일정 자체에는 전 세계적으로 통용되는 공식 별점이 없으므로
 # gaemiGTP에서 "시장 영향도" 기준으로 자체 중요도를 부여합니다.
-# 현재 실적 수집 대상은 이미 주요 기업으로 한정되어 있으며, 그 안에서 3/2/1단계로 표시합니다.
+# 실적은 향후 7일 전체 후보에서 시가총액/핵심종목 기준으로 중요도 3/2/1단계만 선별합니다.
 EARNINGS_IMPORTANCE_3 = {
     "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "AMD", "AVGO",
     "005930", "005930.KS", "000660", "000660.KS", "005380", "005380.KS",
@@ -1245,7 +1245,7 @@ def get_earnings_importance(symbol):
         return 2, "★★☆"
     return 1, "★☆☆"
 
-def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None):
+def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None, importance=None):
     """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
@@ -1292,8 +1292,8 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         "date_str": date_str,
         "date_header": date_header,
         "time": time_str,
-        "stars": get_earnings_importance(sym)[0],
-        "star_str": get_earnings_importance(sym)[1],
+        "stars": int(importance if importance is not None else get_earnings_importance(sym)[0]),
+        "star_str": "★★★" if int(importance if importance is not None else get_earnings_importance(sym)[0]) == 3 else ("★★☆" if int(importance if importance is not None else get_earnings_importance(sym)[0]) == 2 else "★☆☆"),
         "type": "earn",
         "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
         "ticker": sym,
@@ -1375,149 +1375,163 @@ def _fetch_yahoo_earnings_timestamps(symbols):
     return result
 
 
+def _fetch_yahoo_quote_metadata(symbols):
+    """Yahoo quote API에서 실적 후보의 시가총액/회사명을 일괄 조회합니다."""
+    result = {}
+    symbols = [str(x).upper().strip() for x in (symbols or []) if str(x).strip()]
+    if not symbols:
+        return result
+    for i in range(0, len(symbols), 50):
+        chunk = symbols[i:i+50]
+        try:
+            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(chunk)}"
+            res = HTTP_SESSION.get(url, timeout=3.5, headers={"User-Agent": "Mozilla/5.0"}).json()
+            for it in res.get("quoteResponse", {}).get("result", []) or []:
+                sym = str(it.get("symbol", "")).upper().strip()
+                if not sym:
+                    continue
+                result[sym] = {
+                    "market_cap": float(it.get("marketCap") or 0),
+                    "name": str(it.get("shortName") or it.get("longName") or sym).strip()
+                }
+        except Exception as exc:
+            print("[CALENDAR][EARN] Yahoo 시총 조회 오류:", exc)
+    return result
+
+def _dynamic_earnings_importance(sym, market_cap, is_known_major=False):
+    """실적 시장영향도: 기존 핵심종목 우선 + 시가총액 기반 자동 선별."""
+    sym = str(sym or "").upper().strip()
+    known_score, _ = get_earnings_importance(sym)
+    if is_known_major and known_score >= 2:
+        return known_score
+    if known_score >= 3:
+        return 3
+    cap = float(market_cap or 0)
+    if cap >= 300_000_000_000:
+        return 3
+    if cap >= 50_000_000_000:
+        return 2
+    if cap >= 10_000_000_000:
+        return 1
+    return 0
+
 def fetch_all_real_earnings():
+    """앞으로 7일의 실적 후보를 가져오고, 시장 영향도가 높은 기업만 표시합니다."""
     events = []
     sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
     for k_code, k_name in MAJOR_KR_EARNINGS.items():
         sym_to_ko[k_code] = k_name
 
-    captured_syms = set()
+    captured_keys = set()
     now_kst = datetime.now(timezone(timedelta(hours=9)))
+    start_date = now_kst.date()
+    end_date = (now_kst + timedelta(days=7)).date()
 
-    # 주요 미국 종목은 Yahoo의 실제 earnings timestamp를 별도로 확보해
-    # Finnhub의 amc/bmo 같은 범주형 시간보다 우선 사용합니다.
-    us_symbols = [item[0] for item in MAJOR_US_TECH_TICKERS]
-    yahoo_times = _fetch_yahoo_earnings_timestamps(us_symbols)
-
-    # Tier 1: Finnhub API
+    # Tier 1: Finnhub 전체 실적 캘린더. 고정 25종목 제한을 제거합니다.
     if FINNHUB_API_KEY:
         try:
-            from_d = (now_kst - timedelta(days=7)).strftime("%Y-%m-%d")
-            to_d = (now_kst + timedelta(days=60)).strftime("%Y-%m-%d")
+            from_d = start_date.strftime("%Y-%m-%d")
+            to_d = end_date.strftime("%Y-%m-%d")
             url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
-            res = HTTP_SESSION.get(url, timeout=3.0).json()
-            items = res.get("earningsCalendar", [])
+            res = HTTP_SESSION.get(url, timeout=5.0, headers={"User-Agent": "Mozilla/5.0"}).json()
+            items = res.get("earningsCalendar", []) or []
+
+            # 후보 전체의 시가총액/회사명을 한 번에 가져와 중요도를 자동 판정합니다.
+            candidate_symbols = sorted({str(it.get("symbol", "")).upper().strip() for it in items if it.get("symbol")})
+            quote_meta = _fetch_yahoo_quote_metadata(candidate_symbols)
 
             for it in items:
-                sym = str(it.get("symbol", "")).upper()
-                if sym not in sym_to_ko:
-                    continue
-
+                sym = str(it.get("symbol", "")).upper().strip()
                 raw_date = str(it.get("date", "")).strip()
-                if not raw_date:
+                if not sym or not raw_date:
+                    continue
+                try:
+                    event_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                if event_date < start_date or event_date > end_date:
                     continue
 
                 hour = str(it.get("hour", "amc")).lower().strip()
-
                 eps_est = it.get("epsEstimate")
                 rev_est = it.get("revenueEstimate")
                 eps_actual = it.get("epsActual")
                 rev_actual = it.get("revenueActual")
-
-                eps_str = (
-                    f"예상 EPS ${eps_est:.2f}"
-                    if eps_est is not None else "예상치 집계중"
-                )
-                rev_str = (
-                    f"예상 매출 ${rev_est/1e9:.1f}B"
-                    if rev_est is not None else "-"
-                )
+                eps_str = f"예상 EPS ${eps_est:.2f}" if eps_est is not None else "예상치 집계중"
+                rev_str = f"예상 매출 ${rev_est/1e9:.1f}B" if rev_est is not None else "-"
 
                 us_dt = datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-
-                # Finnhub은 날짜 + amc/bmo/dmh만 제공하므로,
-                # 우선 실제 Yahoo timestamp가 같은 발표일 근처에 있으면 사용합니다.
                 dt_utc = None
+                # 이미 등록된 핵심 종목은 Yahoo의 실제 timestamp를 우선 사용합니다.
+                yahoo_times = _fetch_yahoo_earnings_timestamps([sym]) if sym in {x[0] for x in MAJOR_US_TECH_TICKERS} else {}
                 yahoo_dt = yahoo_times.get(sym)
-                if yahoo_dt is not None:
-                    day_gap = abs((yahoo_dt.date() - us_dt.date()).days)
-                    if day_gap <= 1:
-                        dt_utc, hour = _normalize_earnings_timestamp(sym, yahoo_dt)
+                if yahoo_dt is not None and abs((yahoo_dt.date() - us_dt.date()).days) <= 1:
+                    dt_utc, hour = _normalize_earnings_timestamp(sym, yahoo_dt)
 
-                # Yahoo timestamp가 없거나 날짜가 맞지 않을 때만
-                # 미국 동부시간의 표준 발표 시각을 안전한 fallback으로 사용합니다.
                 if dt_utc is None:
                     if ZoneInfo is not None:
                         try:
                             et_zone = ZoneInfo("America/New_York")
-                            if hour == "amc":
-                                local_time = datetime.strptime(raw_date + " 16:00", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
-                            elif hour == "bmo":
-                                local_time = datetime.strptime(raw_date + " 06:00", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
-                            else:
-                                local_time = datetime.strptime(raw_date + " 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            local_hm = "16:00" if hour == "amc" else ("06:00" if hour == "bmo" else "09:30")
+                            local_time = datetime.strptime(raw_date + " " + local_hm, "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
                             dt_utc = local_time.astimezone(timezone.utc)
                         except Exception:
                             dt_utc = None
-
                     if dt_utc is None:
-                        # 최종 fallback: 기존보다 DST 오차가 적은 UTC 기준값
-                        if hour == "amc":
-                            dt_utc = us_dt + timedelta(hours=20)
-                        elif hour == "bmo":
-                            dt_utc = us_dt + timedelta(hours=10)
-                        else:
-                            dt_utc = us_dt + timedelta(hours=13, minutes=30)
+                        dt_utc = us_dt + (timedelta(hours=20) if hour == "amc" else timedelta(hours=10) if hour == "bmo" else timedelta(hours=13, minutes=30))
 
-                events.extend(
-                    build_earnings_event(
-                        sym, sym_to_ko[sym], dt_utc,
-                        eps_str, rev_str, hour,
-                        actual_eps=eps_actual, actual_rev=rev_actual,
-                        expected_eps=eps_est, expected_rev=rev_est
-                    )
-                )
-                captured_syms.add(sym)
+                meta = quote_meta.get(sym, {})
+                market_cap = meta.get("market_cap", 0)
+                known_major = sym in {x[0] for x in MAJOR_US_TECH_TICKERS}
+                importance = _dynamic_earnings_importance(sym, market_cap, known_major)
+                # 10B 미만 및 자체 중요도 기준 미달 기업은 표시하지 않습니다.
+                if importance < 1:
+                    continue
 
+                ko_name = sym_to_ko.get(sym) or meta.get("name") or sym
+                event_key = (sym, raw_date, hour)
+                if event_key in captured_keys:
+                    continue
+                captured_keys.add(event_key)
+
+                events.extend(build_earnings_event(
+                    sym, ko_name, dt_utc, eps_str, rev_str, hour,
+                    actual_eps=eps_actual, actual_rev=rev_actual,
+                    expected_eps=eps_est, expected_rev=rev_est,
+                    importance=importance
+                ))
         except Exception as exc:
-            print("[CALENDAR][EARN] Finnhub 오류:", exc)
+            print("[CALENDAR][EARN] Finnhub 동적 실적 수집 오류:", exc)
 
-    # Tier 2: Yahoo Finance
-    # Finnhub에서 못 받은 종목은 Yahoo timestamp를 직접 사용합니다.
-    missing = [s for s in us_symbols if s not in captured_syms]
-    if missing:
+    # Tier 2: 고정 핵심종목은 Finnhub 누락 시 Yahoo로 보완합니다.
+    missing_symbols = [sym for sym, _ in MAJOR_US_TECH_TICKERS if not any(ev.get("ticker") == sym for ev in events)]
+    if missing_symbols:
         try:
-            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing)}"
-            res = HTTP_SESSION.get(url, timeout=2.5).json()
-            items = res.get("quoteResponse", {}).get("result", [])
-
-            for it in items:
-                sym = str(it.get("symbol", "")).upper()
+            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing_symbols)}"
+            res = HTTP_SESSION.get(url, timeout=3.5, headers={"User-Agent": "Mozilla/5.0"}).json()
+            for it in res.get("quoteResponse", {}).get("result", []) or []:
+                sym = str(it.get("symbol", "")).upper().strip()
                 raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
-                if sym in sym_to_ko and raw_ts:
-                    dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
-                    dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
-                    eps_f = it.get("epsForward")
-                    eps_str = (
-                        f"예상 EPS ${eps_f:.2f}"
-                        if eps_f is not None else "예상치 집계중"
-                    )
-
-                    events.extend(
-                        build_earnings_event(
-                            sym, sym_to_ko[sym], dt_utc,
-                            eps_str, "-", hour
-                        )
-                    )
-                    captured_syms.add(sym)
-
+                if sym not in {x[0] for x in MAJOR_US_TECH_TICKERS} or not raw_ts:
+                    continue
+                dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                if not (start_date <= dt_utc.astimezone(timezone(timedelta(hours=9))).date() <= end_date):
+                    continue
+                dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
+                eps_f = it.get("epsForward")
+                eps_str = f"예상 EPS ${eps_f:.2f}" if eps_f is not None else "예상치 집계중"
+                events.extend(build_earnings_event(
+                    sym, sym_to_ko.get(sym, sym), dt_utc, eps_str, "-", hour, importance=get_earnings_importance(sym)[0]
+                ))
         except Exception as exc:
-            print("[CALENDAR][EARN] Yahoo 오류:", exc)
+            print("[CALENDAR][EARN] Yahoo 보완 오류:", exc)
 
-    # 국내 실적은 현재 가상 날짜를 만들지 않고,
-    # 실제 데이터가 들어오는 경우에만 표시합니다.
-
-    # 동일 종목 + 동일 KST 날짜 + 동일 시간이면 1건만 유지
+    # 동일 종목 + 동일 KST 날짜 + 동일 시간 중복 제거
     unique = {}
     for ev in events:
-        key = (
-            ev.get("ticker", ""),
-            ev.get("date_key", ""),
-            ev.get("time", "")
-        )
+        key = (ev.get("ticker", ""), ev.get("date_key", ""), ev.get("time", ""))
         if key not in unique:
             unique[key] = ev
-
     return sorted(unique.values(), key=lambda x: x.get("ts", 0))
 
 
@@ -5624,8 +5638,24 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const container = document.getElementById('earnCalEventList');
             if (!container) return;
 
-            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => ev.type === 'earn' && ev.date_key === info.dateKey && Number(ev.stars || 0) >= 1 && Number(ev.stars || 0) <= 3);
+            const allEarnings = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
+                .filter(ev => ev.type === 'earn' && Number(ev.stars || 0) >= 1 && Number(ev.stars || 0) <= 3)
+                .sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
+
+            let filtered = allEarnings.filter(ev => ev.date_key === info.dateKey);
+
+            // 오늘 실적이 없으면 가장 가까운 향후 주요 실적 날짜를 자동으로 보여줍니다.
+            if (!filtered.length && Number(earningsCalOffset || 0) === 0 && allEarnings.length) {
+                const nowTs = Date.now() / 1000;
+                const upcoming = allEarnings.find(ev => Number(ev.ts || 0) >= nowTs);
+                if (upcoming) {
+                    earningsCalOffset = Math.max(0, Math.round((new Date(upcoming.date_key.replace(/\./g, '-')).getTime() - new Date().setHours(0,0,0,0)) / 86400000));
+                    earningsCalPage = 1;
+                    const nextInfo = getCalendarDateInfo(earningsCalOffset);
+                    setTxt('earnCalDisplayDate', nextInfo.display);
+                    filtered = allEarnings.filter(ev => ev.date_key === nextInfo.dateKey);
+                }
+            }
 
             setTxt(
                 'earnCalDayHeader',

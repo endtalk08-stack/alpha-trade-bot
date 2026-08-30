@@ -1679,7 +1679,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
     now_kst = datetime.now(timezone(timedelta(hours=9)))
     from_d = (now_kst - timedelta(days=days_back)).strftime("%Y-%m-%d")
     to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
-    cache_key = f"earn_history_v18:{from_d}:{to_d}"
+    cache_key = f"earn_history_v20:{from_d}:{to_d}"
     cached = _cache_get(ALPHA_EARNINGS_CACHE, cache_key, 1800)
     if cached is not None:
         return cached
@@ -1691,6 +1691,8 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
     # Finnhub 전체 캘린더가 일부 주요 종목의 미래 일정을 누락하는 경우
     # 해당 종목만 symbol 단위로 다시 확인합니다.
     future_captured = set()
+    historical_captured = set()
+    recent_cutoff = (now_kst - timedelta(days=30)).strftime("%Y-%m-%d")
 
     if FINNHUB_API_KEY:
         try:
@@ -1735,6 +1737,13 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                 ))
                 captured.add((sym, raw_date))
 
+                # 최근 과거 실적이 실제로 확보되었는지 별도로 기록합니다.
+                try:
+                    if raw_date >= recent_cutoff and raw_date < now_kst.strftime("%Y-%m-%d"):
+                        historical_captured.add(sym)
+                except Exception:
+                    pass
+
                 # 미래 일정이 실제로 확보되었는지 별도로 기록합니다.
                 try:
                     if raw_date >= now_kst.strftime("%Y-%m-%d"):
@@ -1755,8 +1764,14 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
         import time as _calendar_time
 
         missing_future_symbols = [s for s in us_symbols if s not in future_captured]
+        missing_recent_history_symbols = [s for s in us_symbols if s not in historical_captured]
 
-        for sym in missing_future_symbols:
+        # 중복 제거: 최근 과거 또는 미래 중 하나라도 누락된 종목을 개별 재조회합니다.
+        symbols_to_recheck = list(dict.fromkeys(
+            missing_recent_history_symbols + missing_future_symbols
+        ))
+
+        for sym in symbols_to_recheck:
             try:
                 _calendar_time.sleep(0.35)
 
@@ -1784,8 +1799,12 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                         continue
 
                     raw_date = str(it.get("date", "")).strip()
-                    if not raw_date or raw_date < now_kst.strftime("%Y-%m-%d"):
+                    if not raw_date:
                         continue
+
+                    # 과거/현재/미래 모두 허용합니다.
+                    # 과거 실적을 숨기면 날짜 이동형 캘린더의 의미가 없어지므로
+                    # 조회 범위(from_d ~ to_d) 안에서는 날짜를 버리지 않습니다.
 
                     hour = str(it.get("hour", "amc")).lower().strip()
                     eps_est = it.get("epsEstimate")
@@ -1839,7 +1858,10 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                         expected_eps=eps_est,
                         expected_rev=rev_est,
                     ))
-                    future_captured.add(direct_sym)
+                    if raw_date >= recent_cutoff and raw_date < now_kst.strftime("%Y-%m-%d"):
+                        historical_captured.add(direct_sym)
+                    if raw_date >= now_kst.strftime("%Y-%m-%d"):
+                        future_captured.add(direct_sym)
 
             except Exception as exc:
                 print(f"[CALENDAR][EARN] {sym} Finnhub 개별 보강 실패:", repr(exc))

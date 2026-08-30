@@ -4416,8 +4416,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .tsm-barbox,.tsm-box,.tsm-backtest,.tsm-info,.tsm-judgment{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:9px;}
         .tsm-barbox{padding:7px 5px;text-align:center;min-width:0;}
         .tsm-barbox span{display:block;font-size:.60rem;color:var(--text-muted);}
-        .tsm-barbox b{display:block;font-size:.76rem;color:var(--text-title);margin:3px 0;}
-        .tsm-barbox i{display:block;height:5px;border-radius:5px;background:#22c55e;opacity:.75;min-width:2px;}
+        .tsm-barbox b{display:block;font-size:.76rem;color:var(--text-title);margin:3px 0 5px;}
+        .tsm-minibars{height:38px;display:flex;align-items:flex-end;justify-content:center;gap:3px;padding:0 3px;border-bottom:1px solid var(--border-line);}
+        .tsm-minibars i{display:block;width:6px;min-height:3px;border-radius:2px 2px 0 0;background:#22c55e;opacity:.9;}
+        .tsm-vol-row{display:grid;grid-template-columns:88px 1fr;gap:8px;align-items:center;}
+        .tsm-vol-svg{width:100%;height:45px;}
+        .tsm-vol-path{fill:none;stroke:#f59e0b;stroke-width:2.5;vector-effect:non-scaling-stroke;}
         .tsm-grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
         .tsm-box{padding:8px 9px;}
         .tsm-big{font-size:.92rem;font-weight:850;color:var(--text-title);}
@@ -5993,10 +5997,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
   <div class="tsm-section-title">① 모멘텀</div>
   <div class="tsm-momentum">
-    <div class="tsm-barbox"><span>1M</span><b id="tsmM1">-</b><i id="tsmB1"></i></div>
-    <div class="tsm-barbox"><span>3M</span><b id="tsmM3">-</b><i id="tsmB3"></i></div>
-    <div class="tsm-barbox"><span>6M</span><b id="tsmM6">-</b><i id="tsmB6"></i></div>
-    <div class="tsm-barbox"><span>12M</span><b id="tsmM12">-</b><i id="tsmB12"></i></div>
+    <div class="tsm-barbox"><span>1M</span><b id="tsmM1">-</b><div class="tsm-minibars" id="tsmChart1"></div></div>
+    <div class="tsm-barbox"><span>3M</span><b id="tsmM3">-</b><div class="tsm-minibars" id="tsmChart3"></div></div>
+    <div class="tsm-barbox"><span>6M</span><b id="tsmM6">-</b><div class="tsm-minibars" id="tsmChart6"></div></div>
+    <div class="tsm-barbox"><span>12M</span><b id="tsmM12">-</b><div class="tsm-minibars" id="tsmChart12"></div></div>
   </div>
 
   <div class="tsm-grid2">
@@ -6007,8 +6011,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
     <div class="tsm-box">
       <div class="tsm-section-title">③ 변동성</div>
-      <div class="tsm-big" id="tsmVol">-</div>
-      <div class="tsm-muted" id="tsmVolState">-</div>
+      <div class="tsm-vol-row">
+        <div><div class="tsm-big" id="tsmVol">-</div><div class="tsm-muted" id="tsmVolState">-</div></div>
+        <svg class="tsm-vol-svg" viewBox="0 0 240 70" preserveAspectRatio="none" aria-label="변동성 가상 추이 차트">
+          <polyline class="tsm-vol-path" points="3,51 20,43 38,48 56,35 74,40 92,27 110,34 128,22 146,30 164,17 182,25 200,14 218,21 237,10"/>
+        </svg>
+      </div>
     </div>
   </div>
 
@@ -7935,11 +7943,20 @@ document.addEventListener('DOMContentLoaded', function(){
   const p=document.getElementById('tsmProgress');
   if(p)p.style.width=T.score+'%';
 
-  [['tsmB1',T.m.m1],['tsmB3',T.m.m3],['tsmB6',T.m.m6],['tsmB12',T.m.m12]]
-    .forEach(([id,v])=>{
-      const e=document.getElementById(id);
-      if(e){e.style.width=Math.min(100,Math.max(8,v*2.2))+'%';e.style.background='#22c55e';}
-    });
+  const makeBars=(id,base)=>{
+    const box=document.getElementById(id);
+    if(!box)return;
+    const shape=[0.52,0.68,0.44,0.78,0.61,0.88,0.72,1.00];
+    box.innerHTML=shape.map((n,i)=>{
+      const wobble=1+(i%3-1)*0.10;
+      const h=Math.max(6,Math.min(36,base*n*wobble*0.72));
+      return '<i style="height:'+h+'px"></i>';
+    }).join('');
+  };
+  makeBars('tsmChart1',T.m.m1);
+  makeBars('tsmChart3',T.m.m3);
+  makeBars('tsmChart6',T.m.m6);
+  makeBars('tsmChart12',T.m.m12);
 
   const badge=document.getElementById('tsmSignalBadge');
   if(badge){badge.textContent='테스트 · 매수 우세';badge.style.color='#22c55e';}

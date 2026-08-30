@@ -4030,19 +4030,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
             box-sizing: border-box;
         }
 
+        /* 일정 위젯은 전체 사이트의 가독성 기준에 맞춰 한글 우선 글꼴을 사용합니다. */
+        .calendar-widget,
+        .calendar-widget * {
+            font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+        }
+
         .calendar-widget-title {
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 8px;
             margin-bottom: 8px;
-            font-size: 1.0rem;
+            font-size: 1.08rem;
             font-weight: 800;
             color: var(--text-title);
         }
 
         .calendar-widget-badge {
-            font-size: 0.55rem;
+            font-size: 0.58rem;
             font-weight: 800;
             letter-spacing: 0.08em;
             color: var(--text-muted);
@@ -4060,10 +4066,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         .calendar-widget-subtitle {
-            font-size: 0.7rem;
+            font-size: 0.76rem;
             font-weight: 700;
             color: var(--text-muted);
-            margin: 1px 0 6px;
+            margin: 1px 0 7px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -4085,11 +4091,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         .calendar-widget-list .cal-event-title {
-            font-size: 0.7rem;
+            font-size: 0.78rem;
         }
 
         .calendar-widget-list .cal-event-meta {
-            font-size: 0.62rem;
+            font-size: 0.68rem;
         }
 
         .calendar-widget-list .cal-importance-wrap {
@@ -4219,6 +4225,47 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
         .cal-filter-pill.active { background: #ffffff; color: #121212; border-color: #ffffff; }
         .cal-filter-pill .star-gold { color: var(--star-gold); }
+        .calendar-widget .cal-filter-bar {
+            margin: 2px 0 9px;
+            gap: 5px;
+        }
+        .calendar-widget .cal-filter-pill {
+            min-height: 28px;
+            padding: 4px 10px;
+            font-size: 0.76rem;
+            font-weight: 800;
+            line-height: 1;
+            border-radius: 14px;
+        }
+        .calendar-widget .cal-filter-pill.active {
+            box-shadow: 0 0 0 1px rgba(255,255,255,0.08) inset;
+        }
+        .calendar-widget .cal-current-date {
+            font-size: 1.02rem;
+            font-weight: 850;
+        }
+        .calendar-widget .cal-today-btn {
+            font-size: 0.76rem;
+            font-weight: 800;
+            padding: 5px 10px;
+        }
+        .calendar-widget-list .cal-time-col {
+            font-size: 0.72rem;
+            font-weight: 800;
+        }
+        .calendar-widget-list .cal-event-stars {
+            font-size: 0.72rem;
+            font-weight: 900;
+        }
+        .calendar-widget-list .cal-event-title {
+            font-size: 0.80rem;
+            font-weight: 800;
+            line-height: 1.38;
+        }
+        .calendar-widget-list .cal-event-meta {
+            font-size: 0.68rem;
+            line-height: 1.35;
+        }
 
         .cal-day-header { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); margin: 2px 0 6px; }
         
@@ -4333,7 +4380,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             margin-bottom: 2px;
         }
         .calendar-widget-list .cal-event-stars {
-            font-size: 0.62rem;
+            font-size: 0.70rem;
         }
         .cal-event-meta {
             display: flex;
@@ -4922,6 +4969,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <button class="cal-today-btn" onclick="resetEarningsCalendarDate()">오늘</button>
                                 </div>
 
+                                <div class="cal-filter-bar" aria-label="실적 중요도 필터">
+                                    <button class="cal-filter-pill active" id="earnFilterAll" onclick="setEarningsImportanceFilter('all')">전체</button>
+                                    <button class="cal-filter-pill" id="earnFilterStar3" onclick="setEarningsImportanceFilter('star3')"><span class="star-gold">★★★</span></button>
+                                    <button class="cal-filter-pill" id="earnFilterStar2" onclick="setEarningsImportanceFilter('star2')"><span class="star-gold">★★☆</span></button>
+                                    <button class="cal-filter-pill" id="earnFilterStar1" onclick="setEarningsImportanceFilter('star1')"><span class="star-gold">★☆☆</span></button>
+                                </div>
+
                                 <div class="calendar-widget-subtitle" id="earnCalDayHeader">중요 기업 실적 일정</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="earnCalEventList"></div>
 
@@ -4947,6 +5001,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                         <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(1)">&#10095;</button>
                                     </div>
                                     <button class="cal-today-btn" onclick="resetEconomicCalendarDate()">오늘</button>
+                                </div>
+
+                                <div class="cal-filter-bar" aria-label="경제 일정 중요도 필터">
+                                    <button class="cal-filter-pill active" id="ecoFilterAll" onclick="setEconomicImportanceFilter('all')">전체</button>
+                                    <button class="cal-filter-pill" id="ecoFilterStar3" onclick="setEconomicImportanceFilter('star3')"><span class="star-gold">★★★</span></button>
+                                    <button class="cal-filter-pill" id="ecoFilterStar2" onclick="setEconomicImportanceFilter('star2')"><span class="star-gold">★★☆</span></button>
+                                    <button class="cal-filter-pill" id="ecoFilterStar1" onclick="setEconomicImportanceFilter('star1')"><span class="star-gold">★☆☆</span></button>
                                 </div>
 
                                 <div class="calendar-widget-subtitle" id="ecoCalDayHeader">중요 경제지표 일정</div>
@@ -5528,6 +5589,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let earningsCalOffset = 0;
         let economicCalPage = 1;
         let earningsCalPage = 1;
+        let economicImportanceFilter = 'all';
+        let earningsImportanceFilter = 'all';
         const calendarItemsPerPage = 3;
 
         function renderCalendarEventCard(ev) {
@@ -5597,6 +5660,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
                 .filter(ev => ev.type === 'eco' && ev.date_key === info.dateKey && Number(ev.stars || 0) >= 1 && Number(ev.stars || 0) <= 3);
+            if (economicImportanceFilter !== 'all') {
+                const targetStars = economicImportanceFilter === 'star3' ? 3 : (economicImportanceFilter === 'star2' ? 2 : 1);
+                filtered = filtered.filter(ev => Number(ev.stars || 0) === targetStars);
+            }
 
             setTxt(
                 'ecoCalDayHeader',
@@ -5643,17 +5710,31 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 .sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
 
             let filtered = allEarnings.filter(ev => ev.date_key === info.dateKey);
+            if (earningsImportanceFilter !== 'all') {
+                const targetStars = earningsImportanceFilter === 'star3' ? 3 : (earningsImportanceFilter === 'star2' ? 2 : 1);
+                filtered = filtered.filter(ev => Number(ev.stars || 0) === targetStars);
+            }
 
             // 오늘 실적이 없으면 가장 가까운 향후 주요 실적 날짜를 자동으로 보여줍니다.
             if (!filtered.length && Number(earningsCalOffset || 0) === 0 && allEarnings.length) {
                 const nowTs = Date.now() / 1000;
-                const upcoming = allEarnings.find(ev => Number(ev.ts || 0) >= nowTs);
+                const upcoming = allEarnings.find(ev => {
+                    if (Number(ev.ts || 0) < nowTs) return false;
+                    if (earningsImportanceFilter === 'all') return true;
+                    const targetStars = earningsImportanceFilter === 'star3' ? 3 : (earningsImportanceFilter === 'star2' ? 2 : 1);
+                    return Number(ev.stars || 0) === targetStars;
+                });
                 if (upcoming) {
                     earningsCalOffset = Math.max(0, Math.round((new Date(upcoming.date_key.replace(/\./g, '-')).getTime() - new Date().setHours(0,0,0,0)) / 86400000));
                     earningsCalPage = 1;
                     const nextInfo = getCalendarDateInfo(earningsCalOffset);
                     setTxt('earnCalDisplayDate', nextInfo.display);
-                    filtered = allEarnings.filter(ev => ev.date_key === nextInfo.dateKey);
+                    filtered = allEarnings.filter(ev => {
+                        if (ev.date_key !== nextInfo.dateKey) return false;
+                        if (earningsImportanceFilter === 'all') return true;
+                        const targetStars = earningsImportanceFilter === 'star3' ? 3 : (earningsImportanceFilter === 'star2' ? 2 : 1);
+                        return Number(ev.stars || 0) === targetStars;
+                    });
                 }
             }
 
@@ -5688,6 +5769,26 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 .slice(startIdx, startIdx + calendarItemsPerPage)
                 .map(renderCalendarEventCard)
                 .join('');
+        }
+
+        function setEconomicImportanceFilter(filterKey) {
+            economicImportanceFilter = filterKey || 'all';
+            economicCalPage = 1;
+            ['All', 'Star3', 'Star2', 'Star1'].forEach(key => {
+                const el = document.getElementById('ecoFilter' + key);
+                if (el) el.classList.toggle('active', (key === 'All' && economicImportanceFilter === 'all') || (key === 'Star3' && economicImportanceFilter === 'star3') || (key === 'Star2' && economicImportanceFilter === 'star2') || (key === 'Star1' && economicImportanceFilter === 'star1'));
+            });
+            renderEconomicCalendarView();
+        }
+
+        function setEarningsImportanceFilter(filterKey) {
+            earningsImportanceFilter = filterKey || 'all';
+            earningsCalPage = 1;
+            ['All', 'Star3', 'Star2', 'Star1'].forEach(key => {
+                const el = document.getElementById('earnFilter' + key);
+                if (el) el.classList.toggle('active', (key === 'All' && earningsImportanceFilter === 'all') || (key === 'Star3' && earningsImportanceFilter === 'star3') || (key === 'Star2' && earningsImportanceFilter === 'star2') || (key === 'Star1' && earningsImportanceFilter === 'star1'));
+            });
+            renderEarningsCalendarView();
         }
 
         function shiftEconomicCalendarDate(delta) {

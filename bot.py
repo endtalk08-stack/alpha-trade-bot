@@ -1621,6 +1621,63 @@ def _parse_calendar_timestamp(raw_value):
         return None
 
 
+def fetch_real_market_calendar_live():
+    """실적 + 경제 캘린더를 실제 API에서 가져와 화면용 단일 배열로 합칩니다."""
+    global CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
+
+    now = time.time()
+
+    if CACHED_MARKET_CALENDAR and (now - LAST_CALENDAR_FETCH_TIME) < 600:
+        return CACHED_MARKET_CALENDAR
+
+    earnings = []
+    economic = []
+
+    try:
+        earnings = fetch_all_real_earnings() or []
+    except Exception as exc:
+        print("[MARKET CALENDAR] 실적 캘린더 조회 실패:", repr(exc))
+
+    try:
+        economic = fetch_economic_calendar_history_future(
+            days_back=180,
+            days_forward=90,
+        ) or []
+    except Exception as exc:
+        print("[MARKET CALENDAR] 경제 캘린더 조회 실패:", repr(exc))
+
+    combined = [
+        ev for ev in (earnings + economic)
+        if isinstance(ev, dict) and ev.get("date_key")
+    ]
+
+    unique = {}
+    for ev in combined:
+        key = (
+            ev.get("type", ""),
+            ev.get("ticker", ""),
+            ev.get("date_key", ""),
+            ev.get("time", ""),
+            ev.get("name", ""),
+        )
+        unique[key] = ev
+
+    combined = sorted(unique.values(), key=lambda x: x.get("ts", 0))
+
+    # 빈 결과는 캐시하지 않습니다.
+    if combined:
+        CACHED_MARKET_CALENDAR = combined
+        LAST_CALENDAR_FETCH_TIME = now
+        print(
+            f"[MARKET CALENDAR] 정상 수집: 전체 {len(combined)}건 / "
+            f"실적 {len(earnings)}건 / 경제 {len(economic)}건"
+        )
+        return combined
+
+    print("[MARKET CALENDAR] 실적/경제 캘린더 데이터가 없습니다.")
+    return CACHED_MARKET_CALENDAR or []
+
+
 def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
     """경제 캘린더를 과거/현재/미래까지 안정적으로 수집한다.
 
@@ -1722,7 +1779,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
                             else "발표대기"
                         )
 
-                    events.extend(
+                    events.append(
                         _calendar_event_common(
                             dt,
                             full_name,
@@ -1837,7 +1894,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
                                 else "발표대기"
                             )
 
-                        events.extend(
+                        events.append(
                             _calendar_event_common(
                                 dt,
                                 full_name,
@@ -1925,7 +1982,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
                     else "발표대기"
                 )
 
-                events.extend(
+                events.append(
                     _calendar_event_common(
                         dt,
                         full_name,

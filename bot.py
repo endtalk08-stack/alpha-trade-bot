@@ -7387,11 +7387,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function resetEconomicCalendarDate() {
-            // [오늘] 버튼은 실제 오늘 날짜가 아니라 현재 경제지표가 표시되는 기준점으로 복귀합니다.
-            // 오늘 일정이 없으면 findNearestEconomicOffset()이 가장 가까운 예정 지표 날짜를 찾습니다.
-            economicCalOffset = findNearestEconomicOffset();
+            economicCalOffset = 0;
             economicCalPage = 1;
-            economicCalendarAutoJumped = true;
             renderEconomicCalendarView();
         }
 
@@ -8075,7 +8072,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
                     const trackDetailList = document.getElementById('trackDetailList');
                     if (trackDetailList) {
-                        trackDetailList.innerHTML = evidenceReasons.map(r => {
+                        const trackOrder = ['시장 5일 흐름','시장','업종·테마','외국인 수급','기관 수급','기업 재료','거래량','거래대금'];
+                        const orderedEvidenceReasons = trackOrder
+                            .map(label => evidenceReasons.find(r => r && r.label === label))
+                            .filter(Boolean);
+                        trackDetailList.innerHTML = orderedEvidenceReasons.map(r => {
                             const score = Number(r.score || 0);
                             const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
                             const statusClass =

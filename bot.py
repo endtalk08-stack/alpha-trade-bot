@@ -1441,6 +1441,9 @@ def fetch_all_real_earnings():
             url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
             res = HTTP_SESSION.get(url, timeout=3.0).json()
             items = res.get("earningsCalendar", [])
+            
+            print(f"[EARNINGS DEBUG] Finnhub 원본: {len(items)}건")
+            print(f"[EARNINGS DEBUG] Finnhub 종목: {[str(x.get('symbol','')).upper() for x in items]}")
 
             for it in items:
                 sym = str(it.get("symbol", "")).upper()

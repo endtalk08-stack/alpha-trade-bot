@@ -4405,67 +4405,50 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
         .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
 
-        /* 기관형 추세추종 레이아웃 전용 - 다른 카드/캘린더 스타일을 건드리지 않음 */
-        .tsm-card{min-width:0;overflow:hidden;}
-        .tsm-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;}
-        .tsm-title{font-size:1.05rem;font-weight:900;color:var(--text-title);}
-        .tsm-subtitle{font-size:.76rem;font-weight:700;color:var(--text-muted);}
-        .tsm-pro{display:inline-block;margin-left:5px;padding:2px 7px;border:1px solid #7c3aed;border-radius:9px;color:#a78bfa;font-size:.60rem;font-weight:900;}
-        .tsm-head-signal{padding:4px 9px;border:1px solid rgba(16,185,129,.35);border-radius:10px;color:#10b981;background:rgba(16,185,129,.08);font-size:.68rem;font-weight:900;white-space:nowrap;}
-        .tsm-overview{display:grid;grid-template-columns:145px minmax(0,1fr);gap:12px;padding-bottom:10px;border-bottom:1px solid var(--border-line);}
-        .tsm-score-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;}
-        .tsm-score-ring{width:106px;height:106px;border-radius:50%;border:8px solid rgba(16,185,129,.22);display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--text-title);font-size:1.65rem;font-weight:900;line-height:1;box-sizing:border-box;}
-        .tsm-score-ring small{font-size:.56rem;color:var(--text-muted);margin-top:4px;font-weight:700;}
-        .tsm-score-label{font-size:.64rem;color:var(--text-muted);margin-top:4px;}
-        .tsm-overview-main{min-width:0;}
-        .tsm-overview-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-bottom:8px;}
-        .tsm-overview-grid>div{min-width:0;}
-        .tsm-overview-grid span,.tsm-state-grid span,.tsm-signal-meta span{display:block;color:var(--text-muted);font-size:.61rem;}
-        .tsm-overview-grid b{display:block;color:var(--text-title);font-size:.80rem;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-        .tsm-price-chart-box,.tsm-equity-box{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:8px;padding:6px;min-width:0;}
-        .tsm-chart-head{display:flex;justify-content:space-between;align-items:center;font-size:.61rem;color:var(--text-muted);margin-bottom:3px;}
-        .tsm-chart-head b{color:#38bdf8;font-size:.65rem;}
-        #tsmPriceChart,#tsmVolChart,#tsmEquityChart{display:block;width:100%;height:100%;}
-        #tsmPriceChart{height:55px;}
-        .tsm-section-title{font-size:.68rem;font-weight:900;color:var(--text-title);margin-bottom:7px;}
-        .tsm-section-title em{font-style:normal;color:var(--text-muted);font-weight:700;}
-        .tsm-momentum-row{margin-top:9px;padding:9px 10px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:8px;}
-        .tsm-bars{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;}
-        .tsm-bar-item{text-align:center;min-width:0;}
-        .tsm-bar-value{font-size:.68rem;font-weight:900;color:var(--text-title);margin-bottom:4px;white-space:nowrap;}
-        .tsm-bar-track{height:44px;background:rgba(148,163,184,.10);border-radius:4px;display:flex;align-items:flex-end;overflow:hidden;border:1px solid var(--border-line);}
-        .tsm-bar-track i{display:block;width:100%;height:8%;background:#10b981;border-radius:3px 3px 0 0;}
-        .tsm-bar-item span{display:block;color:var(--text-muted);font-size:.58rem;margin-top:3px;}
-        .tsm-grid-2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-top:8px;}
-        .tsm-panel{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:8px;padding:9px 10px;min-width:0;}
-        .tsm-direction-line{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-        .tsm-direction-line b{font-size:1rem;color:#10b981;}
-        .tsm-direction-line span{font-size:.65rem;color:var(--text-muted);}
-        .tsm-strength-track{height:7px;background:rgba(148,163,184,.15);border-radius:6px;overflow:hidden;margin-top:7px;border:1px solid var(--border-line);}
-        .tsm-strength-track i{display:block;width:0;height:100%;background:linear-gradient(90deg,#38bdf8,#10b981);border-radius:6px;}
-        .tsm-small-note{font-size:.61rem;line-height:1.45;color:var(--text-muted);margin-top:5px;word-break:keep-all;}
-        .tsm-vol-line{display:flex;align-items:baseline;gap:6px;margin-bottom:4px;}
-        .tsm-vol-line b{font-size:1rem;color:#f59e0b;}.tsm-vol-line span{font-size:.65rem;color:#f59e0b;}
-        #tsmVolChart{height:48px;}
-        .tsm-big-signal{font-size:1.05rem;font-weight:900;color:#10b981;margin-bottom:7px;}
-        .tsm-signal-meta{display:flex;justify-content:space-between;padding-top:5px;border-top:1px solid var(--border-line);margin-top:5px;}
-        .tsm-signal-meta b{font-size:.65rem;color:var(--text-title);}
-        .tsm-position-value{font-size:1.12rem;font-weight:900;color:#10b981;}
-        .tsm-state-panel{margin-top:8px;}
-        .tsm-state-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;}
-        .tsm-state-grid b{display:block;font-size:.68rem;color:var(--text-title);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-        .tsm-backtest{margin-top:8px;padding:10px;background:rgba(16,185,129,.035);border:1px solid rgba(16,185,129,.22);border-radius:9px;}
-        .tsm-backtest-head{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:8px;}
-        .tsm-backtest-period{padding:3px 7px;border-radius:8px;background:rgba(56,189,248,.10);border:1px solid rgba(56,189,248,.22);color:#38bdf8;font-size:.59rem;font-weight:800;white-space:nowrap;}
-        .tsm-backtest-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(190px,1fr);gap:8px;}
-        .tsm-equity-box svg{height:125px;}
-        .tsm-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;}
-        .tsm-stats>div{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:7px;min-width:0;}
-        .tsm-stats span{display:block;color:var(--text-muted);font-size:.58rem;}.tsm-stats b{display:block;color:var(--text-title);font-size:.82rem;margin-top:3px;}
-        .tsm-judgment{display:flex;align-items:flex-start;gap:8px;margin-top:8px;padding:9px 10px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:9px;}
-        .tsm-judgment-icon{font-size:1rem;}.tsm-judgment span{display:block;color:var(--text-muted);font-size:.61rem;}.tsm-judgment b{display:block;color:#10b981;font-size:.76rem;margin-top:2px;}.tsm-judgment p{margin:3px 0 0;color:var(--text-muted);font-size:.62rem;line-height:1.45;word-break:keep-all;}
-        @media(max-width:900px){.tsm-overview{grid-template-columns:100px minmax(0,1fr);}.tsm-score-ring{width:88px;height:88px;font-size:1.35rem}.tsm-overview-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.tsm-backtest-layout{grid-template-columns:1fr;}.tsm-stats{grid-template-columns:repeat(3,minmax(0,1fr));}}
-        @media(max-width:600px){.tsm-head{align-items:flex-start}.tsm-subtitle{display:block;margin-top:2px}.tsm-overview{grid-template-columns:1fr;}.tsm-score-wrap{flex-direction:row;justify-content:flex-start;gap:9px}.tsm-score-label{margin-top:0}.tsm-bars{gap:4px}.tsm-grid-2{grid-template-columns:1fr}.tsm-state-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.tsm-stats{grid-template-columns:repeat(2,minmax(0,1fr));}.tsm-equity-box svg{height:110px;}}
+
+        .tsm-summary{display:grid;grid-template-columns:125px 1fr;gap:14px;align-items:center;padding:8px 0 11px;border-bottom:1px solid var(--border-line);}
+        .tsm-score-ring{width:96px;height:96px;border-radius:50%;border:7px solid rgba(34,197,94,.18);box-sizing:border-box;display:flex;flex-direction:column;align-items:center;justify-content:center;}
+        .tsm-score-ring b{font-size:1.65rem;line-height:1;color:var(--text-title);}
+        .tsm-score-ring span,.tsm-label,.tsm-muted{font-size:.65rem;color:var(--text-muted);}
+        .tsm-direction{font-size:1.15rem;font-weight:900;color:var(--text-title);margin:4px 0;}
+        .tsm-section-title{font-size:.70rem;font-weight:800;color:var(--text-muted);margin:8px 0 6px;}
+        .tsm-momentum{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;}
+        .tsm-barbox,.tsm-box,.tsm-backtest,.tsm-info,.tsm-judgment{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:9px;}
+        .tsm-barbox{padding:7px 5px;text-align:center;min-width:0;}
+        .tsm-barbox span{display:block;font-size:.60rem;color:var(--text-muted);}
+        .tsm-barbox b{display:block;font-size:.76rem;color:var(--text-title);margin:3px 0;}
+        .tsm-barbox i{display:block;height:5px;border-radius:5px;background:#22c55e;opacity:.75;min-width:2px;}
+        .tsm-grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
+        .tsm-box{padding:8px 9px;}
+        .tsm-big{font-size:.92rem;font-weight:850;color:var(--text-title);}
+        .tsm-progress{height:8px;border-radius:8px;background:var(--border-line);overflow:hidden;}
+        .tsm-progress span{display:block;height:100%;width:0;background:#22c55e;border-radius:8px;}
+        .tsm-progress-label{display:flex;justify-content:space-between;margin-top:3px;font-size:.58rem;color:var(--text-muted);}
+        .tsm-progress-label b{color:var(--text-title);}
+        .tsm-state{margin-top:8px;}
+        .tsm-state-text{font-size:.76rem;color:var(--text-sub);line-height:1.5;}
+        .tsm-backtest{margin-top:8px;padding:9px;}
+        .tsm-equity{height:70px;border-bottom:1px solid var(--border-line);position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(34,197,94,.04),transparent);}
+        .tsm-chart-line{position:absolute;left:3%;right:3%;bottom:13px;height:42px;border-top:2px solid #22c55e;transform:skewY(-9deg);opacity:.75;}
+        .tsm-equity span{position:absolute;left:8px;top:7px;font-size:.60rem;color:var(--text-muted);}
+        .tsm-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;margin-top:7px;}
+        .tsm-stats div{text-align:center;}
+        .tsm-stats b{display:block;font-size:.78rem;color:var(--text-title);}
+        .tsm-stats span{font-size:.58rem;color:var(--text-muted);}
+        .tsm-info{margin-top:8px;padding:9px 10px;}
+        .tsm-info b{font-size:.76rem;color:var(--text-title);}
+        .tsm-info p{font-size:.68rem;line-height:1.45;color:var(--text-sub);margin:4px 0 0;}
+        .tsm-judgment{margin-top:8px;padding:9px 10px;}
+        .tsm-judgment #tsmJudgment{font-size:.76rem;line-height:1.5;color:var(--text-sub);}
+        @media(max-width:700px){
+          .tsm-summary{grid-template-columns:100px 1fr;}
+          .tsm-score-ring{width:82px;height:82px;}
+          .tsm-score-ring b{font-size:1.4rem;}
+          .tsm-grid2{grid-template-columns:1fr;}
+          .tsm-momentum{gap:4px;}
+          .tsm-barbox{padding:6px 3px;}
+          .tsm-stats{grid-template-columns:repeat(2,1fr);row-gap:8px;}
+        }
 
         /* [핵심 마스터 그리드] PC: 832px(좌) + 348px(우) 완벽 대칭 구조 */
         .dashboard-master-grid {
@@ -5985,115 +5968,94 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 기관형 추세추종 분석: 레이아웃 전용 / 기존 캘린더 영역은 수정하지 않음 -->
-                        <div class="card tsm-card" id="rowTrack" style="justify-content:flex-start;">
-                            <div class="tsm-head">
-                                <div>
-                                    <span class="tsm-title">기관형 추세추종 분석</span>
-                                    <span class="tsm-subtitle">(Time-Series Momentum)</span>
-                                    <span class="tsm-pro">PRO</span>
-                                </div>
-                                <div class="tsm-head-signal" id="tsmHeadSignal">분석 대기</div>
-                            </div>
+                        <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
+                        
+<div class="card" id="rowTrack" style="justify-content:flex-start;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+    <span style="font-size:1.05rem;font-weight:800;color:var(--text-title);">기관형 추세추종 분석</span>
+    <span id="tsmSignalBadge" style="font-size:.70rem;font-weight:800;padding:4px 9px;border-radius:10px;background:rgba(56,189,248,.10);color:#38bdf8;border:1px solid rgba(56,189,248,.20);">분석 대기</span>
+  </div>
 
-                            <div class="tsm-overview">
-                                <div class="tsm-score-wrap">
-                                    <div class="tsm-score-ring"><span id="tsmScore">-</span><small>/100</small></div>
-                                    <div class="tsm-score-label">추세 점수</div>
-                                </div>
-                                <div class="tsm-overview-main">
-                                    <div class="tsm-overview-grid">
-                                        <div><span>현재 주가</span><b id="tsmPrice">-</b></div>
-                                        <div><span>오늘 등락률</span><b id="tsmChange">-</b></div>
-                                        <div><span>추세 방향</span><b id="tsmDirection">-</b></div>
-                                        <div><span>기간 일치</span><b id="tsmAlignment">-</b></div>
-                                    </div>
-                                    <div class="tsm-price-chart-box">
-                                        <div class="tsm-chart-head"><span>최근 60거래일 가격 흐름</span><b id="tsm60d">-</b></div>
-                                        <svg id="tsmPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
-                                    </div>
-                                </div>
-                            </div>
+  <div class="tsm-summary">
+    <div class="tsm-score">
+      <div class="tsm-score-ring"><b id="tsmScore">-</b><span>추세점수</span></div>
+    </div>
+    <div>
+      <div class="tsm-label">현재 추세</div>
+      <div id="tsmDirection" class="tsm-direction">-</div>
+      <div id="tsmAlignment" class="tsm-muted">기간 일치 -</div>
+    </div>
+  </div>
 
-                            <div class="tsm-momentum-row">
-                                <div class="tsm-section-title">1. 모멘텀 <em>(수익률)</em></div>
-                                <div class="tsm-bars">
-                                    <div class="tsm-bar-item"><div class="tsm-bar-value" id="tsmM1">-</div><div class="tsm-bar-track"><i id="tsmBar1"></i></div><span>1M</span></div>
-                                    <div class="tsm-bar-item"><div class="tsm-bar-value" id="tsmM3">-</div><div class="tsm-bar-track"><i id="tsmBar3"></i></div><span>3M</span></div>
-                                    <div class="tsm-bar-item"><div class="tsm-bar-value" id="tsmM6">-</div><div class="tsm-bar-track"><i id="tsmBar6"></i></div><span>6M</span></div>
-                                    <div class="tsm-bar-item"><div class="tsm-bar-value" id="tsmM12">-</div><div class="tsm-bar-track"><i id="tsmBar12"></i></div><span>12M</span></div>
-                                </div>
-                            </div>
+  <div class="tsm-section-title">① 모멘텀</div>
+  <div class="tsm-momentum">
+    <div class="tsm-barbox"><span>1M</span><b id="tsmM1">-</b><i id="tsmB1"></i></div>
+    <div class="tsm-barbox"><span>3M</span><b id="tsmM3">-</b><i id="tsmB3"></i></div>
+    <div class="tsm-barbox"><span>6M</span><b id="tsmM6">-</b><i id="tsmB6"></i></div>
+    <div class="tsm-barbox"><span>12M</span><b id="tsmM12">-</b><i id="tsmB12"></i></div>
+  </div>
 
-                            <div class="tsm-grid-2">
-                                <div class="tsm-panel">
-                                    <div class="tsm-section-title">2. 추세 방향 &amp; 강도</div>
-                                    <div class="tsm-direction-line"><b id="tsmDirection2">-</b><span id="tsmStrength">강도 -/100</span></div>
-                                    <div class="tsm-strength-track"><i id="tsmStrengthBar"></i></div>
-                                    <div class="tsm-small-note" id="tsmTrendNote">추세 데이터를 계산하면 표시됩니다.</div>
-                                </div>
-                                <div class="tsm-panel">
-                                    <div class="tsm-section-title">3. 변동성 <em>(20D)</em></div>
-                                    <div class="tsm-vol-line"><b id="tsmVol">-</b><span id="tsmVolState">-</span></div>
-                                    <svg id="tsmVolChart" viewBox="0 0 300 90" preserveAspectRatio="none"></svg>
-                                </div>
-                            </div>
+  <div class="tsm-grid2">
+    <div class="tsm-box">
+      <div class="tsm-section-title">② 추세 방향 & 강도</div>
+      <div class="tsm-progress"><span id="tsmProgress"></span></div>
+      <div class="tsm-progress-label"><span>0</span><b id="tsmStrength">-</b><span>100</span></div>
+    </div>
+    <div class="tsm-box">
+      <div class="tsm-section-title">③ 변동성</div>
+      <div class="tsm-big" id="tsmVol">-</div>
+      <div class="tsm-muted" id="tsmVolState">-</div>
+    </div>
+  </div>
 
-                            <div class="tsm-grid-2">
-                                <div class="tsm-panel">
-                                    <div class="tsm-section-title">4. 매매신호</div>
-                                    <div class="tsm-big-signal" id="tsmSignal">-</div>
-                                    <div class="tsm-signal-meta"><span>신호 발생일</span><b id="tsmSignalDate">-</b></div>
-                                    <div class="tsm-signal-meta"><span>신호 유지</span><b id="tsmSignalDays">-</b></div>
-                                </div>
-                                <div class="tsm-panel">
-                                    <div class="tsm-section-title">5. 포지션 크기 <em>(참고 비중)</em></div>
-                                    <div class="tsm-position-value" id="tsmPosition">-</div>
-                                    <div class="tsm-strength-track"><i id="tsmPositionBar"></i></div>
-                                    <div class="tsm-small-note">변동성 기반 위험관리 참고치</div>
-                                </div>
-                            </div>
+  <div class="tsm-grid2">
+    <div class="tsm-box">
+      <div class="tsm-section-title">④ 매매신호</div>
+      <div class="tsm-big" id="tsmSignal">-</div>
+      <div class="tsm-muted">현재 추세 기반 신호</div>
+    </div>
+    <div class="tsm-box">
+      <div class="tsm-section-title">⑤ 포지션</div>
+      <div class="tsm-big" id="tsmPosition">-</div>
+      <div class="tsm-muted">변동성 기반 참고 비중</div>
+    </div>
+  </div>
 
-                            <div class="tsm-panel tsm-state-panel">
-                                <div class="tsm-section-title">6. 전략 상태</div>
-                                <div class="tsm-state-grid">
-                                    <div><span>현재 포지션</span><b id="tsmStatePosition">-</b></div>
-                                    <div><span>추세 상태</span><b id="tsmStateTrend">-</b></div>
-                                    <div><span>위험 수준</span><b id="tsmStateRisk">-</b></div>
-                                    <div><span>다음 확인</span><b id="tsmStateNext">-</b></div>
-                                </div>
-                            </div>
+  <div class="tsm-box tsm-state">
+    <div class="tsm-section-title">⑥ 전략 상태</div>
+    <div id="tsmState" class="tsm-state-text">-</div>
+  </div>
 
-                            <!-- 7번을 핵심 영역으로 크게 확보: 실제 백테스트 값 연결 전 레이아웃 -->
-                            <div class="tsm-backtest">
-                                <div class="tsm-backtest-head">
-                                    <div>
-                                        <div class="tsm-section-title">7. 과거 성과 <em>(백테스트)</em></div>
-                                        <div class="tsm-small-note">실제 전략 백테스트 결과를 이 영역에 연결</div>
-                                    </div>
-                                    <span class="tsm-backtest-period" id="tsmBtPeriod">검증 예정</span>
-                                </div>
-                                <div class="tsm-backtest-layout">
-                                    <div class="tsm-equity-box">
-                                        <div class="tsm-chart-head"><span>누적 수익률</span><b id="tsmBtReturn">-</b></div>
-                                        <svg id="tsmEquityChart" viewBox="0 0 620 180" preserveAspectRatio="none"></svg>
-                                    </div>
-                                    <div class="tsm-stats">
-                                        <div><span>CAGR</span><b id="tsmCagr">-</b></div>
-                                        <div><span>승률</span><b id="tsmWin">-</b></div>
-                                        <div><span>최대 낙폭 MDD</span><b id="tsmMdd">-</b></div>
-                                        <div><span>Sharpe</span><b id="tsmSharpe">-</b></div>
-                                        <div><span>평균 보유</span><b id="tsmHold">-</b></div>
-                                        <div><span>총 거래</span><b id="tsmTrades">-</b></div>
-                                    </div>
-                                </div>
-                            </div>
+  <div class="tsm-backtest">
+    <div class="tsm-section-title">⑦ 과거 성과</div>
+    <div class="tsm-equity">
+      <div class="tsm-chart-line"></div>
+      <span>누적수익률</span>
+    </div>
+    <div class="tsm-stats">
+      <div><b id="tsmCagr">-</b><span>CAGR</span></div>
+      <div><b id="tsmWin">-</b><span>승률</span></div>
+      <div><b id="tsmMdd">-</b><span>MDD</span></div>
+      <div><b id="tsmSharpe">-</b><span>Sharpe</span></div>
+    </div>
+    <div id="tsmBtMeta" class="tsm-muted">-</div>
+  </div>
 
-                            <div class="tsm-judgment">
-                                <div class="tsm-judgment-icon">🐜</div>
-                                <div><span>종합 판단</span><b id="tsmJudgment">기관형 추세추종 분석을 준비 중입니다.</b><p id="tsmJudgmentDetail">레이아웃 확정 후 실제 계산식과 백테스트 데이터를 연결합니다.</p></div>
-                            </div>
-                        </div>
+  <div class="tsm-info">
+    <b>기관형 추세추종이란?</b>
+    <p>가격의 추세가 일정 기간 지속되는 경향을 분석하는 추세추종 방식입니다.</p>
+    <p>2012년 Moskowitz·Ooi·Pedersen 연구에서 25년 이상의 데이터와 58개 선물·선도 상품의 1~12개월 추세 지속성을 분석했습니다.</p>
+    <p>gaemiGTP는 이 개념을 참고해 여러 기간의 모멘텀·추세·변동성을 분석합니다.</p>
+  </div>
+
+  <div class="tsm-judgment">
+    <div class="tsm-section-title">종합 판단</div>
+    <div id="tsmJudgment">-</div>
+  </div>
+</div>
+
+
+                        
 
                         <!-- 4행 우측: 실적 일정 (트랙 분석과 1:1 높이) -->
                             <!-- 실적 일정 -->
@@ -7614,83 +7576,133 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
                     `;
 
-                    // 기관형 추세추종 레이아웃 렌더링
-                    // 주의: 이번 단계에서는 레이아웃만 교체한다. 기존 경제/실적 캘린더 및 백엔드 계산은 건드리지 않는다.
+                    // 트랙 분석: 퀀트 분석과 동일한 카드형 레이아웃을 사용한다.
+                    const trackPriceVal = document.getElementById('tPriceVal');
+                    const trackChangeVal = document.getElementById('tChangeVal');
+                    const trackEvidenceVal = document.getElementById('tEvidenceCountVal');
+                    const trackStatusBadge = document.getElementById('tStatusBadge');
+                    const trackStatusDots = document.getElementById('tStatusDots');
+                    const trackPriceTrendTxt = document.getElementById('tPriceTrendTxt');
+
+                    if (trackPriceVal) trackPriceVal.innerText = data.price_str || '-';
+
+                    const cp = Number(data.current_change_pct);
+                    if (trackChangeVal) {
+                        trackChangeVal.innerText = Number.isFinite(cp) ? `${cp >= 0 ? '+' : ''}${cp.toFixed(2)}%` : '-';
+                        trackChangeVal.style.color =
+                            Number.isFinite(cp) && cp > 0 ? '#10b981' :
+                            (Number.isFinite(cp) && cp < 0 ? '#ef4444' : 'var(--text-title)');
+                    }
+
+                    if (trackEvidenceVal) {
+                        trackEvidenceVal.innerText = `${evidenceCount}/8`;
+                    }
+                    if (trackStatusBadge) {
+                        trackStatusBadge.innerText = mr.confidence || '-';
+                        trackStatusBadge.style.cssText = confidenceStyle;
+                    }
+                    if (trackStatusDots) {
+                        trackStatusDots.innerText =
+                            evidenceCount > 0
+                                ? `확인된 근거 ${evidenceCount}개 · 실제 데이터 기준`
+                                : '확인된 근거 부족 · 추가 확인 필요';
+                    }
+
+                    // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
+                    const tPriceChart = document.getElementById('tPriceChart');
+                    const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
+                    const trackVals = candleRows
+                        .map(x => Number(x && x.c))
+                        .filter(Number.isFinite);
+
+                    if (tPriceChart && trackVals.length > 1) {
+                        const first = trackVals[0];
+                        const normalized = first !== 0 ? trackVals.map(v => ((v / first) - 1) * 100) : [];
+                        if (normalized.length > 1 && normalized.every(Number.isFinite)) {
+                            const W = 600, H = 120, pad = 8;
+                            const minV = Math.min(...normalized), maxV = Math.max(...normalized);
+                            const span = Math.max(0.01, maxV - minV);
+                            const x = i => pad + i * ((W - pad * 2) / Math.max(1, normalized.length - 1));
+                            const y = v => pad + ((maxV - v) / span) * (H - pad * 2);
+                            const coords = normalized.map((v,i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+                            const linePath = 'M ' + coords.join(' L ');
+                            const baseY = y(0);
+                            const areaPath = `M ${coords[0].split(',')[0]},${baseY.toFixed(1)} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${baseY.toFixed(1)} Z`;
+                            const last = normalized[normalized.length - 1];
+                            const stroke = last >= 0 ? '#10b981' : '#ef4444';
+
+                            tPriceChart.innerHTML = `
+                                <defs>
+                                    <linearGradient id="tPriceFill" x1="0" x2="0" y1="0" y2="1">
+                                        <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"/>
+                                        <stop offset="100%" stop-color="${stroke}" stop-opacity="0.02"/>
+                                    </linearGradient>
+                                </defs>
+                                <line x1="0" y1="${baseY.toFixed(1)}" x2="600" y2="${baseY.toFixed(1)}"
+                                      stroke="rgba(148,163,184,0.20)" stroke-width="1" stroke-dasharray="4 4"/>
+                                <path d="${areaPath}" fill="url(#tPriceFill)"/>
+                                <path d="${linePath}" fill="none" stroke="${stroke}" stroke-width="3"
+                                      vector-effect="non-scaling-stroke"/>
+                                <circle cx="${coords[coords.length-1].split(',')[0]}"
+                                        cy="${coords[coords.length-1].split(',')[1]}"
+                                        r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2"
+                                        vector-effect="non-scaling-stroke"/>
+                            `;
+
+                            if (trackPriceTrendTxt) {
+                                const p = normalized[normalized.length - 1];
+                                trackPriceTrendTxt.innerText =
+                                    `최근 60D ${p >= 0 ? '+' : ''}${p.toFixed(2)}%`;
+                            }
+                        }
+                    } else if (trackPriceTrendTxt) {
+                        trackPriceTrendTxt.innerText = '데이터 부족';
+                    }
+
+                    // 52주 가격 위치: 현재 퀀트 데이터와 동일한 실제 값 사용.
                     const tq = data.quant || {};
-                    const setTsm = (id, value, color) => {
-                        const el = document.getElementById(id);
-                        if (!el) return;
-                        el.innerText = value;
-                        if (color) el.style.color = color;
-                    };
-                    const num = v => Number(v);
-                    const fmtPct = v => Number.isFinite(num(v)) ? `${num(v) >= 0 ? '+' : ''}${num(v).toFixed(1)}%` : '-';
+                    setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
+                    setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
+                    setTxt('tPos52wLabel', tq.pos_52w ? `52주 가격 위치 ${tq.pos_52w}` : '52주 가격 위치');
 
-                    setTsm('tsmPrice', data.price_str || '-');
-                    const cpTsm = num(data.current_change_pct);
-                    setTsm('tsmChange', Number.isFinite(cpTsm) ? `${cpTsm >= 0 ? '+' : ''}${cpTsm.toFixed(2)}%` : '-', cpTsm > 0 ? '#10b981' : cpTsm < 0 ? '#ef4444' : 'var(--text-title)');
+                    const sliderPct = Number(tq.slider_fill_pct);
+                    const tFill = document.getElementById('tSliderFill');
+                    if (tFill && Number.isFinite(sliderPct)) tFill.style.width = `${sliderPct}%`;
 
-                    // 기존 실제 60D candles를 그대로 사용하여 상단 가격 차트만 표시
-                    const tsmPriceChart = document.getElementById('tsmPriceChart');
-                    const candleRowsTsm = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
-                    const valsTsm = candleRowsTsm.map(x => num(x && x.c)).filter(Number.isFinite);
-                    if (tsmPriceChart && valsTsm.length > 1) {
-                        const first = valsTsm[0];
-                        const normalized = first !== 0 ? valsTsm.map(v => ((v / first) - 1) * 100) : [];
-                        const W=600,H=120,pad=8,minV=Math.min(...normalized),maxV=Math.max(...normalized),span=Math.max(.01,maxV-minV);
-                        const x=i=>pad+i*((W-pad*2)/Math.max(1,normalized.length-1));
-                        const y=v=>pad+((maxV-v)/span)*(H-pad*2);
-                        const coords=normalized.map((v,i)=>`${x(i).toFixed(1)},${y(v).toFixed(1)}`);
-                        const stroke=normalized[normalized.length-1]>=0?'#10b981':'#ef4444';
-                        tsmPriceChart.innerHTML=`<path d="M ${coords.join(' L ')}" fill="none" stroke="${stroke}" stroke-width="3" vector-effect="non-scaling-stroke"/><circle cx="${coords.at(-1).split(',')[0]}" cy="${coords.at(-1).split(',')[1]}" r="4" fill="${stroke}"/>`;
-                        setTsm('tsm60d',`최근 60D ${normalized.at(-1)>=0?'+':''}${normalized.at(-1).toFixed(2)}%`,stroke);
+                    const tDot = document.getElementById('tDotMarker');
+                    if (tDot && Number.isFinite(sliderPct)) {
+                        tDot.style.left = `${Math.min(99, Math.max(1, sliderPct))}%`;
                     }
 
-                    // 레이아웃 확정 단계에서는 기존 데이터가 있는 경우에만 안전하게 표시
-                    const m1 = tq.mom_1m ?? tq.momentum_1m;
-                    const m3 = tq.mom_3m ?? tq.momentum_3m;
-                    const m6 = tq.mom_6m ?? tq.momentum_6m;
-                    const m12 = tq.mom_12m ?? tq.momentum_12m;
-                    [['1',m1],['3',m3],['6',m6],['12',m12]].forEach(([k,v])=>{
-                        setTsm('tsmM'+k, fmtPct(v));
-                        const bar=document.getElementById('tsmBar'+k);
-                        if(bar && Number.isFinite(num(v))){ bar.style.height=`${Math.min(100,Math.max(8,Math.abs(num(v))/3))}%`; bar.style.background=num(v)>=0?'#10b981':'#ef4444'; }
-                    });
+                    // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
+                    const trackDetailList = document.getElementById('trackDetailList');
+                    if (trackDetailList) {
+                        const iconForTrack = {
+                            '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂',
+                            '시장':'⌁','업종·테마':'◇','기업 재료':'▤',
+                            '거래량':'♧','시장 5일 흐름':'⌁'
+                        };
 
-                    const scoreCandidate = tq.trend_score ?? tq.score;
-                    if (Number.isFinite(num(scoreCandidate))) {
-                        const score=Math.max(0,Math.min(100,num(scoreCandidate)));
-                        setTsm('tsmScore',Math.round(score));
-                        setTsm('tsmStrength',`강도 ${Math.round(score)}/100`);
-                        const sb=document.getElementById('tsmStrengthBar'); if(sb) sb.style.width=`${score}%`;
+                        trackDetailList.innerHTML = evidenceReasons.map(r => {
+                            const score = Number(r.score || 0);
+                            const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
+                            const statusClass =
+                                score > 0 ? 'status-pill-positive' :
+                                score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
+
+                            return `<div class="quant-row-item">
+                                <div class="quant-row-left">
+                                    <span class="quant-row-name">${iconForTrack[r.label] || '•'} ${r.label || '-'}</span>
+                                    <span class="quant-row-status ${statusClass}">${status}</span>
+                                </div>
+                                <div class="quant-row-right">
+                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
+                                    <div class="quant-row-subval">실제 확인 데이터</div>
+                                </div>
+                            </div>`;
+                        }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
                     }
-                    const trend=tq.trend_direction || tq.trend || '-';
-                    setTsm('tsmDirection',trend,trend==='LONG'?'#10b981':trend==='SHORT'?'#ef4444':'var(--text-title)');
-                    setTsm('tsmDirection2',trend,trend==='LONG'?'#10b981':trend==='SHORT'?'#ef4444':'var(--text-title)');
-                    setTsm('tsmAlignment',tq.trend_alignment || '-');
-                    setTsm('tsmTrendNote',tq.judgment || '추세 데이터 연결 후 상세 판단을 표시합니다.');
-                    setTsm('tsmHeadSignal',tq.signal || trend || '분석 대기',trend==='SHORT'?'#ef4444':'#10b981');
-                    setTsm('tsmSignal',tq.signal || trend || '-');
-                    setTsm('tsmVol',Number.isFinite(num(tq.volatility))?`${num(tq.volatility).toFixed(1)}%`:'-');
-                    setTsm('tsmVolState',tq.volatility_state || '-');
-                    setTsm('tsmPosition',Number.isFinite(num(tq.position_size))?`${num(tq.position_size).toFixed(0)}%`:'-');
-                    const pb=document.getElementById('tsmPositionBar'); if(pb && Number.isFinite(num(tq.position_size))) pb.style.width=`${Math.min(100,Math.max(0,num(tq.position_size)))}%`;
-                    setTsm('tsmStatePosition',trend || '-');
-                    setTsm('tsmStateTrend',tq.signal || '-');
-                    setTsm('tsmStateRisk',tq.volatility_state || '-');
-                    setTsm('tsmStateNext','조건 충족 여부 재확인');
-
-                    // 7번: 실제 백테스트 결과가 연결되기 전에는 절대로 임의 수치를 넣지 않는다.
-                    setTsm('tsmCagr','-'); setTsm('tsmWin','-'); setTsm('tsmMdd','-'); setTsm('tsmSharpe','-'); setTsm('tsmHold','-'); setTsm('tsmTrades','-');
-                    setTsm('tsmBtReturn','실제 백테스트 연결 전');
-                    setTsm('tsmBtPeriod','검증 예정');
-                    setTsm('tsmJudgment',tq.judgment || '기관형 추세추종 분석 준비 중');
-                    setTsm('tsmJudgmentDetail','현재는 레이아웃 단계입니다. 7번 과거 성과는 실제 백테스트 계산을 연결한 뒤 표시합니다.');
-
-                    // 변동성 차트는 실제 변동성 시계열이 연결되기 전까지 빈 상태로 유지
-                    const vc=document.getElementById('tsmVolChart'); if(vc) vc.innerHTML='';
-                    const ec=document.getElementById('tsmEquityChart'); if(ec) ec.innerHTML='';
-                    }
+                }
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
                 const sNews = document.getElementById('stockNewsList');

@@ -4333,10 +4333,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             border-color: rgba(126, 231, 135, 0.28);
         }
 
-        .calendar-widget .cal-eco-item .cal-event-icon {
-            font-size: 0.82rem;
-        }
-
         .calendar-widget .cal-event-topline {
             display: flex;
             align-items: center;
@@ -5434,7 +5430,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="calendar-widget-subtitle" id="earnCalDayHeader">주요 기업 실적</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="earnCalEventList"></div>
 
-                                <div class="calendar-full-btn" onclick="changeEarningsCalendarPage(1)">전체 실적 캘린더 보기 <span>&#10095;</span></div>
                                 <div class="cal-pagination-bar">
                                     <button class="cal-page-btn" id="btnEarnCalPrev" onclick="changeEarningsCalendarPage(-1)">&#10094;</button>
                                     <span class="cal-page-txt" id="earnCalPageIndicator">1 / 1</span>
@@ -5467,7 +5462,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="calendar-widget-subtitle" id="ecoCalDayHeader">주요 경제지표</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="ecoCalEventList"></div>
 
-                                <div class="calendar-full-btn" onclick="changeEconomicCalendarPage(1)">전체 경제 캘린더 보기 <span>&#10095;</span></div>
                                 <div class="cal-pagination-bar">
                                     <button class="cal-page-btn" id="btnEcoCalPrev" onclick="changeEconomicCalendarPage(-1)">&#10094;</button>
                                     <span class="cal-page-txt" id="ecoCalPageIndicator">1 / 1</span>
@@ -6044,6 +6038,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let earningsCalOffset = 0;
         let economicCalPage = 1;
         let earningsCalPage = 1;
+        // 실적 캘린더는 오늘 실적이 없을 때 최초 1회만 '가장 가까운 예정 실적일'로 이동합니다.
+        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
+        let earningsCalendarAutoJumped = false;
         let economicCalStarFilter = 'all';
         let earningsCalStarFilter = 'all';
         const calendarItemsPerPage = 4;
@@ -6062,12 +6059,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (ev.exp && ev.exp !== '-') metaParts.push(`예상 ${ev.exp}`);
             if (ev.prev && ev.prev !== '-') metaParts.push(`이전 ${ev.prev}`);
             const meta = metaParts.join('  ·  ');
-            const iconText = isEarn ? (ev.ticker || '?').slice(0, 3) : (ev.country || '🌐');
+            const iconText = isEarn ? (ev.ticker || '?').slice(0, 4) : '';
 
             return `
                 <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
                     <div class="cal-time-col">${timeLabel}</div>
-                    <div class="cal-event-icon" aria-hidden="true">${iconText}</div>
+                    ${isEarn ? `<div class="cal-event-icon" aria-hidden="true">${iconText}</div>` : ''}
                     <div class="cal-detail-col">
                         <div class="cal-event-topline">
                             <span class="cal-stars">${stars}</span>
@@ -6153,7 +6150,41 @@ HTML_PAGE = r"""<!DOCTYPE html>
             scheduleCalendarHeightSync();
         }
 
+        function findNearestEarningsOffset() {
+            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
+            const futureDates = [...new Set(all
+                .filter(ev => ev.type === 'earn' && ev.date_key)
+                .map(ev => ev.date_key))].sort();
+            if (!futureDates.length) return 0;
+
+            const now = new Date();
+            const kstString = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(now);
+            const [yyyy, mm, dd] = kstString.split('-').map(Number);
+            const today = new Date(Date.UTC(yyyy, mm - 1, dd));
+
+            for (const key of futureDates) {
+                const [y, m, d] = key.split('.').map(Number);
+                const candidate = new Date(Date.UTC(y, m - 1, d));
+                if (candidate >= today) {
+                    return Math.round((candidate - today) / 86400000);
+                }
+            }
+            return 0;
+        }
+
         function renderEarningsCalendarView() {
+            // 첫 화면에서 오늘 실적이 비어 있으면 가장 가까운 예정 실적일을 보여줍니다.
+            // 날짜 이동 버튼과 [오늘] 버튼은 이후 정상적으로 하루 단위로 작동합니다.
+            if (!earningsCalendarAutoJumped && earningsCalOffset === 0) {
+                const nearestOffset = findNearestEarningsOffset();
+                if (nearestOffset > 0) {
+                    earningsCalOffset = nearestOffset;
+                }
+                earningsCalendarAutoJumped = true;
+            }
+
             const info = getCalendarDateInfo(earningsCalOffset);
             setTxt('earnCalDisplayDate', info.display);
 
@@ -6234,6 +6265,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         function resetEarningsCalendarDate() {
             earningsCalOffset = 0;
             earningsCalPage = 1;
+            earningsCalendarAutoJumped = true;
             renderEarningsCalendarView();
         }
 

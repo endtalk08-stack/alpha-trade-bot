@@ -6666,6 +6666,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
         // 실적 캘린더는 오늘 실적이 없을 때 최초 1회만 '가장 가까운 예정 실적일'로 이동합니다.
         // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
         let earningsCalendarAutoJumped = false;
+
+        // 경제 캘린더는 오늘 발표가 없을 때 최초 1회만
+        // '오늘 이전의 가장 최근 발표일'로 이동합니다.
+        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
+        let economicCalendarAutoJumped = false;
+
         let economicCalStarFilter = 'all';
         let earningsCalStarFilter = 'all';
         const calendarItemsPerPage = 4;
@@ -6681,14 +6687,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const timeLabel = ev.time || '--:--';
             const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료') ? '발표완료' : '발표대기';
             const metaParts = [];
-            if (ev.exp && ev.exp !== '-') {
-    const expText = String(ev.exp).trim();
-    metaParts.push(
-        expText.startsWith('예상')
-            ? expText
-            : `예상 ${expText}`
-    );
-}
+            if (ev.exp && ev.exp !== '-') metaParts.push(`예상 ${ev.exp}`);
             if (ev.prev && ev.prev !== '-') metaParts.push(`이전 ${ev.prev}`);
             const meta = metaParts.join('  ·  ');
 
@@ -6742,7 +6741,65 @@ HTML_PAGE = r"""<!DOCTYPE html>
             };
         }
 
+        function findLatestEconomicOffset() {
+            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
+
+            const now = new Date();
+            const kstString = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Seoul',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).format(now);
+
+            const [yyyy, mm, dd] = kstString.split('-').map(Number);
+            const today = new Date(Date.UTC(yyyy, mm - 1, dd));
+
+            const economicDates = [...new Set(
+                all
+                    .filter(ev => ev.type === 'eco' && ev.date_key)
+                    .map(ev => ev.date_key)
+            )].sort();
+
+            // 오늘 경제 일정이 있으면 오늘을 그대로 보여줍니다.
+            const todayKey =
+                `${yyyy}.${String(mm).padStart(2, '0')}.${String(dd).padStart(2, '0')}`;
+
+            if (economicDates.includes(todayKey)) {
+                return 0;
+            }
+
+            // 오늘 이전 날짜 중 가장 최근 발표일을 찾습니다.
+            let latestKey = null;
+            for (const key of economicDates) {
+                const [y, m, d] = key.split('.').map(Number);
+                const candidate = new Date(Date.UTC(y, m - 1, d));
+
+                if (candidate < today) {
+                    latestKey = key;
+                } else {
+                    break;
+                }
+            }
+
+            if (!latestKey) return 0;
+
+            const [y, m, d] = latestKey.split('.').map(Number);
+            const latestDate = new Date(Date.UTC(y, m - 1, d));
+            return Math.round((latestDate - today) / 86400000);
+        }
+
         function renderEconomicCalendarView() {
+            // 첫 화면에서 오늘 경제 일정이 없으면
+            // 오늘 이전의 가장 최근 발표일을 자동으로 보여줍니다.
+            if (!economicCalendarAutoJumped && economicCalOffset === 0) {
+                const latestOffset = findLatestEconomicOffset();
+                if (latestOffset < 0) {
+                    economicCalOffset = latestOffset;
+                }
+                economicCalendarAutoJumped = true;
+            }
+
             const info = getCalendarDateInfo(economicCalOffset);
             setTxt('ecoCalDisplayDate', info.display);
 

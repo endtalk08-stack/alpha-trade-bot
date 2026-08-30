@@ -3955,6 +3955,108 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #rowQuant { grid-column: 1; grid-row: 5; height: 100%; }
         #rowCalendar { grid-column: 2; grid-row: 5; height: 100%; }
 
+        /* 경제 일정 / 실적 일정 분리 위젯 */
+        #rowCalendar.calendar-stack {
+            grid-column: 2;
+            grid-row: 5;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            background: transparent;
+            border: 0;
+            padding: 0;
+            min-width: 0;
+        }
+
+        .calendar-widget {
+            min-height: 0;
+            flex: 1 1 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .calendar-widget-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+            font-size: 1.0rem;
+            font-weight: 800;
+            color: var(--text-title);
+        }
+
+        .calendar-widget-badge {
+            font-size: 0.55rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            border: 1px solid var(--border-line);
+            border-radius: 8px;
+            padding: 2px 5px;
+        }
+
+        .calendar-widget-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            margin-bottom: 5px;
+        }
+
+        .calendar-widget-subtitle {
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            margin: 1px 0 6px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .calendar-widget-list {
+            min-height: 0;
+        }
+
+        .calendar-widget-list .cal-card-item {
+            min-height: 0;
+            padding: 7px 8px;
+            gap: 7px;
+        }
+
+        .calendar-widget-list .cal-time-col {
+            min-width: 42px;
+            font-size: 0.65rem;
+        }
+
+        .calendar-widget-list .cal-event-title {
+            font-size: 0.7rem;
+        }
+
+        .calendar-widget-list .cal-event-meta {
+            font-size: 0.62rem;
+        }
+
+        .calendar-widget-list .cal-importance-wrap {
+            margin-top: 5px;
+        }
+
+        .calendar-widget-list .cal-alarm-btn {
+            width: 25px;
+            height: 25px;
+            flex: 0 0 25px;
+        }
+
+        @media (max-width: 1100px) {
+            #rowCalendar.calendar-stack {
+                grid-column: 1;
+                grid-row: auto;
+            }
+        }
+
+
         /* 좌측 832px 단독 배치 행들 */
         #rowConsensus { grid-column: 1; grid-row: 6; }
         #rowVote { grid-column: 1; grid-row: 7; }
@@ -4739,58 +4841,61 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         
 
-                        <!-- 5행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
-                        <div class="card" id="rowCalendar">
-                            <div>
-                                <div class="cal-top-title-area">
-                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">캘린더</span>
+                        <!-- 5행 우측: 경제 일정 + 실적 일정 (독립 위젯 2개) -->
+                        <div id="rowCalendar" class="calendar-stack">
+
+                            <!-- 경제 일정 -->
+                            <div class="card calendar-widget" id="rowEconomicCalendar">
+                                <div class="calendar-widget-title">
+                                    <span>경제 일정</span>
+                                    <span class="calendar-widget-badge">ECONOMY</span>
                                 </div>
 
-                                <!-- 날짜 상단 영역: 확정 디자인 -->
-                                <div class="cal-view-tabs" aria-label="캘린더 보기 방식">
-                                    <button class="cal-view-tab active" type="button">전체</button>
-                                    <button class="cal-view-tab" type="button">주별</button>
-                                    <button class="cal-view-tab" type="button">월별</button>
-                                    <button class="cal-view-tab" type="button">
-                                        <svg class="cal-view-custom-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                                            <rect x="3.5" y="4.5" width="17" height="16" rx="2.5" stroke="currentColor" stroke-width="1.8"/>
-                                            <path d="M7.5 2.8v3.4M16.5 2.8v3.4M3.8 9h16.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-                                            <path d="M7.5 13h.01M11.5 13h.01M15.5 13h.01M7.5 17h.01M11.5 17h.01" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
-                                        </svg>
-                                        사용자 지정
-                                    </button>
-                                </div>
-
-                                <div class="cal-top-nav">
+                                <div class="calendar-widget-nav">
                                     <div class="cal-date-ctrl">
-                                        <button class="cal-arrow-btn" onclick="shiftCalendarDate(-1)">&#10094;</button>
-                                        <span class="cal-current-date" id="calDisplayDate">--</span>
-                                        <button class="cal-arrow-btn" onclick="shiftCalendarDate(1)">&#10095;</button>
+                                        <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(-1)">&#10094;</button>
+                                        <span class="cal-current-date" id="ecoCalDisplayDate">--</span>
+                                        <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(1)">&#10095;</button>
                                     </div>
-                                    <button class="cal-today-btn" onclick="resetCalendarDate()">오늘</button>
+                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()">오늘</button>
                                 </div>
 
-                                <div class="cal-filter-bar">
-                                    <button class="cal-filter-pill active" id="filterAll" onclick="setCalendarFilter('all')">전체</button>
-                                    <button class="cal-filter-pill" id="filterStar3" onclick="setCalendarFilter('star3')"><span class="star-gold">★★★</span></button>
-                                    <button class="cal-filter-pill" id="filterStar2" onclick="setCalendarFilter('star2')"><span class="star-gold">★★☆</span></button>
-                                    <button class="cal-filter-pill" id="filterStar1" onclick="setCalendarFilter('star1')"><span class="star-gold">★☆☆</span></button>
-                                    <button class="cal-filter-pill" id="filterEarn" onclick="setCalendarFilter('earn')">실적</button>
-                                    <button class="cal-filter-pill" id="filterEco" onclick="setCalendarFilter('eco')">경제</button>
+                                <div class="calendar-widget-subtitle" id="ecoCalDayHeader">경제지표 발표 일정</div>
+                                <div class="cal-event-list-wrap calendar-widget-list" id="ecoCalEventList"></div>
+
+                                <div class="cal-pagination-bar">
+                                    <button class="cal-page-btn" id="btnEcoCalPrev" onclick="changeEconomicCalendarPage(-1)">&#10094;</button>
+                                    <span class="cal-page-txt" id="ecoCalPageIndicator">1 / 1</span>
+                                    <button class="cal-page-btn" id="btnEcoCalNext" onclick="changeEconomicCalendarPage(1)">&#10095;</button>
+                                </div>
+                            </div>
+
+                            <!-- 실적 일정 -->
+                            <div class="card calendar-widget" id="rowEarningsCalendar">
+                                <div class="calendar-widget-title">
+                                    <span>실적 일정</span>
+                                    <span class="calendar-widget-badge">EARNINGS</span>
                                 </div>
 
-                                <div class="cal-day-header" id="calDayHeader">--</div>
+                                <div class="calendar-widget-nav">
+                                    <div class="cal-date-ctrl">
+                                        <button class="cal-arrow-btn" onclick="shiftEarningsCalendarDate(-1)">&#10094;</button>
+                                        <span class="cal-current-date" id="earnCalDisplayDate">--</span>
+                                        <button class="cal-arrow-btn" onclick="shiftEarningsCalendarDate(1)">&#10095;</button>
+                                    </div>
+                                    <button class="cal-today-btn" onclick="resetEarningsCalendarDate()">오늘</button>
+                                </div>
+
+                                <div class="calendar-widget-subtitle" id="earnCalDayHeader">주요 기업 실적 발표 일정</div>
+                                <div class="cal-event-list-wrap calendar-widget-list" id="earnCalEventList"></div>
+
+                                <div class="cal-pagination-bar">
+                                    <button class="cal-page-btn" id="btnEarnCalPrev" onclick="changeEarningsCalendarPage(-1)">&#10094;</button>
+                                    <span class="cal-page-txt" id="earnCalPageIndicator">1 / 1</span>
+                                    <button class="cal-page-btn" id="btnEarnCalNext" onclick="changeEarningsCalendarPage(1)">&#10095;</button>
+                                </div>
                             </div>
 
-                            <!-- 4개씩 깔끔하게 노출되는 프레임 -->
-                            <div class="cal-event-list-wrap" id="calEventList"></div>
-
-                            <!-- 스크롤 없는 페이지 이동 컨트롤러 -->
-                            <div class="cal-pagination-bar">
-                                <button class="cal-page-btn" id="btnCalPrev" onclick="changeCalPage(-1)">&#10094;</button>
-                                <span class="cal-page-txt" id="calPageIndicator">1 / 1</span>
-                                <button class="cal-page-btn" id="btnCalNext" onclick="changeCalPage(1)">&#10095;</button>
-                            </div>
                         </div>
 
                         <!-- 3행 좌측: 종목 뉴스 (832px) -->
@@ -5353,163 +5458,209 @@ HTML_PAGE = r"""<!DOCTYPE html>
         setInterval(checkCalendarAlarms, 15000);
         setTimeout(checkCalendarAlarms, 1000);
 
-        function renderMarketCalendarView() {
-            const dateStr = getTargetDateStr(currentCalOffset);
-            setTxt('calDisplayDate', dateStr);
+        // ============================================================
+        // 경제 일정 / 실적 일정 독립 위젯
+        // - 같은 globalMarketCalendar 데이터를 사용하지만
+        //   날짜 이동/페이지 상태/렌더링은 서로 완전히 분리
+        // ============================================================
+        let economicCalOffset = 0;
+        let earningsCalOffset = 0;
+        let economicCalPage = 1;
+        let earningsCalPage = 1;
+        const calendarItemsPerPage = 3;
 
-            const container = document.getElementById('calEventList');
+        function renderCalendarEventCard(ev) {
+            const isEarn = ev.type === 'earn';
+            const clickAttr = isEarn && ev.ticker
+                ? `onclick="doSearch('${String(ev.ticker).replace(/'/g, "\\'")}')"`
+                : '';
+
+            const importanceScore = ev.stars === 3 ? 90 : (ev.stars === 2 ? 65 : 35);
+            const alarmKey = getCalendarEventKey(ev);
+            const alarmActive = !!getCalendarAlarms()[alarmKey];
+
+            const timeLabel = isEarn && ev.date_str
+                ? `${ev.date_str} ${ev.time || ''}`
+                : (ev.time || '--:--');
+
+            return `
+                <div class="cal-card-item" ${clickAttr}>
+                    <div class="cal-time-col">${timeLabel}</div>
+                    <div class="cal-detail-col">
+                        <div class="cal-event-title">${ev.name || '일정'}</div>
+                        <div class="cal-event-meta">
+                            <span class="cal-actual-val">${ev.val || '-'}</span>
+                            (${ev.exp || '-'} &nbsp; ${ev.prev || '-'})
+                        </div>
+                        <div class="cal-importance-wrap" title="시장 중요도 ${importanceScore}">
+                            <div class="cal-importance-bar" style="--importance-width:${importanceScore}%;">
+                                <div class="cal-importance-marker"></div>
+                            </div>
+                            <div class="cal-importance-labels">
+                                <span>낮음</span>
+                                <span class="center">중요도 <span class="cal-importance-score">${importanceScore}</span></span>
+                                <span>높음</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
+                            onclick="event.stopPropagation(); toggleCalendarAlarmByKey('${encodeURIComponent(alarmKey)}')"
+                            title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
+                            aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">
+                        <svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path>
+                            <path d="M10 21h4"></path>
+                        </svg>
+                    </button>
+                </div>
+            `;
+        }
+
+        function getCalendarDateInfo(offset) {
+            const now = new Date();
+            const kstString = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Seoul',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            }).format(now);
+
+            const [yyyy, mm, dd] = kstString.split('-').map(Number);
+            const d = new Date(Date.UTC(yyyy, mm - 1, dd + Number(offset || 0)));
+            const daysMap = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
+
+            return {
+                dateKey: `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`,
+                display: `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`,
+                header: `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일 ${daysMap[d.getUTCDay()]}`
+            };
+        }
+
+        function renderEconomicCalendarView() {
+            const info = getCalendarDateInfo(economicCalOffset);
+            setTxt('ecoCalDisplayDate', info.display);
+
+            const container = document.getElementById('ecoCalEventList');
             if (!container) return;
-            container.innerHTML = '';
 
-            const normalizedCalendar = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-            let filtered = [];
+            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
+                .filter(ev => ev.type === 'eco' && ev.date_key === info.dateKey);
 
-            if (currentCalFilter === 'earn') {
-                // 실적 탭: 날짜에 구애받지 않고 주요 기업 실적 전체를 시간순 페이징 노출
-                filtered = normalizedCalendar.filter(ev => ev.type === 'earn');
-                setTxt('calDayHeader', '주요 빅테크 및 국내 기업 실적 발표');
-            } else {
-                // 전체 / 경제 / 별점 탭: 선택된 날짜 기준 필터링
-                filtered = normalizedCalendar.filter(ev => ev.date_key === dateStr);
-                
-                if (filtered.length > 0) {
-                    setTxt('calDayHeader', filtered[0].date_header);
-                } else {
-                    const now = new Date();
-                    const kstString = new Intl.DateTimeFormat('en-CA', {
-                        timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
-                    }).format(now);
-                    const [yyyy, mm, dd] = kstString.split('-').map(Number);
-                    const d = new Date(Date.UTC(yyyy, mm - 1, dd + Number(currentCalOffset || 0)));
-                    const daysMap = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
-                    setTxt('calDayHeader', `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일 ${daysMap[d.getUTCDay()]}`);
-                }
+            setTxt(
+                'ecoCalDayHeader',
+                filtered.length && filtered[0].date_header
+                    ? filtered[0].date_header
+                    : `${info.header} · 주요 경제지표`
+            );
 
-                if (currentCalFilter === 'star3') filtered = filtered.filter(ev => ev.stars === 3);
-                if (currentCalFilter === 'star2') filtered = filtered.filter(ev => ev.stars === 2);
-                if (currentCalFilter === 'star1') filtered = filtered.filter(ev => ev.stars === 1);
-                if (currentCalFilter === 'eco') filtered = filtered.filter(ev => ev.type === 'eco');
-            }
+            const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
+            economicCalPage = Math.max(1, Math.min(economicCalPage, totalPages));
 
-            const totalPages = Math.ceil(filtered.length / calItemsPerPage) || 1;
-            if (currentCalPage < 1) currentCalPage = 1;
-            if (currentCalPage > totalPages) currentCalPage = totalPages;
+            const prev = document.getElementById('btnEcoCalPrev');
+            const next = document.getElementById('btnEcoCalNext');
+            if (prev) prev.disabled = economicCalPage <= 1;
+            if (next) next.disabled = economicCalPage >= totalPages;
+            setTxt('ecoCalPageIndicator', `${economicCalPage} / ${totalPages}`);
 
-            const btnPrev = document.getElementById('btnCalPrev');
-            const btnNext = document.getElementById('btnCalNext');
-            if (btnPrev) btnPrev.disabled = (currentCalPage <= 1);
-            if (btnNext) btnNext.disabled = (currentCalPage >= totalPages);
-            setTxt('calPageIndicator', `${currentCalPage} / ${totalPages}`);
-
-            if (filtered.length === 0) {
+            if (!filtered.length) {
                 container.innerHTML = `
-                    <div style="display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-muted); font-size:0.82rem; text-align:center; padding:40px 10px;">
-                        해당 조건에 예정된 실시간 일정이 없습니다.
+                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
+                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
+                        이 날짜에 예정된 경제 일정이 없습니다.
                     </div>
                 `;
                 return;
             }
 
-            const startIdx = (currentCalPage - 1) * calItemsPerPage;
-            const pageItems = filtered.slice(startIdx, startIdx + calItemsPerPage);
+            const startIdx = (economicCalPage - 1) * calendarItemsPerPage;
+            container.innerHTML = filtered
+                .slice(startIdx, startIdx + calendarItemsPerPage)
+                .map(renderCalendarEventCard)
+                .join('');
+        }
 
-            pageItems.forEach(ev => {
+        function renderEarningsCalendarView() {
+            const info = getCalendarDateInfo(earningsCalOffset);
+            setTxt('earnCalDisplayDate', info.display);
 
+            const container = document.getElementById('earnCalEventList');
+            if (!container) return;
 
-                const isEarn = ev.type === 'earn';
+            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
+                .filter(ev => ev.type === 'earn' && ev.date_key === info.dateKey);
 
+            setTxt(
+                'earnCalDayHeader',
+                filtered.length && filtered[0].date_header
+                    ? filtered[0].date_header
+                    : `${info.header} · 주요 기업 실적`
+            );
 
-                const clickAttr = isEarn && ev.ticker ? `onclick="doSearch('${ev.ticker}')"` : '';
+            const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
+            earningsCalPage = Math.max(1, Math.min(earningsCalPage, totalPages));
 
+            const prev = document.getElementById('btnEarnCalPrev');
+            const next = document.getElementById('btnEarnCalNext');
+            if (prev) prev.disabled = earningsCalPage <= 1;
+            if (next) next.disabled = earningsCalPage >= totalPages;
+            setTxt('earnCalPageIndicator', `${earningsCalPage} / ${totalPages}`);
 
-                const timePrefix = (currentCalFilter === 'earn' && ev.date_str) ? `${ev.date_str} ` : '';
-
-
-
-                // 기존 별표 등급은 데이터 기준으로만 사용하고 카드에서는 막대로 표시합니다.
-
-
-                const importanceScore = ev.stars === 3 ? 90 : (ev.stars === 2 ? 65 : 35);
-
-
-                const importanceWidth = Math.max(0, Math.min(100, importanceScore));
-                const alarmKey = getCalendarEventKey(ev);
-                const alarmActive = !!getCalendarAlarms()[getCalendarEventKey(ev)];
-
-
-
-                container.innerHTML += `
-
-
-                    <div class="cal-card-item" ${clickAttr}>
-
-
-                        <div class="cal-time-col">${timePrefix}${ev.time}</div>
-
-
-                        <div class="cal-detail-col">
-
-
-                            <div class="cal-event-title">${ev.name}</div>
-
-
-                            <div class="cal-event-meta">
-
-
-                                <span class="cal-actual-val">${ev.val}</span>
-
-
-                                (${ev.exp} &nbsp; ${ev.prev})
-
-
-                            </div>
-
-
-                            <div class="cal-importance-wrap" title="시장 중요도 ${importanceScore}">
-
-
-                                <div class="cal-importance-bar" style="--importance-width:${importanceWidth}%;">
-                                    <div class="cal-importance-marker"></div>
-
-
-                                </div>
-
-
-                                <div class="cal-importance-labels">
-
-
-                                    <span>낮음</span>
-
-
-                                    <span class="center">중요도 <span class="cal-importance-score">${importanceScore}</span></span>
-
-
-                                    <span>높음</span>
-
-
-                                </div>
-
-
-                            </div>
-
-
-                        </div>
-                        <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
-                                onclick="event.stopPropagation(); toggleCalendarAlarmByKey(encodeURIComponent('${alarmKey}'))"
-                                title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
-                                aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">${alarmActive
-    ? '<svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>'
-    : '<svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>'}</button>
+            if (!filtered.length) {
+                container.innerHTML = `
+                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
+                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
+                        이 날짜에 예정된 실적 일정이 없습니다.
                     </div>
-
-
                 `;
-
-
-            });
-
-
+                return;
             }
+
+            const startIdx = (earningsCalPage - 1) * calendarItemsPerPage;
+            container.innerHTML = filtered
+                .slice(startIdx, startIdx + calendarItemsPerPage)
+                .map(renderCalendarEventCard)
+                .join('');
+        }
+
+        function shiftEconomicCalendarDate(delta) {
+            economicCalOffset += Number(delta || 0);
+            economicCalPage = 1;
+            renderEconomicCalendarView();
+        }
+
+        function resetEconomicCalendarDate() {
+            economicCalOffset = 0;
+            economicCalPage = 1;
+            renderEconomicCalendarView();
+        }
+
+        function changeEconomicCalendarPage(delta) {
+            economicCalPage += Number(delta || 0);
+            renderEconomicCalendarView();
+        }
+
+        function shiftEarningsCalendarDate(delta) {
+            earningsCalOffset += Number(delta || 0);
+            earningsCalPage = 1;
+            renderEarningsCalendarView();
+        }
+
+        function resetEarningsCalendarDate() {
+            earningsCalOffset = 0;
+            earningsCalPage = 1;
+            renderEarningsCalendarView();
+        }
+
+        function changeEarningsCalendarPage(delta) {
+            earningsCalPage += Number(delta || 0);
+            renderEarningsCalendarView();
+        }
+
+        function renderMarketCalendarView() {
+            // 기존 호출부와의 호환성을 유지하되 두 위젯을 각각 렌더링합니다.
+            renderEconomicCalendarView();
+            renderEarningsCalendarView();
+        }
 
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;

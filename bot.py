@@ -1223,6 +1223,28 @@ MAJOR_KR_EARNINGS = {
 # ----------------------------------------------------
 # 3. 3단계 하이브리드 실적 일정 수집기 (한국/미국 완벽 대응)
 # ----------------------------------------------------
+# 실적 일정 자체에는 전 세계적으로 통용되는 공식 별점이 없으므로
+# gaemiGTP에서 "시장 영향도" 기준으로 자체 중요도를 부여합니다.
+# 현재 실적 수집 대상은 이미 주요 기업으로 한정되어 있으며, 그 안에서 3/2/1단계로 표시합니다.
+EARNINGS_IMPORTANCE_3 = {
+    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "AMD", "AVGO",
+    "005930", "005930.KS", "000660", "000660.KS", "005380", "005380.KS",
+    "000270", "000270.KS", "012450", "012450.KS", "373220", "373220.KS"
+}
+EARNINGS_IMPORTANCE_2 = {
+    "PLTR", "005490", "005490.KS", "042660", "042660.KS", "034020", "034020.KS",
+    "012330", "012330.KS", "009150", "009150.KS", "035420", "035420.KS",
+    "068270", "068270.KS"
+}
+
+def get_earnings_importance(symbol):
+    sym = str(symbol or "").upper().strip()
+    if sym in EARNINGS_IMPORTANCE_3:
+        return 3, "★★★"
+    if sym in EARNINGS_IMPORTANCE_2:
+        return 2, "★★☆"
+    return 1, "★☆☆"
+
 def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None):
     """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
@@ -1270,8 +1292,8 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         "date_str": date_str,
         "date_header": date_header,
         "time": time_str,
-        "stars": 3,
-        "star_str": "★★★",
+        "stars": get_earnings_importance(sym)[0],
+        "star_str": get_earnings_importance(sym)[1],
         "type": "earn",
         "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
         "ticker": sym,
@@ -4288,6 +4310,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
             margin-bottom: 3px;
             letter-spacing: -0.015em;
         }
+        .cal-event-stars {
+            color: var(--star-gold);
+            font-size: 0.72rem;
+            font-weight: 900;
+            letter-spacing: 0.04em;
+            line-height: 1;
+            margin-bottom: 2px;
+        }
+        .calendar-widget-list .cal-event-stars {
+            font-size: 0.62rem;
+        }
         .cal-event-meta {
             display: flex;
             align-items: baseline;
@@ -4875,7 +4908,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <button class="cal-today-btn" onclick="resetEarningsCalendarDate()">오늘</button>
                                 </div>
 
-                                <div class="calendar-widget-subtitle" id="earnCalDayHeader">주요 기업 실적 발표 일정</div>
+                                <div class="calendar-widget-subtitle" id="earnCalDayHeader">중요 기업 실적 일정</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="earnCalEventList"></div>
 
                                 <div class="cal-pagination-bar">
@@ -4902,7 +4935,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <button class="cal-today-btn" onclick="resetEconomicCalendarDate()">오늘</button>
                                 </div>
 
-                                <div class="calendar-widget-subtitle" id="ecoCalDayHeader">경제지표 발표 일정</div>
+                                <div class="calendar-widget-subtitle" id="ecoCalDayHeader">중요 경제지표 일정</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="ecoCalEventList"></div>
 
                                 <div class="cal-pagination-bar">
@@ -5501,20 +5534,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 <div class="cal-card-item" ${clickAttr}>
                     <div class="cal-time-col">${timeLabel}</div>
                     <div class="cal-detail-col">
+                        <div class="cal-event-stars" title="시장 중요도 ${ev.stars || 1}단계">${ev.star_str || (ev.stars === 3 ? '★★★' : (ev.stars === 2 ? '★★☆' : '★☆☆'))}</div>
                         <div class="cal-event-title">${ev.name || '일정'}</div>
                         <div class="cal-event-meta">
                             <span class="cal-actual-val">${ev.val || '-'}</span>
                             (${ev.exp || '-'} &nbsp; ${ev.prev || '-'})
-                        </div>
-                        <div class="cal-importance-wrap" title="시장 중요도 ${importanceScore}">
-                            <div class="cal-importance-bar" style="--importance-width:${importanceScore}%;">
-                                <div class="cal-importance-marker"></div>
-                            </div>
-                            <div class="cal-importance-labels">
-                                <span>낮음</span>
-                                <span class="center">중요도 <span class="cal-importance-score">${importanceScore}</span></span>
-                                <span>높음</span>
-                            </div>
                         </div>
                     </div>
                     <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
@@ -5558,7 +5582,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (!container) return;
 
             let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => ev.type === 'eco' && ev.date_key === info.dateKey);
+                .filter(ev => ev.type === 'eco' && ev.date_key === info.dateKey && Number(ev.stars || 0) >= 1 && Number(ev.stars || 0) <= 3);
 
             setTxt(
                 'ecoCalDayHeader',
@@ -5601,7 +5625,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (!container) return;
 
             let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => ev.type === 'earn' && ev.date_key === info.dateKey);
+                .filter(ev => ev.type === 'earn' && ev.date_key === info.dateKey && Number(ev.stars || 0) >= 1 && Number(ev.stars || 0) <= 3);
 
             setTxt(
                 'earnCalDayHeader',

@@ -5163,6 +5163,128 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 
         /* ============================================================
+           v14: 경제/실적 캘린더 카드 최종 배치
+           시간 | 별표 + 발표대기 / 일정명 / 상세정보 | 알림
+           두 캘린더 완전히 동일한 내부 구조
+           ============================================================ */
+        .calendar-widget-list .cal-card-item {
+            display: grid !important;
+            grid-template-columns: 54px minmax(0, 1fr) 30px !important;
+            grid-template-rows: 1fr !important;
+            column-gap: 10px !important;
+            align-items: center !important;
+            width: 100% !important;
+            box-sizing: border-box !important;
+        }
+
+        .calendar-widget-list .cal-time-col {
+            grid-column: 1 !important;
+            grid-row: 1 !important;
+            width: 54px !important;
+            min-width: 54px !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            background: transparent !important;
+            border: 0 !important;
+            align-self: center !important;
+            text-align: left !important;
+        }
+
+        .calendar-widget-list .cal-detail-col {
+            grid-column: 2 !important;
+            grid-row: 1 !important;
+            min-width: 0 !important;
+            width: 100% !important;
+            overflow: hidden !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: flex-start !important;
+            gap: 2px !important;
+        }
+
+        /* 별표 + 발표대기는 반드시 일정명보다 위 */
+        .calendar-widget-list .cal-event-topline {
+            order: 1 !important;
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: flex-start !important;
+            gap: 7px !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            min-height: 16px !important;
+            margin: 0 !important;
+        }
+
+        .calendar-widget-list .cal-stars {
+            order: 1 !important;
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            display: inline-block !important;
+            white-space: nowrap !important;
+            font-size: 0.72rem !important;
+            line-height: 1.2 !important;
+            letter-spacing: -0.08em !important;
+            color: #ffb000 !important;
+        }
+
+        .calendar-widget-list .cal-event-status {
+            order: 2 !important;
+            flex: 0 0 auto !important;
+            display: inline-block !important;
+            font-size: 0.66rem !important;
+            line-height: 1.2 !important;
+            color: #aeb2b3 !important;
+            white-space: nowrap !important;
+            margin: 0 !important;
+        }
+
+        .calendar-widget-list .cal-event-title {
+            order: 2 !important;
+            display: block !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow-wrap: anywhere !important;
+            word-break: keep-all !important;
+            font-size: 0.86rem !important;
+            line-height: 1.32 !important;
+            font-weight: 800 !important;
+            color: #f3f4f4 !important;
+        }
+
+        .calendar-widget-list .cal-event-meta {
+            order: 3 !important;
+            display: block !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow-wrap: anywhere !important;
+            font-size: 0.68rem !important;
+            line-height: 1.3 !important;
+            color: #aeb2b3 !important;
+        }
+
+        .calendar-widget-list .cal-alarm-btn {
+            grid-column: 3 !important;
+            grid-row: 1 !important;
+            width: 30px !important;
+            min-width: 30px !important;
+            height: 30px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            justify-self: end !important;
+            align-self: center !important;
+            flex: none !important;
+        }
+
+        /* ============================================================
            v13: 경제/실적 캘린더 공통 내부 구조
            시간 | 별표+발표상태+일정내용 | 알람
            경제/실적 모두 동일한 CSS 구조를 사용
@@ -6163,7 +6285,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const alarmActive = !!getCalendarAlarms()[alarmKey];
             const stars = ev.star_str || (ev.stars === 3 ? '★★★' : ev.stars === 2 ? '★★☆' : '★☆☆');
             const timeLabel = ev.time || '--:--';
-            const status = ev.val || '-';
+            const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료') ? '발표완료' : '발표대기';
             const metaParts = [];
             if (ev.exp && ev.exp !== '-') metaParts.push(`예상 ${ev.exp}`);
             if (ev.prev && ev.prev !== '-') metaParts.push(`이전 ${ev.prev}`);

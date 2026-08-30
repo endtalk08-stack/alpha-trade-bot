@@ -7899,6 +7899,53 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         window.addEventListener('DOMContentLoaded', initTheme);
     </script>
+
+<script>
+/* ===== 기관형 추세추종 레이아웃 테스트 모드 =====
+   실제 DB/API 미연결. 화면 디자인 확인용 가상 데이터.
+*/
+document.addEventListener('DOMContentLoaded', function(){
+  const T = {
+    score:82, direction:'LONG', alignment:'3/4',
+    vol:'24.8%', volState:'보통 변동성',
+    signal:'매수 우세', position:'40%',
+    m:{m1:8.4,m3:15.2,m6:21.7,m12:34.6},
+    cagr:'18.6%', win:'56.4%', mdd:'-12.8%', sharpe:'1.31',
+    meta:'약 5.0년 · 신호전환 38회 · 평균 보유 42거래일',
+    judgment:'중장기 추세가 상승 방향으로 우세합니다. 단기 모멘텀도 함께 개선되어 현재는 상승 추세 추종에 우호적인 상태입니다.'
+  };
+  const set=(id,v,c)=>{
+    const e=document.getElementById(id);
+    if(e){e.textContent=v;if(c)e.style.color=c;}
+  };
+  set('tsmScore',T.score); set('tsmStrength',T.score);
+  set('tsmDirection',T.direction,'#22c55e');
+  set('tsmAlignment','기간 일치 '+T.alignment);
+  set('tsmVol',T.vol); set('tsmVolState',T.volState);
+  set('tsmSignal',T.signal,'#22c55e'); set('tsmPosition',T.position);
+  set('tsmState',T.judgment);
+  set('tsmCagr',T.cagr); set('tsmWin',T.win);
+  set('tsmMdd',T.mdd); set('tsmSharpe',T.sharpe);
+  set('tsmBtMeta',T.meta); set('tsmJudgment',T.judgment);
+  set('tsmM1','+'+T.m.m1.toFixed(1)+'%');
+  set('tsmM3','+'+T.m.m3.toFixed(1)+'%');
+  set('tsmM6','+'+T.m.m6.toFixed(1)+'%');
+  set('tsmM12','+'+T.m.m12.toFixed(1)+'%');
+
+  const p=document.getElementById('tsmProgress');
+  if(p)p.style.width=T.score+'%';
+
+  [['tsmB1',T.m.m1],['tsmB3',T.m.m3],['tsmB6',T.m.m6],['tsmB12',T.m.m12]]
+    .forEach(([id,v])=>{
+      const e=document.getElementById(id);
+      if(e){e.style.width=Math.min(100,Math.max(8,v*2.2))+'%';e.style.background='#22c55e';}
+    });
+
+  const badge=document.getElementById('tsmSignalBadge');
+  if(badge){badge.textContent='테스트 · 매수 우세';badge.style.color='#22c55e';}
+});
+</script>
+
 </body>
 </html>
 """

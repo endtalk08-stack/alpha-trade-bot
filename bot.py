@@ -1415,8 +1415,10 @@ def _dynamic_earnings_importance(sym, market_cap, is_known_major=False):
         return 1
     return 0
 
-def fetch_all_real_earnings():
-    """앞으로 7일의 실적 후보를 가져오고, 시장 영향도가 높은 기업만 표시합니다."""
+def fetch_all_real_earnings(start_date=None, end_date=None):
+    """지정한 기간의 실적 후보를 가져오고, 시장 영향도가 높은 기업만 표시합니다.
+    날짜를 지정하지 않으면 오늘부터 7일을 사용합니다.
+    """
     events = []
     sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
     for k_code, k_name in MAJOR_KR_EARNINGS.items():
@@ -1424,8 +1426,12 @@ def fetch_all_real_earnings():
 
     captured_keys = set()
     now_kst = datetime.now(timezone(timedelta(hours=9)))
-    start_date = now_kst.date()
-    end_date = (now_kst + timedelta(days=7)).date()
+    if start_date is None:
+        start_date = now_kst.date()
+    if end_date is None:
+        end_date = (start_date + timedelta(days=7))
+    if end_date < start_date:
+        start_date, end_date = end_date, start_date
 
     # Tier 1: Finnhub 전체 실적 캘린더. 고정 25종목 제한을 제거합니다.
     if FINNHUB_API_KEY:
@@ -1533,6 +1539,159 @@ def fetch_all_real_earnings():
         if key not in unique:
             unique[key] = ev
     return sorted(unique.values(), key=lambda x: x.get("ts", 0))
+
+
+# 날짜 이동용 캘린더 캐시. 외부 API를 날짜 클릭마다 반복 호출하지 않도록 합니다.
+CALENDAR_RANGE_CACHE = {}
+CALENDAR_RANGE_CACHE_TTL = 600  # 10분
+
+
+def _calendar_cache_key(start_date, end_date):
+    return f"{start_date.isoformat()}_{end_date.isoformat()}"
+
+
+def _fetch_economic_calendar_range(start_date, end_date):
+    """경제 일정을 지정 기간으로 가져옵니다.
+    Finnhub 경제 캘린더를 우선 사용하고, 실패하면 현재 주간 FF 데이터를 보조로 사용합니다.
+    """
+    events = []
+    days_map = ["일", "월", "화", "수", "목", "금", "토"]
+    kst = timezone(timedelta(hours=9))
+
+    # 1) Finnhub: 과거/현재/미래 날짜 범위 조회
+    if FINNHUB_API_KEY:
+        try:
+            url = (
+                "https://finnhub.io/api/v1/calendar/economic"
+                f"?from={start_date.strftime('%Y-%m-%d')}"
+                f"&to={end_date.strftime('%Y-%m-%d')}"
+                f"&token={FINNHUB_API_KEY}"
+            )
+            res = HTTP_SESSION.get(url, timeout=5.0, headers={"User-Agent": "Mozilla/5.0"}).json()
+            items = res.get("economicCalendar", []) if isinstance(res, dict) else []
+            for it in items or []:
+                raw_time = str(it.get("time") or it.get("date") or "").strip()
+                if not raw_time:
+                    continue
+                try:
+                    raw_time = raw_time.replace("Z", "+00:00")
+                    utc_dt = datetime.fromisoformat(raw_time)
+                    if utc_dt.tzinfo is None:
+                        utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+                    else:
+                        utc_dt = utc_dt.astimezone(timezone.utc)
+                except Exception:
+                    try:
+                        utc_dt = datetime.strptime(raw_time[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    except Exception:
+                        continue
+
+                kst_dt = utc_dt.astimezone(kst)
+                if not (start_date <= kst_dt.date() <= end_date):
+                    continue
+
+                country = str(it.get("country") or "").strip()
+                prefix = COUNTRY_PREFIX_MAP.get(country, "")
+                raw_title = str(it.get("event") or it.get("title") or "").strip()
+                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
+                full_name = f"{prefix}{title_ko}" if prefix else title_ko
+
+                impact_raw = str(it.get("impact") or it.get("importance") or "").strip().lower()
+                if impact_raw in {"high", "3", "3.0"}:
+                    stars, star_str = 3, "★★★"
+                elif impact_raw in {"medium", "moderate", "2", "2.0"}:
+                    stars, star_str = 2, "★★☆"
+                else:
+                    stars, star_str = 1, "★☆☆"
+
+                actual = str(it.get("actual") or "").strip() or ("발표완료" if utc_dt <= datetime.now(timezone.utc) else "발표대기")
+                forecast = str(it.get("estimate") or it.get("forecast") or "").strip() or "-"
+                previous = str(it.get("prev") or it.get("previous") or "").strip() or "-"
+
+                events.append({
+                    "ts": utc_dt.timestamp(),
+                    "date_key": kst_dt.strftime("%Y.%m.%d"),
+                    "date_str": f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})",
+                    "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일",
+                    "time": kst_dt.strftime("%H:%M"),
+                    "stars": stars,
+                    "star_str": star_str,
+                    "type": "eco",
+                    "name": full_name or "경제지표",
+                    "ticker": "",
+                    "val": actual,
+                    "exp": forecast,
+                    "prev": previous,
+                })
+            if events:
+                return events
+        except Exception as exc:
+            print("[CALENDAR][ECO] Finnhub 기간 조회 오류:", exc)
+
+    # 2) 보조: FF thisweek (현재 주간 범위와 겹칠 때만)
+    try:
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        res = HTTP_SESSION.get(url, timeout=3.5, headers={"User-Agent": "Mozilla/5.0"}).json()
+        if isinstance(res, list):
+            for it in res:
+                date_str = it.get("date", "")
+                if not date_str:
+                    continue
+                utc_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                kst_dt = utc_dt.astimezone(kst)
+                if not (start_date <= kst_dt.date() <= end_date):
+                    continue
+                country = it.get("country", "")
+                prefix = COUNTRY_PREFIX_MAP.get(country, "")
+                raw_title = it.get("title", "")
+                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
+                impact_raw = it.get("impact", "")
+                stars = 3 if impact_raw == "High" else (2 if impact_raw == "Medium" else 1)
+                events.append({
+                    "ts": utc_dt.timestamp(),
+                    "date_key": kst_dt.strftime("%Y.%m.%d"),
+                    "date_str": f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})",
+                    "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일",
+                    "time": kst_dt.strftime("%H:%M"),
+                    "stars": stars,
+                    "star_str": "★★★" if stars == 3 else ("★★☆" if stars == 2 else "★☆☆"),
+                    "type": "eco",
+                    "name": f"{prefix}{title_ko}",
+                    "ticker": "",
+                    "val": str(it.get("actual") or "발표대기"),
+                    "exp": str(it.get("forecast") or "-") ,
+                    "prev": str(it.get("previous") or "-"),
+                })
+    except Exception as exc:
+        print("[CALENDAR][ECO] FF 보조 조회 오류:", exc)
+    return events
+
+
+def fetch_calendar_range(start_date, end_date):
+    """경제/실적 모두 지정 기간을 조회합니다. 서버 메모리 캐시로 외부 호출을 줄입니다."""
+    if end_date < start_date:
+        start_date, end_date = end_date, start_date
+    key = _calendar_cache_key(start_date, end_date)
+    now = time.time()
+    cached = CALENDAR_RANGE_CACHE.get(key)
+    if cached and now - cached["ts"] < CALENDAR_RANGE_CACHE_TTL:
+        return cached["events"]
+
+    combined = []
+    combined.extend(_fetch_economic_calendar_range(start_date, end_date))
+    try:
+        combined.extend(fetch_all_real_earnings(start_date, end_date))
+    except Exception as exc:
+        print("[CALENDAR][EARN] 기간 조회 오류:", exc)
+
+    # 동일 이벤트 중복 제거
+    unique = {}
+    for ev in combined:
+        key2 = (ev.get("type", ""), ev.get("ticker", ""), ev.get("name", ""), ev.get("date_key", ""), ev.get("time", ""))
+        unique[key2] = ev
+    result = sorted(unique.values(), key=lambda x: (x.get("date_key", ""), x.get("ts", 0), x.get("name", "")))
+    CALENDAR_RANGE_CACHE[key] = {"ts": now, "events": result}
+    return result
 
 
 def fetch_real_market_calendar_live():
@@ -5651,8 +5810,40 @@ HTML_PAGE = r"""<!DOCTYPE html>
             };
         }
 
+        function mergeCalendarEvents(events) {
+            if (!Array.isArray(events) || !events.length) return;
+            const map = new Map();
+            (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : []).forEach(ev => {
+                const key = `${ev.type||''}|${ev.ticker||''}|${ev.name||''}|${ev.date_key||''}|${ev.time||''}`;
+                map.set(key, ev);
+            });
+            events.forEach(ev => {
+                const key = `${ev.type||''}|${ev.ticker||''}|${ev.name||''}|${ev.date_key||''}|${ev.time||''}`;
+                map.set(key, ev);
+            });
+            globalMarketCalendar = Array.from(map.values()).sort((a,b) => Number(a.ts||0)-Number(b.ts||0));
+        }
+
+        const calendarLoadedRanges = new Map();
+        async function ensureCalendarDateLoaded(offset) {
+            const targetKey = getCalendarDateInfo(offset).dateKey;
+            if (calendarLoadedRanges.has(targetKey)) return;
+            calendarLoadedRanges.set(targetKey, true);
+            try {
+                const target = targetKey.replace(/\./g, '-');
+                const res = await fetch(`/api/calendar?date=${encodeURIComponent(target)}&before=14&after=14`, {cache:'no-store'});
+                const data = await res.json();
+                if (data && data.ok && Array.isArray(data.data)) {
+                    mergeCalendarEvents(data.data);
+                }
+            } catch (e) {
+                console.warn('calendar range load failed', e);
+            }
+        }
+
         function renderEconomicCalendarView() {
             const info = getCalendarDateInfo(economicCalOffset);
+            if (!calendarLoadedRanges.has(info.dateKey)) { ensureCalendarDateLoaded(economicCalOffset).then(() => renderEconomicCalendarView()); }
             setTxt('ecoCalDisplayDate', info.display);
 
             const container = document.getElementById('ecoCalEventList');
@@ -5700,6 +5891,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function renderEarningsCalendarView() {
             const info = getCalendarDateInfo(earningsCalOffset);
+            if (!calendarLoadedRanges.has(info.dateKey)) { ensureCalendarDateLoaded(earningsCalOffset).then(() => renderEarningsCalendarView()); }
             setTxt('earnCalDisplayDate', info.display);
 
             const container = document.getElementById('earnCalEventList');
@@ -5791,15 +5983,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
             renderEarningsCalendarView();
         }
 
-        function shiftEconomicCalendarDate(delta) {
+        async function shiftEconomicCalendarDate(delta) {
             economicCalOffset += Number(delta || 0);
             economicCalPage = 1;
+            await ensureCalendarDateLoaded(economicCalOffset);
             renderEconomicCalendarView();
         }
 
-        function resetEconomicCalendarDate() {
+        async function resetEconomicCalendarDate() {
             economicCalOffset = 0;
             economicCalPage = 1;
+            await ensureCalendarDateLoaded(0);
             renderEconomicCalendarView();
         }
 
@@ -5808,15 +6002,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
             renderEconomicCalendarView();
         }
 
-        function shiftEarningsCalendarDate(delta) {
+        async function shiftEarningsCalendarDate(delta) {
             earningsCalOffset += Number(delta || 0);
             earningsCalPage = 1;
+            await ensureCalendarDateLoaded(earningsCalOffset);
             renderEarningsCalendarView();
         }
 
-        function resetEarningsCalendarDate() {
+        async function resetEarningsCalendarDate() {
             earningsCalOffset = 0;
             earningsCalPage = 1;
+            await ensureCalendarDateLoaded(0);
             renderEarningsCalendarView();
         }
 
@@ -6721,6 +6917,33 @@ class WebHandler(BaseHTTPRequestHandler):
                     "data": recent,
                 }
             )
+            return
+
+        # 날짜별 경제/실적 일정 조회
+        # /api/calendar?date=2026-08-29&before=14&after=14
+        if parsed.path == "/api/calendar":
+            date_text = str(params.get("date", [""])[0]).strip()
+            try:
+                target = datetime.strptime(date_text, "%Y-%m-%d").date() if date_text else datetime.now(timezone(timedelta(hours=9))).date()
+            except Exception:
+                self._json(400, {"ok": False, "error": "date는 YYYY-MM-DD 형식이어야 합니다."})
+                return
+            try:
+                before = max(0, min(31, int(params.get("before", ["14"])[0])))
+            except Exception:
+                before = 14
+            try:
+                after = max(0, min(31, int(params.get("after", ["14"])[0])))
+            except Exception:
+                after = 14
+            start_date = target - timedelta(days=before)
+            end_date = target + timedelta(days=after)
+            try:
+                events = fetch_calendar_range(start_date, end_date)
+                self._json(200, {"ok": True, "target": target.isoformat(), "start": start_date.isoformat(), "end": end_date.isoformat(), "data": events})
+            except Exception as exc:
+                print(f"API ERROR /api/calendar: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "일정 데이터를 가져오지 못했습니다."})
             return
 
         if parsed.path == "/api/analyze":

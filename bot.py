@@ -1679,7 +1679,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
     now_kst = datetime.now(timezone(timedelta(hours=9)))
     from_d = (now_kst - timedelta(days=days_back)).strftime("%Y-%m-%d")
     to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
-    cache_key = f"earn_history:{from_d}:{to_d}"
+    cache_key = f"earn_history_v18:{from_d}:{to_d}"
     cached = _cache_get(ALPHA_EARNINGS_CACHE, cache_key, 1800)
     if cached is not None:
         return cached
@@ -1744,13 +1744,22 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
         except Exception as exc:
             print("[CALENDAR][EARN] Finnhub 기간 조회 실패:", exc)
 
-    # Finnhub 전체 기간 조회에서 미래 실적이 빠진 주요 미국 종목만
-    # symbol 단위로 재조회합니다. AVGO 같은 종목이 전체 캘린더에서
-    # 누락되어도 실적 캘린더에는 정상적으로 들어오도록 하는 보강 단계입니다.
+    # Finnhub 전체 기간 조회에서 미래 실적이 빠진 주요 미국 종목은
+    # "종목별 조회"로 다시 확인합니다.
+    #
+    # 중요:
+    # - 전체 조회가 일부 종목만 반환해도 나머지를 버리지 않습니다.
+    # - 종목별 요청 사이에 짧은 간격을 둬 API rate-limit 영향을 줄입니다.
+    # - 응답이 비어 있으면 Yahoo 종목별 조회로 한 번 더 보강합니다.
     if FINNHUB_API_KEY:
+        import time as _calendar_time
+
         missing_future_symbols = [s for s in us_symbols if s not in future_captured]
+
         for sym in missing_future_symbols:
             try:
+                _calendar_time.sleep(0.35)
+
                 direct_res = HTTP_SESSION.get(
                     "https://finnhub.io/api/v1/calendar/earnings",
                     params={
@@ -1759,9 +1768,15 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                         "symbol": sym,
                         "token": FINNHUB_API_KEY,
                     },
-                    timeout=5.0,
+                    timeout=6.0,
                 )
-                direct_items = direct_res.json().get("earningsCalendar", []) if direct_res.ok else []
+
+                direct_items = []
+                if direct_res.ok:
+                    try:
+                        direct_items = direct_res.json().get("earningsCalendar", [])
+                    except Exception:
+                        direct_items = []
 
                 for it in direct_items:
                     direct_sym = str(it.get("symbol", sym)).upper()
@@ -1769,11 +1784,7 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                         continue
 
                     raw_date = str(it.get("date", "")).strip()
-                    if not raw_date:
-                        continue
-
-                    # 이미 지난 날짜만 반환된 경우에는 보강 대상으로 취급하지 않습니다.
-                    if raw_date < now_kst.strftime("%Y-%m-%d"):
+                    if not raw_date or raw_date < now_kst.strftime("%Y-%m-%d"):
                         continue
 
                     hour = str(it.get("hour", "amc")).lower().strip()
@@ -1791,8 +1802,6 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                         if rev_est is not None else "-"
                     )
 
-                    # 이 보강 단계에서는 Finnhub의 날짜 + 발표구분을 그대로 사용합니다.
-                    # Yahoo의 잘못된 예상일이 Finnhub 날짜를 덮어쓰지 않게 합니다.
                     us_dt = datetime.strptime(
                         raw_date, "%Y-%m-%d"
                     ).replace(tzinfo=timezone.utc)
@@ -1833,28 +1842,63 @@ def fetch_all_real_earnings_history(days_back=180, days_forward=90):
                     future_captured.add(direct_sym)
 
             except Exception as exc:
-                print(f"[CALENDAR][EARN] {sym} 개별 보강 실패:", exc)
+                print(f"[CALENDAR][EARN] {sym} Finnhub 개별 보강 실패:", repr(exc))
 
-    # API가 없거나 일부 종목만 반환된 경우 Yahoo의 현재 예정 실적을 보강한다.
-    # Yahoo는 historical 전체를 보장하지 않으므로 보강용으로만 사용한다.
+    # Yahoo도 "전체 일괄 조회"만 믿지 않고, 아직 미래 실적이 없는 종목은
+    # 종목별 quote 요청으로 다시 확인합니다.
     if not events or len(future_captured) < len(us_symbols):
-        try:
-            res = HTTP_SESSION.get(
-                f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(us_symbols)}",
-                timeout=3.0,
-            ).json()
-            for it in res.get("quoteResponse", {}).get("result", []):
-                sym = str(it.get("symbol", "")).upper()
-                raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
-                if sym in sym_to_ko and raw_ts and sym not in future_captured:
+        import time as _calendar_time
+
+        for sym in us_symbols:
+            if sym in future_captured:
+                continue
+
+            try:
+                _calendar_time.sleep(0.35)
+
+                yahoo_res = HTTP_SESSION.get(
+                    "https://query1.finance.yahoo.com/v7/finance/quote",
+                    params={"symbols": sym},
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=5.0,
+                )
+
+                items = []
+                if yahoo_res.ok:
+                    try:
+                        items = yahoo_res.json().get("quoteResponse", {}).get("result", [])
+                    except Exception:
+                        items = []
+
+                for it in items:
+                    ysym = str(it.get("symbol", sym)).upper()
+                    raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
+
+                    if ysym not in sym_to_ko or not raw_ts:
+                        continue
+
                     dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
-                    dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
-                    events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc,
-                        f"예상 EPS ${it.get('epsForward'):.2f}" if it.get('epsForward') is not None else "예상치 집계중",
-                        "-", hour))
-                    future_captured.add(sym)
-        except Exception as exc:
-            print("[CALENDAR][EARN] Yahoo 보강 실패:", exc)
+
+                    # Yahoo timestamp가 현재보다 과거이면 미래 일정으로 사용하지 않습니다.
+                    if dt_utc <= datetime.now(timezone.utc):
+                        continue
+
+                    dt_utc, hour = _normalize_earnings_timestamp(ysym, dt_utc)
+
+                    eps_f = it.get("epsForward")
+                    eps_str = (
+                        f"예상 EPS ${eps_f:.2f}"
+                        if eps_f is not None else "예상치 집계중"
+                    )
+
+                    events.extend(build_earnings_event(
+                        ysym, sym_to_ko[ysym], dt_utc,
+                        eps_str, "-", hour
+                    ))
+                    future_captured.add(ysym)
+
+            except Exception as exc:
+                print(f"[CALENDAR][EARN] {sym} Yahoo 개별 보강 실패:", repr(exc))
 
     unique = {}
     for ev in events:

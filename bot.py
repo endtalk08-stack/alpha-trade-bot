@@ -3685,7 +3685,7 @@ def build_clustered_material_evidence(news_list, target_name="", symbol=""):
     elif top["repeat_count"] >= 2 and direction != 0: score = direction
     else: score = 0
     topic = "·".join(top["keywords"][:3]) or "관련 재료"
-    detail = f"{topic} 관련 내용이 {top['repeat_count']}건, 서로 다른 출처 {top['source_count']}곳에서 반복 확인"
+    detail = f"{topic} 관련 내용이 {top['repeat_count']}건"
     if direction > 0: detail += " · 긍정 방향"
     elif direction < 0: detail += " · 부정 방향"
     return {"score": score, "detail": detail, "evidence": top["items"][:5], "clusters": clusters[:5]}
@@ -5377,6 +5377,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
             font-size: 0.64rem;
             color: var(--text-muted);
             line-height: 1.25;
+        }
+        #rowTrack .track-percent {
+            color: var(--text-muted);
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+        #rowTrack .quant-row-name {
+            font-weight: 700;
         }
 
         #rowTrack .track-price-chart-wrap {
@@ -8092,7 +8100,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const tq = data.quant || {};
                     setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
                     setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
-                    setTxt('tPos52wLabel', tq.pos_52w ? `52주 가격 위치 ${tq.pos_52w}` : '52주 가격 위치');
+                    setTxt('tPos52wLabel', '52주 가격 위치');
 
                     const sliderPct = Number(tq.slider_fill_pct);
                     const tFill = document.getElementById('tSliderFill');
@@ -8106,12 +8114,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
                     const trackDetailList = document.getElementById('trackDetailList');
                     if (trackDetailList) {
-                        const iconForTrack = {
-                            '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂',
-                            '시장':'⌁','업종·테마':'◇','기업 재료':'▤',
-                            '거래량':'♧','시장 5일 흐름':'⌁'
-                        };
-
                         trackDetailList.innerHTML = evidenceReasons.map(r => {
                             const score = Number(r.score || 0);
                             const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
@@ -8119,14 +8121,30 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 score > 0 ? 'status-pill-positive' :
                                 score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
 
+                            // 트랙 분석은 아이콘 없이 깔끔한 2단 구조로 표시한다.
+                            // 상세 문구 안의 등락률은 퀀트 분석처럼 아래 줄로 분리한다.
+                            const rawDetail = String(r.detail || '-').trim();
+                            const pctMatch = rawDetail.match(/([+-]?\d+(?:\.\d+)?)\s*%/);
+                            let mainDetail = rawDetail;
+                            let pctDetail = '';
+
+                            if (pctMatch) {
+                                pctDetail = `${pctMatch[1]}%`;
+                                mainDetail = rawDetail
+                                    .replace(pctMatch[0], '')
+                                    .replace(/\s*[·•]\s*$/, '')
+                                    .replace(/\s{2,}/g, ' ')
+                                    .trim();
+                            }
+
                             return `<div class="quant-row-item">
                                 <div class="quant-row-left">
-                                    <span class="quant-row-name">${iconForTrack[r.label] || '•'} ${r.label || '-'}</span>
+                                    <span class="quant-row-name">${r.label || '-'}</span>
                                     <span class="quant-row-status ${statusClass}">${status}</span>
                                 </div>
                                 <div class="quant-row-right">
-                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
-                                    <div class="quant-row-subval"></div>
+                                    <div class="quant-row-val">${mainDetail || '-'}</div>
+                                    ${pctDetail ? `<div class="quant-row-subval track-percent">${pctDetail}</div>` : ''}
                                 </div>
                             </div>`;
                         }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;

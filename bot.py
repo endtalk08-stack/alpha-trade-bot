@@ -1223,29 +1223,7 @@ MAJOR_KR_EARNINGS = {
 # ----------------------------------------------------
 # 3. 3단계 하이브리드 실적 일정 수집기 (한국/미국 완벽 대응)
 # ----------------------------------------------------
-# 실적 일정 자체에는 전 세계적으로 통용되는 공식 별점이 없으므로
-# gaemiGTP에서 "시장 영향도" 기준으로 자체 중요도를 부여합니다.
-# 실적은 향후 7일 전체 후보에서 시가총액/핵심종목 기준으로 중요도 3/2/1단계만 선별합니다.
-EARNINGS_IMPORTANCE_3 = {
-    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "AMD", "AVGO",
-    "005930", "005930.KS", "000660", "000660.KS", "005380", "005380.KS",
-    "000270", "000270.KS", "012450", "012450.KS", "373220", "373220.KS"
-}
-EARNINGS_IMPORTANCE_2 = {
-    "PLTR", "005490", "005490.KS", "042660", "042660.KS", "034020", "034020.KS",
-    "012330", "012330.KS", "009150", "009150.KS", "035420", "035420.KS",
-    "068270", "068270.KS"
-}
-
-def get_earnings_importance(symbol):
-    sym = str(symbol or "").upper().strip()
-    if sym in EARNINGS_IMPORTANCE_3:
-        return 3, "★★★"
-    if sym in EARNINGS_IMPORTANCE_2:
-        return 2, "★★☆"
-    return 1, "★☆☆"
-
-def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None, importance=None):
+def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None):
     """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
@@ -1292,8 +1270,8 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         "date_str": date_str,
         "date_header": date_header,
         "time": time_str,
-        "stars": int(importance if importance is not None else get_earnings_importance(sym)[0]),
-        "star_str": "★★★" if int(importance if importance is not None else get_earnings_importance(sym)[0]) == 3 else ("★★☆" if int(importance if importance is not None else get_earnings_importance(sym)[0]) == 2 else "★☆☆"),
+        "stars": 3,
+        "star_str": "★★★",
         "type": "earn",
         "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
         "ticker": sym,
@@ -1375,89 +1353,350 @@ def _fetch_yahoo_earnings_timestamps(symbols):
     return result
 
 
-def _fetch_yahoo_quote_metadata(symbols):
-    """Yahoo quote API에서 실적 후보의 시가총액/회사명을 일괄 조회합니다."""
-    result = {}
-    symbols = [str(x).upper().strip() for x in (symbols or []) if str(x).strip()]
-    if not symbols:
-        return result
-    for i in range(0, len(symbols), 50):
-        chunk = symbols[i:i+50]
+def fetch_all_real_earnings():
+    events = []
+    sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
+    for k_code, k_name in MAJOR_KR_EARNINGS.items():
+        sym_to_ko[k_code] = k_name
+
+    captured_syms = set()
+    now_kst = datetime.now(timezone(timedelta(hours=9)))
+
+    # 주요 미국 종목은 Yahoo의 실제 earnings timestamp를 별도로 확보해
+    # Finnhub의 amc/bmo 같은 범주형 시간보다 우선 사용합니다.
+    us_symbols = [item[0] for item in MAJOR_US_TECH_TICKERS]
+    yahoo_times = _fetch_yahoo_earnings_timestamps(us_symbols)
+
+    # Tier 1: Finnhub API
+    if FINNHUB_API_KEY:
         try:
-            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(chunk)}"
-            res = HTTP_SESSION.get(url, timeout=3.5, headers={"User-Agent": "Mozilla/5.0"}).json()
-            for it in res.get("quoteResponse", {}).get("result", []) or []:
-                sym = str(it.get("symbol", "")).upper().strip()
-                if not sym:
+            from_d = (now_kst - timedelta(days=180)).strftime("%Y-%m-%d")
+            to_d = (now_kst + timedelta(days=90)).strftime("%Y-%m-%d")
+            url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
+            res = HTTP_SESSION.get(url, timeout=3.0).json()
+            items = res.get("earningsCalendar", [])
+
+            for it in items:
+                sym = str(it.get("symbol", "")).upper()
+                if sym not in sym_to_ko:
                     continue
-                result[sym] = {
-                    "market_cap": float(it.get("marketCap") or 0),
-                    "name": str(it.get("shortName") or it.get("longName") or sym).strip()
-                }
+
+                raw_date = str(it.get("date", "")).strip()
+                if not raw_date:
+                    continue
+
+                hour = str(it.get("hour", "amc")).lower().strip()
+
+                eps_est = it.get("epsEstimate")
+                rev_est = it.get("revenueEstimate")
+                eps_actual = it.get("epsActual")
+                rev_actual = it.get("revenueActual")
+
+                eps_str = (
+                    f"예상 EPS ${eps_est:.2f}"
+                    if eps_est is not None else "예상치 집계중"
+                )
+                rev_str = (
+                    f"예상 매출 ${rev_est/1e9:.1f}B"
+                    if rev_est is not None else "-"
+                )
+
+                us_dt = datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+                # Finnhub은 날짜 + amc/bmo/dmh만 제공하므로,
+                # 우선 실제 Yahoo timestamp가 같은 발표일 근처에 있으면 사용합니다.
+                dt_utc = None
+                yahoo_dt = yahoo_times.get(sym)
+                if yahoo_dt is not None:
+                    day_gap = abs((yahoo_dt.date() - us_dt.date()).days)
+                    if day_gap <= 1:
+                        dt_utc, hour = _normalize_earnings_timestamp(sym, yahoo_dt)
+
+                # Yahoo timestamp가 없거나 날짜가 맞지 않을 때만
+                # 미국 동부시간의 표준 발표 시각을 안전한 fallback으로 사용합니다.
+                if dt_utc is None:
+                    if ZoneInfo is not None:
+                        try:
+                            et_zone = ZoneInfo("America/New_York")
+                            if hour == "amc":
+                                local_time = datetime.strptime(raw_date + " 16:00", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            elif hour == "bmo":
+                                local_time = datetime.strptime(raw_date + " 06:00", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            else:
+                                local_time = datetime.strptime(raw_date + " 09:30", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                            dt_utc = local_time.astimezone(timezone.utc)
+                        except Exception:
+                            dt_utc = None
+
+                    if dt_utc is None:
+                        # 최종 fallback: 기존보다 DST 오차가 적은 UTC 기준값
+                        if hour == "amc":
+                            dt_utc = us_dt + timedelta(hours=20)
+                        elif hour == "bmo":
+                            dt_utc = us_dt + timedelta(hours=10)
+                        else:
+                            dt_utc = us_dt + timedelta(hours=13, minutes=30)
+
+                events.extend(
+                    build_earnings_event(
+                        sym, sym_to_ko[sym], dt_utc,
+                        eps_str, rev_str, hour,
+                        actual_eps=eps_actual, actual_rev=rev_actual,
+                        expected_eps=eps_est, expected_rev=rev_est
+                    )
+                )
+                captured_syms.add(sym)
+
         except Exception as exc:
-            print("[CALENDAR][EARN] Yahoo 시총 조회 오류:", exc)
-    return result
+            print("[CALENDAR][EARN] Finnhub 오류:", exc)
 
-def _dynamic_earnings_importance(sym, market_cap, is_known_major=False):
-    """실적 시장영향도: 기존 핵심종목 우선 + 시가총액 기반 자동 선별."""
-    sym = str(sym or "").upper().strip()
-    known_score, _ = get_earnings_importance(sym)
-    if is_known_major and known_score >= 2:
-        return known_score
-    if known_score >= 3:
-        return 3
-    cap = float(market_cap or 0)
-    if cap >= 300_000_000_000:
-        return 3
-    if cap >= 50_000_000_000:
-        return 2
-    if cap >= 10_000_000_000:
-        return 1
-    return 0
+    # Tier 2: Yahoo Finance
+    # Finnhub에서 못 받은 종목은 Yahoo timestamp를 직접 사용합니다.
+    missing = [s for s in us_symbols if s not in captured_syms]
+    if missing:
+        try:
+            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing)}"
+            res = HTTP_SESSION.get(url, timeout=2.5).json()
+            items = res.get("quoteResponse", {}).get("result", [])
 
-def fetch_all_real_earnings(start_date=None, end_date=None):
-    """지정한 기간의 실적 후보를 가져오고, 시장 영향도가 높은 기업만 표시합니다.
-    날짜를 지정하지 않으면 오늘부터 7일을 사용합니다.
+            for it in items:
+                sym = str(it.get("symbol", "")).upper()
+                raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
+                if sym in sym_to_ko and raw_ts:
+                    dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                    dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
+                    eps_f = it.get("epsForward")
+                    eps_str = (
+                        f"예상 EPS ${eps_f:.2f}"
+                        if eps_f is not None else "예상치 집계중"
+                    )
+
+                    events.extend(
+                        build_earnings_event(
+                            sym, sym_to_ko[sym], dt_utc,
+                            eps_str, "-", hour
+                        )
+                    )
+                    captured_syms.add(sym)
+
+        except Exception as exc:
+            print("[CALENDAR][EARN] Yahoo 오류:", exc)
+
+    # 국내 실적은 현재 가상 날짜를 만들지 않고,
+    # 실제 데이터가 들어오는 경우에만 표시합니다.
+
+    # 동일 종목 + 동일 KST 날짜 + 동일 시간이면 1건만 유지
+    unique = {}
+    for ev in events:
+        key = (
+            ev.get("ticker", ""),
+            ev.get("date_key", ""),
+            ev.get("time", "")
+        )
+        if key not in unique:
+            unique[key] = ev
+
+    return sorted(unique.values(), key=lambda x: x.get("ts", 0))
+
+
+def _calendar_event_common(utc_dt, event_name, country, stars, star_str, event_type, actual, forecast, previous, ticker="", extra=None):
+    """캘린더 이벤트 공통 포맷. 화면은 항상 한국시간(KST)으로 표시한다."""
+    days_map = ["일", "월", "화", "수", "목", "금", "토"]
+    kst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
+    date_key = kst_dt.strftime("%Y.%m.%d")
+    date_str = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
+    date_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일"
+    item = {
+        "ts": utc_dt.timestamp(),
+        "date_key": date_key,
+        "date_str": date_str,
+        "date_header": date_header,
+        "time": kst_dt.strftime("%H:%M"),
+        "stars": int(stars),
+        "star_str": star_str,
+        "type": event_type,
+        "name": event_name,
+        "ticker": ticker or "",
+        "country": country or "",
+        "val": actual or "-",
+        "exp": forecast or "-",
+        "prev": previous or "-",
+    }
+    if isinstance(extra, dict):
+        item.update(extra)
+    return item
+
+
+def _impact_to_stars(impact):
+    text = str(impact or "").strip().lower()
+    if text in {"high", "3", "3.0", "red"}:
+        return 3, "★★★"
+    if text in {"medium", "moderate", "2", "2.0", "orange", "yellow"}:
+        return 2, "★★☆"
+    return 1, "★☆☆"
+
+
+def _parse_calendar_timestamp(raw_value):
+    """Finnhub/Yahoo/ISO 등 여러 시간 형식을 UTC datetime으로 안전하게 변환."""
+    if raw_value is None or raw_value == "":
+        return None
+    try:
+        if isinstance(raw_value, (int, float)):
+            return datetime.fromtimestamp(float(raw_value), tz=timezone.utc)
+        text = str(raw_value).strip()
+        if text.isdigit():
+            return datetime.fromtimestamp(float(text), tz=timezone.utc)
+        text = text.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
+    """과거/현재/미래 경제 일정.
+
+    1순위: FINNHUB_API_KEY가 있으면 Finnhub 경제 캘린더의 기간 조회를 사용한다.
+    2순위: API 키가 없거나 실패하면 기존 Forex Factory 이번 주 데이터를 사용한다.
+
+    화면에서는 원본 데이터를 전부 노출하지 않고 중요도 별표로 필터링한다.
+    """
+    now_kst = datetime.now(timezone(timedelta(hours=9)))
+    from_d = (now_kst - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
+    cache_key = f"eco:{from_d}:{to_d}"
+    cached = _cache_get(ALPHA_NEWS_CACHE, cache_key, 1800)
+    if cached is not None:
+        return cached
+
+    events = []
+
+    # Finnhub: historical + scheduled macro releases
+    if FINNHUB_API_KEY:
+        try:
+            url = "https://finnhub.io/api/v1/calendar/economic"
+            res = HTTP_SESSION.get(
+                url,
+                params={"from": from_d, "to": to_d, "token": FINNHUB_API_KEY},
+                timeout=6.0,
+            )
+            if res.ok:
+                payload = res.json()
+                rows = payload.get("economicCalendar", []) if isinstance(payload, dict) else []
+                for it in rows:
+                    dt = _parse_calendar_timestamp(it.get("time") or it.get("timestamp") or it.get("date"))
+                    if dt is None:
+                        # 날짜만 오는 데이터는 00:00 UTC로 보정
+                        raw_date = str(it.get("date") or "").strip()
+                        if raw_date:
+                            try:
+                                dt = datetime.strptime(raw_date[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                            except Exception:
+                                continue
+                    if dt is None:
+                        continue
+
+                    stars, star_str = _impact_to_stars(it.get("impact") or it.get("importance"))
+                    country = str(it.get("country") or "").strip()
+                    raw_title = str(it.get("event") or it.get("title") or "").strip()
+                    if not raw_title:
+                        continue
+                    prefix = COUNTRY_PREFIX_MAP.get(country, "")
+                    title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
+                    full_name = f"{prefix}{title_ko}" if prefix else title_ko
+
+                    actual = str(it.get("actual") or "").strip()
+                    estimate = str(it.get("estimate") or it.get("forecast") or "").strip()
+                    previous = str(it.get("prev") or it.get("previous") or "").strip()
+                    if not actual:
+                        actual = "발표완료" if dt <= datetime.now(timezone.utc) else "발표대기"
+
+                    events.append(_calendar_event_common(
+                        dt, full_name, country, stars, star_str, "eco",
+                        actual, estimate, previous,
+                        extra={"unit": it.get("unit") or "", "source": "Finnhub"},
+                    ))
+
+                if events:
+                    # 같은 날짜/시간/이벤트 중복 제거
+                    unique = {}
+                    for ev in events:
+                        key = (ev.get("date_key"), ev.get("time"), ev.get("name"), ev.get("country", ""))
+                        unique[key] = ev
+                    out = sorted(unique.values(), key=lambda x: x.get("ts", 0))
+                    return _cache_set(ALPHA_NEWS_CACHE, cache_key, out)
+        except Exception as exc:
+            print("[CALENDAR][ECO] Finnhub 기간 조회 실패:", exc)
+
+    # Fallback: 기존 이번 주 데이터
+    try:
+        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+        res = HTTP_SESSION.get(url, timeout=3.5).json()
+        if isinstance(res, list):
+            for it in res:
+                dt = _parse_calendar_timestamp(it.get("date", ""))
+                if dt is None:
+                    continue
+                stars, star_str = _impact_to_stars(it.get("impact"))
+                country = str(it.get("country", ""))
+                prefix = COUNTRY_PREFIX_MAP.get(country, "")
+                raw_title = str(it.get("title", ""))
+                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
+                full_name = f"{prefix}{title_ko}"
+                actual_raw = str(it.get("actual", "")).strip()
+                actual = actual_raw or ("발표완료" if dt <= datetime.now(timezone.utc) else "발표대기")
+                events.append(_calendar_event_common(
+                    dt, full_name, country, stars, star_str, "eco",
+                    actual, str(it.get("forecast", "")).strip() or "-",
+                    str(it.get("previous", "")).strip() or "-",
+                    extra={"source": "ForexFactory"},
+                ))
+    except Exception as exc:
+        print("[CALENDAR][ECO] fallback 파싱 에러:", exc)
+
+    unique = {}
+    for ev in events:
+        key = (ev.get("date_key"), ev.get("time"), ev.get("name"), ev.get("country", ""))
+        unique[key] = ev
+    return _cache_set(ALPHA_NEWS_CACHE, cache_key, sorted(unique.values(), key=lambda x: x.get("ts", 0)))
+
+
+def fetch_all_real_earnings_history(days_back=180, days_forward=90):
+    """주요 기업 실적을 과거/현재/미래 범위로 확보한다.
+    기존 fetch_all_real_earnings()는 다른 분석 로직에서도 사용하므로 그대로 두고,
+    캘린더 전용으로 기간을 넓힌 버전만 추가한다.
     """
     events = []
     sym_to_ko = {sym: ko for sym, ko in MAJOR_US_TECH_TICKERS}
     for k_code, k_name in MAJOR_KR_EARNINGS.items():
         sym_to_ko[k_code] = k_name
 
-    captured_keys = set()
     now_kst = datetime.now(timezone(timedelta(hours=9)))
-    if start_date is None:
-        start_date = now_kst.date()
-    if end_date is None:
-        end_date = (start_date + timedelta(days=7))
-    if end_date < start_date:
-        start_date, end_date = end_date, start_date
+    from_d = (now_kst - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
+    cache_key = f"earn_history:{from_d}:{to_d}"
+    cached = _cache_get(ALPHA_EARNINGS_CACHE, cache_key, 1800)
+    if cached is not None:
+        return cached
 
-    # Tier 1: Finnhub 전체 실적 캘린더. 고정 25종목 제한을 제거합니다.
+    us_symbols = [item[0] for item in MAJOR_US_TECH_TICKERS]
+    yahoo_times = _fetch_yahoo_earnings_timestamps(us_symbols)
+    captured = set()
+
     if FINNHUB_API_KEY:
         try:
-            from_d = start_date.strftime("%Y-%m-%d")
-            to_d = end_date.strftime("%Y-%m-%d")
-            url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
-            res = HTTP_SESSION.get(url, timeout=5.0, headers={"User-Agent": "Mozilla/5.0"}).json()
-            items = res.get("earningsCalendar", []) or []
-
-            # 후보 전체의 시가총액/회사명을 한 번에 가져와 중요도를 자동 판정합니다.
-            candidate_symbols = sorted({str(it.get("symbol", "")).upper().strip() for it in items if it.get("symbol")})
-            quote_meta = _fetch_yahoo_quote_metadata(candidate_symbols)
-
+            url = "https://finnhub.io/api/v1/calendar/earnings"
+            res = HTTP_SESSION.get(url, params={"from": from_d, "to": to_d, "token": FINNHUB_API_KEY}, timeout=6.0)
+            items = res.json().get("earningsCalendar", []) if res.ok else []
             for it in items:
-                sym = str(it.get("symbol", "")).upper().strip()
+                sym = str(it.get("symbol", "")).upper()
+                if sym not in sym_to_ko:
+                    continue
                 raw_date = str(it.get("date", "")).strip()
-                if not sym or not raw_date:
+                if not raw_date:
                     continue
-                try:
-                    event_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
-                except Exception:
-                    continue
-                if event_date < start_date or event_date > end_date:
-                    continue
-
                 hour = str(it.get("hour", "amc")).lower().strip()
                 eps_est = it.get("epsEstimate")
                 rev_est = it.get("revenueEstimate")
@@ -1465,307 +1704,80 @@ def fetch_all_real_earnings(start_date=None, end_date=None):
                 rev_actual = it.get("revenueActual")
                 eps_str = f"예상 EPS ${eps_est:.2f}" if eps_est is not None else "예상치 집계중"
                 rev_str = f"예상 매출 ${rev_est/1e9:.1f}B" if rev_est is not None else "-"
-
                 us_dt = datetime.strptime(raw_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
                 dt_utc = None
-                # 이미 등록된 핵심 종목은 Yahoo의 실제 timestamp를 우선 사용합니다.
-                yahoo_times = _fetch_yahoo_earnings_timestamps([sym]) if sym in {x[0] for x in MAJOR_US_TECH_TICKERS} else {}
                 yahoo_dt = yahoo_times.get(sym)
                 if yahoo_dt is not None and abs((yahoo_dt.date() - us_dt.date()).days) <= 1:
                     dt_utc, hour = _normalize_earnings_timestamp(sym, yahoo_dt)
-
+                if dt_utc is None and ZoneInfo is not None:
+                    try:
+                        et_zone = ZoneInfo("America/New_York")
+                        hhmm = "16:00" if hour == "amc" else ("06:00" if hour == "bmo" else "09:30")
+                        local_time = datetime.strptime(f"{raw_date} {hhmm}", "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
+                        dt_utc = local_time.astimezone(timezone.utc)
+                    except Exception:
+                        dt_utc = None
                 if dt_utc is None:
-                    if ZoneInfo is not None:
-                        try:
-                            et_zone = ZoneInfo("America/New_York")
-                            local_hm = "16:00" if hour == "amc" else ("06:00" if hour == "bmo" else "09:30")
-                            local_time = datetime.strptime(raw_date + " " + local_hm, "%Y-%m-%d %H:%M").replace(tzinfo=et_zone)
-                            dt_utc = local_time.astimezone(timezone.utc)
-                        except Exception:
-                            dt_utc = None
-                    if dt_utc is None:
-                        dt_utc = us_dt + (timedelta(hours=20) if hour == "amc" else timedelta(hours=10) if hour == "bmo" else timedelta(hours=13, minutes=30))
-
-                meta = quote_meta.get(sym, {})
-                market_cap = meta.get("market_cap", 0)
-                known_major = sym in {x[0] for x in MAJOR_US_TECH_TICKERS}
-                importance = _dynamic_earnings_importance(sym, market_cap, known_major)
-                # 10B 미만 및 자체 중요도 기준 미달 기업은 표시하지 않습니다.
-                if importance < 1:
-                    continue
-
-                ko_name = sym_to_ko.get(sym) or meta.get("name") or sym
-                event_key = (sym, raw_date, hour)
-                if event_key in captured_keys:
-                    continue
-                captured_keys.add(event_key)
+                    dt_utc = us_dt + (timedelta(hours=20) if hour == "amc" else timedelta(hours=10) if hour == "bmo" else timedelta(hours=13, minutes=30))
 
                 events.extend(build_earnings_event(
-                    sym, ko_name, dt_utc, eps_str, rev_str, hour,
+                    sym, sym_to_ko[sym], dt_utc, eps_str, rev_str, hour,
                     actual_eps=eps_actual, actual_rev=rev_actual,
                     expected_eps=eps_est, expected_rev=rev_est,
-                    importance=importance
                 ))
+                captured.add((sym, raw_date))
         except Exception as exc:
-            print("[CALENDAR][EARN] Finnhub 동적 실적 수집 오류:", exc)
+            print("[CALENDAR][EARN] Finnhub 기간 조회 실패:", exc)
 
-    # Tier 2: 고정 핵심종목은 Finnhub 누락 시 Yahoo로 보완합니다.
-    missing_symbols = [sym for sym, _ in MAJOR_US_TECH_TICKERS if not any(ev.get("ticker") == sym for ev in events)]
-    if missing_symbols:
+    # API가 없거나 일부 종목만 반환된 경우 Yahoo의 현재 예정 실적을 보강한다.
+    # Yahoo는 historical 전체를 보장하지 않으므로 보강용으로만 사용한다.
+    if not events:
         try:
-            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(missing_symbols)}"
-            res = HTTP_SESSION.get(url, timeout=3.5, headers={"User-Agent": "Mozilla/5.0"}).json()
-            for it in res.get("quoteResponse", {}).get("result", []) or []:
-                sym = str(it.get("symbol", "")).upper().strip()
+            res = HTTP_SESSION.get(
+                f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={','.join(us_symbols)}",
+                timeout=3.0,
+            ).json()
+            for it in res.get("quoteResponse", {}).get("result", []):
+                sym = str(it.get("symbol", "")).upper()
                 raw_ts = it.get("earningsTimestamp") or it.get("earningsTimestampStart")
-                if sym not in {x[0] for x in MAJOR_US_TECH_TICKERS} or not raw_ts:
-                    continue
-                dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
-                if not (start_date <= dt_utc.astimezone(timezone(timedelta(hours=9))).date() <= end_date):
-                    continue
-                dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
-                eps_f = it.get("epsForward")
-                eps_str = f"예상 EPS ${eps_f:.2f}" if eps_f is not None else "예상치 집계중"
-                events.extend(build_earnings_event(
-                    sym, sym_to_ko.get(sym, sym), dt_utc, eps_str, "-", hour, importance=get_earnings_importance(sym)[0]
-                ))
+                if sym in sym_to_ko and raw_ts:
+                    dt_utc = datetime.fromtimestamp(int(raw_ts), tz=timezone.utc)
+                    dt_utc, hour = _normalize_earnings_timestamp(sym, dt_utc)
+                    events.extend(build_earnings_event(sym, sym_to_ko[sym], dt_utc,
+                        f"예상 EPS ${it.get('epsForward'):.2f}" if it.get('epsForward') is not None else "예상치 집계중",
+                        "-", hour))
         except Exception as exc:
-            print("[CALENDAR][EARN] Yahoo 보완 오류:", exc)
+            print("[CALENDAR][EARN] Yahoo 보강 실패:", exc)
 
-    # 동일 종목 + 동일 KST 날짜 + 동일 시간 중복 제거
     unique = {}
     for ev in events:
         key = (ev.get("ticker", ""), ev.get("date_key", ""), ev.get("time", ""))
-        if key not in unique:
-            unique[key] = ev
-    return sorted(unique.values(), key=lambda x: x.get("ts", 0))
-
-
-# 날짜 이동용 캘린더 캐시. 외부 API를 날짜 클릭마다 반복 호출하지 않도록 합니다.
-CALENDAR_RANGE_CACHE = {}
-CALENDAR_RANGE_CACHE_TTL = 600  # 10분
-
-
-def _calendar_cache_key(start_date, end_date):
-    return f"{start_date.isoformat()}_{end_date.isoformat()}"
-
-
-def _fetch_economic_calendar_range(start_date, end_date):
-    """경제 일정을 지정 기간으로 가져옵니다.
-    Finnhub 경제 캘린더를 우선 사용하고, 실패하면 현재 주간 FF 데이터를 보조로 사용합니다.
-    """
-    events = []
-    days_map = ["일", "월", "화", "수", "목", "금", "토"]
-    kst = timezone(timedelta(hours=9))
-
-    # 1) Finnhub: 과거/현재/미래 날짜 범위 조회
-    if FINNHUB_API_KEY:
-        try:
-            url = (
-                "https://finnhub.io/api/v1/calendar/economic"
-                f"?from={start_date.strftime('%Y-%m-%d')}"
-                f"&to={end_date.strftime('%Y-%m-%d')}"
-                f"&token={FINNHUB_API_KEY}"
-            )
-            res = HTTP_SESSION.get(url, timeout=5.0, headers={"User-Agent": "Mozilla/5.0"}).json()
-            items = res.get("economicCalendar", []) if isinstance(res, dict) else []
-            for it in items or []:
-                raw_time = str(it.get("time") or it.get("date") or "").strip()
-                if not raw_time:
-                    continue
-                try:
-                    raw_time = raw_time.replace("Z", "+00:00")
-                    utc_dt = datetime.fromisoformat(raw_time)
-                    if utc_dt.tzinfo is None:
-                        utc_dt = utc_dt.replace(tzinfo=timezone.utc)
-                    else:
-                        utc_dt = utc_dt.astimezone(timezone.utc)
-                except Exception:
-                    try:
-                        utc_dt = datetime.strptime(raw_time[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                    except Exception:
-                        continue
-
-                kst_dt = utc_dt.astimezone(kst)
-                if not (start_date <= kst_dt.date() <= end_date):
-                    continue
-
-                country = str(it.get("country") or "").strip()
-                prefix = COUNTRY_PREFIX_MAP.get(country, "")
-                raw_title = str(it.get("event") or it.get("title") or "").strip()
-                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
-                full_name = f"{prefix}{title_ko}" if prefix else title_ko
-
-                impact_raw = str(it.get("impact") or it.get("importance") or "").strip().lower()
-                if impact_raw in {"high", "3", "3.0"}:
-                    stars, star_str = 3, "★★★"
-                elif impact_raw in {"medium", "moderate", "2", "2.0"}:
-                    stars, star_str = 2, "★★☆"
-                else:
-                    stars, star_str = 1, "★☆☆"
-
-                actual = str(it.get("actual") or "").strip() or ("발표완료" if utc_dt <= datetime.now(timezone.utc) else "발표대기")
-                forecast = str(it.get("estimate") or it.get("forecast") or "").strip() or "-"
-                previous = str(it.get("prev") or it.get("previous") or "").strip() or "-"
-
-                events.append({
-                    "ts": utc_dt.timestamp(),
-                    "date_key": kst_dt.strftime("%Y.%m.%d"),
-                    "date_str": f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})",
-                    "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일",
-                    "time": kst_dt.strftime("%H:%M"),
-                    "stars": stars,
-                    "star_str": star_str,
-                    "type": "eco",
-                    "name": full_name or "경제지표",
-                    "ticker": "",
-                    "val": actual,
-                    "exp": forecast,
-                    "prev": previous,
-                })
-            if events:
-                return events
-        except Exception as exc:
-            print("[CALENDAR][ECO] Finnhub 기간 조회 오류:", exc)
-
-    # 2) 보조: FF thisweek (현재 주간 범위와 겹칠 때만)
-    try:
-        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-        res = HTTP_SESSION.get(url, timeout=3.5, headers={"User-Agent": "Mozilla/5.0"}).json()
-        if isinstance(res, list):
-            for it in res:
-                date_str = it.get("date", "")
-                if not date_str:
-                    continue
-                utc_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                kst_dt = utc_dt.astimezone(kst)
-                if not (start_date <= kst_dt.date() <= end_date):
-                    continue
-                country = it.get("country", "")
-                prefix = COUNTRY_PREFIX_MAP.get(country, "")
-                raw_title = it.get("title", "")
-                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
-                impact_raw = it.get("impact", "")
-                stars = 3 if impact_raw == "High" else (2 if impact_raw == "Medium" else 1)
-                events.append({
-                    "ts": utc_dt.timestamp(),
-                    "date_key": kst_dt.strftime("%Y.%m.%d"),
-                    "date_str": f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})",
-                    "date_header": f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일",
-                    "time": kst_dt.strftime("%H:%M"),
-                    "stars": stars,
-                    "star_str": "★★★" if stars == 3 else ("★★☆" if stars == 2 else "★☆☆"),
-                    "type": "eco",
-                    "name": f"{prefix}{title_ko}",
-                    "ticker": "",
-                    "val": str(it.get("actual") or "발표대기"),
-                    "exp": str(it.get("forecast") or "-") ,
-                    "prev": str(it.get("previous") or "-"),
-                })
-    except Exception as exc:
-        print("[CALENDAR][ECO] FF 보조 조회 오류:", exc)
-    return events
-
-
-def fetch_calendar_range(start_date, end_date):
-    """경제/실적 모두 지정 기간을 조회합니다. 서버 메모리 캐시로 외부 호출을 줄입니다."""
-    if end_date < start_date:
-        start_date, end_date = end_date, start_date
-    key = _calendar_cache_key(start_date, end_date)
-    now = time.time()
-    cached = CALENDAR_RANGE_CACHE.get(key)
-    if cached and now - cached["ts"] < CALENDAR_RANGE_CACHE_TTL:
-        return cached["events"]
-
-    combined = []
-    combined.extend(_fetch_economic_calendar_range(start_date, end_date))
-    try:
-        combined.extend(fetch_all_real_earnings(start_date, end_date))
-    except Exception as exc:
-        print("[CALENDAR][EARN] 기간 조회 오류:", exc)
-
-    # 동일 이벤트 중복 제거
-    unique = {}
-    for ev in combined:
-        key2 = (ev.get("type", ""), ev.get("ticker", ""), ev.get("name", ""), ev.get("date_key", ""), ev.get("time", ""))
-        unique[key2] = ev
-    result = sorted(unique.values(), key=lambda x: (x.get("date_key", ""), x.get("ts", 0), x.get("name", "")))
-    CALENDAR_RANGE_CACHE[key] = {"ts": now, "events": result}
-    return result
+        unique[key] = ev
+    out = sorted(unique.values(), key=lambda x: x.get("ts", 0))
+    return _cache_set(ALPHA_EARNINGS_CACHE, cache_key, out)
 
 
 def fetch_real_market_calendar_live():
+    """캘린더 전용 데이터: 과거 180일 + 미래 90일.
+    원천 데이터는 메모리 캐시하고 화면에서는 날짜별로만 잘라서 보여준다.
+    """
     combined_events = []
-    days_map = ["일", "월", "화", "수", "목", "금", "토"]
-
-    # 1. 글로벌 경제 지표 API (헤더 및 예외처리 강화)
     try:
-        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-        res = HTTP_SESSION.get(url, timeout=3.5).json()
-        if isinstance(res, list):
-            for it in res:
-                date_str = it.get("date", "")
-                if not date_str:
-                    continue
-                
-                utc_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                kst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
-                date_key = kst_dt.strftime("%Y.%m.%d")
-                date_formatted = f"{kst_dt.month}.{kst_dt.day} ({days_map[int(kst_dt.strftime('%w'))]})"
-                date_header = f"{kst_dt.month}월 {kst_dt.day}일 {days_map[int(kst_dt.strftime('%w'))]}요일"
-                time_str = kst_dt.strftime("%H:%M")
-                
-                country = it.get("country", "")
-                prefix = COUNTRY_PREFIX_MAP.get(country, "")
-                raw_title = it.get("title", "")
-                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
-                full_name = f"{prefix}{title_ko}"
-                
-                impact_raw = it.get("impact", "")
-                if impact_raw == "High":
-                    stars, star_str = 3, "★★★"
-                elif impact_raw == "Medium":
-                    stars, star_str = 2, "★★☆"
-                else:
-                    stars, star_str = 1, "★☆☆"
-                    
-                actual_raw = str(it.get("actual", "")).strip()
-                if actual_raw:
-                    actual = actual_raw
-                elif utc_dt <= datetime.now(timezone.utc):
-                    actual = "발표완료"
-                else:
-                    actual = "발표대기"
-                forecast = str(it.get("forecast", "")).strip() or "-"
-                previous = str(it.get("previous", "")).strip() or "-"
-                
-                combined_events.append({
-                    "ts": utc_dt.timestamp(),
-                    "date_key": date_key,
-                    "date_str": date_formatted,
-                    "date_header": date_header,
-                    "time": time_str,
-                    "stars": stars,
-                    "star_str": star_str,
-                    "type": "eco",
-                    "name": full_name,
-                    "ticker": "",
-                    "val": actual,
-                    "exp": forecast,
-                    "prev": previous
-                })
+        combined_events.extend(fetch_economic_calendar_history_future(180, 90))
     except Exception as exc:
-        print("[CALENDAR][ECO] 경제지표 파싱 에러:", exc)
-
-    # 2. 미국/국내 기업 실적 발표 결합
+        print("[CALENDAR][ECO] 기간 데이터 실패:", exc)
     try:
-        earnings_events = fetch_all_real_earnings()
-        combined_events.extend(earnings_events)
+        combined_events.extend(fetch_all_real_earnings_history(180, 90))
     except Exception as exc:
-        print("[CALENDAR][EARN] 실적 데이터 파싱 에러:", exc)
+        print("[CALENDAR][EARN] 기간 데이터 실패:", exc)
 
-    combined_events.sort(key=lambda x: x["ts"])
-    return combined_events
+    # 중복 제거 + 시간순 정렬
+    unique = {}
+    for ev in combined_events:
+        key = (ev.get("type"), ev.get("date_key"), ev.get("time"), ev.get("name"), ev.get("ticker", ""))
+        unique[key] = ev
+    return sorted(unique.values(), key=lambda x: x.get("ts", 0))
 
 def background_worker():
     global CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
@@ -4187,84 +4199,174 @@ HTML_PAGE = r"""<!DOCTYPE html>
             overflow: hidden;
             align-self: stretch;
             box-sizing: border-box;
-        }
-
-        /* 일정 위젯은 전체 사이트의 가독성 기준에 맞춰 한글 우선 글꼴을 사용합니다. */
-        .calendar-widget,
-        .calendar-widget * {
-            font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+            padding: 16px;
         }
 
         .calendar-widget-title {
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            justify-content: flex-start;
             gap: 8px;
-            margin-bottom: 8px;
-            font-size: 1.08rem;
+            margin-bottom: 10px;
+            font-size: 1.05rem;
+            line-height: 1.25;
             font-weight: 800;
             color: var(--text-title);
-        }
-
-        .calendar-widget-badge {
-            font-size: 0.58rem;
-            font-weight: 800;
-            letter-spacing: 0.08em;
-            color: var(--text-muted);
-            border: 1px solid var(--border-line);
-            border-radius: 8px;
-            padding: 2px 5px;
+            flex: 0 0 auto;
         }
 
         .calendar-widget-nav {
             display: flex;
             align-items: center;
             justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+            flex: 0 0 auto;
+        }
+
+        .calendar-star-filter {
+            display: flex;
+            align-items: center;
             gap: 6px;
-            margin-bottom: 5px;
+            margin: 0 0 8px;
+            flex: 0 0 auto;
+        }
+
+        .calendar-star-btn {
+            border: 1px solid var(--border-line);
+            background: var(--bg-card);
+            color: var(--text-sub);
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 0.66rem;
+            line-height: 1;
+            font-weight: 800;
+            cursor: pointer;
+        }
+
+        .calendar-star-btn.active {
+            background: var(--text-title);
+            color: #111;
+            border-color: var(--text-title);
         }
 
         .calendar-widget-subtitle {
-            font-size: 0.76rem;
+            font-size: 0.72rem;
+            line-height: 1.25;
             font-weight: 700;
             color: var(--text-muted);
-            margin: 1px 0 7px;
+            margin: 1px 0 8px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            flex: 0 0 auto;
         }
 
         .calendar-widget-list {
             min-height: 0;
+            flex: 1 1 auto;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
         }
 
         .calendar-widget-list .cal-card-item {
-            min-height: 0;
-            padding: 7px 8px;
-            gap: 7px;
+            min-height: 64px;
+            padding: 9px 10px;
+            gap: 9px;
+            border-radius: 10px;
+            flex: 0 0 auto;
         }
 
         .calendar-widget-list .cal-time-col {
-            min-width: 42px;
-            font-size: 0.65rem;
+            min-width: 48px;
+            font-size: 0.68rem;
+            line-height: 1.25;
+            font-weight: 700;
         }
 
         .calendar-widget-list .cal-event-title {
-            font-size: 0.78rem;
+            font-size: 0.76rem;
+            line-height: 1.3;
+            font-weight: 750;
         }
 
         .calendar-widget-list .cal-event-meta {
-            font-size: 0.68rem;
+            font-size: 0.64rem;
+            line-height: 1.3;
+            margin-top: 3px;
         }
 
         .calendar-widget-list .cal-importance-wrap {
-            margin-top: 5px;
+            margin-top: 4px;
         }
 
         .calendar-widget-list .cal-alarm-btn {
-            width: 25px;
-            height: 25px;
-            flex: 0 0 25px;
+            width: 27px;
+            height: 27px;
+            flex: 0 0 27px;
+        }
+
+        .calendar-widget .cal-pagination-bar {
+            flex: 0 0 auto;
+            margin-top: 8px;
+        }
+
+        .calendar-widget .cal-event-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 32px;
+            font-size: 0.58rem;
+            font-weight: 800;
+            color: var(--text-title);
+            background: var(--bg-card);
+            border: 1px solid var(--border-line);
+        }
+
+        .calendar-widget .cal-earn-item .cal-event-icon {
+            color: #7ee787;
+            border-color: rgba(126, 231, 135, 0.28);
+        }
+
+        .calendar-widget .cal-eco-item .cal-event-icon {
+            font-size: 0.82rem;
+        }
+
+        .calendar-widget .cal-event-topline {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            min-width: 0;
+        }
+
+        .calendar-widget .cal-stars {
+            flex: 0 0 auto;
+            font-size: 0.72rem;
+            letter-spacing: -0.04em;
+            color: #ffb000;
+            white-space: nowrap;
+        }
+
+        .calendar-widget .cal-event-meta {
+            color: var(--text-sub);
+        }
+
+        .calendar-widget .cal-date-ctrl {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .calendar-widget .cal-current-date {
+            min-width: 116px;
+            text-align: center;
+            font-size: 0.86rem;
+            font-weight: 800;
         }
 
         @media (max-width: 1100px) {
@@ -4384,47 +4486,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
         .cal-filter-pill.active { background: #ffffff; color: #121212; border-color: #ffffff; }
         .cal-filter-pill .star-gold { color: var(--star-gold); }
-        .calendar-widget .cal-filter-bar {
-            margin: 2px 0 9px;
-            gap: 5px;
-        }
-        .calendar-widget .cal-filter-pill {
-            min-height: 28px;
-            padding: 4px 10px;
-            font-size: 0.76rem;
-            font-weight: 800;
-            line-height: 1;
-            border-radius: 14px;
-        }
-        .calendar-widget .cal-filter-pill.active {
-            box-shadow: 0 0 0 1px rgba(255,255,255,0.08) inset;
-        }
-        .calendar-widget .cal-current-date {
-            font-size: 1.02rem;
-            font-weight: 850;
-        }
-        .calendar-widget .cal-today-btn {
-            font-size: 0.76rem;
-            font-weight: 800;
-            padding: 5px 10px;
-        }
-        .calendar-widget-list .cal-time-col {
-            font-size: 0.72rem;
-            font-weight: 800;
-        }
-        .calendar-widget-list .cal-event-stars {
-            font-size: 0.72rem;
-            font-weight: 900;
-        }
-        .calendar-widget-list .cal-event-title {
-            font-size: 0.80rem;
-            font-weight: 800;
-            line-height: 1.38;
-        }
-        .calendar-widget-list .cal-event-meta {
-            font-size: 0.68rem;
-            line-height: 1.35;
-        }
 
         .cal-day-header { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); margin: 2px 0 6px; }
         
@@ -4529,17 +4590,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             word-break: keep-all;
             margin-bottom: 3px;
             letter-spacing: -0.015em;
-        }
-        .cal-event-stars {
-            color: var(--star-gold);
-            font-size: 0.72rem;
-            font-weight: 900;
-            letter-spacing: 0.04em;
-            line-height: 1;
-            margin-bottom: 2px;
-        }
-        .calendar-widget-list .cal-event-stars {
-            font-size: 0.70rem;
         }
         .cal-event-meta {
             display: flex;
@@ -5115,8 +5165,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <!-- 실적 일정 -->
                             <div class="card calendar-widget" id="rowEarningsCalendar">
                                 <div class="calendar-widget-title">
-                                    <span>실적 일정</span>
-                                    <span class="calendar-widget-badge">EARNINGS</span>
+                                    <span>실적 캘린더</span>
                                 </div>
 
                                 <div class="calendar-widget-nav">
@@ -5128,14 +5177,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <button class="cal-today-btn" onclick="resetEarningsCalendarDate()">오늘</button>
                                 </div>
 
-                                <div class="cal-filter-bar" aria-label="실적 중요도 필터">
-                                    <button class="cal-filter-pill active" id="earnFilterAll" onclick="setEarningsImportanceFilter('all')">전체</button>
-                                    <button class="cal-filter-pill" id="earnFilterStar3" onclick="setEarningsImportanceFilter('star3')"><span class="star-gold">★★★</span></button>
-                                    <button class="cal-filter-pill" id="earnFilterStar2" onclick="setEarningsImportanceFilter('star2')"><span class="star-gold">★★☆</span></button>
-                                    <button class="cal-filter-pill" id="earnFilterStar1" onclick="setEarningsImportanceFilter('star1')"><span class="star-gold">★☆☆</span></button>
+                                <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
+                                    <button class="calendar-star-btn active" data-cal-type="earn" data-stars="all" onclick="setCalendarStarFilter('earn','all',this)">전체</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="3" onclick="setCalendarStarFilter('earn','3',this)">★★★</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="2" onclick="setCalendarStarFilter('earn','2',this)">★★☆</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="1" onclick="setCalendarStarFilter('earn','1',this)">★☆☆</button>
                                 </div>
-
-                                <div class="calendar-widget-subtitle" id="earnCalDayHeader">중요 기업 실적 일정</div>
+                                <div class="calendar-widget-subtitle" id="earnCalDayHeader">주요 기업 실적</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="earnCalEventList"></div>
 
                                 <div class="cal-pagination-bar">
@@ -5149,8 +5197,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <!-- 경제 일정 -->
                             <div class="card calendar-widget" id="rowEconomicCalendar">
                                 <div class="calendar-widget-title">
-                                    <span>경제 일정</span>
-                                    <span class="calendar-widget-badge">ECONOMY</span>
+                                    <span>경제 캘린더</span>
                                 </div>
 
                                 <div class="calendar-widget-nav">
@@ -5162,14 +5209,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <button class="cal-today-btn" onclick="resetEconomicCalendarDate()">오늘</button>
                                 </div>
 
-                                <div class="cal-filter-bar" aria-label="경제 일정 중요도 필터">
-                                    <button class="cal-filter-pill active" id="ecoFilterAll" onclick="setEconomicImportanceFilter('all')">전체</button>
-                                    <button class="cal-filter-pill" id="ecoFilterStar3" onclick="setEconomicImportanceFilter('star3')"><span class="star-gold">★★★</span></button>
-                                    <button class="cal-filter-pill" id="ecoFilterStar2" onclick="setEconomicImportanceFilter('star2')"><span class="star-gold">★★☆</span></button>
-                                    <button class="cal-filter-pill" id="ecoFilterStar1" onclick="setEconomicImportanceFilter('star1')"><span class="star-gold">★☆☆</span></button>
+                                <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
+                                    <button class="calendar-star-btn active" data-cal-type="eco" data-stars="all" onclick="setCalendarStarFilter('eco','all',this)">전체</button>
+                                    <button class="calendar-star-btn" data-cal-type="eco" data-stars="3" onclick="setCalendarStarFilter('eco','3',this)">★★★</button>
+                                    <button class="calendar-star-btn" data-cal-type="eco" data-stars="2" onclick="setCalendarStarFilter('eco','2',this)">★★☆</button>
+                                    <button class="calendar-star-btn" data-cal-type="eco" data-stars="1" onclick="setCalendarStarFilter('eco','1',this)">★☆☆</button>
                                 </div>
-
-                                <div class="calendar-widget-subtitle" id="ecoCalDayHeader">중요 경제지표 일정</div>
+                                <div class="calendar-widget-subtitle" id="ecoCalDayHeader">주요 경제지표</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="ecoCalEventList"></div>
 
                                 <div class="cal-pagination-bar">
@@ -5748,34 +5794,36 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let earningsCalOffset = 0;
         let economicCalPage = 1;
         let earningsCalPage = 1;
-        let economicImportanceFilter = 'all';
-        let earningsImportanceFilter = 'all';
-        const calendarItemsPerPage = 3;
+        let economicCalStarFilter = 'all';
+        let earningsCalStarFilter = 'all';
+        const calendarItemsPerPage = 4;
 
         function renderCalendarEventCard(ev) {
             const isEarn = ev.type === 'earn';
             const clickAttr = isEarn && ev.ticker
                 ? `onclick="doSearch('${String(ev.ticker).replace(/'/g, "\\'")}')"`
                 : '';
-
-            const importanceScore = ev.stars === 3 ? 90 : (ev.stars === 2 ? 65 : 35);
             const alarmKey = getCalendarEventKey(ev);
             const alarmActive = !!getCalendarAlarms()[alarmKey];
-
-            const timeLabel = isEarn && ev.date_str
-                ? `${ev.date_str} ${ev.time || ''}`
-                : (ev.time || '--:--');
+            const stars = ev.star_str || (ev.stars === 3 ? '★★★' : ev.stars === 2 ? '★★☆' : '★☆☆');
+            const timeLabel = ev.time || '--:--';
+            const status = ev.val || '-';
+            const metaParts = [];
+            if (ev.exp && ev.exp !== '-') metaParts.push(`예상 ${ev.exp}`);
+            if (ev.prev && ev.prev !== '-') metaParts.push(`이전 ${ev.prev}`);
+            const meta = metaParts.join('  ·  ');
+            const iconText = isEarn ? (ev.ticker || '?').slice(0, 3) : (ev.country || '🌐');
 
             return `
-                <div class="cal-card-item" ${clickAttr}>
+                <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
                     <div class="cal-time-col">${timeLabel}</div>
+                    <div class="cal-event-icon" aria-hidden="true">${iconText}</div>
                     <div class="cal-detail-col">
-                        <div class="cal-event-stars" title="시장 중요도 ${ev.stars || 1}단계">${ev.star_str || (ev.stars === 3 ? '★★★' : (ev.stars === 2 ? '★★☆' : '★☆☆'))}</div>
-                        <div class="cal-event-title">${ev.name || '일정'}</div>
-                        <div class="cal-event-meta">
-                            <span class="cal-actual-val">${ev.val || '-'}</span>
-                            (${ev.exp || '-'} &nbsp; ${ev.prev || '-'})
+                        <div class="cal-event-topline">
+                            <span class="cal-stars">${stars}</span>
+                            <div class="cal-event-title">${ev.name || (isEarn ? '실적 발표' : '경제지표')}</div>
                         </div>
+                        <div class="cal-event-meta">${status}${meta ? ` &nbsp;·&nbsp; ${meta}` : ''}</div>
                     </div>
                     <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
                             onclick="event.stopPropagation(); toggleCalendarAlarmByKey('${encodeURIComponent(alarmKey)}')"
@@ -5810,51 +5858,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
             };
         }
 
-        function mergeCalendarEvents(events) {
-            if (!Array.isArray(events) || !events.length) return;
-            const map = new Map();
-            (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : []).forEach(ev => {
-                const key = `${ev.type||''}|${ev.ticker||''}|${ev.name||''}|${ev.date_key||''}|${ev.time||''}`;
-                map.set(key, ev);
-            });
-            events.forEach(ev => {
-                const key = `${ev.type||''}|${ev.ticker||''}|${ev.name||''}|${ev.date_key||''}|${ev.time||''}`;
-                map.set(key, ev);
-            });
-            globalMarketCalendar = Array.from(map.values()).sort((a,b) => Number(a.ts||0)-Number(b.ts||0));
-        }
-
-        const calendarLoadedRanges = new Map();
-        async function ensureCalendarDateLoaded(offset) {
-            const targetKey = getCalendarDateInfo(offset).dateKey;
-            if (calendarLoadedRanges.has(targetKey)) return;
-            calendarLoadedRanges.set(targetKey, true);
-            try {
-                const target = targetKey.replace(/\./g, '-');
-                const res = await fetch(`/api/calendar?date=${encodeURIComponent(target)}&before=14&after=14`, {cache:'no-store'});
-                const data = await res.json();
-                if (data && data.ok && Array.isArray(data.data)) {
-                    mergeCalendarEvents(data.data);
-                }
-            } catch (e) {
-                console.warn('calendar range load failed', e);
-            }
-        }
-
         function renderEconomicCalendarView() {
             const info = getCalendarDateInfo(economicCalOffset);
-            if (!calendarLoadedRanges.has(info.dateKey)) { ensureCalendarDateLoaded(economicCalOffset).then(() => renderEconomicCalendarView()); }
             setTxt('ecoCalDisplayDate', info.display);
 
             const container = document.getElementById('ecoCalEventList');
             if (!container) return;
 
             let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => ev.type === 'eco' && ev.date_key === info.dateKey && Number(ev.stars || 0) >= 1 && Number(ev.stars || 0) <= 3);
-            if (economicImportanceFilter !== 'all') {
-                const targetStars = economicImportanceFilter === 'star3' ? 3 : (economicImportanceFilter === 'star2' ? 2 : 1);
-                filtered = filtered.filter(ev => Number(ev.stars || 0) === targetStars);
-            }
+                .filter(ev => ev.type === 'eco' && ev.date_key === info.dateKey && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
 
             setTxt(
                 'ecoCalDayHeader',
@@ -5891,44 +5903,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function renderEarningsCalendarView() {
             const info = getCalendarDateInfo(earningsCalOffset);
-            if (!calendarLoadedRanges.has(info.dateKey)) { ensureCalendarDateLoaded(earningsCalOffset).then(() => renderEarningsCalendarView()); }
             setTxt('earnCalDisplayDate', info.display);
 
             const container = document.getElementById('earnCalEventList');
             if (!container) return;
 
-            const allEarnings = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => ev.type === 'earn' && Number(ev.stars || 0) >= 1 && Number(ev.stars || 0) <= 3)
-                .sort((a, b) => Number(a.ts || 0) - Number(b.ts || 0));
-
-            let filtered = allEarnings.filter(ev => ev.date_key === info.dateKey);
-            if (earningsImportanceFilter !== 'all') {
-                const targetStars = earningsImportanceFilter === 'star3' ? 3 : (earningsImportanceFilter === 'star2' ? 2 : 1);
-                filtered = filtered.filter(ev => Number(ev.stars || 0) === targetStars);
-            }
-
-            // 오늘 실적이 없으면 가장 가까운 향후 주요 실적 날짜를 자동으로 보여줍니다.
-            if (!filtered.length && Number(earningsCalOffset || 0) === 0 && allEarnings.length) {
-                const nowTs = Date.now() / 1000;
-                const upcoming = allEarnings.find(ev => {
-                    if (Number(ev.ts || 0) < nowTs) return false;
-                    if (earningsImportanceFilter === 'all') return true;
-                    const targetStars = earningsImportanceFilter === 'star3' ? 3 : (earningsImportanceFilter === 'star2' ? 2 : 1);
-                    return Number(ev.stars || 0) === targetStars;
-                });
-                if (upcoming) {
-                    earningsCalOffset = Math.max(0, Math.round((new Date(upcoming.date_key.replace(/\./g, '-')).getTime() - new Date().setHours(0,0,0,0)) / 86400000));
-                    earningsCalPage = 1;
-                    const nextInfo = getCalendarDateInfo(earningsCalOffset);
-                    setTxt('earnCalDisplayDate', nextInfo.display);
-                    filtered = allEarnings.filter(ev => {
-                        if (ev.date_key !== nextInfo.dateKey) return false;
-                        if (earningsImportanceFilter === 'all') return true;
-                        const targetStars = earningsImportanceFilter === 'star3' ? 3 : (earningsImportanceFilter === 'star2' ? 2 : 1);
-                        return Number(ev.stars || 0) === targetStars;
-                    });
-                }
-            }
+            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
+                .filter(ev => ev.type === 'earn' && ev.date_key === info.dateKey && (earningsCalStarFilter === 'all' || String(ev.stars) === earningsCalStarFilter));
 
             setTxt(
                 'earnCalDayHeader',
@@ -5963,37 +5944,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 .join('');
         }
 
-        function setEconomicImportanceFilter(filterKey) {
-            economicImportanceFilter = filterKey || 'all';
-            economicCalPage = 1;
-            ['All', 'Star3', 'Star2', 'Star1'].forEach(key => {
-                const el = document.getElementById('ecoFilter' + key);
-                if (el) el.classList.toggle('active', (key === 'All' && economicImportanceFilter === 'all') || (key === 'Star3' && economicImportanceFilter === 'star3') || (key === 'Star2' && economicImportanceFilter === 'star2') || (key === 'Star1' && economicImportanceFilter === 'star1'));
-            });
-            renderEconomicCalendarView();
+        function setCalendarStarFilter(type, value, btn) {
+            if (type === 'eco') economicCalStarFilter = value;
+            else earningsCalStarFilter = value;
+            const root = type === 'eco' ? '#rowEconomicCalendar' : '#rowEarningsCalendar';
+            document.querySelectorAll(`${root} .calendar-star-btn`).forEach(b => b.classList.remove('active'));
+            if (btn) btn.classList.add('active');
+            if (type === 'eco') { economicCalPage = 1; renderEconomicCalendarView(); }
+            else { earningsCalPage = 1; renderEarningsCalendarView(); }
         }
 
-        function setEarningsImportanceFilter(filterKey) {
-            earningsImportanceFilter = filterKey || 'all';
-            earningsCalPage = 1;
-            ['All', 'Star3', 'Star2', 'Star1'].forEach(key => {
-                const el = document.getElementById('earnFilter' + key);
-                if (el) el.classList.toggle('active', (key === 'All' && earningsImportanceFilter === 'all') || (key === 'Star3' && earningsImportanceFilter === 'star3') || (key === 'Star2' && earningsImportanceFilter === 'star2') || (key === 'Star1' && earningsImportanceFilter === 'star1'));
-            });
-            renderEarningsCalendarView();
-        }
-
-        async function shiftEconomicCalendarDate(delta) {
+        function shiftEconomicCalendarDate(delta) {
             economicCalOffset += Number(delta || 0);
             economicCalPage = 1;
-            await ensureCalendarDateLoaded(economicCalOffset);
             renderEconomicCalendarView();
         }
 
-        async function resetEconomicCalendarDate() {
+        function resetEconomicCalendarDate() {
             economicCalOffset = 0;
             economicCalPage = 1;
-            await ensureCalendarDateLoaded(0);
             renderEconomicCalendarView();
         }
 
@@ -6002,17 +5971,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
             renderEconomicCalendarView();
         }
 
-        async function shiftEarningsCalendarDate(delta) {
+        function shiftEarningsCalendarDate(delta) {
             earningsCalOffset += Number(delta || 0);
             earningsCalPage = 1;
-            await ensureCalendarDateLoaded(earningsCalOffset);
             renderEarningsCalendarView();
         }
 
-        async function resetEarningsCalendarDate() {
+        function resetEarningsCalendarDate() {
             earningsCalOffset = 0;
             earningsCalPage = 1;
-            await ensureCalendarDateLoaded(0);
             renderEarningsCalendarView();
         }
 
@@ -6919,33 +6886,6 @@ class WebHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # 날짜별 경제/실적 일정 조회
-        # /api/calendar?date=2026-08-29&before=14&after=14
-        if parsed.path == "/api/calendar":
-            date_text = str(params.get("date", [""])[0]).strip()
-            try:
-                target = datetime.strptime(date_text, "%Y-%m-%d").date() if date_text else datetime.now(timezone(timedelta(hours=9))).date()
-            except Exception:
-                self._json(400, {"ok": False, "error": "date는 YYYY-MM-DD 형식이어야 합니다."})
-                return
-            try:
-                before = max(0, min(31, int(params.get("before", ["14"])[0])))
-            except Exception:
-                before = 14
-            try:
-                after = max(0, min(31, int(params.get("after", ["14"])[0])))
-            except Exception:
-                after = 14
-            start_date = target - timedelta(days=before)
-            end_date = target + timedelta(days=after)
-            try:
-                events = fetch_calendar_range(start_date, end_date)
-                self._json(200, {"ok": True, "target": target.isoformat(), "start": start_date.isoformat(), "end": end_date.isoformat(), "data": events})
-            except Exception as exc:
-                print(f"API ERROR /api/calendar: {type(exc).__name__}: {exc}")
-                self._json(500, {"ok": False, "error": "일정 데이터를 가져오지 못했습니다."})
-            return
-
         if parsed.path == "/api/analyze":
             q = str(params.get("q", [""])[0]).strip()
             if not q:
@@ -7212,3 +7152,4 @@ print("[경제 고정 문장]", build_market_event_fixed(_e["topic"]))
 # 10. 중복 제거 후 내용이 완전히 겹치면 경제 이벤트만 출력한다.
 # 11. 시장/업종/종목/수급/마무리 고정 문장은 이 규칙의 영향을 받지 않는다.
 # 12. 이 영역에서는 AI가 임의로 설명을 덧붙이지 않는다.
+

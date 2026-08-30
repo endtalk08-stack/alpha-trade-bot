@@ -6687,7 +6687,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const timeLabel = ev.time || '--:--';
             const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료') ? '발표완료' : '발표대기';
             const metaParts = [];
-            if (ev.exp && ev.exp !== '-') metaParts.push(`예상 ${ev.exp}`);
+           if (ev.exp && ev.exp !== '-') {
+    const expText = String(ev.exp).trim();
+    metaParts.push(
+        expText.startsWith('예상')
+            ? expText
+            : `예상 ${expText}`
+    );
+}
             if (ev.prev && ev.prev !== '-') metaParts.push(`이전 ${ev.prev}`);
             const meta = metaParts.join('  ·  ');
 

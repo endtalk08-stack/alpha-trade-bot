@@ -20,6 +20,535 @@ import requests
 import pandas as pd
 import numpy as np
 
+
+# ----------------------------------------------------
+# PostgreSQL / gaemigtp-db
+# - Render DATABASE_URL 환경변수 사용
+# - 기존 분석 기능과 분리
+# - DB 장애가 기존 사이트/API를 중단시키지 않도록 fail-safe
+# ----------------------------------------------------
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+    from psycopg.types.json import Jsonb
+except ImportError:
+    psycopg = None
+    dict_row = None
+    Jsonb = None
+
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+DB_MODEL_VERSION = "gaemiGTP-db-v1"
+
+
+def _db_available():
+    return bool(DATABASE_URL and psycopg is not None)
+
+
+def _db_connect():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL 환경변수가 설정되지 않았습니다.")
+    if psycopg is None:
+        raise RuntimeError("psycopg가 설치되지 않았습니다.")
+    return psycopg.connect(
+        DATABASE_URL,
+        row_factory=dict_row,
+        connect_timeout=5,
+    )
+
+
+def init_database():
+    """Render PostgreSQL에 원천 가격/퀀트 결과 테이블을 안전하게 생성한다."""
+    if not _db_available():
+        print("[DB] PostgreSQL 비활성화: DATABASE_URL 또는 psycopg 확인 필요")
+        return False
+
+    ddl = """
+    CREATE TABLE IF NOT EXISTS market_prices (
+        id BIGSERIAL PRIMARY KEY,
+        market VARCHAR(20) NOT NULL,
+        symbol VARCHAR(50) NOT NULL,
+        timeframe VARCHAR(20) NOT NULL DEFAULT '1d',
+        timestamp TIMESTAMPTZ NOT NULL,
+        open NUMERIC(30, 10) NOT NULL,
+        high NUMERIC(30, 10) NOT NULL,
+        low NUMERIC(30, 10) NOT NULL,
+        close NUMERIC(30, 10) NOT NULL,
+        volume NUMERIC(40, 10) NOT NULL DEFAULT 0,
+        source VARCHAR(100),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CONSTRAINT uq_market_prices_market_symbol_tf_ts
+            UNIQUE (market, symbol, timeframe, timestamp)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_market_prices_symbol_timestamp
+        ON market_prices (market, symbol, timeframe, timestamp DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_market_prices_timestamp
+        ON market_prices (timestamp DESC);
+
+
+    CREATE TABLE IF NOT EXISTS quant_results (
+        id BIGSERIAL PRIMARY KEY,
+        market VARCHAR(20) NOT NULL,
+        symbol VARCHAR(50) NOT NULL,
+        timeframe VARCHAR(20) NOT NULL DEFAULT '1d',
+        timestamp TIMESTAMPTZ NOT NULL,
+
+        current_price NUMERIC(30, 10),
+
+        momentum_1m NUMERIC(20, 8),
+        momentum_3m NUMERIC(20, 8),
+        momentum_6m NUMERIC(20, 8),
+        momentum_12m NUMERIC(20, 8),
+
+        trend_direction VARCHAR(50),
+        volatility NUMERIC(20, 8),
+        position_size NUMERIC(20, 8),
+        signal VARCHAR(50),
+
+        backtest_1y NUMERIC(20, 8),
+        backtest_2y NUMERIC(20, 8),
+        risk_reward NUMERIC(20, 8),
+
+        model_version VARCHAR(100) NOT NULL,
+        result_json JSONB,
+
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+        CONSTRAINT uq_quant_results_key
+            UNIQUE (market, symbol, timeframe, timestamp, model_version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_quant_results_symbol_timestamp
+        ON quant_results (market, symbol, timeframe, timestamp DESC);
+    """
+
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(ddl)
+            conn.commit()
+        print("[DB] PostgreSQL 연결 및 테이블 초기화 성공")
+        return True
+    except Exception as exc:
+        print(f"[DB] 초기화 실패: {type(exc).__name__}: {exc}")
+        return False
+
+
+def _market_db_name(market_name):
+    mapping = {
+        "국내주식": "Korea",
+        "국내증시": "Korea",
+        "미국주식": "US",
+        "암호화폐": "Crypto",
+        "외환": "FX",
+        "원자재": "Commodity",
+        "글로벌증시": "Global",
+    }
+    return mapping.get(str(market_name), str(market_name)[:20] or "Unknown")
+
+
+def _to_db_timestamp(value, market):
+    """
+    국내 Naver 일봉은 날짜만 있으므로 Asia/Seoul로 해석하고,
+    Yahoo/Binance의 epoch 기반 timestamp는 UTC로 취급한다.
+    최종 DB에는 모두 UTC TIMESTAMPTZ로 저장한다.
+    """
+    ts = pd.Timestamp(value)
+
+    if ts.tzinfo is None:
+        if market == "Korea":
+            ts = ts.tz_localize("Asia/Seoul")
+        else:
+            ts = ts.tz_localize("UTC")
+
+    return ts.tz_convert("UTC").to_pydatetime()
+
+
+def save_market_prices(df, market_name, symbol, timeframe="1d", source="alpha-trade-bot"):
+    """
+    API에서 받은 OHLCV 원천 데이터를 market_prices에 누적 저장한다.
+    같은 market/symbol/timeframe/timestamp는 UPSERT한다.
+    """
+    if not _db_available() or df is None or df.empty:
+        return 0
+
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    if any(col not in df.columns for col in required):
+        print(f"[DB] OHLCV 컬럼 누락: {required}")
+        return 0
+
+    market = _market_db_name(market_name)
+
+    # 국내 Naver 데이터가 anchor_price 보정을 거친 경우,
+    # fetch 함수가 보관한 원본 DataFrame을 우선 사용한다.
+    source_df = df.attrs.get("_gaemi_raw_df")
+    if isinstance(source_df, pd.DataFrame) and not source_df.empty:
+        work_df = source_df
+    else:
+        work_df = df
+
+    rows = []
+    for idx, row in work_df.iterrows():
+        try:
+            ts = _to_db_timestamp(idx, market)
+            o = float(row["Open"])
+            h = float(row["High"])
+            l = float(row["Low"])
+            c = float(row["Close"])
+            v = float(row["Volume"]) if pd.notna(row["Volume"]) else 0.0
+
+            if not all(np.isfinite(x) for x in (o, h, l, c, v)):
+                continue
+
+            rows.append((
+                market,
+                str(symbol),
+                str(timeframe),
+                ts,
+                o, h, l, c, v,
+                str(source),
+            ))
+        except Exception as exc:
+            print(f"[DB] OHLCV row 변환 실패: {exc}")
+
+    if not rows:
+        return 0
+
+    sql = """
+    INSERT INTO market_prices (
+        market, symbol, timeframe, timestamp,
+        open, high, low, close, volume, source
+    )
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (market, symbol, timeframe, timestamp)
+    DO UPDATE SET
+        open = EXCLUDED.open,
+        high = EXCLUDED.high,
+        low = EXCLUDED.low,
+        close = EXCLUDED.close,
+        volume = EXCLUDED.volume,
+        source = EXCLUDED.source
+    """
+
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(sql, rows)
+            conn.commit()
+
+        print(
+            f"[DB] OHLCV 저장 성공: "
+            f"{market}/{symbol}/{timeframe} {len(rows)}건"
+        )
+        return len(rows)
+    except Exception as exc:
+        print(
+            f"[DB] OHLCV 저장 실패: "
+            f"{market}/{symbol}/{timeframe} "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return 0
+
+
+def _safe_numeric_from_text(value):
+    if value is None:
+        return None
+    try:
+        s = str(value).replace("%", "").replace("실측", "").replace("년", "").strip()
+        return float(s)
+    except Exception:
+        return None
+
+
+def _calculate_tsm_metrics_for_db(df, raw_price):
+    """
+    향후 기관형 Time-Series Momentum에 사용할 기본 1/3/6/12개월 수익률.
+    거래일 기준 21/63/126/252 bars를 사용한다.
+    이 계산은 기존 화면 분석 로직을 변경하지 않고 DB 결과만 채운다.
+    """
+    result = {
+        "momentum_1m": None,
+        "momentum_3m": None,
+        "momentum_6m": None,
+        "momentum_12m": None,
+        "volatility": None,
+    }
+
+    if df is None or df.empty or raw_price is None:
+        return result
+
+    closes = pd.to_numeric(df["Close"], errors="coerce").dropna()
+    if closes.empty:
+        return result
+
+    lookbacks = {
+        "momentum_1m": 21,
+        "momentum_3m": 63,
+        "momentum_6m": 126,
+        "momentum_12m": 252,
+    }
+
+    for key, bars in lookbacks.items():
+        if len(closes) > bars:
+            base = float(closes.iloc[-(bars + 1)])
+            if base > 0:
+                result[key] = ((float(raw_price) / base) - 1.0) * 100.0
+
+    returns = closes.pct_change().dropna()
+    if len(returns) >= 20:
+        vol = float(returns.tail(252).std() * np.sqrt(250) * 100.0)
+        if np.isfinite(vol):
+            result["volatility"] = vol
+
+    return result
+
+
+def save_quant_result(
+    market_name,
+    symbol,
+    raw_price,
+    df,
+    quant,
+    timeframe="1d",
+):
+    """현재 gaemiGTP 퀀트 결과를 원천 가격 테이블과 분리해 저장한다."""
+    if not _db_available() or not quant or raw_price is None:
+        return False
+
+    market = _market_db_name(market_name)
+    metrics = _calculate_tsm_metrics_for_db(df, raw_price)
+
+    # 분석 시점은 실제 원천 데이터의 마지막 timestamp를 우선 사용한다.
+    try:
+        latest_idx = df.index[-1]
+        ts = _to_db_timestamp(latest_idx, market)
+    except Exception:
+        ts = datetime.now(timezone.utc)
+
+    bt_1y = _safe_numeric_from_text(quant.get("bt_1y"))
+    bt_2y = _safe_numeric_from_text(quant.get("bt_2y"))
+
+    rr = None
+    rr_raw = quant.get("rr_str")
+    if rr_raw:
+        m = re.search(r"1:([0-9]+(?:\.[0-9]+)?)", str(rr_raw))
+        if m:
+            try:
+                rr = float(m.group(1))
+            except Exception:
+                rr = None
+
+    signal = None
+    score = _safe_numeric_from_text(quant.get("quant_score"))
+    if score is not None:
+        if score >= 80:
+            signal = "STRONG"
+        elif score >= 65:
+            signal = "LONG"
+        else:
+            signal = "NEUTRAL"
+
+    payload = {
+        "quant_score": quant.get("quant_score"),
+        "trend": quant.get("trend"),
+        "ann_vol": quant.get("ann_vol"),
+        "rsi": quant.get("rsi"),
+        "atr": quant.get("atr"),
+        "ma20": quant.get("ma20"),
+        "ma60": quant.get("ma60"),
+        "entry1": quant.get("entry1"),
+        "entry2": quant.get("entry2"),
+        "target1": quant.get("target1"),
+        "target2": quant.get("target2"),
+        "stop_p": quant.get("stop_p"),
+        "bt_1y": quant.get("bt_1y"),
+        "bt_2y": quant.get("bt_2y"),
+        "rr_str": quant.get("rr_str"),
+    }
+
+    sql = """
+    INSERT INTO quant_results (
+        market, symbol, timeframe, timestamp,
+        current_price,
+        momentum_1m, momentum_3m, momentum_6m, momentum_12m,
+        trend_direction, volatility, position_size, signal,
+        backtest_1y, backtest_2y, risk_reward,
+        model_version, result_json
+    )
+    VALUES (
+        %s, %s, %s, %s,
+        %s,
+        %s, %s, %s, %s,
+        %s, %s, %s, %s,
+        %s, %s, %s,
+        %s, %s
+    )
+    ON CONFLICT (market, symbol, timeframe, timestamp, model_version)
+    DO UPDATE SET
+        current_price = EXCLUDED.current_price,
+        momentum_1m = EXCLUDED.momentum_1m,
+        momentum_3m = EXCLUDED.momentum_3m,
+        momentum_6m = EXCLUDED.momentum_6m,
+        momentum_12m = EXCLUDED.momentum_12m,
+        trend_direction = EXCLUDED.trend_direction,
+        volatility = EXCLUDED.volatility,
+        position_size = EXCLUDED.position_size,
+        signal = EXCLUDED.signal,
+        backtest_1y = EXCLUDED.backtest_1y,
+        backtest_2y = EXCLUDED.backtest_2y,
+        risk_reward = EXCLUDED.risk_reward,
+        result_json = EXCLUDED.result_json
+    """
+
+    values = (
+        market,
+        str(symbol),
+        str(timeframe),
+        ts,
+        float(raw_price),
+        metrics["momentum_1m"],
+        metrics["momentum_3m"],
+        metrics["momentum_6m"],
+        metrics["momentum_12m"],
+        str(quant.get("trend") or ""),
+        metrics["volatility"],
+        None,  # 포지션 크기는 향후 리스크 예산 엔진에서 결정
+        signal,
+        bt_1y,
+        bt_2y,
+        rr,
+        DB_MODEL_VERSION,
+        Jsonb(payload) if Jsonb is not None else json.dumps(payload, ensure_ascii=False),
+    )
+
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, values)
+            conn.commit()
+        return True
+    except Exception as exc:
+        print(f"[DB] 퀀트 결과 저장 실패: {type(exc).__name__}: {exc}")
+        return False
+
+
+def get_db_health():
+    if not DATABASE_URL:
+        return {
+            "ok": False,
+            "configured": False,
+            "error": "DATABASE_URL이 없습니다."
+        }
+
+    if psycopg is None:
+        return {
+            "ok": False,
+            "configured": True,
+            "error": "psycopg가 설치되지 않았습니다."
+        }
+
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT NOW() AS now")
+                row = cur.fetchone()
+
+        return {
+            "ok": True,
+            "configured": True,
+            "database_time": row["now"].isoformat(),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "configured": True,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def get_db_price_summary(market, symbol, timeframe="1d"):
+    if not _db_available():
+        return {
+            "ok": False,
+            "error": "DATABASE_URL 또는 psycopg가 없습니다."
+        }
+
+    sql = """
+    SELECT
+        COUNT(*) AS count,
+        MIN(timestamp) AS oldest,
+        MAX(timestamp) AS newest
+    FROM market_prices
+    WHERE market = %s
+      AND symbol = %s
+      AND timeframe = %s
+    """
+
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (market, symbol, timeframe))
+                row = cur.fetchone()
+
+        return {
+            "ok": True,
+            "market": market,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "count": int(row["count"] or 0),
+            "oldest": row["oldest"].isoformat() if row["oldest"] else None,
+            "newest": row["newest"].isoformat() if row["newest"] else None,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def get_db_recent_prices(market, symbol, timeframe="1d", limit=10):
+    if not _db_available():
+        return []
+
+    limit = max(1, min(int(limit), 100))
+
+    sql = """
+    SELECT
+        market, symbol, timeframe, timestamp,
+        open, high, low, close, volume, source
+    FROM market_prices
+    WHERE market = %s
+      AND symbol = %s
+      AND timeframe = %s
+    ORDER BY timestamp DESC
+    LIMIT %s
+    """
+
+    try:
+        with _db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (market, symbol, timeframe, limit))
+                rows = cur.fetchall()
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            if item.get("timestamp"):
+                item["timestamp"] = item["timestamp"].isoformat()
+
+            for key in ("open", "high", "low", "close", "volume"):
+                if item.get(key) is not None:
+                    item[key] = float(item[key])
+
+            result.append(item)
+
+        return result
+    except Exception as exc:
+        print(f"[DB] 가격 조회 실패: {type(exc).__name__}: {exc}")
+        return []
+
+
 # ----------------------------------------------------
 # 0. 고성능 네트워크 세션 (TCP 커넥션 풀 재사용)
 # ----------------------------------------------------
@@ -1268,6 +1797,7 @@ def fetch_domestic_candles(code, anchor_price=None):
                     })
             if len(records) >= 15:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
+                df.attrs["_gaemi_raw_df"] = df.copy()
                 if anchor_price and anchor_price > 0:
                     last_close = float(df['Close'].iloc[-1])
                     if abs(last_close - anchor_price) / anchor_price > 0.3:
@@ -1295,7 +1825,9 @@ def fetch_domestic_candles(code, anchor_price=None):
                     "Volume": float(str(it['accumulatedTradingVolume']).replace(',', ''))
                 })
             if len(records) >= 15:
-                return pd.DataFrame(records).set_index("Date").sort_index()
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                df.attrs["_gaemi_raw_df"] = df.copy()
+                return df
     except Exception:
         pass
 
@@ -2992,6 +3524,22 @@ def run_full_pipeline(query):
     if raw_price is None or df is None:
         return None
 
+    # ====================================================
+    # PostgreSQL 원천 OHLCV 저장
+    # 기존 사이트 분석 로직과 분리되어 있으며,
+    # DB 오류가 나도 기존 분석은 계속 진행한다.
+    # ====================================================
+    try:
+        save_market_prices(
+            df=df,
+            market_name=market_name,
+            symbol=symbol,
+            timeframe="1d",
+            source="alpha-trade-bot",
+        )
+    except Exception as exc:
+        print(f"[DB] 원천 OHLCV 저장 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
+
     with ThreadPoolExecutor(max_workers=9) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 10)
         f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10)
@@ -3036,6 +3584,18 @@ def run_full_pipeline(query):
             market_calendar = []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
+
+    try:
+        save_quant_result(
+            market_name=market_name,
+            symbol=symbol,
+            raw_price=raw_price,
+            df=df,
+            quant=quant,
+            timeframe="1d",
+        )
+    except Exception as exc:
+        print(f"[DB] 퀀트 결과 저장 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
     try:
         movement_reason = analyze_movement_reason(
@@ -5798,6 +6358,51 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "telegram_configured": bool(TELEGRAM_TOKEN)})
             return
 
+        # PostgreSQL 연결 상태 확인
+        if parsed.path == "/api/db/health":
+            self._json(200, get_db_health())
+            return
+
+        # PostgreSQL 저장 데이터 확인
+        # /api/db/prices?market=Korea&symbol=000660&limit=10
+        if parsed.path == "/api/db/prices":
+            market = str(params.get("market", [""])[0]).strip()
+            symbol = str(params.get("symbol", [""])[0]).strip()
+
+            try:
+                limit = int(params.get("limit", ["10"])[0])
+            except Exception:
+                limit = 10
+
+            if not market or not symbol:
+                self._json(
+                    400,
+                    {"ok": False, "error": "market와 symbol이 필요합니다."}
+                )
+                return
+
+            summary = get_db_price_summary(
+                market=market,
+                symbol=symbol,
+                timeframe="1d",
+            )
+            recent = get_db_recent_prices(
+                market=market,
+                symbol=symbol,
+                timeframe="1d",
+                limit=limit,
+            )
+
+            self._json(
+                200,
+                {
+                    "ok": summary.get("ok", False),
+                    "summary": summary,
+                    "data": recent,
+                }
+            )
+            return
+
         if parsed.path == "/api/analyze":
             q = str(params.get("q", [""])[0]).strip()
             if not q:
@@ -5826,6 +6431,12 @@ class WebHandler(BaseHTTPRequestHandler):
         self.wfile.write(html_bytes)
 
 def run_web_server():
+    # DB가 실패해도 기존 서버를 막지 않는다.
+    try:
+        init_database()
+    except Exception as exc:
+        print(f"[DB] 서버 시작 시 초기화 실패 - 기존 서버 계속 실행: {type(exc).__name__}: {exc}")
+
     port = int(os.environ.get("PORT", 10000))
     server = ThreadingHTTPServer(("0.0.0.0", port), WebHandler)
     print(f"gaemiGTP listening on :{port}")

@@ -5392,6 +5392,83 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
         }
 
+
+        /* ============================================================
+           v15: 다크/화이트 모드 캘린더 색상 연동
+           - 기존 캘린더에 고정된 다크 색상을 제거
+           - body.light-theme의 전역 CSS 변수와 연결
+           - 캘린더 2개 모두 동일하게 적용
+           ============================================================ */
+        body.light-theme .calendar-widget {
+            background: var(--bg-card) !important;
+            border-color: var(--border-line) !important;
+            color: var(--text-main) !important;
+        }
+
+        body.light-theme .calendar-widget-title,
+        body.light-theme .calendar-widget .cal-current-date {
+            color: var(--text-title) !important;
+        }
+
+        body.light-theme .calendar-widget .cal-arrow-btn,
+        body.light-theme .calendar-widget .cal-today-btn {
+            background: var(--bg-subcard) !important;
+            border-color: var(--border-focus) !important;
+            color: var(--text-main) !important;
+        }
+
+        body.light-theme .calendar-star-btn {
+            background: var(--bg-subcard) !important;
+            border-color: var(--border-line) !important;
+            color: var(--text-muted) !important;
+        }
+
+        body.light-theme .calendar-star-btn.active {
+            background: #202124 !important;
+            border-color: #202124 !important;
+            color: #ffffff !important;
+        }
+
+        body.light-theme .calendar-widget-subtitle,
+        body.light-theme .calendar-widget .cal-event-meta,
+        body.light-theme .calendar-widget .cal-event-status,
+        body.light-theme .calendar-widget .cal-page-txt {
+            color: var(--text-muted) !important;
+        }
+
+        body.light-theme .calendar-widget-list .cal-card-item {
+            background: #f8f9fa !important;
+            border-color: var(--border-line) !important;
+        }
+
+        body.light-theme .calendar-widget-list .cal-card-item:hover {
+            background: #ffffff !important;
+            border-color: var(--border-focus) !important;
+        }
+
+        body.light-theme .calendar-widget-list .cal-time-col,
+        body.light-theme .calendar-widget .cal-event-title {
+            color: var(--text-main) !important;
+        }
+
+        body.light-theme .calendar-widget .cal-alarm-btn {
+            color: #5f6368 !important;
+        }
+
+        body.light-theme .calendar-widget .cal-pagination-bar {
+            border-top-color: var(--border-line) !important;
+        }
+
+        body.light-theme .calendar-widget .cal-page-btn {
+            background: var(--bg-subcard) !important;
+            border-color: var(--border-line) !important;
+            color: var(--text-muted) !important;
+        }
+
+        body.light-theme .calendar-widget-list > div[style*="height:100%"] {
+            color: var(--text-muted) !important;
+        }
+
     </style>
 </head>
 <body>

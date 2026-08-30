@@ -7387,8 +7387,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function resetEconomicCalendarDate() {
-            economicCalOffset = 0;
+            // [오늘] 버튼은 실제 오늘 날짜가 아니라 현재 경제지표가 표시되는 기준점으로 복귀합니다.
+            // 오늘 일정이 없으면 findNearestEconomicOffset()이 가장 가까운 예정 지표 날짜를 찾습니다.
+            economicCalOffset = findNearestEconomicOffset();
             economicCalPage = 1;
+            economicCalendarAutoJumped = true;
             renderEconomicCalendarView();
         }
 

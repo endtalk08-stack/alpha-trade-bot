@@ -1340,9 +1340,10 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
             else "★☆☆"
         ),
         "type": "earn",
-        # 기업명과 발표 시점은 화면에서 두 줄로 표시할 수 있도록 분리합니다.
-        "name": f"{ko_name} ({sym}) 실적".strip(),
-        "timing_label": hour_label,
+        # 기업명/실적명과 장마감·장시작 표시를 분리합니다.
+        # 화면에서는 기업명 아래에 장 마감 후/장 시작 전이 표시됩니다.
+        "name": f"{ko_name} 실적".strip(),
+        "earnings_hour_label": hour_label,
         "ticker": sym,
         "val": val_str,
         "exp": eps_str,
@@ -4944,7 +4945,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
             font-weight: 700;
         }
 
-        .calendar-widget-list .cal-event-title {
+        .calendar-widget-list .cal-earnings-hour-label {
+    font-size: 0.70rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+    line-height: 1.25;
+}
+
+.cal-event-title {
             font-size: 0.76rem;
             line-height: 1.3;
             font-weight: 750;
@@ -5009,40 +5017,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .calendar-widget .cal-event-meta {
             color: var(--text-sub);
         }
-        /* 실적 캘린더: 기업명 아래에 미국 장 발표 시점을 한 줄로 표시 */
-        /* 실적 카드 표시 순서 고정:
-           별점/발표상태 → 기업명 → (미국 장 마감 후) → 예상 EPS/매출 */
-        .calendar-widget .cal-earn-item .cal-detail-col {
-            display: flex !important;
-            flex-direction: column !important;
-            min-width: 0 !important;
-        }
-        .calendar-widget .cal-earn-item .cal-event-topline {
-            order: 1 !important;
-            display: flex !important;
-        }
-        .calendar-widget .cal-earn-item .cal-event-title {
-            order: 2 !important;
-            display: block !important;
-            width: 100% !important;
-            margin-top: 1px !important;
-            margin-bottom: 0 !important;
-        }
-        .calendar-widget .cal-earn-item .cal-earn-timing {
-            order: 3 !important;
-            display: block !important;
-            width: 100% !important;
-            margin-top: 1px !important;
-            font-size: 0.70rem !important;
-            line-height: 1.25 !important;
-            font-weight: 700 !important;
-            color: var(--text-sub) !important;
-            white-space: normal !important;
-        }
-        .calendar-widget .cal-earn-item .cal-event-meta {
-            order: 4 !important;
-        }
-
 
         .calendar-widget .cal-date-ctrl {
             display: flex;
@@ -7043,8 +7017,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let earningsCalendarAutoJumped = false;
 
         // 경제 캘린더는 오늘 발표가 없을 때 최초 1회만
-        // '오늘 이후 가장 가까운 예정 일정'으로 이동합니다.
-        // 앞으로 일정이 없으면 오늘 이전 가장 최근 일정으로 이동합니다.
+        // '오늘 이전의 가장 최근 발표일'로 이동합니다.
         // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
         let economicCalendarAutoJumped = false;
 
@@ -7093,19 +7066,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             // 실적 캘린더에서는 티커(NVDA 등)와 기업 마크를 표시하지 않습니다.
             const rawEventName = ev.name || (isEarn ? '실적 발표' : '경제지표');
-            let eventName = isEarn
+            const eventName = isEarn
                 ? String(rawEventName).replace(/\s*\([A-Za-z0-9.\-]+\)/g, '').trim()
                 : String(rawEventName);
-
-            // 이전 데이터 형식에서 이름에 발표시점이 붙어 있어도 화면에서는 분리합니다.
-            let timingLabel = isEarn ? String(ev.timing_label || '').trim() : '';
-            if (isEarn && !timingLabel) {
-                const timingMatch = eventName.match(/\s*(\((?:미국 )?장 (?:마감 후|시작 전)\))\s*$/);
-                if (timingMatch) {
-                    timingLabel = timingMatch[1];
-                    eventName = eventName.slice(0, timingMatch.index).trim();
-                }
-            }
+            const earningsHourLabel = isEarn ? String(ev.earnings_hour_label || '').trim() : '';
 
             return `
                 <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
@@ -7116,7 +7080,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <span class="cal-event-status">${status}</span>
                         </div>
                         <div class="cal-event-title">${eventName}</div>
-                        ${isEarn && timingLabel ? `<div class="cal-earn-timing">${timingLabel}</div>` : ''}
+                        ${earningsHourLabel ? `<div class="cal-earnings-hour-label">${earningsHourLabel}</div>` : ''}
                         ${meta ? `<div class="cal-event-meta">${meta}</div>` : ''}
                     </div>
                     <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
@@ -7171,7 +7135,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             return kstString.replace(/-/g, '.');
         }
 
-        function findNearestEconomicOffset() {
+        function findLatestEconomicOffset() {
             const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
             const todayKey = getTodayKstDateKey();
             const [yyyy, mm, dd] = todayKey.split('.').map(Number);
@@ -7183,38 +7147,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
             )].sort();
 
-            if (!economicDates.length) return 0;
+            // 화면에 실제로 표시할 수 있는 오늘 일정이 있으면 오늘을 유지합니다.
+            const todayHasEvents = economicDates.includes(todayKey);
+            if (todayHasEvents) return 0;
 
-            // 1. 오늘 경제 일정이 있으면 오늘을 그대로 유지합니다.
-            if (economicDates.includes(todayKey)) {
-                return 0;
-            }
-
-            // 2. 오늘 이후 가장 가까운 경제 일정 날짜를 먼저 찾습니다.
-            //    주말/공휴일처럼 오늘 일정이 없는 경우 예정된 다음 일정으로 이동합니다.
-            for (const key of economicDates) {
-                const parts = key.split('.').map(Number);
-                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
-
-                const candidate = new Date(
-                    Date.UTC(parts[0], parts[1] - 1, parts[2])
-                );
-
-                if (candidate >= today) {
-                    return Math.round((candidate - today) / 86400000);
-                }
-            }
-
-            // 3. 미래 일정도 없으면 오늘 이전의 가장 최근 일정으로 이동합니다.
+            // 오늘 이전의 가장 최근 경제 일정 날짜를 직접 찾습니다.
             let latestKey = null;
             for (const key of economicDates) {
                 const parts = key.split('.').map(Number);
                 if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
 
-                const candidate = new Date(
-                    Date.UTC(parts[0], parts[1] - 1, parts[2])
-                );
-
+                const candidate = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
                 if (candidate < today) {
                     latestKey = key;
                 }
@@ -7236,9 +7179,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                 // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
                 if (hasEconomicData) {
-                    const nearestOffset = findNearestEconomicOffset();
-                    if (nearestOffset !== 0) {
-                        economicCalOffset = nearestOffset;
+                    const latestOffset = findLatestEconomicOffset();
+                    if (latestOffset < 0) {
+                        economicCalOffset = latestOffset;
                     }
                     economicCalendarAutoJumped = true;
                 }
@@ -7386,9 +7329,35 @@ HTML_PAGE = r"""<!DOCTYPE html>
             renderEconomicCalendarView();
         }
 
+        function findNearestEconomicOffset() {
+            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
+            const todayKey = getTodayKstDateKey();
+            const [yyyy, mm, dd] = todayKey.split('.').map(Number);
+            const today = new Date(Date.UTC(yyyy, mm - 1, dd));
+
+            const economicDates = [...new Set(
+                all
+                    .filter(isEconomicCalendarEvent)
+                    .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
+            )].filter(key => /^\d{4}\.\d{2}\.\d{2}$/.test(key)).sort();
+
+            for (const key of economicDates) {
+                const [y, m, d] = key.split('.').map(Number);
+                const candidate = new Date(Date.UTC(y, m - 1, d));
+                if (candidate >= today) {
+                    return Math.round((candidate - today) / 86400000);
+                }
+            }
+
+            return 0;
+        }
+
         function resetEconomicCalendarDate() {
-            economicCalOffset = 0;
+            // [오늘]은 실제 오늘 날짜가 아니라, 오늘부터 가장 가까운 경제 일정으로 복귀합니다.
+            // 예: 오늘 8/30이고 다음 일정이 9/1이면 [오늘] → 9/1
+            economicCalOffset = findNearestEconomicOffset();
             economicCalPage = 1;
+            economicCalendarAutoJumped = true;
             renderEconomicCalendarView();
         }
 

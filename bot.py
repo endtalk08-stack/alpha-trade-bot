@@ -7888,6 +7888,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     setT('tsmCagr',Number.isFinite(Number(bt.cagr))?`${Number(bt.cagr).toFixed(1)}%`:'-'); setT('tsmWin',Number.isFinite(Number(bt.win_rate))?`${Number(bt.win_rate).toFixed(1)}%`:'-'); setT('tsmMdd',Number.isFinite(Number(bt.mdd))?`${Number(bt.mdd).toFixed(1)}%`:'-'); setT('tsmSharpe',Number.isFinite(Number(bt.sharpe))?Number(bt.sharpe).toFixed(2):'-'); setT('tsmBtMeta',bt.trades?`기간 약 ${Number(bt.years||0).toFixed(1)}년 · 신호전환 ${bt.trades}회 · 평균 보유 ${Number(bt.avg_holding_days||0).toFixed(0)}거래일`:'백테스트 데이터 부족'); setT('tsmJudgmentShort',tsm.judgment||'-');
                     const badge=document.getElementById('tsmSignalBadge'); if(badge){badge.innerText=tsm.signal||'분석 대기';badge.style.color=col;badge.style.borderColor=col+'55';badge.style.background=col+'18';}
                     const detail=document.getElementById('tsmDetail'); if(detail){detail.innerHTML=Array.isArray(tsm.detail)&&tsm.detail.length?tsm.detail.map(x=>`<span style="display:inline-block;margin:2px 5px 2px 0;padding:3px 7px;border-radius:8px;background:var(--bg-card);border:1px solid var(--border-line);">${x}</span>`).join('')+`<div style="margin-top:5px;">${tsm.judgment||''}</div>`:'추세추종 계산에 필요한 데이터가 부족합니다.';}
+                    }
 
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
                 const sNews = document.getElementById('stockNewsList');

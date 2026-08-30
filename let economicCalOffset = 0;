@@ -4681,6 +4681,39 @@ HTML_PAGE = r"""<!DOCTYPE html>
             padding: 16px;
         }
 
+        .cal-tab-filter {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 9px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-line);
+        }
+        .cal-tab-btn {
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--text-muted);
+            padding: 3px 9px;
+            font-size: 0.72rem;
+            font-weight: 800;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.15s ease;
+        }
+        .cal-tab-btn:hover {
+            color: var(--text-title);
+            background: var(--btn-hover);
+        }
+        .cal-tab-btn.active {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            border-color: rgba(16, 185, 129, 0.35);
+        }
+        body.light-theme .cal-tab-btn.active {
+            background: rgba(16, 185, 129, 0.12);
+            color: #059669;
+            border-color: rgba(16, 185, 129, 0.4);
+        }
         .calendar-widget-title {
             display: flex;
             align-items: center;
@@ -5412,6 +5445,39 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .calendar-widget * {
             font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
         }
+        .cal-tab-filter {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 9px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-line);
+        }
+        .cal-tab-btn {
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--text-muted);
+            padding: 3px 9px;
+            font-size: 0.72rem;
+            font-weight: 800;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.15s ease;
+        }
+        .cal-tab-btn:hover {
+            color: var(--text-title);
+            background: var(--btn-hover);
+        }
+        .cal-tab-btn.active {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            border-color: rgba(16, 185, 129, 0.35);
+        }
+        body.light-theme .cal-tab-btn.active {
+            background: rgba(16, 185, 129, 0.12);
+            color: #059669;
+            border-color: rgba(16, 185, 129, 0.4);
+        }
         .calendar-widget-title {
             font-size: 1.15rem !important;
             line-height: 1.35 !important;
@@ -5605,7 +5671,40 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 padding: 15px 14px 12px !important;
                 border-radius: 14px !important;
             }
-            .calendar-widget-title { font-size: 1.08rem !important; }
+            .cal-tab-filter {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 9px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-line);
+        }
+        .cal-tab-btn {
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--text-muted);
+            padding: 3px 9px;
+            font-size: 0.72rem;
+            font-weight: 800;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.15s ease;
+        }
+        .cal-tab-btn:hover {
+            color: var(--text-title);
+            background: var(--btn-hover);
+        }
+        .cal-tab-btn.active {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            border-color: rgba(16, 185, 129, 0.35);
+        }
+        body.light-theme .cal-tab-btn.active {
+            background: rgba(16, 185, 129, 0.12);
+            color: #059669;
+            border-color: rgba(16, 185, 129, 0.4);
+        }
+        .calendar-widget-title { font-size: 1.08rem !important; }
             .calendar-widget .cal-current-date {
                 min-width: 116px !important;
                 font-size: 0.88rem !important;
@@ -6199,6 +6298,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <span>실적 캘린더</span>
                                 </div>
 
+                                <div class="cal-tab-filter" role="tablist">
+                                    <button class="cal-tab-btn active" data-cal-type="earn" data-mode="day" onclick="setCalendarViewMode('earn','day',this)">일간</button>
+                                    <button class="cal-tab-btn" data-cal-type="earn" data-mode="week" onclick="setCalendarViewMode('earn','week',this)">주간</button>
+                                    <button class="cal-tab-btn" data-cal-type="earn" data-mode="upcoming" onclick="setCalendarViewMode('earn','upcoming',this)">예정 전체</button>
+                                </div>
+
                                 <div class="calendar-widget-nav">
                                     <div class="cal-date-ctrl">
                                         <button class="cal-arrow-btn" onclick="shiftEarningsCalendarDate(-1)">&#10094;</button>
@@ -6229,6 +6334,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div class="card calendar-widget" id="rowEconomicCalendar">
                                 <div class="calendar-widget-title">
                                     <span>경제 캘린더</span>
+                                </div>
+
+                                <div class="cal-tab-filter" role="tablist">
+                                    <button class="cal-tab-btn active" data-cal-type="eco" data-mode="day" onclick="setCalendarViewMode('eco','day',this)">일간</button>
+                                    <button class="cal-tab-btn" data-cal-type="eco" data-mode="week" onclick="setCalendarViewMode('eco','week',this)">주간</button>
+                                    <button class="cal-tab-btn" data-cal-type="eco" data-mode="upcoming" onclick="setCalendarViewMode('eco','upcoming',this)">예정 전체</button>
                                 </div>
 
                                 <div class="calendar-widget-nav">
@@ -6825,20 +6936,62 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let earningsCalOffset = 0;
         let economicCalPage = 1;
         let earningsCalPage = 1;
-        // 실적 캘린더는 오늘 실적이 없을 때 최초 1회만 '가장 가까운 예정 실적일'로 이동합니다.
-        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
-        let earningsCalendarAutoJumped = false;
+        let economicCalViewMode = 'day'; // 'day' | 'week' | 'upcoming'
+        let earningsCalViewMode = 'day'; // 'day' | 'week' | 'upcoming'
 
-        // 경제 캘린더는 오늘 발표가 없을 때 최초 1회만
-        // '오늘 이전의 가장 최근 발표일'로 이동합니다.
-        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
+        let earningsCalendarAutoJumped = false;
         let economicCalendarAutoJumped = false;
 
         let economicCalStarFilter = 'all';
         let earningsCalStarFilter = 'all';
         const calendarItemsPerPage = 4;
 
-        function renderCalendarEventCard(ev) {
+        function setCalendarViewMode(type, mode, btn) {
+            if (type === 'earn') {
+                earningsCalViewMode = mode;
+                earningsCalPage = 1;
+                const root = document.getElementById('rowEarningsCalendar');
+                if (root) {
+                    root.querySelectorAll('.cal-tab-btn').forEach(b => b.classList.remove('active'));
+                    if (btn) btn.classList.add('active');
+                }
+                renderEarningsCalendarView();
+            } else {
+                economicCalViewMode = mode;
+                economicCalPage = 1;
+                const root = document.getElementById('rowEconomicCalendar');
+                if (root) {
+                    root.querySelectorAll('.cal-tab-btn').forEach(b => b.classList.remove('active'));
+                    if (btn) btn.classList.add('active');
+                }
+                renderEconomicCalendarView();
+            }
+        }
+
+        function getWeekRangeDateKeys(offset) {
+            const now = new Date();
+            const kstString = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(now);
+            const [yyyy, mm, dd] = kstString.split('-').map(Number);
+            const centerDate = new Date(Date.UTC(yyyy, mm - 1, dd + Number(offset || 0)));
+            
+            const dayOfWeek = centerDate.getUTCDay();
+            const diffToMon = (dayOfWeek === 0 ? -6 : 1 - dayOfWeek);
+            const monDate = new Date(centerDate.getTime() + diffToMon * 86400000);
+            
+            const weekKeys = [];
+            for (let i = 0; i < 7; i++) {
+                const d = new Date(monDate.getTime() + i * 86400000);
+                weekKeys.push(`${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`);
+            }
+            const sunDate = new Date(monDate.getTime() + 6 * 86400000);
+            const display = `${monDate.getUTCMonth() + 1}.${monDate.getUTCDate()} ~ ${sunDate.getUTCMonth() + 1}.${sunDate.getUTCDate()} (주간)`;
+            const header = `${monDate.getUTCFullYear()}년 ${monDate.getUTCMonth() + 1}월 ${Math.ceil(monDate.getUTCDate() / 7)}주차`;
+            return { weekKeys, display, header };
+        }
+
+        function renderCalendarEventCard(ev, isMultiDayView = false) {
             const isEarn = ev.type === 'earn';
             const clickAttr = isEarn && ev.ticker
                 ? `onclick="doSearch('${String(ev.ticker).replace(/'/g, "\\'")}')"`
@@ -6846,20 +6999,25 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const alarmKey = getCalendarEventKey(ev);
             const alarmActive = !!getCalendarAlarms()[alarmKey];
             const stars = ev.star_str || (ev.stars === 3 ? '★★★' : ev.stars === 2 ? '★★☆' : '★☆☆');
-            const timeLabel = ev.time || '--:--';
-            const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료') ? '발표완료' : '발표대기';
+            const timeStr = ev.time || '--:--';
+            
+            let timeColHtml = timeStr;
+            if (isMultiDayView && ev.date_str) {
+                const shortDate = ev.date_str.split(' ')[0];
+                timeColHtml = `<div style="font-size:0.62rem;color:#10b981;font-weight:800;line-height:1.1;margin-bottom:2px;">${shortDate}</div><div>${timeStr}</div>`;
+            }
+
+            const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료' || ev.val === '공시완료') ? '발표완료' : '발표대기';
             const metaParts = [];
             if (ev.exp && ev.exp !== '-') {
                 const expText = String(ev.exp).trim();
                 metaParts.push(
-                    expText.startsWith('예상')
+                    expText.startsWith('예상') || expText.startsWith('정기') || expText.startsWith('공시')
                         ? expText
                         : `예상 ${expText}`
                 );
             }
 
-            // 실적 캘린더의 두 번째 값은 '이전'이 아니라 '예상 매출'입니다.
-            // 경제 캘린더에서만 ev.prev를 '이전'으로 표시합니다.
             if (isEarn) {
                 const revenueText = String(
                     ev.expected_revenue_str || ''
@@ -6877,7 +7035,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             const meta = metaParts.join('  ·  ');
 
-            // 실적 캘린더에서는 티커(NVDA 등)와 기업 마크를 표시하지 않습니다.
             const rawEventName = ev.name || (isEarn ? '실적 발표' : '경제지표');
             const eventName = isEarn
                 ? String(rawEventName).replace(/\s*\([A-Za-z0-9.\-]+\)/g, '').trim()
@@ -6885,7 +7042,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             return `
                 <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
-                    <div class="cal-time-col">${timeLabel}</div>
+                    <div class="cal-time-col">${timeColHtml}</div>
                     <div class="cal-detail-col">
                         <div class="cal-event-topline">
                             <span class="cal-stars">${stars}</span>
@@ -6927,8 +7084,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             };
         }
 
-        // 경제 캘린더 이벤트 판별을 한 곳에서 통일합니다.
-        // 이전 배포본에서 type 값이 eco/economic으로 달라져도 대응합니다.
         function isEconomicCalendarEvent(ev) {
             if (!ev || !ev.date_key) return false;
             const t = String(ev.type || '').toLowerCase();
@@ -6958,11 +7113,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
             )].sort();
 
-            // 화면에 실제로 표시할 수 있는 오늘 일정이 있으면 오늘을 유지합니다.
             const todayHasEvents = economicDates.includes(todayKey);
             if (todayHasEvents) return 0;
 
-            // 오늘 이전의 가장 최근 경제 일정 날짜를 직접 찾습니다.
             let latestKey = null;
             for (const key of economicDates) {
                 const parts = key.split('.').map(Number);
@@ -6982,40 +7135,58 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function renderEconomicCalendarView() {
-            // 첫 화면에서 오늘 경제 일정이 없으면
-            // 오늘 이전의 가장 최근 발표일을 자동으로 보여줍니다.
-            if (!economicCalendarAutoJumped && economicCalOffset === 0) {
-                const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-                const hasEconomicData = all.some(ev => isEconomicCalendarEvent(ev));
+            const isUpcoming = (economicCalViewMode === 'upcoming');
+            const isWeek = (economicCalViewMode === 'week');
+            const isMultiDay = isUpcoming || isWeek;
 
-                // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
-                if (hasEconomicData) {
-                    const latestOffset = findLatestEconomicOffset();
-                    if (latestOffset < 0) {
-                        economicCalOffset = latestOffset;
+            let filtered = [];
+            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
+            const baseList = all.filter(ev => isEconomicCalendarEvent(ev) && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
+
+            if (isUpcoming) {
+                setTxt('ecoCalDisplayDate', '다가오는 경제지표');
+                setTxt('ecoCalDayHeader', '예정된 주요 경제지표 (다가오는 순)');
+                const todayKey = getTodayKstDateKey();
+                filtered = baseList.filter(ev => {
+                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
+                    return evKey >= todayKey;
+                });
+                filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
+            } else if (isWeek) {
+                const weekInfo = getWeekRangeDateKeys(economicCalOffset);
+                setTxt('ecoCalDisplayDate', weekInfo.display);
+                setTxt('ecoCalDayHeader', `${weekInfo.header} · 주간 경제지표`);
+                const weekSet = new Set(weekInfo.weekKeys.map(k => k.replace(/[\\/]/g, '.')));
+                filtered = baseList.filter(ev => {
+                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
+                    return weekSet.has(evKey);
+                });
+                filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
+            } else {
+                if (!economicCalendarAutoJumped && economicCalOffset === 0) {
+                    const hasEconomicData = all.some(ev => isEconomicCalendarEvent(ev));
+                    if (hasEconomicData) {
+                        const latestOffset = findLatestEconomicOffset();
+                        if (latestOffset < 0) {
+                            economicCalOffset = latestOffset;
+                        }
+                        economicCalendarAutoJumped = true;
                     }
-                    economicCalendarAutoJumped = true;
                 }
+
+                const info = getCalendarDateInfo(economicCalOffset);
+                info.dateKey = String(info.dateKey || '').replace(/[\\/]/g, '.');
+                setTxt('ecoCalDisplayDate', info.display);
+
+                filtered = baseList.filter(ev => String(ev.date_key).replace(/[\\/]/g, '.') === info.dateKey);
+
+                setTxt(
+                    'ecoCalDayHeader',
+                    filtered.length && filtered[0].date_header
+                        ? filtered[0].date_header
+                        : `${info.header} · 주요 경제지표`
+                );
             }
-
-            const info = getCalendarDateInfo(economicCalOffset);
-            info.dateKey = String(info.dateKey || '').replace(/[\\/]/g, '.');
-            setTxt('ecoCalDisplayDate', info.display);
-
-            const container = document.getElementById('ecoCalEventList');
-            if (!container) return;
-
-            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => isEconomicCalendarEvent(ev)
-                    && String(ev.date_key).replace(/[\\/]/g, '.') === info.dateKey
-                    && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
-
-            setTxt(
-                'ecoCalDayHeader',
-                filtered.length && filtered[0].date_header
-                    ? filtered[0].date_header
-                    : `${info.header} · 주요 경제지표`
-            );
 
             const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
             economicCalPage = Math.max(1, Math.min(economicCalPage, totalPages));
@@ -7026,11 +7197,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (next) next.disabled = economicCalPage >= totalPages;
             setTxt('ecoCalPageIndicator', `${economicCalPage} / ${totalPages}`);
 
+            const container = document.getElementById('ecoCalEventList');
+            if (!container) return;
+
             if (!filtered.length) {
+                const emptyMsg = isUpcoming
+                    ? '예정된 경제 일정이 없습니다.'
+                    : isWeek
+                        ? '이번 주에 예정된 경제 일정이 없습니다.'
+                        : '이 날짜에 예정된 경제 일정이 없습니다.';
                 container.innerHTML = `
                     <div style="display:flex;align-items:center;justify-content:center;height:100%;
                                 color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        이 날짜에 예정된 경제 일정이 없습니다.
+                        ${emptyMsg}
                     </div>
                 `;
                 scheduleCalendarHeightSync();
@@ -7040,7 +7219,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const startIdx = (economicCalPage - 1) * calendarItemsPerPage;
             container.innerHTML = filtered
                 .slice(startIdx, startIdx + calendarItemsPerPage)
-                .map(renderCalendarEventCard)
+                .map(ev => renderCalendarEventCard(ev, isMultiDay))
                 .join('');
             scheduleCalendarHeightSync();
         }
@@ -7070,31 +7249,54 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function renderEarningsCalendarView() {
-            // 첫 화면에서 오늘 실적이 비어 있으면 가장 가까운 예정 실적일을 보여줍니다.
-            // 날짜 이동 버튼과 [오늘] 버튼은 이후 정상적으로 하루 단위로 작동합니다.
-            if (!earningsCalendarAutoJumped && earningsCalOffset === 0) {
-                const nearestOffset = findNearestEarningsOffset();
-                if (nearestOffset > 0) {
-                    earningsCalOffset = nearestOffset;
+            const isUpcoming = (earningsCalViewMode === 'upcoming');
+            const isWeek = (earningsCalViewMode === 'week');
+            const isMultiDay = isUpcoming || isWeek;
+
+            let filtered = [];
+            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
+            const baseList = all.filter(ev => ev.type === 'earn' && (earningsCalStarFilter === 'all' || String(ev.stars) === earningsCalStarFilter));
+
+            if (isUpcoming) {
+                setTxt('earnCalDisplayDate', '다가오는 주요 실적');
+                setTxt('earnCalDayHeader', '예정된 기업 실적 전체 (다가오는 순)');
+                const todayKey = getTodayKstDateKey();
+                filtered = baseList.filter(ev => {
+                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
+                    return evKey >= todayKey;
+                });
+                filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
+            } else if (isWeek) {
+                const weekInfo = getWeekRangeDateKeys(earningsCalOffset);
+                setTxt('earnCalDisplayDate', weekInfo.display);
+                setTxt('earnCalDayHeader', `${weekInfo.header} · 주간 기업 실적`);
+                const weekSet = new Set(weekInfo.weekKeys.map(k => k.replace(/[\\/]/g, '.')));
+                filtered = baseList.filter(ev => {
+                    const evKey = String(ev.date_key || '').replace(/[\\/]/g, '.');
+                    return weekSet.has(evKey);
+                });
+                filtered.sort((a,b) => (a.ts || 0) - (b.ts || 0));
+            } else {
+                if (!earningsCalendarAutoJumped && earningsCalOffset === 0) {
+                    const nearestOffset = findNearestEarningsOffset();
+                    if (nearestOffset > 0) {
+                        earningsCalOffset = nearestOffset;
+                    }
+                    earningsCalendarAutoJumped = true;
                 }
-                earningsCalendarAutoJumped = true;
+
+                const info = getCalendarDateInfo(earningsCalOffset);
+                setTxt('earnCalDisplayDate', info.display);
+
+                filtered = baseList.filter(ev => String(ev.date_key).replace(/[\\/]/g, '.') === info.dateKey);
+
+                setTxt(
+                    'earnCalDayHeader',
+                    filtered.length && filtered[0].date_header
+                        ? filtered[0].date_header
+                        : `${info.header} · 주요 기업 실적`
+                );
             }
-
-            const info = getCalendarDateInfo(earningsCalOffset);
-            setTxt('earnCalDisplayDate', info.display);
-
-            const container = document.getElementById('earnCalEventList');
-            if (!container) return;
-
-            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => ev.type === 'earn' && ev.date_key === info.dateKey && (earningsCalStarFilter === 'all' || String(ev.stars) === earningsCalStarFilter));
-
-            setTxt(
-                'earnCalDayHeader',
-                filtered.length && filtered[0].date_header
-                    ? filtered[0].date_header
-                    : `${info.header} · 주요 기업 실적`
-            );
 
             const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
             earningsCalPage = Math.max(1, Math.min(earningsCalPage, totalPages));
@@ -7105,11 +7307,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (next) next.disabled = earningsCalPage >= totalPages;
             setTxt('earnCalPageIndicator', `${earningsCalPage} / ${totalPages}`);
 
+            const container = document.getElementById('earnCalEventList');
+            if (!container) return;
+
             if (!filtered.length) {
+                const emptyMsg = isUpcoming
+                    ? '예정된 실적 일정이 없습니다.'
+                    : isWeek
+                        ? '이번 주에 예정된 실적 일정이 없습니다.'
+                        : '이 날짜에 예정된 실적 일정이 없습니다.';
                 container.innerHTML = `
                     <div style="display:flex;align-items:center;justify-content:center;height:100%;
                                 color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        이 날짜에 예정된 실적 일정이 없습니다.
+                        ${emptyMsg}
                     </div>
                 `;
                 scheduleCalendarHeightSync();
@@ -7119,7 +7329,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const startIdx = (earningsCalPage - 1) * calendarItemsPerPage;
             container.innerHTML = filtered
                 .slice(startIdx, startIdx + calendarItemsPerPage)
-                .map(renderCalendarEventCard)
+                .map(ev => renderCalendarEventCard(ev, isMultiDay))
                 .join('');
             scheduleCalendarHeightSync();
         }
@@ -7135,7 +7345,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function shiftEconomicCalendarDate(delta) {
-            economicCalOffset += Number(delta || 0);
+            const step = (economicCalViewMode === 'week') ? 7 : 1;
+            economicCalOffset += Number(delta || 0) * step;
             economicCalPage = 1;
             renderEconomicCalendarView();
         }
@@ -7152,7 +7363,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function shiftEarningsCalendarDate(delta) {
-            earningsCalOffset += Number(delta || 0);
+            const step = (earningsCalViewMode === 'week') ? 7 : 1;
+            earningsCalOffset += Number(delta || 0) * step;
             earningsCalPage = 1;
             renderEarningsCalendarView();
         }

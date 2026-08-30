@@ -1298,8 +1298,7 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
 
     now_utc = datetime.now(timezone.utc)
     has_actual = actual_eps is not None or actual_rev is not None
-    is_past_date = kst_dt.date() < datetime.now(timezone(timedelta(hours=9))).date()
-    if has_actual or is_past_date:
+    if has_actual:
         val_str = "발표완료"
     elif dt_utc <= now_utc:
         val_str = "발표확인중"
@@ -1426,21 +1425,20 @@ def fetch_all_real_earnings():
     국내 + 미국 주요기업 실적 캘린더 수집기.
 
     설계 원칙
-    - 과거 30일 + 오늘 + 앞으로 30일의 실적을 KST 기준으로 표시한다.
+    - 오늘부터 앞으로 30일의 '예정 실적'을 KST 기준으로 표시한다.
     - Finnhub의 국제 실적 캘린더를 사용하되, 무작위 소형/해외 종목이
       화면에 섞이지 않도록 사이트에서 추적하는 주요 미국/한국 기업만 허용한다.
     - 미국: Finnhub + Yahoo timestamp 보정.
     - 한국: Finnhub international=true + Yahoo timestamp 보정.
     - DART는 '미래 발표 예정일'을 제공하는 API가 아니므로 예정일 생성에
       가상 날짜를 만들지 않는다. DART는 기존 공시 기능에서 실제 발표/공시 확인용으로 사용한다.
-    - API가 주는 날짜가 과거 30일~미래 30일 범위를 벗어나면 표시하지 않는다.
+    - API가 주는 날짜가 미래 30일 범위를 벗어나면 표시하지 않는다.
     - 같은 기업/같은 날짜/같은 시간은 1건으로 합친다.
     """
 
     events = []
     now_kst = datetime.now(timezone(timedelta(hours=9)))
     today_kst = now_kst.date()
-    history_start = today_kst - timedelta(days=30)
     future_end = today_kst + timedelta(days=30)
 
     # ----------------------------------------------------
@@ -1633,9 +1631,9 @@ def fetch_all_real_earnings():
         except Exception:
             return
 
-        # 과거 30일 + 오늘 + 앞으로 30일의 실적을 표시한다.
-        # 과거 날짜는 실제 발표가 끝난 실적으로 표시할 수 있다.
-        if source_date < history_start or source_date > future_end:
+        # 오늘부터 앞으로 30일만 표시.
+        # 발표 완료 과거 데이터는 이 캘린더의 '예정' 목록에서 제외한다.
+        if source_date < today_kst or source_date > future_end:
             return
 
         raw_sym = str(it.get("symbol", "")).upper().strip()
@@ -1660,7 +1658,7 @@ def fetch_all_real_earnings():
 
         # KST 날짜가 실제 화면 기준 범위를 벗어나면 제외.
         kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
-        if kst_dt.date() < history_start or kst_dt.date() > future_end:
+        if kst_dt.date() < today_kst or kst_dt.date() > future_end:
             return
 
         eps_est = it.get("epsEstimate")
@@ -1723,7 +1721,7 @@ def fetch_all_real_earnings():
     # 기존 코드의 기본값(false)은 미국 중심 데이터만 반환한다.
     # ----------------------------------------------------
     if FINNHUB_API_KEY:
-        from_d = history_start.strftime("%Y-%m-%d")
+        from_d = today_kst.strftime("%Y-%m-%d")
         to_d = future_end.strftime("%Y-%m-%d")
 
         for international in (False, True):
@@ -1776,7 +1774,7 @@ def fetch_all_real_earnings():
         captured.add((ticker, date_key))
 
     # Yahoo quote endpoint에서 이미 가져온 timestamp를 활용한다.
-    # Yahoo quote timestamp는 현재/다음 실적용이므로 미래 보완에만 사용한다.
+    # timestamp가 오늘~30일이면 Finnhub 누락 종목에만 추가한다.
     for us_sym in sorted(allowed_us):
         dt_utc = get_yahoo_time(us_sym, "US")
         if dt_utc is None:
@@ -1924,7 +1922,7 @@ def fetch_all_real_earnings():
     )
 
     # ----------------------------------------------------
-    # 디버그: 과거 30일 + 오늘 + 앞으로 30일 날짜별 건수
+    # 디버그: 앞으로 30일 날짜별 건수
     # ----------------------------------------------------
     date_counts = {}
     market_counts = {"KR": 0, "US": 0}
@@ -1939,7 +1937,7 @@ def fetch_all_real_earnings():
             market_counts[market] += 1
 
     print(
-        f"[EARNINGS FINAL] 과거30일~미래30일: {len(final_events)}건 / "
+        f"[EARNINGS FINAL] 오늘~30일: {len(final_events)}건 / "
         f"국내={market_counts['KR']}건 / 미국={market_counts['US']}건 / "
         f"일정있는날={len(date_counts)}일"
     )
@@ -3687,7 +3685,7 @@ def build_clustered_material_evidence(news_list, target_name="", symbol=""):
     elif top["repeat_count"] >= 2 and direction != 0: score = direction
     else: score = 0
     topic = "·".join(top["keywords"][:3]) or "관련 재료"
-    detail = f"{topic} 관련 내용이 {top['repeat_count']}건, 서로 다른 출처 {top['source_count']}곳에서 반복 확인"
+    detail = f"{topic} 관련 내용이 {top['repeat_count']}건"
     if direction > 0: detail += " · 긍정 방향"
     elif direction < 0: detail += " · 부정 방향"
     return {"score": score, "detail": detail, "evidence": top["items"][:5], "clusters": clusters[:5]}
@@ -4503,10 +4501,21 @@ def run_full_pipeline(query):
     df = df[~df.index.duplicated(keep='last')]
 
     candles = []
+    price_history_60d = []
     ma20_line = []
     ma60_line = []
     bb_up_line = []
     bb_dn_line = []
+
+    # 트랙 분석용 60거래일 종가를 OHLC 유효성 검사와 분리해 항상 전달한다.
+    try:
+        for date_idx, close_value in df["Close"].dropna().tail(60).items():
+            close_num = float(close_value)
+            if np.isfinite(close_num):
+                t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d") if hasattr(date_idx, 'strftime') else str(date_idx)[:10]
+                price_history_60d.append({"time": t_str, "close": close_num})
+    except Exception as exc:
+        print(f"[TRACK 60D] price history build failed: {type(exc).__name__}: {exc}")
 
     for date_idx, row in df.tail(65).iterrows():
         t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d") if hasattr(date_idx, 'strftime') else str(date_idx)[:10]
@@ -4580,6 +4589,7 @@ def run_full_pipeline(query):
         "market_calendar": market_calendar,
         "dart_disclosures": dart_disclosures,
         "candles": candles,
+        "price_history_60d": price_history_60d,
         "ma20_line": ma20_line,
         "ma60_line": ma60_line,
         "bb_up_line": bb_up_line,
@@ -5349,8 +5359,61 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .quant-row-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
         .quant-row-name { font-weight: 700; color: var(--text-title); }
         .quant-row-status { font-size: 0.7rem; font-weight: 700; }
-        .quant-row-right { text-align: right; flex-shrink: 0; }
-        .quant-row-val { font-weight: 800; color: var(--text-title); }
+        .quant-row-right {
+            text-align: right;
+            flex: 1 1 auto;
+            min-width: 0;
+            max-width: 72%;
+        }
+        .quant-row-val {
+            font-weight: 750;
+            color: var(--text-title);
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+            word-break: keep-all;
+        }
+        .quant-row-subval {
+            margin-top: 3px;
+            font-size: 0.64rem;
+            color: var(--text-muted);
+            line-height: 1.25;
+        }
+        #rowTrack .track-percent {
+            color: var(--text-muted);
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+        #rowTrack .quant-row-name {
+            font-weight: 700;
+        }
+
+        #rowTrack .track-price-chart-wrap {
+            width: 100%;
+            height: 64px;
+            background: var(--bg-subcard);
+            border-radius: 8px;
+            position: relative;
+            border: 1px solid var(--border-line);
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+        #rowTrack #tPriceChart {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        #rowTrack .track-52w-head {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+            gap: 8px;
+            align-items: center;
+            font-size: 0.7rem;
+            line-height: 1.25;
+        }
+        #rowTrack .track-52w-head span:first-child { text-align: left; }
+        #rowTrack .track-52w-head span:nth-child(2) { text-align: center; }
+        #rowTrack .track-52w-head span:last-child { text-align: right; }
+        #rowTrack .track-detail-list { width: 100%; min-width: 0; }
         .movement-evidence-summary { margin: 2px 0 14px; }
         .movement-evidence-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
         .movement-evidence-label { font-size:0.72rem; font-weight:700; color:var(--text-main); }
@@ -5769,6 +5832,59 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 min-height: 560px;
             }
         }
+        /* 트랙 분석 모바일 최종 보정 */
+        @media (max-width: 1200px) {
+            #rowTrack {
+                width: 100%;
+                max-width: 832px;
+                box-sizing: border-box;
+                overflow: hidden;
+            }
+            #rowTrack .quant-row-item {
+                align-items: flex-start;
+                gap: 10px;
+            }
+            #rowTrack .quant-row-left {
+                flex: 0 0 31%;
+                width: 31%;
+                min-width: 0;
+            }
+            #rowTrack .quant-row-right {
+                flex: 1 1 69%;
+                width: 69%;
+                max-width: none;
+                min-width: 0;
+            }
+            #rowTrack .quant-row-val { font-size: 0.78rem; }
+        }
+
+        @media (max-width: 520px) {
+            #rowTrack {
+                padding: 16px 14px !important;
+                border-radius: 14px !important;
+            }
+            #rowTrack .track-price-chart-wrap { height: 58px; border-radius: 7px; }
+            #rowTrack .track-52w-head {
+                grid-template-columns: minmax(0, 1fr) minmax(92px, auto) minmax(0, 1fr);
+                gap: 5px;
+                font-size: 0.61rem;
+            }
+            #rowTrack .quant-row-item { padding: 10px 0; gap: 8px; }
+            #rowTrack .quant-row-left { flex-basis: 34%; width: 34%; }
+            #rowTrack .quant-row-right { flex-basis: 66%; width: 66%; }
+            #rowTrack .quant-row-name { font-size: 0.74rem; line-height: 1.25; overflow-wrap: anywhere; }
+            #rowTrack .quant-row-status { font-size: 0.62rem; }
+            #rowTrack .quant-row-val {
+                font-size: 0.72rem;
+                line-height: 1.32;
+                overflow-wrap: anywhere;
+                word-break: keep-all;
+            }
+            #rowTrack .quant-row-subval { font-size: 0.59rem; line-height: 1.2; }
+            #rowTrack #tPriceVal { font-size: 1.08rem !important; }
+            #rowTrack #tChangeVal { font-size: 1rem !important; }
+        }
+
         @media (max-width: 1200px) {
             .calendar-widget {
                 padding: 18px 16px 14px !important;
@@ -6344,17 +6460,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 주가 흐름</span>
                                     <span style="font-size:0.7rem; color:#38bdf8; font-weight:800;" id="tPriceTrendTxt">현재 -</span>
                                 </div>
-                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
-                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
+                                <div class="track-price-chart-wrap">
+                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
                                 </div>
                             </div>
 
                             <!-- 하단 그래프: 실제 52주 가격 위치 -->
                             <div style="margin:12px 0 12px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
-                                    <span style="color:var(--text-muted);" id="tLow52w"></span>
-                                    <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
-                                    <span style="color:var(--text-muted);" id="tHigh52w"></span>
+                                <div class="track-52w-head" style="margin-bottom:6px;">
+                                    <span style="display:none;" id="tLow52w"></span>
+                                    <span style="color:#38bdf8; font-weight:700; grid-column:1 / -1; text-align:center;" id="tPos52wLabel">52주 가격 위치</span>
+                                    <span style="display:none;" id="tHigh52w"></span>
                                 </div>
                                 <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
                                     <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="tSliderFill"></div>
@@ -6363,7 +6479,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
 
                             <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
-                                <div id="trackDetailList"></div>
+                                <div id="trackDetailList" class="track-detail-list"></div>
                             </div>
                         </div>
 
@@ -6635,15 +6751,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
                             <div class="model-dropdown-menu" id="bottomDropdown">
                                 <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
-                                    <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                                    <div class="item-title">gaemi <span class="item-check"></span></div>
                                     <div class="item-sub">도움을 받으세요</div>
                                 </div>
                                 <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
-                                    <div class="item-title">info <span class="item-check">✓</span></div>
+                                    <div class="item-title">info <span class="item-check"></span></div>
                                     <div class="item-sub">정보를 확인하세요</div>
                                 </div>
                                 <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
-                                    <div class="item-title">pro <span class="item-check">✓</span></div>
+                                    <div class="item-title">pro <span class="item-check"></span></div>
                                     <div class="item-sub">실력을 키우세요</div>
                                 </div>
                             </div>
@@ -7135,24 +7251,31 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
             )].sort();
 
-            // 화면에 실제로 표시할 수 있는 오늘 일정이 있으면 오늘을 유지합니다.
-            const todayHasEvents = economicDates.includes(todayKey);
-            if (todayHasEvents) return 0;
+            // 오늘 일정이 있으면 오늘을 그대로 보여줍니다.
+            if (economicDates.includes(todayKey)) return 0;
 
-            // 오늘 이전의 가장 최근 경제 일정 날짜를 직접 찾습니다.
-            let latestKey = null;
+            // 오늘 일정이 없으면 가장 가까운 미래 경제 일정으로 이동합니다.
+            // 예: 오늘이 8/30이고 다음 일정이 9/1이면 최초 화면은 9/1입니다.
             for (const key of economicDates) {
                 const parts = key.split('.').map(Number);
                 if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
 
                 const candidate = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
-                if (candidate < today) {
-                    latestKey = key;
+                if (candidate > today) {
+                    return Math.round((candidate - today) / 86400000);
                 }
             }
 
-            if (!latestKey) return 0;
+            // 미래 일정이 없다면 오늘 이전의 가장 최근 일정으로 이동합니다.
+            let latestKey = null;
+            for (const key of economicDates) {
+                const parts = key.split('.').map(Number);
+                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
+                const candidate = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+                if (candidate < today) latestKey = key;
+            }
 
+            if (!latestKey) return 0;
             const [y, m, d] = latestKey.split('.').map(Number);
             const latestDate = new Date(Date.UTC(y, m - 1, d));
             return Math.round((latestDate - today) / 86400000);
@@ -7160,7 +7283,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function renderEconomicCalendarView() {
             // 첫 화면에서 오늘 경제 일정이 없으면
-            // 오늘 이전의 가장 최근 발표일을 자동으로 보여줍니다.
+            // 가장 가까운 미래 경제 일정 날짜를 우선 보여줍니다.
             if (!economicCalendarAutoJumped && economicCalOffset === 0) {
                 const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
                 const hasEconomicData = all.some(ev => isEconomicCalendarEvent(ev));
@@ -7168,7 +7291,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
                 if (hasEconomicData) {
                     const latestOffset = findLatestEconomicOffset();
-                    if (latestOffset < 0) {
+                    if (latestOffset !== 0) {
                         economicCalOffset = latestOffset;
                     }
                     economicCalendarAutoJumped = true;
@@ -7286,7 +7409,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 container.innerHTML = `
                     <div style="display:flex;align-items:center;justify-content:center;height:100%;
                                 color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        이 날짜에 실적 일정이 없습니다.
+                        이 날짜에 예정된 실적 일정이 없습니다.
                     </div>
                 `;
                 scheduleCalendarHeightSync();
@@ -7335,11 +7458,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function resetEarningsCalendarDate() {
-            // [오늘]을 누르면 단순히 오늘 날짜(실적이 없을 수 있음)로 가지 않고
-            // 초기 화면과 동일하게 '오늘 이후 가장 가까운 실적 발표일'로 돌아갑니다.
-            // 예: 오늘 8/30이고 다음 실적이 9/2라면 [오늘] → 9/2
-            const nearestOffset = findNearestEarningsOffset();
-            earningsCalOffset = nearestOffset;
+            earningsCalOffset = 0;
             earningsCalPage = 1;
             earningsCalendarAutoJumped = true;
             renderEarningsCalendarView();
@@ -7924,14 +8043,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 : '확인된 근거 부족 · 추가 확인 필요';
                     }
 
-                    // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
+                    // 최근 60거래일: 별도 종가 흐름을 우선 사용하고 candles를 보조로 사용한다.
                     const tPriceChart = document.getElementById('tPriceChart');
+                    const historyRows = Array.isArray(data.price_history_60d) ? data.price_history_60d.slice(-60) : [];
                     const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
+                    const sourceRows = historyRows.length > 1 ? historyRows : candleRows;
 
-                    // 서버가 보내는 candles 필드는 open/high/low/close 형식이다.
-                    // 기존 코드가 x.c를 읽고 있어 차트 값이 전부 비어 있던 문제를 수정한다.
-                    // close를 우선 사용하고, 혹시 다른 응답 형식이 들어와도 c를 보조로 사용한다.
-                    const trackVals = candleRows
+                    const trackVals = sourceRows
                         .map(x => {
                             const close = Number(x && x.close);
                             if (Number.isFinite(close)) return close;
@@ -7989,7 +8107,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const tq = data.quant || {};
                     setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
                     setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
-                    setTxt('tPos52wLabel', tq.pos_52w ? `52주 가격 위치 ${tq.pos_52w}` : '52주 가격 위치');
+                    setTxt('tPos52wLabel', '52주 가격 위치');
 
                     const sliderPct = Number(tq.slider_fill_pct);
                     const tFill = document.getElementById('tSliderFill');
@@ -8003,12 +8121,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
                     const trackDetailList = document.getElementById('trackDetailList');
                     if (trackDetailList) {
-                        const iconForTrack = {
-                            '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂',
-                            '시장':'⌁','업종·테마':'◇','기업 재료':'▤',
-                            '거래량':'♧','시장 5일 흐름':'⌁'
-                        };
-
                         trackDetailList.innerHTML = evidenceReasons.map(r => {
                             const score = Number(r.score || 0);
                             const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
@@ -8016,14 +8128,30 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 score > 0 ? 'status-pill-positive' :
                                 score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
 
+                            // 트랙 분석은 아이콘 없이 깔끔한 2단 구조로 표시한다.
+                            // 상세 문구 안의 등락률은 퀀트 분석처럼 아래 줄로 분리한다.
+                            const rawDetail = String(r.detail || '-').trim();
+                            const pctMatch = rawDetail.match(/([+-]?\d+(?:\.\d+)?)\s*%/);
+                            let mainDetail = rawDetail;
+                            let pctDetail = '';
+
+                            if (pctMatch) {
+                                pctDetail = `${pctMatch[1]}%`;
+                                mainDetail = rawDetail
+                                    .replace(pctMatch[0], '')
+                                    .replace(/\s*[·•]\s*$/, '')
+                                    .replace(/\s{2,}/g, ' ')
+                                    .trim();
+                            }
+
                             return `<div class="quant-row-item">
                                 <div class="quant-row-left">
-                                    <span class="quant-row-name">${iconForTrack[r.label] || '•'} ${r.label || '-'}</span>
+                                    <span class="quant-row-name">${r.label || '-'}</span>
                                     <span class="quant-row-status ${statusClass}">${status}</span>
                                 </div>
                                 <div class="quant-row-right">
-                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
-                                    <div class="quant-row-subval">실제 확인 데이터</div>
+                                    <div class="quant-row-val">${mainDetail || '-'}</div>
+                                    ${pctDetail ? `<div class="quant-row-subval track-percent">${pctDetail}</div>` : ''}
                                 </div>
                             </div>`;
                         }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;

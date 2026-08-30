@@ -38,6 +38,9 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "gaemigtp_bot").strip()
 DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
+FRED_API_KEY = os.environ.get("FRED_API_KEY", "").strip()
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
+NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
 
 GLOBAL_INDEX_MAP = {
     "코스피": "^KS11", "KOSPI": "^KS11",
@@ -109,6 +112,42 @@ CACHED_WORLD_BOARD = []
 CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
+
+# ===== External API cache / rate-limit protection =====
+FRED_CACHE = {}
+FRED_CACHE_TTL = 900  # 15분
+ALPHA_NEWS_CACHE = {}
+ALPHA_NEWS_CACHE_TTL = 600  # 10분
+ALPHA_EARNINGS_CACHE = {}
+ALPHA_EARNINGS_CACHE_TTL = 1800  # 30분
+FINNHUB_CONSENSUS_CACHE = {}
+FINNHUB_CONSENSUS_CACHE_TTL = 1800  # 30분
+FRED_LAST_REQUEST_TS = 0.0
+FRED_MIN_INTERVAL = 0.55  # FRED 2 req/s 제한에 안전하게 대응
+API_LOCK = threading.Lock()
+
+def _rate_limit_wait(min_interval):
+    global FRED_LAST_REQUEST_TS
+    with API_LOCK:
+        now = time.time()
+        wait = min_interval - (now - FRED_LAST_REQUEST_TS)
+        if wait > 0:
+            time.sleep(wait)
+        FRED_LAST_REQUEST_TS = time.time()
+
+def _cache_get(cache, key, ttl):
+    item = cache.get(key)
+    if not item:
+        return None
+    ts, value = item
+    if time.time() - ts > ttl:
+        cache.pop(key, None)
+        return None
+    return value
+
+def _cache_set(cache, key, value):
+    cache[key] = (time.time(), value)
+    return value
 
 # ===== Theme co-movement engine =====
 THEME_KEYWORDS = {
@@ -655,7 +694,7 @@ MAJOR_KR_EARNINGS = {
 # ----------------------------------------------------
 # 3. 3단계 하이브리드 실적 일정 수집기 (한국/미국 완벽 대응)
 # ----------------------------------------------------
-def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None):
+def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", rev_str="-", hour="amc", actual_eps=None, actual_rev=None, expected_eps=None, expected_rev=None):
     """실적 1건을 한국시간(KST) 기준으로 정확히 1회만 생성합니다."""
     days_map = ["일", "월", "화", "수", "목", "금", "토"]
 
@@ -709,7 +748,11 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
         "ticker": sym,
         "val": val_str,
         "exp": eps_str,
-        "prev": rev_str
+        "prev": rev_str,
+        "actual_eps": actual_eps,
+        "expected_eps": expected_eps,
+        "actual_revenue": actual_rev,
+        "expected_revenue": expected_rev
     }]
 
 def _classify_earnings_hour(dt_utc):
@@ -869,8 +912,8 @@ def fetch_all_real_earnings():
                     build_earnings_event(
                         sym, sym_to_ko[sym], dt_utc,
                         eps_str, rev_str, hour,
-                        actual_eps=eps_actual,
-                        actual_rev=rev_actual
+                        actual_eps=eps_actual, actual_rev=rev_actual,
+                        expected_eps=eps_est, expected_rev=rev_est
                     )
                 )
                 captured_syms.add(sym)
@@ -1198,9 +1241,9 @@ def fetch_naver_domestic_flow_metrics(code):
                 v=num(it.get(k))
                 if v is not None: iv.append(v); break
         if fv:
-            total=sum(fv); result['foreigner_latest']=fv[-1]; result['foreigner_5d']=total; result['foreigner_detail']=f"최근 5거래일 순매수 {'+' if total>=0 else '-'}{abs(total):,.0f}주"
+            total=sum(fv); result['foreigner_latest']=fv[-1]; result['foreigner_5d']=total; result['foreigner_detail']=f"최근 5거래일 외국인 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
         if iv:
-            total=sum(iv); result['institution_latest']=iv[-1]; result['institution_5d']=total; result['institution_detail']=f"최근 5거래일 순매수 {'+' if total>=0 else '-'}{abs(total):,.0f}주"
+            total=sum(iv); result['institution_latest']=iv[-1]; result['institution_5d']=total; result['institution_detail']=f"최근 5거래일 기관 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
     except Exception as exc: print(f"[NAVER FLOW] {code} fetch failed: {exc}")
     return result
 
@@ -1280,29 +1323,151 @@ def fetch_domestic_candles(code, anchor_price=None):
     return None
 
 def fetch_overseas_candles(symbol):
+    """
+    해외주식 차트 데이터 조회.
+    - 차트는 기존 Yahoo Chart API의 일봉 데이터를 사용한다.
+    - 현재가를 일봉 마지막 Close로 오인하지 않는다.
+    - 데이터 누락/HTTP 오류를 조용히 삼키지 않고 로그로 남긴다.
+    - 현재가/세션 가격은 별도 quote snapshot에서 가져올 수 있도록 분리한다.
+    """
     try:
         encoded_sym = urllib.parse.quote(symbol.upper())
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded_sym}?range=5y&interval=1d"
-        res = HTTP_SESSION.get(url, timeout=2.0).json()
-        result = res.get("chart", {}).get("result", [])
-        if result:
-            ts = result[0].get("timestamp", [])
-            quote = result[0].get("indicators", {}).get("quote", [{}])[0]
-            records = [{
-                "Date": pd.to_datetime(ts[i], unit='s'),
-                "Open": float(quote['open'][i]),
-                "High": float(quote['high'][i]),
-                "Low": float(quote['low'][i]),
-                "Close": float(quote['close'][i]),
-                "Volume": float(quote['volume'][i] or 0.0)
-            } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
-            if records:
-                df = pd.DataFrame(records).set_index("Date").sort_index()
-                curr_p = float(df['Close'].iloc[-1])
-                return curr_p, f"{curr_p:,.2f} 달러", df
-    except Exception:
-        pass
-    return None, None, None
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/"
+            f"{encoded_sym}?range=5y&interval=1d&includePrePost=false"
+        )
+        response = HTTP_SESSION.get(
+            url,
+            timeout=5.0,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        response.raise_for_status()
+        res = response.json()
+
+        chart = res.get("chart") or {}
+        if chart.get("error"):
+            raise RuntimeError(f"Yahoo chart error: {chart.get('error')}")
+
+        result = chart.get("result") or []
+        if not result:
+            raise RuntimeError("Yahoo chart result가 비어 있습니다.")
+
+        item = result[0]
+        ts = item.get("timestamp") or []
+        quote = (item.get("indicators") or {}).get("quote") or [{}]
+        quote = quote[0] if quote else {}
+
+        if not ts or not quote:
+            raise RuntimeError("Yahoo chart에 timestamp/quote 데이터가 없습니다.")
+
+        records = []
+        opens = quote.get("open") or []
+        highs = quote.get("high") or []
+        lows = quote.get("low") or []
+        closes = quote.get("close") or []
+        volumes = quote.get("volume") or []
+
+        n = min(len(ts), len(opens), len(highs), len(lows), len(closes), len(volumes))
+        for i in range(n):
+            if any(v is None for v in (opens[i], highs[i], lows[i], closes[i])):
+                continue
+            records.append({
+                "Date": pd.to_datetime(ts[i], unit="s"),
+                "Open": float(opens[i]),
+                "High": float(highs[i]),
+                "Low": float(lows[i]),
+                "Close": float(closes[i]),
+                "Volume": float(volumes[i] or 0.0),
+            })
+
+        if len(records) < 15:
+            raise RuntimeError(f"유효한 일봉 데이터가 부족합니다: {len(records)}개")
+
+        df = pd.DataFrame(records).set_index("Date").sort_index()
+
+        # 중요: 여기서 반환하는 가격은 '실시간 현재가'가 아니라
+        # 차트의 마지막 정규장 일봉 종가임을 명확히 한다.
+        chart_close = float(df["Close"].iloc[-1])
+        return chart_close, f"{chart_close:,.2f} 달러", df
+
+    except Exception as exc:
+        print(f"[YAHOO CHART ERROR] {symbol}: {type(exc).__name__}: {exc}")
+        return None, None, None
+
+
+def fetch_overseas_quote_snapshot(symbol):
+    """
+    해외주식 현재가/세션 데이터 조회.
+    Yahoo quote의 세션 정보를 기준으로 현재 표시 가격을 결정한다.
+    반환값은 차트용 일봉 데이터와 분리한다.
+    """
+    try:
+        encoded_sym = urllib.parse.quote(symbol.upper())
+        url = (
+            f"https://query1.finance.yahoo.com/v7/finance/quote"
+            f"?symbols={encoded_sym}"
+        )
+        response = HTTP_SESSION.get(
+            url,
+            timeout=5.0,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+        result = ((payload.get("quoteResponse") or {}).get("result") or [])
+        if not result:
+            raise RuntimeError("Yahoo quote result가 비어 있습니다.")
+
+        q = result[0]
+        state = str(q.get("marketState") or "CLOSED").upper()
+        regular_price = q.get("regularMarketPrice")
+        previous_close = q.get("regularMarketPreviousClose")
+
+        # 정규장 가격을 기본값으로 사용하고,
+        # PRE/POST에서는 확장시장 가격이 있으면 그 값을 사용한다.
+        price = regular_price
+        price_source = "regular"
+        change_pct = q.get("regularMarketChangePercent")
+
+        if state in ("PRE", "PREPRE"):
+            pre_price = q.get("preMarketPrice")
+            if pre_price is not None:
+                price = pre_price
+                price_source = "pre"
+                change_pct = q.get("preMarketChangePercent")
+
+        elif state in ("POST", "POSTPOST"):
+            post_price = q.get("postMarketPrice")
+            if post_price is not None:
+                price = post_price
+                price_source = "post"
+                change_pct = q.get("postMarketChangePercent")
+
+        if price is None:
+            raise RuntimeError("현재 가격 필드가 없습니다.")
+
+        # 공급자가 등락률을 주지 않는 경우에만 직접 계산한다.
+        if change_pct is None and previous_close:
+            change_pct = ((float(price) - float(previous_close)) / float(previous_close)) * 100.0
+
+        return {
+            "symbol": q.get("symbol") or symbol.upper(),
+            "price": float(price),
+            "previous_close": float(previous_close) if previous_close is not None else None,
+            "change_pct": float(change_pct) if change_pct is not None else None,
+            "market_state": state,
+            "price_source": price_source,
+            "currency": q.get("currency") or "USD",
+            "regular_market_price": float(regular_price) if regular_price is not None else None,
+            "pre_market_price": float(q["preMarketPrice"]) if q.get("preMarketPrice") is not None else None,
+            "post_market_price": float(q["postMarketPrice"]) if q.get("postMarketPrice") is not None else None,
+            "timestamp": q.get("regularMarketTime"),
+        }
+
+    except Exception as exc:
+        print(f"[YAHOO QUOTE ERROR] {symbol}: {type(exc).__name__}: {exc}")
+        return None
 
 def fetch_crypto_candles(symbol):
     clean_sym = symbol.upper().replace("-", "")
@@ -1324,173 +1489,344 @@ def fetch_crypto_candles(symbol):
     return None, None, None
 
 def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
+    """검증된 컨센서스만 표시한다. 데이터가 없으면 목표가/기관명을 만들어내지 않는다."""
     try:
-        if market_name in ["국내주식", "국내증시"]:
-            target_p = None
+        if market_name in ["국내주식","국내증시"]:
+            target_p=None
+            reports=[]
             try:
-                url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
-                res = HTTP_SESSION.get(url, timeout=1.8).json()
-                for item in res.get("totalInfos", []):
-                    if item.get("code") in ["targetPrice", "consensusTargetPrice"]:
-                        v = str(item.get("value", "")).replace(",", "").strip()
-                        if v.replace(".", "").isdigit():
-                            target_p = float(v)
-                            break
-            except Exception:
-                pass
-
-            if not target_p or target_p <= 0:
-                target_p = round(raw_price * 1.25, -2) if raw_price > 100 else round(raw_price * 1.15, 2)
-
-            low_p = round(min(raw_price * 0.95, target_p * 0.85), -2) if raw_price > 100 else round(raw_price * 0.95, 2)
-            high_p = round(max(raw_price * 1.35, target_p * 1.25), -2) if raw_price > 100 else round(raw_price * 1.25, 2)
-
-            recent_reports = []
+                url=f"https://m.stock.naver.com/api/stock/{symbol}/integration"
+                res=HTTP_SESSION.get(url,timeout=2.0).json()
+                for item in res.get("totalInfos",[]):
+                    if item.get("code") in ["targetPrice","consensusTargetPrice"]:
+                        v=_safe_float(item.get("value"))
+                        if v and v>0: target_p=v; break
+            except Exception: pass
             try:
-                rep_url = f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=4"
-                r_res = HTTP_SESSION.get(rep_url, timeout=1.8).json()
-                items = r_res.get("items", []) or r_res.get("researches", [])
-                for it in items[:3]:
-                    broker = it.get("writeCorpName") or it.get("companyName") or "증권사"
-                    date_val = str(it.get("writeDate") or it.get("date") or datetime.now().strftime("%Y-%m-%d"))[:10].replace("-", ".")
-                    opinion = it.get("investmentOpinion") or "BUY"
-                    tp = it.get("targetPrice") or target_p
-                    tp_f = float(tp) if str(tp).replace(",", "").replace(".", "").isdigit() and float(tp) > 0 else target_p
-                    upside = ((tp_f - raw_price) / raw_price) * 100
-                    recent_reports.append({
-                        "main": broker,
-                        "sub": f"<span style='color:#10b981; font-weight:700;'>{opinion}</span> · 시장분석 · {date_val}",
-                        "val": f"{int(tp_f):,}원" if raw_price > 100 else f"{tp_f:,.2f}",
-                        "sub_val": f"{upside:+.2f}%"
-                    })
-            except Exception:
-                pass
-
-            if not recent_reports:
-                recent_reports = [
-                    {"main": "미래에셋증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 시장분석 리서치", "val": f"{int(target_p):,}원" if raw_price > 100 else f"{target_p:,.2f}", "sub_val": f"{((target_p - raw_price)/raw_price)*100:+.2f}%"},
-                    {"main": "삼성증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 시장분석 리서치", "val": f"{int(target_p * 1.05):,}원" if raw_price > 100 else f"{target_p*1.05:,.2f}", "sub_val": f"{((target_p*1.05 - raw_price)/raw_price)*100:+.2f}%"},
-                    {"main": "NH투자증권", "sub": "<span style='color:#10b981; font-weight:700;'>BUY</span> · 시장분석 리서치", "val": f"{int(target_p * 0.95):,}원" if raw_price > 100 else f"{target_p*0.95:,.2f}", "sub_val": f"{((target_p*0.95 - raw_price)/raw_price)*100:+.2f}%"}
-                ]
-
-            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
-            unit_str = "원" if raw_price > 100 else "pt"
-
+                rep_url=f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=5"
+                rr=HTTP_SESSION.get(rep_url,timeout=2.0).json()
+                for it in (rr.get("items",[]) or rr.get("researches",[]))[:5]:
+                    broker=it.get("writeCorpName") or it.get("companyName")
+                    tp=_safe_float(it.get("targetPrice"))
+                    if not broker and tp is None: continue
+                    reports.append({"main":broker or "증권사 리포트",
+                                    "sub":f"{it.get('investmentOpinion') or '의견 확인 필요'} · {str(it.get('writeDate') or it.get('date') or '')[:10]}",
+                                    "val":f"{int(tp):,}원" if tp else "목표가 미확인",
+                                    "sub_val":f"{((tp-raw_price)/raw_price)*100:+.1f}%" if tp and raw_price else ""})
+            except Exception: pass
+            if target_p and raw_price:
+                low_p=target_p*0.85; high_p=target_p*1.15
+                fill_pct=min(92,max(8,int(((target_p-low_p)/max(1,high_p-low_p))*100)))
+                primary_val=f"{int(target_p):,} 원"
+                slider_mid=f"평균 {int(target_p):,}원"
+            else:
+                low_p=raw_price*0.95 if raw_price else 0; high_p=raw_price*1.05 if raw_price else 0
+                fill_pct=50; primary_val="실제 컨센서스 없음"; slider_mid="컨센서스 확인 필요"
             return {
-                "title": "애널리스트 컨센서스",
-                "gauge_val": str(len(recent_reports)*5),
-                "gauge_label": "기관의견",
-                "status_label": "전체 의견",
-                "badge_text": "상승 우세 (BUY)",
-                "dots": f"<span style='color:#10b981;'>매수 {len(recent_reports)*4}</span> &nbsp; <span style='color:#f97316;'>보유 2</span> &nbsp; <span style='color:#ef4444;'>매도 0</span>",
-                "primary_label": "평균 목표가",
-                "primary_val": f"{int(target_p):,} {unit_str}" if raw_price > 100 else f"{target_p:,.2f} {unit_str}",
-                "secondary_label": "현재가",
-                "secondary_val": f"{int(raw_price):,} {unit_str}" if raw_price > 100 else f"{raw_price:,.2f} {unit_str}",
-                "slider_left": f"{int(raw_price):,}{unit_str}" if raw_price > 100 else f"{raw_price:,.2f}{unit_str}",
-                "slider_mid": f"평균 {int(target_p):,}{unit_str}" if raw_price > 100 else f"평균 {target_p:,.2f}{unit_str}",
-                "slider_right": f"{int(high_p):,}{unit_str}" if raw_price > 100 else f"{high_p:,.2f}{unit_str}",
-                "fill_pct": fill_pct,
-                "list_title": "최근 증권사 리포트 평가",
-                "source_tag": "출처: 한경컨센서스 / 네이버",
-                "items": recent_reports
+                "title":"실제 애널리스트 컨센서스", "gauge_val":str(len(reports)), "gauge_label":"확인 리포트",
+                "status_label":"검증 데이터", "badge_text":"실제 데이터만 표시",
+                "dots": "" if not reports else f"확인 리포트 {len(reports)}건",
+                "primary_label":"평균 목표가" if target_p else "목표가", "primary_val":primary_val,
+                "secondary_label":"현재가", "secondary_val":f"{int(raw_price):,} 원" if raw_price else "-",
+                "slider_left":f"{int(raw_price):,}원" if raw_price else "-", "slider_mid":slider_mid,
+                "slider_right":f"{int(high_p):,}원" if high_p else "-", "fill_pct":fill_pct,
+                "list_title":"실제 증권사 리포트", "source_tag":"출처: 네이버 리서치 / 확인 가능한 데이터", "items":reports
             }
 
-        elif market_name in ["미국주식", "글로벌증시", "원자재"]:
-            target_p = round(raw_price * 1.28, 2)
-            low_p = round(raw_price * 0.92, 2)
-            high_p = round(raw_price * 1.45, 2)
-            fill_pct = min(92, max(8, int(((target_p - low_p) / max(1, high_p - low_p)) * 100)))
-
-            recent_reports = [
-                {"main": "Morgan Stanley", "sub": "<span style='color:#10b981; font-weight:700;'>Overweight</span> · Wall Street", "val": f"${target_p * 1.08:,.2f}", "sub_val": f"{((target_p * 1.08 - raw_price)/raw_price)*100:+.2f}%"},
-                {"main": "Goldman Sachs", "sub": "<span style='color:#10b981; font-weight:700;'>Buy</span> · Wall Street", "val": f"${target_p:,.2f}", "sub_val": f"{((target_p - raw_price)/raw_price)*100:+.2f}%"},
-                {"main": "Barclays", "sub": "<span style='color:#10b981; font-weight:700;'>Overweight</span> · Wall Street", "val": f"${target_p * 0.96:,.2f}", "sub_val": f"{((target_p * 0.96 - raw_price)/raw_price)*100:+.2f}%"}
-            ]
-
+        if market_name in ["미국주식","글로벌증시","원자재"]:
+            rec=[]; target_p=None; counts={"Buy":0,"Hold":0,"Sell":0}
+            if FINNHUB_API_KEY and symbol:
+                key=symbol.upper(); cached=_cache_get(FINNHUB_CONSENSUS_CACHE,key,FINNHUB_CONSENSUS_CACHE_TTL)
+                if cached is None:
+                    try:
+                        url="https://finnhub.io/api/v1/stock/recommendation"
+                        rr=HTTP_SESSION.get(url,params={"symbol":key,"token":FINNHUB_API_KEY},timeout=4).json()
+                        cached=rr[0] if isinstance(rr,list) and rr else {}
+                        _cache_set(FINNHUB_CONSENSUS_CACHE,key,cached)
+                    except Exception: cached={}
+                for k,label in [("strongBuy","Buy"),("buy","Buy"),("hold","Hold"),("sell","Sell"),("strongSell","Sell")]:
+                    counts[label]+=int(cached.get(k) or 0)
+                if counts["Buy"]+counts["Hold"]+counts["Sell"]>0:
+                    for label in ("Buy","Hold","Sell"):
+                        if counts[label]: rec.append({"main":label,"sub":"Finnhub recommendation trend","val":str(counts[label]),"sub_val":"실제 집계"})
             return {
-                "title": "애널리스트 컨센서스",
-                "gauge_val": "32",
-                "gauge_label": "기관의견",
-                "status_label": "전체 의견",
-                "badge_text": "상승 모멘텀 우세",
-                "dots": "<span style='color:#10b981;'>Buy 28</span> &nbsp; <span style='color:#f97316;'>Hold 3</span> &nbsp; <span style='color:#ef4444;'>Sell 1</span>",
-                "primary_label": "평균 목표가",
-                "primary_val": f"${target_p:,.2f}",
-                "secondary_label": "현재가",
-                "secondary_val": f"${raw_price:,.2f}",
-                "slider_left": f"${raw_price:,.2f}",
-                "slider_mid": f"평균 ${target_p:,.2f}",
-                "slider_right": f"${high_p:,.2f}",
-                "fill_pct": fill_pct,
-                "list_title": "최근 월가 IB 리포트 평가",
-                "source_tag": "출처: Wall Street Consensus",
-                "items": recent_reports
+                "title":"실제 애널리스트 의견", "gauge_val":str(sum(counts.values())), "gauge_label":"확인 의견",
+                "status_label":"검증 데이터", "badge_text":"실제 데이터만 표시",
+                "dots":f"Buy {counts['Buy']} · Hold {counts['Hold']} · Sell {counts['Sell']}",
+                "primary_label":"평균 목표가", "primary_val":"실제 목표가 데이터 없음",
+                "secondary_label":"현재가", "secondary_val":f"${raw_price:,.2f}" if raw_price else "-",
+                "slider_left":f"${raw_price:,.2f}" if raw_price else "-", "slider_mid":"목표가 확인 필요",
+                "slider_right":"-", "fill_pct":50, "list_title":"실제 애널리스트 의견",
+                "source_tag":"출처: Finnhub / 확인 가능한 데이터" if FINNHUB_API_KEY else "실제 컨센서스 API 미연결", "items":rec
             }
-
-        elif market_name == "암호화폐":
-            clean_sym = symbol.upper().replace("-", "")
-            if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
-                clean_sym += "USDT"
-
-            funding_rate_str = "+0.0100%"
-            try:
-                f_url = f"https://fapi.binance.com/fapi/v1/fundingRate?symbol={clean_sym}&limit=1"
-                f_res = HTTP_SESSION.get(f_url, timeout=1.8).json()
-                if isinstance(f_res, list) and len(f_res) > 0:
-                    fr = float(f_res[0].get("fundingRate", 0.0001)) * 100
-                    funding_rate_str = f"{fr:+.4f}%"
-            except Exception:
-                pass
-
-            usdkrw = get_realtime_usdkrw()
-            kimchi_str = "+1.84%"
-            try:
-                upbit_sym = "KRW-BTC" if "BTC" in clean_sym else ("KRW-ETH" if "ETH" in clean_sym else ("KRW-XRP" if "XRP" in clean_sym else "KRW-DOGE"))
-                u_res = HTTP_SESSION.get(f"https://api.upbit.com/v1/ticker?markets={upbit_sym}", timeout=1.8).json()
-                if isinstance(u_res, list) and len(u_res) > 0:
-                    upbit_krw = float(u_res[0].get("trade_price", 0))
-                    approx_binance_krw = raw_price * usdkrw
-                    if approx_binance_krw > 0:
-                        kp = ((upbit_krw - approx_binance_krw) / approx_binance_krw) * 100
-                        kimchi_str = f"{kp:+.2f}%"
-            except Exception:
-                pass
-
-            fear_greed_score = "74"
-            try:
-                fg_res = HTTP_SESSION.get("https://api.alternative.me/fng/?limit=1", timeout=1.8).json()
-                fear_greed_score = str(fg_res.get("data", [{}])[0].get("value", "74"))
-            except Exception:
-                pass
-
-            return {
-                "title": "글로벌 수급 & 온체인 센티멘트",
-                "gauge_val": fear_greed_score,
-                "gauge_label": "탐욕지수",
-                "status_label": "시장 심리",
-                "badge_text": "롱 포지션 우세",
-                "dots": f"<span style='color:#10b981; font-weight:700;'>롱 64.2%</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>숏 35.8%</span> &nbsp; <span style='color:#d97706; font-weight:700;'>김프 {kimchi_str}</span>",
-                "primary_label": "24H 글로벌 청산 규모",
-                "primary_val": "$184.2M",
-                "secondary_label": "실시간 김치프리미엄",
-                "secondary_val": kimchi_str,
-                "slider_left": "롱 64.2%",
-                "slider_mid": "바이낸스 선물 포지션 비율",
-                "slider_right": "숏 35.8%",
-                "fill_pct": 64,
-                "list_title": "거래소별 파생 펀딩비 및 프리미엄",
-                "source_tag": f"출처: Binance / Upbit (환율 {usdkrw:,.1f}원 연동)",
-                "items": [
-                    {"main": "Binance USDT 선물", "sub": "<span style='color:#10b981; font-weight:700;'>8시간 펀딩비</span> · 롱 포지션 수수료 지급", "val": funding_rate_str, "sub_val": "정상 밴드"},
-                    {"main": "Upbit vs Binance (김프)", "sub": f"<span style='color:#d97706; font-weight:700;'>국내 원화 프리미엄</span> · 환율 {usdkrw:,.1f}원 기준", "val": kimchi_str, "sub_val": "실시간 집계"},
-                    {"main": "OKX 선물 롱/숏 비율", "sub": "<span style='color:#10b981; font-weight:700;'>글로벌 스마트머니</span> · 탑 트레이더", "val": "1.78 : 1", "sub_val": "롱 우세"}
-                ]
-            }
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[CONSENSUS] {symbol} failed: {exc}")
     return None
 
+def _fred_series(series_id, limit=8):
+    """FRED 실제 관측값. 캐시와 요청 간격을 적용해 429를 예방한다."""
+    if not FRED_API_KEY:
+        return []
+    key=f"{series_id}:{limit}"
+    cached=_cache_get(FRED_CACHE,key,FRED_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        _rate_limit_wait(FRED_MIN_INTERVAL)
+        url = "https://api.stlouisfed.org/fred/series/observations"
+        params = {
+            "series_id": series_id, "api_key": FRED_API_KEY, "file_type": "json",
+            "sort_order": "desc", "limit": int(limit)
+        }
+        res = HTTP_SESSION.get(url, params=params, timeout=4.0)
+        if res.status_code == 429:
+            print(f"[FRED] rate limited: {series_id}")
+            return []
+        res.raise_for_status()
+        obs = res.json().get("observations", [])
+        out=[]
+        for x in obs:
+            v=_safe_float(x.get("value"))
+            if v is not None:
+                out.append({"date":x.get("date"),"value":v})
+        return _cache_set(FRED_CACHE,key,out)
+    except Exception as exc:
+        print(f"[FRED] {series_id} fetch failed: {exc}")
+        return []
+
+def fetch_fred_macro_snapshot():
+    """FRED 실제 관측값 스냅샷. 15분 캐시로 불필요한 반복 호출을 막는다."""
+    cache_key="macro_snapshot"
+    cached=_cache_get(FRED_CACHE,cache_key,FRED_CACHE_TTL)
+    if cached is not None:
+        return cached
+    series={
+        "us10y":"DGS10","us2y":"DGS2","fedfunds":"FEDFUNDS",
+        "cpi":"CPIAUCSL","unemployment":"UNRATE","payroll":"PAYEMS",
+    }
+    result={}
+    for name,sid in series.items():
+        obs=_fred_series(sid,8)
+        if obs:
+            result[name]={"series_id":sid,"observations":obs}
+    return _cache_set(FRED_CACHE,cache_key,result)
+
+def fetch_alpha_vantage_news(symbol="", topics=""):
+    """Alpha Vantage 뉴스. 캐시를 사용하며 키가 없으면 빈 결과를 반환."""
+    if not ALPHA_VANTAGE_API_KEY:
+        return []
+    key=(symbol or "").upper()+"|"+(topics or "")
+    cached=_cache_get(ALPHA_NEWS_CACHE,key,ALPHA_NEWS_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        params={"function":"NEWS_SENTIMENT","apikey":ALPHA_VANTAGE_API_KEY,"limit":20}
+        if symbol: params["tickers"]=symbol
+        if topics: params["topics"]=topics
+        res=HTTP_SESSION.get("https://www.alphavantage.co/query",params=params,timeout=4.0).json()
+        feed=res.get("feed",[])
+        out=[]
+        for item in feed:
+            out.append({"title":item.get("title",""),"description":item.get("summary",""),
+                        "url":item.get("url",""),"published":item.get("time_published",""),
+                        "source":item.get("source","Alpha Vantage"),
+                        "sentiment":item.get("overall_sentiment_label",""),
+                        "sentiment_score":_safe_float(item.get("overall_sentiment_score"))})
+        return _cache_set(ALPHA_NEWS_CACHE,key,out)
+    except Exception as exc:
+        print(f"[ALPHA NEWS] fetch failed: {exc}")
+        return []
+
+def fetch_alpha_vantage_earnings(symbol):
+    """실제 EPS actual/estimate/surprise를 반환. 추정 목표가는 절대 생성하지 않는다."""
+    if not ALPHA_VANTAGE_API_KEY or not symbol:
+        return {}
+    key=symbol.upper()
+    cached=_cache_get(ALPHA_EARNINGS_CACHE,key,ALPHA_EARNINGS_CACHE_TTL)
+    if cached is not None:
+        return cached
+    try:
+        params={"function":"EARNINGS","symbol":key,"apikey":ALPHA_VANTAGE_API_KEY}
+        res=HTTP_SESSION.get("https://www.alphavantage.co/query",params=params,timeout=5.0).json()
+        q=res.get("quarterlyEarnings",[])
+        rows=[]
+        for x in q[:8]:
+            actual=_safe_float(x.get("reportedEPS"))
+            estimate=_safe_float(x.get("estimatedEPS"))
+            surprise=_safe_float(x.get("surprisePercentage"))
+            if actual is None and estimate is None:
+                continue
+            rows.append({"fiscalDateEnding":x.get("fiscalDateEnding"),
+                         "reportedDate":x.get("reportedDate"),
+                         "actual_eps":actual,"expected_eps":estimate,
+                         "surprise_pct":surprise,"source":"Alpha Vantage EARNINGS"})
+        return _cache_set(ALPHA_EARNINGS_CACHE,key,{"quarterly":rows})
+    except Exception as exc:
+        print(f"[ALPHA EARNINGS] {symbol} fetch failed: {exc}")
+        return {}
+
+def merge_news_sources(*sources):
+    """뉴스 중복을 줄이고 실제 출처가 있는 뉴스만 합친다."""
+    seen = set()
+    merged = []
+    for source in sources:
+        for item in (source or []):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "")).strip()
+            key = re.sub(r"\s+", " ", title).lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+    return merged
+
+
+def compare_actual_expected(actual, expected, previous=None, unit=""):
+    """실제값/예상값/이전값이 모두 확인된 경우에만 surprise를 계산."""
+    a, e, p = _safe_float(actual), _safe_float(expected), _safe_float(previous)
+    if a is None or e is None or e == 0:
+        return None
+    surprise = (a - e) / abs(e) * 100.0
+    return {
+        "actual": a,
+        "expected": e,
+        "previous": p,
+        "surprise_pct": surprise,
+        "unit": unit
+    }
+
+
+def _safe_float(value):
+    try:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.replace(",", "").replace("%", "").strip()
+        return float(value)
+    except Exception:
+        return None
+
+
+def _classify_direction(value, positive=0.3, strong=1.0):
+    v = _safe_float(value)
+    if v is None:
+        return 0
+    if v >= strong:
+        return 2
+    if v >= positive:
+        return 1
+    if v <= -strong:
+        return -2
+    if v <= -positive:
+        return -1
+    return 0
+
+
+def _extract_news_text(news):
+    out = []
+    for item in (news or []):
+        if isinstance(item, dict):
+            out.append(str(item.get("title", "")))
+            out.append(str(item.get("description", "")))
+            out.append(str(item.get("summary", "")))
+        else:
+            out.append(str(item))
+    return " ".join(out)
+
+
+def _detect_macro_signals(stock_news, global_news=None):
+    """뉴스가 '발표/결과'인지 단순 언급인지 구분하기 위한 최소한의 신호 추출."""
+    blob = (_extract_news_text(stock_news) + " " + _extract_news_text(global_news)).lower()
+
+    groups = {
+        "CPI": ["cpi", "소비자물가", "소비자 물가"],
+        "PPI": ["ppi", "생산자물가", "생산자 물가"],
+        "고용": ["고용", "실업률", "비농업", "nfp", "payroll"],
+        "FOMC": ["fomc", "fed", "연준", "기준금리"],
+        "미국채": ["10년물", "10년 국채", "2년물", "미국채"],
+        "유가": ["wti", "brent", "유가", "원유"],
+        "중국": ["중국", "상하이", "홍콩", "위안화"],
+        "관세·정책": ["관세", "수출규제", "수출 규제", "제재", "정책"],
+        "지정학": ["전쟁", "휴전", "분쟁", "중동", "지정학"],
+    }
+    event_words = ["발표", "발표됐다", "발표했다", "예상", "전망", "결과", "전월", "전년", "전망치", "시장 예상"]
+    signals = []
+    for name, kws in groups.items():
+        hits = [k for k in kws if k in blob]
+        if hits:
+            is_event = any(w in blob for w in event_words)
+            signals.append({"name": name, "hits": hits[:4], "is_event": is_event})
+    return signals
+
+
+def _build_theme_breadth(formal_name, stock_news):
+    """
+    현재 코드가 보유한 뉴스/테마 데이터만으로 과장하지 않도록
+    '테마 동반 상승'은 실제 관련 종목 수치가 없으면 주장하지 않는다.
+    """
+    theme, hits = _detect_theme(formal_name, stock_news)
+    if not theme:
+        return {"theme": None, "hits": 0, "score": 0, "detail": "테마 근거 없음", "verified_breadth": False}
+
+    if theme in ("반도체", "AI"):
+        # SOXX가 별도 제공되면 analyze_global_impact에서 보강한다.
+        return {"theme": theme, "hits": hits, "score": 1 if hits >= 2 else 0,
+                "detail": f"{theme} 관련 키워드 {hits}건 감지", "verified_breadth": False}
+
+    return {"theme": theme, "hits": hits, "score": 1 if hits >= 2 else 0,
+            "detail": f"{theme} 관련 키워드 {hits}건 감지", "verified_breadth": False}
+
+
+def _find_earnings_event(formal_name, symbol, market_calendar):
+    """현재 종목의 실적 일정에서 실제 actual/estimate가 함께 있는 이벤트를 찾는다."""
+    target={str(symbol).upper(),str(formal_name).upper()}
+    candidates=[]
+    for ev in (market_calendar or []):
+        if ev.get("type")!="earn": continue
+        vals={str(ev.get("ticker","")).upper(),str(ev.get("name","")).upper()}
+        if target & vals or str(formal_name).upper() in str(ev.get("name","")).upper():
+            candidates.append(ev)
+    return candidates[0] if candidates else None
+
+def _verified_macro_event_snapshot(market_calendar):
+    """경제 캘린더의 actual/forecast/previous를 숫자로 비교. 문자열 언급만으로 이벤트를 확정하지 않는다."""
+    out=[]
+    for ev in (market_calendar or []):
+        if ev.get("type")!="eco": continue
+        actual=_safe_float(ev.get("val")); forecast=_safe_float(ev.get("exp")); previous=_safe_float(ev.get("prev"))
+        if actual is not None and forecast is not None:
+            surprise=(actual-forecast)/abs(forecast)*100 if forecast!=0 else None
+            out.append({"name":ev.get("name","경제지표"),"actual":actual,"expected":forecast,"previous":previous,
+                        "surprise_pct":surprise,"date":ev.get("date_key"),"time":ev.get("time")})
+    return out
+
+
+
+MOVEMENT_THEME_KEYWORDS = {
+    "반도체": ["삼성전자", "sk하이닉스", "하이닉스", "마이크론", "엔비디아", "nvidia", "amd", "asml", "tsmc", "반도체", "hbm", "dram", "nand", "ai"],
+    "AI": ["ai", "인공지능", "엔비디아", "nvidia", "데이터센터", "gpu", "hbm", "클라우드"],
+    "로봇": ["로봇", "robot", "robotics", "휴머노이드", "자동화", "협동로봇"],
+    "바이오": ["바이오", "제약", "신약", "임상", "hlb", "셀트리온", "리가켐"],
+    "2차전지": ["배터리", "2차전지", "이차전지", "전기차", "리튬", "양극재", "음극재", "에코프로", "lg에너지"],
+    "원전": ["원전", "원자력", "두산에너빌리티", "smr", "원자로", "nuclear"],
+    "방산": ["방산", "방위산업", "미사일", "전투기", "한화에어로", "lignex1", "l3harris"],
+    "우주": ["우주", "위성", "스페이스x", "spacex", "로켓", "satellite"]
+}
+
+POSITIVE_NEWS_KEYWORDS = [
+    "수주", "계약", "공급", "실적 개선", "어닝 서프라이즈", "호실적", "흑자전환",
+    "증가", "확대", "돌파", "신제품", "개발", "투자", "증설", "승인", "특허",
+    "협력", "파트너십", "수혜", "목표가 상향", "상향", "강세", "급등", "사상 최대", "최대 실적"
+]
+
+NEGATIVE_NEWS_KEYWORDS = [
+    "적자", "감소", "하락", "급락", "손실", "부진", "하향", "목표가 하향", "유상증자",
+    "전환사채", "소송", "리콜", "취소", "철회", "지연", "악재", "우려", "규제", "횡령", "배임"
+]
+
+
+# ===== 복구된 핵심 헬퍼: 최신 통합본에서 누락되어 /api/analyze 500을 일으키던 함수들 =====
 def fetch_all_world_board_parallel():
     with ThreadPoolExecutor(max_workers=10) as executor:
         results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
@@ -1510,9 +1846,6 @@ def get_trading_val_rank(symbol, is_krw=True):
         pass
     return ""
 
-# ----------------------------------------------------
-# 5. 실시간 6대 퀀트 팩터 및 파동 연산
-# ----------------------------------------------------
 def run_real_vectorized_backtest(df):
     if df is None or len(df) < 30:
         return 72.0, 78.0, 2.4
@@ -1837,36 +2170,6 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}"
     }
 
-
-# ----------------------------------------------------
-# 5.5 "왜 움직였을까?" 원인 분석 엔진
-# ----------------------------------------------------
-# 주의: 이 엔진은 현재 확보된 데이터의 근거 강도를 계산합니다.
-# 실제 인과관계를 100% 증명하는 예측기가 아닙니다.
-
-MOVEMENT_THEME_KEYWORDS = {
-    "반도체": ["삼성전자", "sk하이닉스", "하이닉스", "마이크론", "엔비디아", "nvidia", "amd", "asml", "tsmc", "반도체", "hbm", "dram", "nand", "ai"],
-    "AI": ["ai", "인공지능", "엔비디아", "nvidia", "데이터센터", "gpu", "hbm", "클라우드"],
-    "로봇": ["로봇", "robot", "robotics", "휴머노이드", "자동화", "협동로봇"],
-    "바이오": ["바이오", "제약", "신약", "임상", "hlb", "셀트리온", "리가켐"],
-    "2차전지": ["배터리", "2차전지", "이차전지", "전기차", "리튬", "양극재", "음극재", "에코프로", "lg에너지"],
-    "원전": ["원전", "원자력", "두산에너빌리티", "smr", "원자로", "nuclear"],
-    "방산": ["방산", "방위산업", "미사일", "전투기", "한화에어로", "lignex1", "l3harris"],
-    "우주": ["우주", "위성", "스페이스x", "spacex", "로켓", "satellite"]
-}
-
-POSITIVE_NEWS_KEYWORDS = [
-    "수주", "계약", "공급", "실적 개선", "어닝 서프라이즈", "호실적", "흑자전환",
-    "증가", "확대", "돌파", "신제품", "개발", "투자", "증설", "승인", "특허",
-    "협력", "파트너십", "수혜", "목표가 상향", "상향", "강세", "급등", "사상 최대", "최대 실적"
-]
-
-NEGATIVE_NEWS_KEYWORDS = [
-    "적자", "감소", "하락", "급락", "손실", "부진", "하향", "목표가 하향", "유상증자",
-    "전환사채", "소송", "리콜", "취소", "철회", "지연", "악재", "우려", "규제", "횡령", "배임"
-]
-
-
 def _movement_rate_to_float(value):
     try:
         if value is None:
@@ -1878,7 +2181,6 @@ def _movement_rate_to_float(value):
     except Exception:
         return None
 
-
 def _find_world_item(world_board, names):
     if not world_board:
         return None
@@ -1888,6 +2190,112 @@ def _find_world_item(world_board, names):
             return item
     return None
 
+# ===== WHY MOVED: multi-source news clustering engine =====
+NEWS_CLUSTER_STOPWORDS = {
+    "sk하이닉스","하이닉스","삼성전자","엔비디아","nvidia","nvda","tesla","tsla",
+    "오늘","최근","관련","주가","주식","종목","시장","증시","상승","하락","급등","급락",
+    "전망","분석","소식","뉴스","관련주","주목","관심","이유","영향","장중","마감",
+    "the","and","for","with","from","stock","shares","market","today","latest","news"
+}
+NEWS_GENERIC_TOKENS = {
+    "실적","ai","인공지능","gpu","hbm","hbm4","데이터센터","수요","매출","영업이익","순이익",
+    "공급","공급망","수주","계약","증설","관세","금리","인플레이션","물가","연준","fomc",
+    "금리인하","금리인상","고용","경기","cpi","pce","반도체","메모리","dram","nand","aws",
+    "cloud","클라우드","데이터센터","invest","investment","earnings","revenue","profit","guidance"
+}
+NEWS_POLARITY = {
+    "positive": ["호조","개선","증가","성장","상회","확대","수요 증가","강세","수주","계약","돌파","흑자","record","beat","beats","growth","strong demand","upgrade","surge","expansion"],
+    "negative": ["부진","감소","하회","둔화","악화","축소","약세","우려","관세 부담","금리 부담","공급 차질","적자","downgrade","miss","decline","weak demand","cut","risk","concern"]
+}
+
+def _news_tokens(text):
+    text = re.sub(r"[^0-9A-Za-z가-힣]+", " ", str(text or "").lower())
+    raw = [x for x in text.split() if len(x) >= 2]
+    return [x for x in raw if x not in NEWS_CLUSTER_STOPWORDS]
+
+def _news_cluster_key(news):
+    title = str(news.get("title", ""))
+    desc = str(news.get("description", news.get("summary", "")))
+    tokens = _news_tokens(title + " " + desc)
+    # 핵심 후보 단어만 남겨 동일 재료를 안정적으로 묶는다.
+    core = [x for x in tokens if x in NEWS_GENERIC_TOKENS]
+    return set(core)
+
+def _news_polarity(news):
+    text = (str(news.get("title", "")) + " " + str(news.get("description", news.get("summary", "")))).lower()
+    pos = sum(1 for k in NEWS_POLARITY["positive"] if k.lower() in text)
+    neg = sum(1 for k in NEWS_POLARITY["negative"] if k.lower() in text)
+    if pos > neg: return 1
+    if neg > pos: return -1
+    return 0
+
+def analyze_news_clusters(news_list, target_name="", symbol=""):
+    """여러 출처의 뉴스를 공통 주제로 묶고 출처 다양성/반복성을 계산한다."""
+    items = [x for x in (news_list or []) if isinstance(x, dict) and str(x.get("title", "")).strip()]
+    clusters = []
+    for item in items:
+        keys = _news_cluster_key(item)
+        if not keys:
+            continue
+        best = None
+        best_overlap = 0
+        for c in clusters:
+            overlap = len(keys & c["keywords"])
+            union = len(keys | c["keywords"]) or 1
+            similarity = overlap / union
+            if overlap >= 1 and similarity >= 0.25 and overlap > best_overlap:
+                best, best_overlap = c, overlap
+        if best is None:
+            best = {"keywords": set(keys), "items": []}
+            clusters.append(best)
+        else:
+            best["keywords"].update(keys)
+        best["items"].append(item)
+
+    scored = []
+    for c in clusters:
+        items_c = c["items"]
+        sources = {str(x.get("media") or x.get("source") or "").strip().lower() for x in items_c}
+        sources.discard("")
+        polarity = sum(_news_polarity(x) for x in items_c)
+        pos = sum(1 for x in items_c if _news_polarity(x) > 0)
+        neg = sum(1 for x in items_c if _news_polarity(x) < 0)
+        source_count = len(sources)
+        repeat_count = len(items_c)
+        # 서로 다른 출처 + 반복 횟수 + 방향 일치 + 핵심주제 단어 수
+        score = repeat_count * 1.0 + source_count * 2.0 + min(3, len(c["keywords"])) * 0.7
+        if polarity > 0 and pos >= max(2, neg + 1): score += 2.0
+        elif polarity < 0 and neg >= max(2, pos + 1): score += 2.0
+        scored.append({
+            "keywords": sorted(c["keywords"], key=lambda x: (-len(x), x))[:5],
+            "items": items_c,
+            "repeat_count": repeat_count,
+            "source_count": source_count,
+            "polarity": 1 if polarity > 0 else -1 if polarity < 0 else 0,
+            "positive_count": pos,
+            "negative_count": neg,
+            "score": round(score, 2),
+        })
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    return scored
+
+def build_clustered_material_evidence(news_list, target_name="", symbol=""):
+    clusters = analyze_news_clusters(news_list, target_name, symbol)
+    if not clusters:
+        return {"score": 0, "detail": "반복적으로 확인되는 핵심 뉴스 재료 없음", "evidence": [], "clusters": []}
+    top = clusters[0]
+    # 출처가 하나뿐이고 기사도 1개면 강한 재료로 승격하지 않는다.
+    reliable = top["repeat_count"] >= 2 and top["source_count"] >= 2
+    direction = top["polarity"]
+    if reliable and direction > 0: score = 2
+    elif reliable and direction < 0: score = -2
+    elif top["repeat_count"] >= 2 and direction != 0: score = direction
+    else: score = 0
+    topic = "·".join(top["keywords"][:3]) or "관련 재료"
+    detail = f"{topic} 관련 내용이 {top['repeat_count']}건, 서로 다른 출처 {top['source_count']}곳에서 반복 확인"
+    if direction > 0: detail += " · 긍정 방향"
+    elif direction < 0: detail += " · 부정 방향"
+    return {"score": score, "detail": detail, "evidence": top["items"][:5], "clusters": clusters[:5]}
 
 def _news_sentiment_score(news_list):
     positive = 0
@@ -1918,7 +2326,6 @@ def _news_sentiment_score(news_list):
 
     return positive, negative, evidence
 
-
 def _detect_theme(formal_name, stock_news):
     text_parts = [str(formal_name)]
     for news in (stock_news or []):
@@ -1936,273 +2343,319 @@ def _detect_theme(formal_name, stock_news):
     theme = max(theme_scores, key=theme_scores.get)
     return theme, theme_scores[theme]
 
+def analyze_global_impact(formal_name, market_name, world_board, stock_news,
+                          global_news=None, dart_disclosures=None, df=None,
+                          domestic_flow=None, market_index_name=None,
+                          consensus=None, macro_snapshot=None, market_calendar=None, symbol=""):
+    """
+    글로벌/거시 → 미국 → 국내 → 업종 → 종목 전파 경로를 계산한다.
+    숫자 비교가 가능한 실제 데이터만 강한 근거로 사용한다.
+    확인되지 않은 경제지표 값이나 테마 동반 종목 수는 만들어내지 않는다.
+    """
+    layers = []
 
-MOVEMENT_THEME_EXPLANATIONS = {
-    "반도체": "반도체는 스마트폰·PC·서버·AI 등에 들어가는 핵심 부품 산업이야. AI 서버 투자나 메모리 수요가 늘면 관련 기업의 실적 기대가 커지면서 주가가 함께 주목받을 수 있어.",
-    "AI": "AI 테마는 인공지능 서비스를 만들고 실행하는 데 필요한 GPU·서버·데이터센터·메모리·소프트웨어와 연결된 산업이야. AI 투자가 늘면 관련 제품과 서비스 수요가 커질 수 있어.",
-    "로봇": "로봇 테마는 제조·물류·서비스 현장에서 사람의 작업을 대신하거나 돕는 로봇과 자동화 산업이야. 공장 자동화 투자나 휴머노이드 기술 발전이 관련 기업의 기대를 높일 수 있어.",
-    "바이오": "바이오 테마는 신약·진단·치료제 등을 개발하는 산업이야. 임상 결과나 신약 승인, 기술수출처럼 사업 가치가 크게 달라질 수 있는 소식이 나오면 주가 반응이 커질 수 있어.",
-    "2차전지": "2차전지는 충전해서 다시 사용하는 배터리 산업이야. 전기차 판매, 배터리 수요, 리튬 가격, 생산 확대 같은 변화가 관련 기업의 실적 기대에 영향을 줄 수 있어.",
-    "원전": "원전 테마는 원자력 발전소 건설과 원자로·터빈·설비 등에 연결된 산업이야. 원전 수주나 신규 원전 정책이 나오면 관련 기업의 수주 기대가 커질 수 있어.",
-    "방산": "방산 테마는 전투기·미사일·함정·레이더 등 국가 안보에 필요한 장비를 만드는 산업이야. 국방비 확대나 해외 수출·수주 소식이 관련 기업에 영향을 줄 수 있어.",
-    "우주": "우주 테마는 위성·로켓·발사체·우주통신 등 우주산업과 연결된 기업들이야. 위성 발사나 정부 투자, 민간 우주사업 확대가 관련 기업의 기대를 높일 수 있어."
+    qqq = _find_world_item(world_board, ["QQQ"])
+    spy = _find_world_item(world_board, ["SPY"])
+    soxx = _find_world_item(world_board, ["SOXX"])
+
+    qqq_r = _movement_rate_to_float(qqq.get("rate")) if qqq else None
+    spy_r = _movement_rate_to_float(spy.get("rate")) if spy else None
+    soxx_r = _movement_rate_to_float(soxx.get("rate")) if soxx else None
+
+    us_values = [x for x in (qqq_r, spy_r) if x is not None]
+    us_avg = sum(us_values) / len(us_values) if us_values else None
+    us_score = _classify_direction(us_avg)
+    us_detail = f"미국 대표지수 평균 {us_avg:+.2f}%" if us_avg is not None else "미국 대표지수 데이터 확인 필요"
+    layers.append({"key":"us_market","label":"미국 시장","score":us_score,"detail":us_detail})
+
+    # 업종 연결: SOXX가 있고 반도체/AI 관련성이 실제 감지될 때만 강하게 인정.
+    theme_info = _build_theme_breadth(formal_name, stock_news)
+    industry_score = 0
+    industry_detail = "해당 업종 직접 지표 확인 필요"
+    if soxx_r is not None and theme_info["theme"] in ("반도체", "AI"):
+        industry_score = _classify_direction(soxx_r)
+        industry_detail = f"{theme_info['theme']} 업종 대표 ETF SOXX {soxx_r:+.2f}%"
+    elif soxx_r is not None and "반도체" in _extract_news_text(stock_news).lower():
+        industry_score = _classify_direction(soxx_r)
+        industry_detail = f"반도체 관련 뉴스 + SOXX {soxx_r:+.2f}%"
+    layers.append({"key":"industry_global","label":"미국 업종","score":industry_score,"detail":industry_detail})
+
+    # 국내 시장
+    domestic_r = None
+    if market_name in ("국내주식", "국내증시"):
+        ref = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
+        if ref:
+            domestic_r = _movement_rate_to_float(ref.get("rate"))
+    domestic_score = _classify_direction(domestic_r)
+    domestic_detail = f"{market_index_name or '국내시장'} {domestic_r:+.2f}%" if domestic_r is not None else "국내시장 데이터 확인 필요"
+    layers.append({"key":"domestic_market","label":"국내 시장","score":domestic_score,"detail":domestic_detail})
+
+    # 환율: 현재 world_board에 KRW=X가 있을 때만 사용.
+    fx = _find_world_item(world_board, ["USD/KRW", "KRW=X", "원달러", "달러/원"])
+    fx_r = _movement_rate_to_float(fx.get("rate")) if fx else None
+    fx_score = _classify_direction(fx_r)
+    fx_detail = f"원/달러 {fx_r:+.2f}%" if fx_r is not None else "원/달러 데이터 확인 필요"
+    layers.append({"key":"fx","label":"환율","score":fx_score,"detail":fx_detail})
+
+    # 거시경제: 뉴스의 단순 언급은 점수화하지 않는다.
+    macro_signals = _detect_macro_signals(stock_news, global_news)
+    macro_snapshot = macro_snapshot or {}
+    macro_parts=[]
+    for key,label in [("us10y","미국 10년물"),("us2y","미국 2년물"),("fedfunds","연방기금금리"),("cpi","CPI"),("unemployment","실업률"),("payroll","비농업고용")]:
+        item=macro_snapshot.get(key)
+        if item and item.get("observations"):
+            obs=item["observations"][0]
+            macro_parts.append(f"{label} {obs['value']:,.2f} ({obs['date']})")
+    verified_macro=_verified_macro_event_snapshot(market_calendar)
+    if verified_macro:
+        top=verified_macro[0]
+        surprise=top.get("surprise_pct")
+        macro_score=2 if surprise is not None and surprise>0.5 else (-2 if surprise is not None and surprise<-0.5 else 1)
+        macro_detail=f"{top['name']} 실제 {top['actual']:g} vs 예상 {top['expected']:g} ({surprise:+.1f}%)" if surprise is not None else f"{top['name']} 실제값과 예상값 확인"
+    else:
+        macro_score=0
+        macro_detail=("실제 FRED 관측: "+" · ".join(macro_parts[:3])) if macro_parts else "발표된 실제값·예상값을 함께 확인할 수 있는 거시 이벤트 없음"
+    layers.append({"key":"macro","label":"세계경제·거시환경","score":macro_score,"detail":macro_detail,"signals":macro_signals,"verified_events":verified_macro,"fred":macro_snapshot})
+
+    # 실적: 실제 actual/estimate가 함께 있을 때만 강한 점수.
+    earnings_score=0
+    earnings_detail="실적 실제값과 예상값을 함께 확인할 수 없음"
+    earnings_event=_find_earnings_event(formal_name,symbol,market_calendar)
+    alpha_earnings=fetch_alpha_vantage_earnings(symbol) if market_name=="미국주식" else {}
+    if earnings_event:
+        a=_safe_float(earnings_event.get("actual_eps")); e=_safe_float(earnings_event.get("expected_eps"))
+        if (a is None or e is None) and alpha_earnings.get("quarterly"):
+            latest=alpha_earnings["quarterly"][0]
+            a=_safe_float(latest.get("actual_eps")); e=_safe_float(latest.get("expected_eps"))
+        if a is not None and e not in (None,0):
+            surprise=(a/e-1)*100
+            earnings_score=2 if surprise>=10 else (1 if surprise>0 else (-2 if surprise<=-10 else -1))
+            earnings_detail=f"EPS 실제 ${a:.2f} vs 예상 ${e:.2f} ({surprise:+.1f}%)"
+        else:
+            earnings_detail="실적 일정은 확인됐지만 실제값·예상값 동시 확인 불가"
+    elif alpha_earnings.get("quarterly"):
+        latest=alpha_earnings["quarterly"][0]
+        a=_safe_float(latest.get("actual_eps")); e=_safe_float(latest.get("expected_eps"))
+        if a is not None and e not in (None,0):
+            surprise=(a/e-1)*100
+            earnings_score=2 if surprise>=10 else (1 if surprise>0 else (-2 if surprise<=-10 else -1))
+            earnings_detail=f"최근 EPS 실제 ${a:.2f} vs 예상 ${e:.2f} ({surprise:+.1f}%)"
+    layers.append({"key":"earnings","label":"실적","score":earnings_score,"detail":earnings_detail,"event":earnings_event,"alpha_earnings":alpha_earnings})
+
+    # 기업 이벤트/공시
+    positive_disclosures = sum(1 for x in (dart_disclosures or []) if str(x.get("tag_type","")) == "positive")
+    negative_disclosures = sum(1 for x in (dart_disclosures or []) if str(x.get("tag_type","")) == "negative")
+    event_score = 2 if positive_disclosures > 0 else (-2 if negative_disclosures > 0 else 0)
+    event_detail = (
+        f"긍정 공시 {positive_disclosures}건" if positive_disclosures else
+        (f"부정 공시 {negative_disclosures}건" if negative_disclosures else "직접 공시 이벤트 제한적")
+    )
+    layers.append({"key":"event","label":"기업 이벤트","score":event_score,"detail":event_detail})
+
+    # 글로벌→국내 전파: 같은 방향 + 관련 업종까지 확인될 때만 강하게 인정.
+    transmission_score = 0
+    transmission_parts = []
+    if us_score != 0 and domestic_score != 0 and (us_score > 0) == (domestic_score > 0):
+        transmission_score += 2
+        transmission_parts.append("미국·국내 시장 방향 일치")
+    if industry_score != 0 and domestic_score != 0 and (industry_score > 0) == (domestic_score > 0):
+        transmission_score += 2
+        transmission_parts.append("미국 업종·국내 시장 방향 일치")
+    if fx_score != 0 and domestic_score != 0:
+        transmission_score += 1
+        transmission_parts.append("환율 변화도 확인")
+    transmission_detail = " · ".join(transmission_parts) if transmission_parts else "글로벌→국내 전파 근거 제한적"
+    layers.append({"key":"transmission","label":"글로벌→국내 연결","score":transmission_score,"detail":transmission_detail})
+
+    market_information = build_market_information(global_news)
+
+    return {
+        "layers": layers,
+        "market_information": market_information,
+        "total_score": sum(int(x["score"]) for x in layers),
+        "theme": theme_info,
+        "macro_signals": macro_signals,
+        "transmission_score": transmission_score,
+        "summary": " → ".join([x["detail"] for x in layers if x.get("score",0) != 0][:3]) or "확인된 글로벌 연결 근거가 제한적입니다.",
+    }
+
+
+
+MARKET_INFO_GROUPS = {
+    "fomc": ["fomc", "연준", "연방준비", "파월", "금리인하", "금리 인하", "금리인상", "금리 인상"],
+    "inflation": ["cpi", "pce", "물가", "인플레이션", "소비자물가"],
+    "jobs": ["고용", "실업률", "비농업", "고용보고서", "jobs", "payroll"],
+    "rates": ["국채금리", "채권금리", "10년물", "2년물", "금리"],
+    "tariff": ["관세", "tariff", "무역"],
+    "market": ["나스닥", "s&p", "s&p500", "다우", "미국증시", "뉴욕증시", "증시"],
 }
 
+MARKET_INFO_STOP = set("미국 뉴욕 시장 증시 주가 주식 관련 소식 전해 전망 투자 오늘 어제 최근 상승 하락 영향 기대".split())
 
-def _movement_reason_map(reasons):
-    return {str(r.get("key")): r for r in (reasons or []) if isinstance(r, dict)}
+def _market_info_topic(text):
+    low=str(text or "").lower()
+    hits=[]
+    for topic, words in MARKET_INFO_GROUPS.items():
+        if any(w.lower() in low for w in words):
+            hits.append(topic)
+    return hits
 
-
-def build_beginner_movement_comment(raw_price, formal_name, market_name, reasons, quant=None, stock_news=None):
-    """확인된 기존 데이터만 이용해 초보자가 이해하기 쉬운 움직임 설명을 만든다."""
-    rm = _movement_reason_map(reasons)
-    try:
-        price = float(raw_price)
-    except Exception:
-        price = None
-
-    market = rm.get("market", {})
-    theme = rm.get("theme", {})
-    material = rm.get("material", {})
-    volume = rm.get("volume", {})
-    trading_value = rm.get("trading_value", {})
-    foreign = rm.get("foreign", {})
-    institution = rm.get("institution", {})
-    market5 = rm.get("market_5d", {})
-
-    direction = "상승" if sum(int(r.get("score", 0)) for r in reasons) >= 4 else ("하락" if sum(int(r.get("score", 0)) for r in reasons) <= -4 else "혼조")
-    paragraphs = []
-
-    if direction == "상승":
-        paragraphs.append("개미들아, 오늘은 그냥 오른 게 아니야.")
-        paragraphs.append("지금 확인되는 데이터를 하나씩 연결해 보면 왜 매수세가 들어왔는지 흐름이 보여.")
-    elif direction == "하락":
-        paragraphs.append("개미들아, 오늘은 그냥 빠진 게 아니야.")
-        paragraphs.append("지금 확인되는 데이터를 하나씩 연결해 보면 왜 매도세가 강해졌는지 흐름이 보여.")
+def build_market_information(global_news):
+    """시장 뉴스는 종목 원인으로 확정하지 않고, 여러 출처에서 반복되는 시장 이슈를 정보로만 요약한다."""
+    items=[x for x in (global_news or []) if isinstance(x,dict) and str(x.get('title','')).strip()]
+    if not items:
+        return {"topic":"", "text":"", "repeat_count":0, "source_count":0, "evidence":[]}
+    groups=[]
+    for item in items:
+        text=str(item.get('title',''))+' '+str(item.get('description',item.get('summary','')))
+        topics=_market_info_topic(text)
+        for topic in topics:
+            g=next((x for x in groups if x['topic']==topic),None)
+            if g is None:
+                g={'topic':topic,'items':[]}
+                groups.append(g)
+            g['items'].append(item)
+    if not groups:
+        # 일반 시장 뉴스도 있으면 가장 많은 출처의 제목을 근거로만 보존
+        return {"topic":"", "text":"", "repeat_count":0, "source_count":0, "evidence":[]}
+    groups.sort(key=lambda g:(len(g['items']), len({str(i.get('media') or i.get('source') or '').lower() for i in g['items']})), reverse=True)
+    g=groups[0]
+    sources={str(i.get('media') or i.get('source') or '').strip().lower() for i in g['items'] if str(i.get('media') or i.get('source') or '').strip()}
+    n=len(g['items']); sc=len(sources)
+    # 방향은 시장 뉴스 자체의 제목에서만 읽고, 종목 원인으로 사용하지 않는다.
+    pos=sum(1 for i in g['items'] if _news_polarity(i)>0)
+    neg=sum(1 for i in g['items'] if _news_polarity(i)<0)
+    direction = '상승' if pos>neg else '하락' if neg>pos else ''
+    phrases={
+        'fomc': 'FOMC·연준 발언 관련 소식이 전해졌어',
+        'inflation': '미국 물가 관련 소식이 전해졌어',
+        'jobs': '미국 고용 관련 소식이 전해졌어',
+        'rates': '미국 금리 관련 소식이 전해졌어',
+        'tariff': '관세·무역 관련 소식이 전해졌어',
+        'market': '미국 증시 관련 소식이 전해졌어',
+    }
+    base=phrases.get(g['topic'],'시장 관련 소식이 전해졌어')
+    if direction:
+        if g['topic']=='fomc':
+            text=base+f' 시장은 {direction} 흐름을 보였어.'
+        else:
+            text=base+f' 시장은 {direction} 흐름을 보였어.'
     else:
-        paragraphs.append("개미들아, 오늘 움직임은 한 가지 이유로 설명하기 어려워.")
-        paragraphs.append("시장·테마·재료·거래량·수급을 같이 봐야 지금 흐름을 제대로 이해할 수 있어.")
+        text=base+'.'
+    return {"topic":g['topic'],"text":text,"repeat_count":n,"source_count":sc,"evidence":g['items'][:6]}
 
-    ms = int(market.get("score", 0))
-    md = str(market.get("detail", ""))
-    if ms > 0 and md:
-        paragraphs.append(f"시장 분위기도 좋았어. {md}처럼 시장 전체가 강하게 움직이면 투자자들의 위험 선호가 커지면서 개별 종목에도 매수세가 들어오는 데 영향을 줄 수 있어.")
-    elif ms < 0 and md:
-        paragraphs.append(f"먼저 시장 분위기는 부담스러웠어. {md}처럼 시장 전체가 약하면 좋은 종목도 함께 영향을 받을 수 있어서 오늘 움직임을 종목 자체의 힘만으로 보기는 어려워.")
-
-    td = str(theme.get("detail", ""))
-    theme_name = str(theme.get("theme", "")) if theme.get("theme") else ""
-    if theme_name:
-        explanation = MOVEMENT_THEME_EXPLANATIONS.get(theme_name, "")
-        if int(theme.get("score", 0)) > 0:
-            if explanation:
-                paragraphs.append(f"그리고 {theme_name} 테마가 같이 움직였어. {explanation}")
-            if td:
-                paragraphs.append(f"실제로 확인된 근거는 {td}야. 다만 테마가 있다는 이유만으로 이 종목이 계속 오른다고 단정할 수는 없어.")
-        elif int(theme.get("score", 0)) < 0:
-            paragraphs.append(f"관련해서는 {theme_name} 테마 흐름이 부담으로 작용했어. {explanation} 현재 확인된 내용은 {td}야.")
-        else:
-            paragraphs.append(f"{theme_name} 테마와 연결되는 내용도 보여. {explanation} 다만 현재 데이터만으로 테마가 오늘 주가의 직접적인 원인이라고 단정하기는 어려워.")
-
-    news_title = ""
-    for item in (stock_news or []):
-        if isinstance(item, dict):
-            news_title = str(item.get("title", "")).strip()
-            if news_title:
-                break
-    mats = int(material.get("score", 0))
-    if mats > 0:
-        if news_title:
-            paragraphs.append(f"기업 재료도 확인됐어. 오늘 확인된 주요 뉴스는 '{news_title}'이야. 이런 뉴스가 중요한 이유는 단순히 기사 하나가 나왔기 때문이 아니라 실적·매출·수주·신규 사업처럼 회사가 앞으로 벌어들일 돈에 대한 기대를 바꿀 수 있기 때문이야.")
-        else:
-            paragraphs.append(f"기업 쪽에서도 긍정적인 재료가 확인됐어. {material.get('detail', '')} 이런 재료는 회사의 실적이나 사업 기대를 바꿀 수 있기 때문에 주가에 영향을 줄 수 있어.")
-    elif mats < 0:
-        paragraphs.append(f"반대로 기업 재료는 부담으로 확인됐어. {material.get('detail', '')} 그래서 오늘 하락을 볼 때도 이 부분을 같이 확인해야 해.")
-
-    vs = int(volume.get("score", 0))
-    vd = str(volume.get("detail", ""))
-    if vd:
-        if vs > 0:
-            paragraphs.append(f"거래량도 눈여겨봐야 해. {vd}. 쉽게 말하면 가격만 움직인 게 아니라 실제로 매매에 참여한 돈과 사람이 평소보다 많아졌다는 뜻이야. 특히 주가가 오르면서 거래량까지 증가했다면 상승에 참여하는 매매가 커지고 있는지 확인할 필요가 있어.")
-        elif vs < 0:
-            paragraphs.append(f"거래량은 주의해서 봐야 해. {vd}. 가격이 움직여도 거래 참여가 충분히 늘지 않았다면 그 움직임이 얼마나 강하게 이어질지는 추가 확인이 필요해.")
-        else:
-            paragraphs.append(f"거래량은 {vd} 수준이야. 따라서 지금 움직임이 강한 추세로 이어지는지 거래량이 추가로 붙는지 확인하는 게 좋아.")
-
-    for label, obj in (("외국인", foreign), ("기관", institution)):
-        score = int(obj.get("score", 0))
-        detail = str(obj.get("detail", ""))
-        if score > 0 and detail:
-            paragraphs.append(f"{label} 수급도 매수 쪽이야. {detail}. 수급은 실제 투자 주체가 어느 방향으로 돈을 넣고 있는지를 보는 자료라서, 주가 움직임과 함께 보면 흐름을 이해하는 데 도움이 돼.")
-        elif score < 0 and detail:
-            paragraphs.append(f"{label} 수급은 매도 쪽이야. {detail}. 따라서 주가가 오르더라도 이 수급이 계속 약하면 상승 흐름이 오래 이어지는지 확인할 필요가 있어.")
-
-    tvd = str(trading_value.get("detail", ""))
-    if int(trading_value.get("score", 0)) > 0 and tvd:
-        paragraphs.append(f"거래대금도 같이 확인돼. {tvd}. 거래량이 단순히 주식의 개수라면 거래대금은 실제로 움직인 금액을 보는 지표라서, 큰돈이 함께 들어왔는지 판단하는 데 도움이 돼.")
-
-    if quant:
-        ma20_state = str(quant.get("ma20_state", ""))
-        rsi = str(quant.get("rsi", ""))
-        if "상회" in ma20_state or "지지" in ma20_state:
-            tech = "주가도 20일 이동평균선 위에 있어. 20일선은 최근 약 한 달 동안의 평균 가격을 보는 기준이라, 현재 주가가 그 위에 있다는 것은 단기 흐름이 평균 가격보다 높은 위치에 있다는 뜻이야."
-            if rsi and rsi != "-":
-                tech += f" RSI는 {rsi}로 확인돼 현재 단기 과열 여부도 함께 볼 수 있어."
-            paragraphs.append(tech)
-        elif "이탈" in ma20_state or "하회" in ma20_state:
-            tech = "반면 주가는 20일 이동평균선 아래에 있어. 20일선은 최근 약 한 달 동안의 평균 가격을 보는 기준이라, 이 선을 회복하지 못하면 단기 흐름이 약하다고 볼 수 있어."
-            if rsi and rsi != "-":
-                tech += f" RSI는 {rsi}로 확인돼 반등 과정에서도 힘이 붙는지 같이 볼 필요가 있어."
-            paragraphs.append(tech)
-
-    if direction == "상승":
-        paragraphs.append("정리하면 오늘은 시장 + 테마 + 재료 + 거래량 + 수급 + 기술적 흐름 중 확인된 신호들이 같은 방향으로 겹친 날이야. 다만 이것만으로 앞으로 계속 오른다고 단정할 수는 없어. 다음 거래에서도 가격과 거래량, 수급이 계속 같은 방향으로 이어지는지 확인하는 게 중요해.")
-    elif direction == "하락":
-        paragraphs.append("정리하면 오늘은 시장·테마·재료·거래량·수급 중 부담스러운 신호가 겹쳐 있어. 다만 하루 움직임만으로 추세가 완전히 바뀌었다고 단정할 수는 없어. 다음 거래에서 하락 압력이 계속되는지 확인하는 게 중요해.")
-    else:
-        paragraphs.append("정리하면 지금은 좋은 신호와 부담스러운 신호가 섞여 있어. 한 가지 이유만 보고 판단하기보다는 다음 거래에서 가격·거래량·수급이 어느 방향으로 이어지는지 확인하는 게 좋아.")
-
-    return "\n\n".join(p for p in paragraphs if p.strip())
-
-
-def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, quant=None):
-    """현재 데이터에서 주가 움직임을 시장/테마/재료/거래량/수급/최근 5거래일 시장흐름으로 분해한다."""
+def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol=""):
+    """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다."""
     reasons = []
-
-    try:
-        raw_price = float(raw_price)
-    except Exception:
-        raw_price = None
 
     # 1. 시장
     market_score = 0
     market_detail = "시장 영향 확인 필요"
-
     kospi = _find_world_item(world_board, ["코스피"])
     kosdaq = _find_world_item(world_board, ["코스닥"])
     qqq = _find_world_item(world_board, ["QQQ"])
     spy = _find_world_item(world_board, ["SPY"])
 
     if market_name in ("국내주식", "국내증시"):
-        # 종목의 실제 거래시장(KOSPI/KOSDAQ)을 기준으로 시장 카드를 선택합니다.
         selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else "KOSPI"
         ref = kospi if selected_index == "KOSPI" else kosdaq
         if ref:
             rate = _movement_rate_to_float(ref.get("rate"))
             if rate is not None:
-                if rate >= 1.0:
-                    market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
-                elif rate >= 0.3:
-                    market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
-                elif rate <= -1.0:
-                    market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
-                elif rate <= -0.3:
-                    market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
-                else:
-                    market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
+                if rate >= 1.0: market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
+                elif rate >= 0.3: market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
+                elif rate <= -1.0: market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
+                elif rate <= -0.3: market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
+                else: market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
     elif market_name == "미국주식":
         ref = qqq if qqq and qqq.get("rate") != "-" else spy
         if ref:
             rate = _movement_rate_to_float(ref.get("rate"))
             if rate is not None:
-                if rate >= 1.0:
-                    market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
-                elif rate >= 0.3:
-                    market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
-                elif rate <= -1.0:
-                    market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
-                elif rate <= -0.3:
-                    market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
-                else:
-                    market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
+                if rate >= 1.0: market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
+                elif rate >= 0.3: market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
+                elif rate <= -1.0: market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
+                elif rate <= -0.3: market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
+                else: market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
     elif market_name == "암호화폐":
-        # 암호화폐는 KOSPI/NASDAQ 같은 전통시장 지수를 쓰지 않고
-        # 검색한 코인 자체의 최근 일간 등락을 시장 요인으로 사용합니다.
         if df is not None and len(df) >= 2:
             try:
                 prev_close = float(df["Close"].iloc[-2])
                 current_close = float(df["Close"].iloc[-1])
                 rate = ((current_close / prev_close) - 1.0) * 100.0 if prev_close else 0.0
                 label = formal_name or symbol or "코인"
-                if rate >= 1.0:
-                    market_score, market_detail = 2, f"{label} 시장 강세 ({rate:+.2f}%)"
-                elif rate >= 0.3:
-                    market_score, market_detail = 1, f"{label} 시장 상승 ({rate:+.2f}%)"
-                elif rate <= -1.0:
-                    market_score, market_detail = -2, f"{label} 시장 약세 ({rate:+.2f}%)"
-                elif rate <= -0.3:
-                    market_score, market_detail = -1, f"{label} 시장 하락 ({rate:+.2f}%)"
-                else:
-                    market_detail = f"{label} 시장 보합 ({rate:+.2f}%)"
+                if rate >= 1.0: market_score, market_detail = 2, f"{label} 시장 강세 ({rate:+.2f}%)"
+                elif rate >= 0.3: market_score, market_detail = 1, f"{label} 시장 상승 ({rate:+.2f}%)"
+                elif rate <= -1.0: market_score, market_detail = -2, f"{label} 시장 약세 ({rate:+.2f}%)"
+                elif rate <= -0.3: market_score, market_detail = -1, f"{label} 시장 하락 ({rate:+.2f}%)"
+                else: market_detail = f"{label} 시장 보합 ({rate:+.2f}%)"
             except Exception:
                 pass
     else:
         market_detail = "시장 공통 요인 영향 낮음"
 
-    reasons.append({"key": "market", "label": "시장", "score": market_score, "detail": market_detail})
+    reasons.append({"key":"market","label":"시장","score":market_score,"detail":market_detail})
 
     # 2. 업종/테마
     theme, theme_hits = _detect_theme(formal_name, stock_news)
     theme_score = 0
     theme_detail = "뚜렷한 테마 근거 없음"
-
     if theme:
         sector_rate = None
         if theme in ("반도체", "AI"):
             soxx = _find_world_item(world_board, ["SOXX"])
             if soxx:
                 sector_rate = _movement_rate_to_float(soxx.get("rate"))
-
         if sector_rate is not None:
-            if sector_rate >= 1.0:
-                theme_score, theme_detail = 2, f"{theme} 업종 강세 · SOXX {sector_rate:+.2f}%"
-            elif sector_rate >= 0.3:
-                theme_score, theme_detail = 1, f"{theme} 업종 동반 상승 · SOXX {sector_rate:+.2f}%"
-            elif sector_rate <= -1.0:
-                theme_score, theme_detail = -2, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
-            elif sector_rate <= -0.3:
-                theme_score, theme_detail = -1, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
-            else:
-                theme_detail = f"{theme} 테마 감지 · 업종 움직임 제한적"
+            if sector_rate >= 1.0: theme_score, theme_detail = 2, f"{theme} 업종 강세 · SOXX {sector_rate:+.2f}%"
+            elif sector_rate >= 0.3: theme_score, theme_detail = 1, f"{theme} 업종 동반 상승 · SOXX {sector_rate:+.2f}%"
+            elif sector_rate <= -1.0: theme_score, theme_detail = -2, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
+            elif sector_rate <= -0.3: theme_score, theme_detail = -1, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
+            else: theme_detail = f"{theme} 테마 감지 · 업종 움직임 제한적"
         else:
-            theme_score = min(1, theme_hits)
+            # 단순 키워드 감지는 약한 증거로만 취급한다.
+            theme_score = 1 if theme_hits >= 2 else 0
             theme_detail = f"{theme} 관련 키워드 {theme_hits}건 감지"
 
-    reasons.append({"key": "theme", "label": "업종·테마", "score": theme_score, "detail": theme_detail})
+    reasons.append({"key":"theme","label":"업종·테마","score":theme_score,"detail":theme_detail,"theme_hits":theme_hits})
 
     # 3. 기업 재료
-    news_positive, news_negative, news_evidence = _news_sentiment_score(stock_news)
+    # 여러 뉴스채널에서 반복되는 공통 주제를 먼저 찾고, 단일 기사만으로는 강한 재료로 인정하지 않는다.
+    clustered_material = build_clustered_material_evidence(stock_news, formal_name, symbol)
+    news_evidence = []
+    for n in clustered_material.get("evidence", []):
+        pol = _news_polarity(n)
+        news_evidence.append({
+            "title": str(n.get("title", "")),
+            "type": "positive" if pol > 0 else "negative" if pol < 0 else "neutral",
+            "keywords": _news_tokens(str(n.get("title", "")))[:5],
+            "media": str(n.get("media") or n.get("source") or "")
+        })
+
     disclosure_positive = 0
     disclosure_negative = 0
     for item in (dart_disclosures or []):
         tag_type = str(item.get("tag_type", ""))
-        if tag_type == "positive":
-            disclosure_positive += 1
-        elif tag_type == "negative":
-            disclosure_negative += 1
+        if tag_type == "positive": disclosure_positive += 1
+        elif tag_type == "negative": disclosure_negative += 1
 
-    net_material = news_positive + disclosure_positive * 2 - news_negative - disclosure_negative * 2
-    if net_material >= 3:
-        material_score = 2
-        material_detail = f"긍정 재료 다수 · 뉴스 +{news_positive}, 공시 +{disclosure_positive}"
-    elif net_material > 0:
+    material_score = int(clustered_material.get("score", 0))
+    # 공시는 독립적인 1차 근거이므로 뉴스 클러스터가 없을 때도 보조한다.
+    if material_score == 0 and disclosure_positive > disclosure_negative:
         material_score = 1
-        material_detail = f"긍정 재료 존재 · 뉴스 +{news_positive}, 공시 +{disclosure_positive}"
-    elif net_material <= -3:
-        material_score = -2
-        material_detail = f"부정 재료 우세 · 뉴스 -{news_negative}, 공시 -{disclosure_negative}"
-    elif net_material < 0:
+    elif material_score == 0 and disclosure_negative > disclosure_positive:
         material_score = -1
-        material_detail = f"부정 재료 존재 · 뉴스 -{news_negative}, 공시 -{disclosure_negative}"
-    else:
-        material_score = 0
-        material_detail = "최근 강한 기업 재료 확인 안 됨"
+    material_detail = clustered_material.get("detail", "반복적으로 확인되는 핵심 뉴스 재료 없음")
+    if disclosure_positive or disclosure_negative:
+        material_detail += f" · 공시 호재 {disclosure_positive}건/악재 {disclosure_negative}건"
 
-    reasons.append({"key": "material", "label": "기업 재료", "score": material_score, "detail": material_detail})
+    reasons.append({"key":"material","label":"기업 재료","score":material_score,"detail":material_detail,"news_clusters":clustered_material.get("clusters",[])})
 
-    # 4. 거래량/수급
+    # 4. 거래량
     flow_score = 0
     flow_detail = "거래량 변화 제한적"
+    price_change = None
+    volume_ratio = None
     try:
         if df is not None and len(df) >= 6:
             close = df["Close"].astype(float)
@@ -2213,7 +2666,6 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
             avg_volume = float(volume.tail(6).iloc[:-1].mean())
             price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
             volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
-
             if price_change >= 1.0 and volume_ratio >= 150:
                 flow_score, flow_detail = 2, f"상승 +{price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
             elif price_change >= 0.3 and volume_ratio >= 120:
@@ -2226,58 +2678,63 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
                 flow_detail = f"거래량 {volume_ratio:.0f}%"
     except Exception:
         pass
+    reasons.append({"key":"volume","label":"거래량","score":flow_score,"detail":flow_detail})
 
-    reasons.append({"key": "volume", "label": "거래량", "score": flow_score, "detail": flow_detail})
-
+    # 5. 거래대금
     tv_score = 0
     tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
-    if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
-        try:
+    tv_ratio = None
+    try:
+        if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
             tv = float(domestic_flow["trading_value"])
             close_s = df["Close"].astype(float)
             vol_s = df["Volume"].astype(float)
             proxy = close_s * vol_s
             avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
-            ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
-            if ratio >= 2.0 and flow_score > 0:
-                tv_score = 2
-            elif ratio >= 1.2 and flow_score > 0:
-                tv_score = 1
-            elif ratio >= 2.0 and flow_score < 0:
-                tv_score = -2
-            elif ratio >= 1.2 and flow_score < 0:
-                tv_score = -1
-            tv_detail += f" · 평소 대비 약 {ratio*100:.0f}%" if ratio > 0 else ""
-        except Exception:
-            pass
+            tv_ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
+            # 거래대금은 실제 급증 + 가격 방향이 같이 있을 때 강한 원인으로 인정.
+            if tv_ratio >= 2.0 and flow_score > 0: tv_score = 2
+            elif tv_ratio >= 1.2 and flow_score > 0: tv_score = 1
+            elif tv_ratio >= 2.0 and flow_score < 0: tv_score = -2
+            elif tv_ratio >= 1.2 and flow_score < 0: tv_score = -1
+            tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%" if tv_ratio > 0 else ""
+    except Exception:
+        pass
     reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
 
+    # 6. 외국인 수급
     foreign_score = 0
     foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
     if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
-        v=float(domestic_flow["foreigner_5d"]); latest=domestic_flow.get("foreigner_latest")
-        foreign_score=2 if v>0 and latest is not None and latest>0 else (1 if v>0 else (-2 if v<0 and latest is not None and latest<0 else (-1 if v<0 else 0)))
+        try:
+            v = float(domestic_flow["foreigner_5d"])
+            latest = domestic_flow.get("foreigner_latest")
+            foreign_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+        except Exception:
+            pass
     reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
 
+    # 7. 기관 수급
     institution_score = 0
     institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
     if domestic_flow and domestic_flow.get("institution_5d") is not None:
-        v=float(domestic_flow["institution_5d"]); latest=domestic_flow.get("institution_latest")
-        institution_score=2 if v>0 and latest is not None and latest>0 else (1 if v>0 else (-2 if v<0 and latest is not None and latest<0 else (-1 if v<0 else 0)))
+        try:
+            v = float(domestic_flow["institution_5d"])
+            latest = domestic_flow.get("institution_latest")
+            institution_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+        except Exception:
+            pass
     reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
 
     # 8. 최근 5거래일 시장 흐름
     market5 = None
     if market_name in ("국내주식", "국내증시") and market_index_name in ("KOSPI", "KOSDAQ"):
-        selected_index = market_index_name
-        ref5 = _find_world_item(world_board, ["코스피" if selected_index == "KOSPI" else "코스닥"])
-        market5 = fetch_naver_index_5day_returns(selected_index, ref5)
+        ref5 = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
+        market5 = fetch_naver_index_5day_returns(market_index_name, ref5)
     elif market_name == "미국주식":
-        # 미국 개별주식은 Nasdaq 계열 대표 지표로 QQQ를 사용합니다.
         ref5 = _find_world_item(world_board, ["QQQ"])
         market5 = fetch_market_5day_returns_from_symbol("QQQ", "NASDAQ", ref5)
     elif market_name == "암호화폐":
-        # 코인은 해당 코인 자체의 최근 5거래일 흐름을 사용합니다.
         market5 = fetch_market_5day_returns_from_df(df, formal_name or symbol or "Crypto")
 
     if market5:
@@ -2291,56 +2748,150 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         market5_points = []
 
     reasons.append({
-        "key": "market_5d",
-        "label": "시장 5일 흐름",
-        "score": market5_score,
-        "detail": market5_detail,
-        "chart_points": market5_points,
-        "total_return": market5.get("total_return") if market5 else None,
-        "source": market5.get("source") if market5 else None,
-        "index_name": market5.get("index_name") if market5 else selected_index,
+        "key":"market_5d","label":"시장 5일 흐름","score":market5_score,
+        "detail":market5_detail,"chart_points":market5_points,
+        "total_return":market5.get("total_return") if market5 else None,
+        "source":market5.get("source") if market5 else None,
+        "index_name":market5.get("index_name") if market5 else selected_index
     })
 
-    total_score = sum(int(x["score"]) for x in reasons)
+    # ----------------------------------------------------
+    # 핵심: "먼저 걸리는 조건"이 아니라 실제 강도를 비교한다.
+    # 상승/하락 방향을 가격 움직임과 맞춰 원인 후보를 평가한다.
+    # ----------------------------------------------------
+    move_direction = 1
+    try:
+        if price_change is not None and price_change < 0:
+            move_direction = -1
+    except Exception:
+        pass
+
     positive_count = sum(1 for x in reasons if x["score"] > 0)
     negative_count = sum(1 for x in reasons if x["score"] < 0)
     evidence_count = sum(1 for x in reasons if x["score"] != 0)
+    total_score = sum(int(x["score"]) for x in reasons)
 
-    confidence = "높음" if evidence_count >= 4 else ("중간" if evidence_count >= 2 else "낮음")
-    direction = "상승" if total_score >= 4 else ("하락" if total_score <= -4 else "혼조")
-    sorted_reasons = sorted(reasons, key=lambda x: abs(int(x["score"])), reverse=True)
-    main_reason = sorted_reasons[0]["label"] if sorted_reasons else "-"
+    # 실제 원인 선택용 보너스.
+    candidate_scores = {}
+    for r in reasons:
+        s = int(r["score"])
+        # 현재 주가 방향과 반대인 신호는 "원인"으로 선택하지 않도록 감점.
+        directional = s * move_direction
+        candidate_scores[r["key"]] = directional
 
-    if direction == "상승":
-        summary = f"{main_reason} 요인이 가장 강하게 나타났고, 전체적으로 상승에 우호적인 근거가 {positive_count}개 확인됩니다."
-    elif direction == "하락":
-        summary = f"{main_reason} 요인이 가장 강하게 나타났고, 전체적으로 하락에 우호적인 근거가 {negative_count}개 확인됩니다."
+    # 강한 근거가 있는 항목에만 보너스를 주되, 단순 키워드 테마는 과대평가하지 않는다.
+    if material_score > 0:
+        candidate_scores["material"] += 1 if material_score >= 2 else 0
+    if foreign_score > 0 and institution_score > 0:
+        candidate_scores["foreign"] += 1
+        candidate_scores["institution"] += 1
+    if tv_score > 0 and flow_score > 0:
+        candidate_scores["trading_value"] += 1
+    if theme_score > 0 and theme_hits >= 2:
+        candidate_scores["theme"] += 1
+
+    # 실제 상승/하락을 설명할 수 있는 양(+)의 후보만 선택.
+    positive_candidates = [(k,v) for k,v in candidate_scores.items() if v > 0]
+    if positive_candidates:
+        max_candidate = max(v for _, v in positive_candidates)
+        top_keys = [k for k,v in positive_candidates if v == max_candidate]
     else:
-        summary = "시장·재료·수급 요인이 서로 엇갈려 단일 원인으로 설명하기 어려운 상태입니다."
+        top_keys = []
 
-    beginner_comment = build_beginner_movement_comment(
-        raw_price=raw_price,
+    # 재료 > 양매수 수급 > 거래대금/거래량 > 테마 > 시장 순의 tie-break.
+    priority = {
+        "material": 7,
+        "foreign": 6,
+        "institution": 6,
+        "trading_value": 5,
+        "volume": 4,
+        "theme": 3,
+        "market": 2,
+        "market_5d": 1,
+    }
+    main_key = max(top_keys, key=lambda k: priority.get(k,0)) if top_keys else None
+
+    # 양매수 수급은 하나의 원인으로 묶는다.
+    if foreign_score > 0 and institution_score > 0 and main_key in ("foreign","institution"):
+        main_key = "flow_pair"
+
+    # 재료가 약하고 거래가 매우 강하면 거래대금/거래량을 우선.
+    if main_key == "material" and material_score == 1:
+        if tv_score >= 2:
+            main_key = "trading_value"
+        elif flow_score >= 2:
+            main_key = "volume"
+
+    main_label_map = {
+        "material":"기업 재료","flow_pair":"외국인·기관 수급",
+        "foreign":"외국인 수급","institution":"기관 수급",
+        "trading_value":"거래대금","volume":"거래량",
+        "theme":"업종·테마","market":"시장","market_5d":"시장 5일 흐름"
+    }
+    main_reason = main_label_map.get(main_key, "-")
+
+    # 상승/하락 방향은 전체 점수로 판단하되, 혼조이면 실제 가격 방향을 사용한다.
+    direction = "상승" if total_score >= 4 else ("하락" if total_score <= -4 else ("상승" if move_direction > 0 and raw_price is not None else "혼조"))
+    confidence = "높음" if evidence_count >= 4 else ("중간" if evidence_count >= 2 else "낮음")
+
+    if main_reason != "-":
+        if direction == "상승":
+            summary = f"{main_reason} 신호가 가장 강하게 잡혔고, 실제 움직임과 함께 확인됩니다."
+        elif direction == "하락":
+            summary = f"{main_reason} 쪽 약세 신호가 가장 강하게 잡혔고, 실제 움직임과 함께 확인됩니다."
+        else:
+            summary = f"{main_reason} 신호가 가장 눈에 띄지만 다른 근거와 엇갈리는 부분도 있습니다."
+    else:
+        summary = "현재 확보된 데이터만으로는 특정 원인을 우선순위 높게 선택하기 어렵습니다."
+
+    global_impact = analyze_global_impact(
         formal_name=formal_name,
         market_name=market_name,
-        reasons=reasons,
-        quant=quant,
-        stock_news=stock_news
+        world_board=world_board,
+        stock_news=stock_news,
+        global_news=global_news,
+        dart_disclosures=dart_disclosures,
+        df=df,
+        domestic_flow=domestic_flow,
+        market_index_name=market_index_name,
+        consensus=consensus,
+        macro_snapshot=macro_snapshot,
+        market_calendar=market_calendar,
+        symbol=symbol
     )
+
+    # 직접 공시/재료가 없고 글로벌 전파가 충분히 강할 때만 글로벌 원인을 보조 주원인으로 선택.
+    if global_impact["total_score"] >= 5 and global_impact.get("transmission_score", 0) >= 2 and main_key in (None, "market", "market_5d", "theme"):
+        main_key = "global_impact"
+        main_reason = "글로벌·국내 연결"
+        summary = f"{global_impact['transmission_score']}단계 연결 근거가 확인됩니다."
 
     return {
         "direction": direction,
         "confidence": confidence,
         "total_score": total_score,
         "main_reason": main_reason,
+        "main_reason_key": main_key,
+        "global_impact": global_impact,
         "summary": summary,
         "reasons": reasons,
-        "news_evidence": news_evidence[:5],
-        "beginner_comment": beginner_comment
+        "news_evidence": news_evidence[:5]
     }
 
 # ----------------------------------------------------
 # 6. 전체 통합 파이프라인
 # ----------------------------------------------------
+def _safe_future_result(future, default, label):
+    """외부 API 하나가 실패해도 전체 /api/analyze가 500으로 끝나지 않게 한다."""
+    if future is None:
+        return default
+    try:
+        return future.result()
+    except Exception as exc:
+        print(f"[OPTIONAL API] {label} failed: {repr(exc)}")
+        return default
+
+
 def run_full_pipeline(query):
     global ANALYSIS_CACHE, CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR
     clean_q = query.strip().replace(" ", "").upper()
@@ -2402,13 +2953,27 @@ def run_full_pipeline(query):
     elif clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.strip()
-        raw_price, price_str, df = fetch_overseas_candles(symbol)
+        chart_price, _, df = fetch_overseas_candles(symbol)
+        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
+        if quote_snapshot:
+            raw_price = quote_snapshot["price"]
+            price_str = f"{raw_price:,.2f} 달러"
+        else:
+            raw_price = chart_price
+            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
         market_name = "미국주식"
         is_krw = False
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()
         formal_name = symbol
-        raw_price, price_str, df = fetch_overseas_candles(symbol)
+        chart_price, _, df = fetch_overseas_candles(symbol)
+        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
+        if quote_snapshot:
+            raw_price = quote_snapshot["price"]
+            price_str = f"{raw_price:,.2f} 달러"
+        else:
+            raw_price = chart_price
+            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
         market_name = "미국주식"
         is_krw = False
 
@@ -2428,24 +2993,52 @@ def run_full_pipeline(query):
         return None
 
     with ThreadPoolExecutor(max_workers=9) as executor:
-        f_news = executor.submit(fetch_rss_news, formal_name, 5)
-        f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 4)
+        f_news = executor.submit(fetch_rss_news, formal_name, 10)
+        f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10)
+        f_api_news = executor.submit(fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro")
+        f_macro = executor.submit(fetch_fred_macro_snapshot)
         f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
         f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 5)
         f_domestic_flow = executor.submit(fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None
 
-        stock_news = f_news.result()
-        global_news = f_global_news.result()
-        consensus = f_consensus.result()
-        dart_disclosures = f_dart.result()
-        domestic_flow = f_domestic_flow.result() if f_domestic_flow else None
+        stock_news_rss = _safe_future_result(f_news, [], "stock RSS")
+        global_news_rss = _safe_future_result(f_global_news, [], "global RSS")
+        api_news = _safe_future_result(f_api_news, [], "Alpha Vantage news")
+        macro_snapshot = _safe_future_result(f_macro, {}, "FRED macro")
 
-    world_board = CACHED_WORLD_BOARD if CACHED_WORLD_BOARD else fetch_all_world_board_parallel()
-    market_calendar = CACHED_MARKET_CALENDAR if CACHED_MARKET_CALENDAR else fetch_real_market_calendar_live()
-    
+        ticker_news = _safe_future_result(
+            executor.submit(fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None,
+            [], "Alpha ticker news"
+        )
+        # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
+        stock_news = merge_news_sources(stock_news_rss, ticker_news)
+        global_news = merge_news_sources(global_news_rss, api_news)
+        consensus = _safe_future_result(f_consensus, None, "consensus")
+        dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
+        domestic_flow = _safe_future_result(f_domestic_flow, None, "domestic flow") if f_domestic_flow else None
+
+    if CACHED_WORLD_BOARD:
+        world_board = CACHED_WORLD_BOARD
+    else:
+        try:
+            world_board = fetch_all_world_board_parallel() or []
+        except Exception as exc:
+            print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
+            world_board = []
+
+    if CACHED_MARKET_CALENDAR:
+        market_calendar = CACHED_MARKET_CALENDAR
+    else:
+        try:
+            market_calendar = fetch_real_market_calendar_live() or []
+        except Exception as exc:
+            print("[MARKET CALENDAR] 조회 실패:", repr(exc))
+            market_calendar = []
+
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 
-    movement_reason = analyze_movement_reason(
+    try:
+        movement_reason = analyze_movement_reason(
         raw_price=raw_price,
         df=df,
         formal_name=formal_name,
@@ -2455,8 +3048,25 @@ def run_full_pipeline(query):
         dart_disclosures=dart_disclosures,
         market_index_name=market_index_name,
         domestic_flow=domestic_flow,
-        quant=quant
-    )
+        global_news=global_news,
+        consensus=consensus,
+        macro_snapshot=macro_snapshot,
+        market_calendar=market_calendar,
+        symbol=symbol
+        )
+    except Exception as exc:
+        print("[MOVEMENT] 분석 엔진 오류:", repr(exc))
+        movement_reason = {
+            "direction": "상승",
+            "confidence": "낮음",
+            "total_score": 0,
+            "main_reason": "-",
+            "main_reason_key": None,
+            "global_impact": {"layers": [], "total_score": 0, "transmission_score": 0, "summary": "분석 근거 부족"},
+            "summary": "일부 외부 데이터가 없어 원인을 확정하기 어렵습니다.",
+            "reasons": [],
+            "news_evidence": []
+        }
 
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
@@ -2496,12 +3106,44 @@ def run_full_pipeline(query):
         if 'BB_DN' in row and not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
 
+    # 코멘트용 현재가/등락률은 가능하면 동일한 실시간 Snapshot을 사용한다.
+    current_change_pct = None
+    current_session = None
+    current_previous_close = None
+    current_price_source = None
+    if market_name == "미국주식":
+        try:
+            if 'quote_snapshot' in locals() and quote_snapshot:
+                current_change_pct = quote_snapshot.get("change_pct")
+                current_session = quote_snapshot.get("market_state")
+                current_previous_close = quote_snapshot.get("previous_close")
+                current_price_source = quote_snapshot.get("price_source")
+        except Exception:
+            pass
+
+    # 국내/암호화폐/기존 데이터는 차트의 직전 종가를 이용해 보조적으로 계산한다.
+    if current_change_pct is None and df is not None and len(df) >= 2 and raw_price is not None:
+        try:
+            prev_for_pct = float(df["Close"].iloc[-2])
+            if prev_for_pct:
+                current_change_pct = ((float(raw_price) - prev_for_pct) / prev_for_pct) * 100.0
+                current_previous_close = prev_for_pct
+                current_price_source = "calculated"
+        except Exception:
+            pass
+
     result_data = {
         "name": formal_name,
         "formal_name": formal_name,
         "symbol": symbol,
         "market": market_name,
+        "market_index_name": market_index_name,
         "price": price_str,
+        "current_price": raw_price,
+        "current_change_pct": current_change_pct,
+        "current_previous_close": current_previous_close,
+        "current_session": current_session,
+        "current_price_source": current_price_source,
         "price_str": price_str,
         "time": now_str,
         "now_str": now_str,
@@ -2510,6 +3152,7 @@ def run_full_pipeline(query):
         "consensus": consensus,
         "stock_news": stock_news,
         "global_news": global_news,
+        "macro_snapshot": macro_snapshot,
         "world_board": world_board,
         "market_calendar": market_calendar,
         "dart_disclosures": dart_disclosures,
@@ -2734,26 +3377,31 @@ HTML_PAGE = r"""<!DOCTYPE html>
             align-items: stretch;
         }
 
-        /* 1행: 차트(좌) & 증시(우) - 높이 100% 동기화 */
+        /* 1행: 왜 움직였을까? — 코멘트 전용 */
         #rowCause { grid-column: 1; grid-row: 1; }
+
+        /* 4행: 트랙 분석 — 종목 뉴스 바로 아래 */
+        #rowTrack { grid-column: 1; grid-row: 4; }
+
+        /* 2행: 차트(좌) & 증시(우) */
         #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
         #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) - 높이 100% 1:1 대칭 */
+        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) */
         #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
         #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
 
-        /* 4행: 퀀트 분석(좌) & 캘린더(우) - 높이 100% 동기화 */
-        #rowQuant { grid-column: 1; grid-row: 4; height: 100%; }
-        #rowCalendar { grid-column: 2; grid-row: 4; height: 100%; }
+        /* 5행: 퀀트 분석(좌) & 캘린더(우) */
+        #rowQuant { grid-column: 1; grid-row: 5; height: 100%; }
+        #rowCalendar { grid-column: 2; grid-row: 5; height: 100%; }
 
         /* 좌측 832px 단독 배치 행들 */
-        #rowConsensus { grid-column: 1; grid-row: 5; }
-        #rowVote { grid-column: 1; grid-row: 6; }
-        #rowComment { grid-column: 1; grid-row: 7; }
-        #rowDart { grid-column: 1; grid-row: 8; }
-        #rowSignal { grid-column: 1; grid-row: 9; }
-        #rowTelegram { grid-column: 1; grid-row: 10; }
+        #rowConsensus { grid-column: 1; grid-row: 6; }
+        #rowVote { grid-column: 1; grid-row: 7; }
+        #rowComment { grid-column: 1; grid-row: 8; }
+        #rowDart { grid-column: 1; grid-row: 9; }
+        #rowSignal { grid-column: 1; grid-row: 10; }
+        #rowTelegram { grid-column: 1; grid-row: 11; }
 
         .card {
             background: var(--bg-card);
@@ -3202,11 +3850,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.85rem; line-height: 1.6; color: var(--text-sub); border-top: 1px solid rgba(16, 185, 129, 0.2); }
         .guide-title { font-weight: 800; color: #10b981; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; font-size: 0.92rem; }
 
-        .news-item { padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: block; }
+        .news-item { height: 60px; box-sizing: border-box; padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
         .news-item:last-child { border-bottom: none; }
-        .news-title { color: var(--text-main); font-size: 0.85rem; font-weight: 500; line-height: 1.4; }
+        .news-title { color: var(--text-main); font-size: 0.85rem; font-weight: 500; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .news-title:hover { color: #0284c7; }
-        .news-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; }
+        .news-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
         #bottom-bar {
             display: none;
@@ -3225,11 +3873,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .bottom-bar-grid-wrapper {
             width: 100%;
             max-width: 1196px;
-            display: grid;
-            grid-template-columns: 832px 348px;
-            gap: 16px;
-            margin: 0 auto;
+            display: flex;
             justify-content: center;
+            align-items: center;
+            margin: 0 auto;
+        }
+        .bottom-bar-grid-wrapper .search-container {
+            width: 100%;
+            max-width: 832px;
+            margin: 0 auto;
         }
 
         .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }
@@ -3264,8 +3916,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
             
             #rowChart { order: 1; }
-            #rowQuant { order: 2; }
-            #rowNews { order: 3; }
+            #rowNews { order: 2; }
+            #rowTrack { order: 3; }
+            #rowQuant { order: 4; }
             #rowConsensus { order: 4; }
             #rowVote { order: 5; }
             #rowComment { order: 6; }
@@ -3366,7 +4019,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         <div id="result-scroll-view">
             <div class="result-inner">
-                <div class="loading" id="loading">세계 증시, 전자공시 및 실시간 퀀트 데이터를 연산 중입니다...</div>
+                <div class="loading" id="loading">......</div>
                 <div id="result-card-wrap" style="display:none;">
                     
                     <!-- [마스터 그리드] PC: 832px + 348px 2열 / 모바일: 순차 1열 -->
@@ -3456,15 +4109,77 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         </div>
 
-                        <!-- 차트 바로 위: 독립된 개미들아! 카드 -->
+                        <!-- 1행 좌측: 왜 움직였을까? — 코멘트 전용 -->
                         <div class="card" id="rowCause" style="justify-content:flex-start;">
                             <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
-                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">개미들아! 이 종목 왜 움직였을까?</span>
+                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
                             </div>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 4행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
+                        <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
+                        <div class="card" id="rowTrack" style="justify-content:flex-start;">
+                            <div style="margin-bottom:14px;">
+                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
+                            </div>
+
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--border-line);">
+                                <div class="gauge-inner-box" style="border-color:#38bdf8;">
+                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="tEvidenceCountVal">-</span>
+                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">근거</span>
+                                </div>
+                                <div style="min-width:0;">
+                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <span style="font-size:0.78rem; color:var(--text-muted);">데이터 상태</span>
+                                        <span style="background:rgba(56,189,248,0.15); color:#38bdf8; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="tStatusBadge">-</span>
+                                    </div>
+                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="tStatusDots">실제 확인된 데이터 기준</div>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
+                                <div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재 주가</div>
+                                    <div style="font-size:1.15rem; font-weight:800; color:var(--text-title);" id="tPriceVal">-</div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">오늘 등락률</div>
+                                    <div style="font-size:1.1rem; font-weight:700; color:var(--text-title);" id="tChangeVal">-</div>
+                                </div>
+                            </div>
+
+                            <!-- 상단 그래프: 실제 종목 최근 60거래일 주가 흐름 -->
+                            <div style="margin:16px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                    <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 주가 흐름</span>
+                                    <span style="font-size:0.7rem; color:#38bdf8; font-weight:800;" id="tPriceTrendTxt">현재 -</span>
+                                </div>
+                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
+                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
+                                </div>
+                            </div>
+
+                            <!-- 하단 그래프: 실제 52주 가격 위치 -->
+                            <div style="margin:12px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);" id="tLow52w"></span>
+                                    <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
+                                    <span style="color:var(--text-muted);" id="tHigh52w"></span>
+                                </div>
+                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
+                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="tSliderFill"></div>
+                                    <div class="dot-marker-style" id="tDotMarker"></div>
+                                </div>
+                            </div>
+
+                            <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
+                                <div id="trackDetailList"></div>
+                            </div>
+                        </div>
+
+                        
+
+                        <!-- 5행 우측: 캘린더 (348px, 퀀트 분석 카드와 1:1 대칭 고정 & 페이지네이션) -->
                         <div class="card" id="rowCalendar">
                             <div>
                                 <div class="cal-top-title-area">
@@ -4341,6 +5056,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         async function doSearch(query) {
+            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
+            let materialText = '';
+
+            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
+
             const cleanQ = query.trim();
             if (!cleanQ) return;
 
@@ -4558,7 +5278,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     setTxt('rStop', q.stop_p);
                     setTxt('rGuideText', q.guide_text);
                 }
-                // 3.5 "왜 움직였을까?" 원인 분석 렌더링
+                // 3.5 "왜 움직였을까?" 코멘트 + "트랙 분석" 근거 렌더링
                 const mr = data.movement_reason;
                 const mrCard = document.getElementById('movementReasonCard');
                 if (mrCard && mr) {
@@ -4569,245 +5289,154 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
                                 : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
 
-                    const evidenceReasons = (mr.reasons || []).slice().sort((a,b) => { const a5=a.key==='market_5d'?1:0; const b5=b.key==='market_5d'?1:0; if(a5!==b5) return a5-b5; return Math.abs(Number(b.score||0))-Math.abs(Number(a.score||0)); });
+                    const evidenceReasons = (mr.reasons || []).slice().sort((a,b) => {
+                        const a5 = a.key === 'market_5d' ? 1 : 0;
+                        const b5 = b.key === 'market_5d' ? 1 : 0;
+                        if (a5 !== b5) return a5 - b5;
+                        return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
+                    });
                     const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
-                    const evidenceDirection = Number(mr.total_score || 0) < 0 ? 'negative' : 'positive';
-
-                    // 코멘트는 백엔드에서 실제 확보된 데이터만 연결해 생성한다.
-                    // 프런트에서 임의의 수치나 가짜 흐름을 만들지 않는다.
-                    const gaemiComment = String(
-                        mr.beginner_comment || mr.summary || '현재 확인된 데이터만으로는 움직임의 원인을 하나로 단정하기 어려워.'
-                    );
-
-                    const movementIconMap = {
-                        '거래대금': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19V5M4 19h16"></path><rect x="7" y="12" width="2.5" height="5"></rect><rect x="11" y="9" width="2.5" height="8"></rect><rect x="15" y="6" width="2.5" height="11"></rect></svg>',
-                        '외국인 수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="7" r="3"></circle><path d="M5 20c.8-4 2.8-6 7-6s6.2 2 7 6"></path></svg>',
-                        '기관 수급': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h16M6 20V9l6-5 6 5v11"></path><path d="M9 13h6M9 16h6"></path></svg>',
-                        '시장': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>',
-                        '업종·테마': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><circle cx="16" cy="16" r="3"></circle><path d="M10.5 10.5l3 3"></path></svg>',
-                        '기업 재료': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"></path><path d="M15 3v4h4M9 12h6M9 16h6"></path></svg>',
-                        '거래량': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
-                        '시장 5일 흐름': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18l5-6 4 3 7-8"></path><path d="M4 20h16"></path></svg>'
-                    };
-
-                    const movementChartStyles = {
-                        '시장': { unit: '%', base: 0 },
-                        '업종·테마': { unit: '%', base: 0 },
-                        '기업 재료': { unit: '건', base: 0 },
-                        '거래량': { unit: '%', base: 0 },
-                        '거래대금': { unit: '원', base: 0 }, '외국인 수급': { unit: '주', base: 0 }, '기관 수급': { unit: '주', base: 0 }
-                    };
-
-                    const movementReasonCards = evidenceReasons.map(r => {
-                        const score = Number(r.score || 0);
-                        const status = score > 0 ? '우호적' : (score < 0 ? '부정적' : '중립');
-                        const statusStyle = score > 0
-                            ? 'background:rgba(16,185,129,0.12);color:#10b981;'
-                            : score < 0
-                                ? 'background:rgba(239,68,68,0.12);color:#ef4444;'
-                                : 'background:rgba(148,163,184,0.10);color:var(--text-muted);';
-
-                        // Convert the existing detail string into a primary metric only when
-                        // the value is explicitly present. Otherwise preserve the text as-is.
-                        const detailText = String(r.detail || '').trim();
-                        const pctMatch = detailText.match(/([+-]?[0-9]+(?:\.[0-9]+)?)%/);
-                        const countMatch = detailText.match(/([0-9]+)\s*건/);
-                        const explicitValue = pctMatch ? Number(pctMatch[1]) : (countMatch ? Number(countMatch[1]) : null);
-
-                        let displayValue = detailText;
-                        let displayUnit = '';
-                        if (explicitValue !== null) {
-                            displayValue = pctMatch ? `${explicitValue >= 0 ? '+' : ''}${explicitValue.toFixed(2)}` : `${explicitValue}`;
-                            displayUnit = pctMatch ? '%' : '건';
-                        }
-
-                        // Chart is intentionally based on the real detail value when available.
-                        // When a value is not present in detail, show a neutral "signal strength"
-                        // bar derived from the existing score, without inventing a new market datum.
-                        const chartMagnitude = explicitValue !== null
-                            ? Math.min(100, Math.max(8, Math.abs(explicitValue) * 10))
-                            : (score === 0 ? 12 : Math.min(100, 28 + Math.abs(score) * 24));
-                        const chartColor = score > 0 ? '#10b981' : (score < 0 ? '#ef4444' : '#64748b');
-
-                        // Build a small 5-point history from the current signal without fabricating
-                        // a numeric time series: stable short bars visualise relative signal strength.
-                        const levels = score > 0
-                            ? [34, 52, 46, 70, 62]
-                            : score < 0
-                                ? [62, 48, 54, 38, 30]
-                                : [42, 46, 40, 48, 44];
-
-                        const iconMap = {
-                            '시장': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>',
-                            '업종·테마': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><circle cx="16" cy="16" r="3"></circle><path d="M10.5 10.5l3 3"></path></svg>',
-                            '기업 재료': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h9l3 3v15H6z"></path><path d="M15 3v4h4M9 12h6M9 16h6"></path></svg>',
-                            '거래량': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"></circle><path d="M3 19c.6-2.5 2.3-4 5-4s4.4 1.5 5 4"></path><path d="M15 8h6M18 5v6"></path></svg>',
-                            '기술': '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 18l5-5 4 3 7-8"></path><path d="M4 4v16h16"></path></svg>'
-                        };
-                        const icon = iconMap[r.label] || '<svg class="movement-reason-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><path d="M12 8v8M8 12h8"></path></svg>';
-
-                        const bars = levels.map((h, idx) =>
-                            `<span class="movement-mini-bar" style="height:${h}%;background:${chartColor};opacity:${0.38 + idx * 0.12};"></span>`
-                        ).join('');
-
-                        if (r.key === 'market_5d') {
-                            const pts = Array.isArray(r.chart_points) ? r.chart_points.slice(-5) : [];
-                            const daily = pts.map(p => Number(p.daily_return)).filter(Number.isFinite);
-                            const cumulative = pts.map(p => Number(p.cumulative_return)).filter(Number.isFinite);
-                            const total5 = Number(r.total_return);
-                            const maxAbs = Math.max(0.5, ...daily.map(v => Math.abs(v)));
-                            const barHtml = pts.map((p, idx) => {
-                                const v = Number(p.daily_return);
-                                const h = Math.max(12, Math.min(100, (Math.abs(v) / maxAbs) * 100));
-                                const color = v >= 0 ? '#10b981' : '#ef4444';
-                                const dateLabel = String(p.date || '').slice(5).replace('-', '.');
-                                return `<div class="market5-bar-wrap"><span class="market5-bar" style="height:${h}%;background:${color};"></span><span class="market5-bar-label">${dateLabel}</span></div>`;
-                            }).join('');
-
-                            let lineHtml = '';
-                            if (cumulative.length >= 2) {
-                                const W = 280, H = 58, PX = 4, PY = 6;
-                                const minV = Math.min(...cumulative, 0);
-                                const maxV = Math.max(...cumulative, 0);
-                                const spanV = Math.max(0.3, maxV - minV);
-                                const xx = i => PX + i * ((W - PX * 2) / Math.max(1, cumulative.length - 1));
-                                const yy = v => PY + ((maxV - v) / spanV) * (H - PY * 2);
-                                const path = cumulative.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xx(i).toFixed(1)} ${yy(v).toFixed(1)}`).join(' ');
-                                const zeroY = yy(0);
-                                lineHtml = `
-                                    <div class="market5-line-chart">
-                                        <div class="market5-zero" style="top:${zeroY}px;"></div>
-                                        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="최근 5거래일 시장 누적 수익률">
-                                            <path d="${path}" fill="none" stroke="${total5 >= 0 ? '#10b981' : '#ef4444'}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"></path>
-                                        </svg>
-                                    </div>`;
-                            }
-
-                            return `
-                                <div class="movement-mini-card movement-market5-card">
-                                    <div class="movement-mini-head">
-                                        <div class="movement-reason-title">
-                                            ${icon}
-                                            <span class="movement-reason-name">시장 5일 흐름</span>
-                                        </div>
-                                        <span class="movement-reason-status" style="${statusStyle}">${status}</span>
-                                    </div>
-                                    ${lineHtml}
-                                    <div class="market5-bars">${barHtml || '<span style="color:var(--text-muted);font-size:0.68rem;">데이터 확인 필요</span>'}</div>
-                                    <div class="movement-mini-value">
-                                        <span>${Number.isFinite(total5) ? `${total5 >= 0 ? '+' : ''}${total5.toFixed(2)}` : '-'}</span>
-                                        <span class="movement-mini-unit">%</span>
-                                    </div>
-                                    <div class="movement-mini-detail">${r.index_name || 'KOSPI'} 최근 5거래일 누적 수익률</div>
-                                </div>
-                            `;
-                        }
-
-                        return `
-                            <div class="movement-mini-card">
-                                <div class="movement-mini-head">
-                                    <div class="movement-reason-title">
-                                        ${icon}
-                                        <span class="movement-reason-name">${r.label}</span>
-                                    </div>
-                                    <span class="movement-reason-status" style="${statusStyle}">${status}</span>
-                                </div>
-                                <div class="movement-mini-chart">
-                                    <div class="movement-mini-bars">${bars}</div>
-                                </div>
-                                <div class="movement-mini-value">
-                                    <span>${displayValue}</span><span class="movement-mini-unit">${displayUnit}</span>
-                                </div>
-                                <div class="movement-mini-detail">${detailText}</div>
-                            </div>
-                        `;
-                    }).join('');
-
-                    const evidenceSegments = Array.from({ length: 8 }, (_, i) => {
-                        const active = i < evidenceCount ? ' active' + (evidenceDirection === 'negative' ? ' negative' : '') : '';
-                        return `<span class="movement-evidence-seg${active}"></span>`;
-                    }).join('');
 
                     mrCard.innerHTML = `
-<div style="font-size:0.72rem;font-weight:800;color:var(--text-title);margin-bottom:6px;">개미 코멘트</div>
-<div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;margin-bottom:12px;">
-                            ${gaemiComment}
-                        </div>
-
-                        <div class="movement-evidence-summary">
-                            <div class="movement-evidence-head">
-                                <span class="movement-evidence-label">확인된 근거</span>
-                                <span class="movement-evidence-count">${evidenceCount} / 8</span>
-                            </div>
-                            <div class="movement-evidence-track">${evidenceSegments}</div>
-                        </div>
-
-                        ${(() => {
-                            // Primary graph: asset vs benchmark over the latest five sessions.
-                            // The backend can supply rs_chart_points and benchmark_name later.
-                            // Until then, do not fabricate a second time series: hide the graph
-                            // instead of showing invented values.
-                            const rs = data.relative_strength || null;
-                            if (!rs || !Array.isArray(rs.points) || rs.points.length < 2) return '';
-
-                            const pts = rs.points.slice(-5);
-                            const valuesA = pts.map(p => Number(p.asset));
-                            const valuesB = pts.map(p => Number(p.benchmark));
-                            if (valuesA.some(v => !Number.isFinite(v)) || valuesB.some(v => !Number.isFinite(v))) return '';
-
-                            const all = valuesA.concat(valuesB);
-                            const minV = Math.min(...all);
-                            const maxV = Math.max(...all);
-                            const span = Math.max(0.01, maxV - minV);
-                            const W = 520, H = 92, PX = 8, PY = 8;
-                            const x = i => PX + (i * (W - PX * 2) / Math.max(1, pts.length - 1));
-                            const y = v => PY + ((maxV - v) / span) * (H - PY * 2);
-                            const path = arr => arr.map((v,i) => `${i === 0 ? 'M' : 'L'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
-                            const diff = Number(rs.relative_return);
-                            const diffText = Number.isFinite(diff) ? `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%p` : '';
-                            const assetName = rs.asset_name || '종목';
-                            const benchmarkName = rs.benchmark_name || '시장';
-                            const latestAsset = valuesA[valuesA.length - 1];
-                            const latestBenchmark = valuesB[valuesB.length - 1];
-
-                            return `
-                                <div class="movement-relative-chart">
-                                    <div class="movement-relative-head">
-                                        <span class="movement-relative-title">시장 대비 상대강도</span>
-                                        <span class="movement-relative-diff">${diffText}</span>
-                                    </div>
-                                    <div class="movement-relative-chartbox">
-                                        <div class="movement-relative-gridline" style="top:25%;"></div>
-                                        <div class="movement-relative-gridline" style="top:50%;"></div>
-                                        <div class="movement-relative-gridline" style="top:75%;"></div>
-                                        <svg class="movement-relative-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="최근 5거래일 상대강도 비교">
-                                            <path d="${path(valuesB)}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.42"></path>
-                                            <path d="${path(valuesA)}" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"></path>
-                                        </svg>
-                                    </div>
-                                    <div class="movement-relative-legend">
-                                        <span><span class="movement-relative-dot" style="background:var(--text-title);"></span>${assetName} ${latestAsset >= 0 ? '+' : ''}${latestAsset.toFixed(2)}%</span>
-                                        <span><span class="movement-relative-dot" style="background:var(--text-muted);"></span>${benchmarkName} ${latestBenchmark >= 0 ? '+' : ''}${latestBenchmark.toFixed(2)}%</span>
-                                    </div>
-                                    <div class="movement-relative-note">최근 5거래일 동안 종목과 기준시장의 상대적인 움직임을 비교합니다.</div>
-                                </div>
-                            `;
-                        })()}
-
-                        <div class="movement-mini-grid">${movementReasonCards}</div>
-
-                        <div style="margin-top:9px;font-size:0.66rem;color:var(--text-muted);line-height:1.4;">
-                            ※ 현재 확보된 시장·뉴스·공시·거래량·거래대금·외국인·기관 데이터를 바탕으로 한 근거 분석입니다. 실제 인과관계를 100% 의미하지 않습니다.
+                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;">
+                            ${(mr.summary || mr.main_reason || '확인된 데이터가 없습니다.')}
                         </div>
                     `;
+
+                    // 트랙 분석: 퀀트 분석과 동일한 카드형 레이아웃을 사용한다.
+                    const trackPriceVal = document.getElementById('tPriceVal');
+                    const trackChangeVal = document.getElementById('tChangeVal');
+                    const trackEvidenceVal = document.getElementById('tEvidenceCountVal');
+                    const trackStatusBadge = document.getElementById('tStatusBadge');
+                    const trackStatusDots = document.getElementById('tStatusDots');
+                    const trackPriceTrendTxt = document.getElementById('tPriceTrendTxt');
+
+                    if (trackPriceVal) trackPriceVal.innerText = data.price_str || '-';
+
+                    const cp = Number(data.current_change_pct);
+                    if (trackChangeVal) {
+                        trackChangeVal.innerText = Number.isFinite(cp) ? `${cp >= 0 ? '+' : ''}${cp.toFixed(2)}%` : '-';
+                        trackChangeVal.style.color =
+                            Number.isFinite(cp) && cp > 0 ? '#10b981' :
+                            (Number.isFinite(cp) && cp < 0 ? '#ef4444' : 'var(--text-title)');
+                    }
+
+                    if (trackEvidenceVal) {
+                        trackEvidenceVal.innerText = `${evidenceCount}/8`;
+                    }
+                    if (trackStatusBadge) {
+                        trackStatusBadge.innerText = mr.confidence || '-';
+                        trackStatusBadge.style.cssText = confidenceStyle;
+                    }
+                    if (trackStatusDots) {
+                        trackStatusDots.innerText =
+                            evidenceCount > 0
+                                ? `확인된 근거 ${evidenceCount}개 · 실제 데이터 기준`
+                                : '확인된 근거 부족 · 추가 확인 필요';
+                    }
+
+                    // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
+                    const tPriceChart = document.getElementById('tPriceChart');
+                    const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
+                    const trackVals = candleRows
+                        .map(x => Number(x && x.c))
+                        .filter(Number.isFinite);
+
+                    if (tPriceChart && trackVals.length > 1) {
+                        const first = trackVals[0];
+                        const normalized = first !== 0 ? trackVals.map(v => ((v / first) - 1) * 100) : [];
+                        if (normalized.length > 1 && normalized.every(Number.isFinite)) {
+                            const W = 600, H = 120, pad = 8;
+                            const minV = Math.min(...normalized), maxV = Math.max(...normalized);
+                            const span = Math.max(0.01, maxV - minV);
+                            const x = i => pad + i * ((W - pad * 2) / Math.max(1, normalized.length - 1));
+                            const y = v => pad + ((maxV - v) / span) * (H - pad * 2);
+                            const coords = normalized.map((v,i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+                            const linePath = 'M ' + coords.join(' L ');
+                            const baseY = y(0);
+                            const areaPath = `M ${coords[0].split(',')[0]},${baseY.toFixed(1)} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${baseY.toFixed(1)} Z`;
+                            const last = normalized[normalized.length - 1];
+                            const stroke = last >= 0 ? '#10b981' : '#ef4444';
+
+                            tPriceChart.innerHTML = `
+                                <defs>
+                                    <linearGradient id="tPriceFill" x1="0" x2="0" y1="0" y2="1">
+                                        <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"/>
+                                        <stop offset="100%" stop-color="${stroke}" stop-opacity="0.02"/>
+                                    </linearGradient>
+                                </defs>
+                                <line x1="0" y1="${baseY.toFixed(1)}" x2="600" y2="${baseY.toFixed(1)}"
+                                      stroke="rgba(148,163,184,0.20)" stroke-width="1" stroke-dasharray="4 4"/>
+                                <path d="${areaPath}" fill="url(#tPriceFill)"/>
+                                <path d="${linePath}" fill="none" stroke="${stroke}" stroke-width="3"
+                                      vector-effect="non-scaling-stroke"/>
+                                <circle cx="${coords[coords.length-1].split(',')[0]}"
+                                        cy="${coords[coords.length-1].split(',')[1]}"
+                                        r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2"
+                                        vector-effect="non-scaling-stroke"/>
+                            `;
+
+                            if (trackPriceTrendTxt) {
+                                const p = normalized[normalized.length - 1];
+                                trackPriceTrendTxt.innerText =
+                                    `최근 60D ${p >= 0 ? '+' : ''}${p.toFixed(2)}%`;
+                            }
+                        }
+                    } else if (trackPriceTrendTxt) {
+                        trackPriceTrendTxt.innerText = '데이터 부족';
+                    }
+
+                    // 52주 가격 위치: 현재 퀀트 데이터와 동일한 실제 값 사용.
+                    const tq = data.quant || {};
+                    setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
+                    setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
+                    setTxt('tPos52wLabel', tq.pos_52w ? `52주 가격 위치 ${tq.pos_52w}` : '52주 가격 위치');
+
+                    const sliderPct = Number(tq.slider_fill_pct);
+                    const tFill = document.getElementById('tSliderFill');
+                    if (tFill && Number.isFinite(sliderPct)) tFill.style.width = `${sliderPct}%`;
+
+                    const tDot = document.getElementById('tDotMarker');
+                    if (tDot && Number.isFinite(sliderPct)) {
+                        tDot.style.left = `${Math.min(99, Math.max(1, sliderPct))}%`;
+                    }
+
+                    // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
+                    const trackDetailList = document.getElementById('trackDetailList');
+                    if (trackDetailList) {
+                        const iconForTrack = {
+                            '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂',
+                            '시장':'⌁','업종·테마':'◇','기업 재료':'▤',
+                            '거래량':'♧','시장 5일 흐름':'⌁'
+                        };
+
+                        trackDetailList.innerHTML = evidenceReasons.map(r => {
+                            const score = Number(r.score || 0);
+                            const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
+                            const statusClass =
+                                score > 0 ? 'status-pill-positive' :
+                                score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
+
+                            return `<div class="quant-row-item">
+                                <div class="quant-row-left">
+                                    <span class="quant-row-name">${iconForTrack[r.label] || '•'} ${r.label || '-'}</span>
+                                    <span class="quant-row-status ${statusClass}">${status}</span>
+                                </div>
+                                <div class="quant-row-right">
+                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
+                                    <div class="quant-row-subval">실제 확인 데이터</div>
+                                </div>
+                            </div>`;
+                        }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
+                    }
                 }
 
-                // 4. 종목 뉴스 & 해외 뉴스 렌더링
+                // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {
                     sNews.innerHTML = '';
                     if (data.stock_news && data.stock_news.length > 0) {
-                        data.stock_news.forEach(n => {
+                        data.stock_news.slice(0, 6).forEach(n => {
                             sNews.innerHTML += `
                                 <a href="${n.link}" target="_blank" class="news-item">
                                     <div class="news-title">${n.title}</div>
@@ -4824,7 +5453,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 if (gNews) {
                     gNews.innerHTML = '';
                     if (data.global_news && data.global_news.length > 0) {
-                        data.global_news.forEach(n => {
+                        data.global_news.slice(0, 6).forEach(n => {
                             gNews.innerHTML += `
                                 <a href="${n.link}" target="_blank" class="news-item">
                                     <div class="news-title">${n.title}</div>
@@ -4922,7 +5551,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             } catch (err) {
                 console.error("Analysis Error:", err);
-                alert('데이터를 처리하는 중 오류가 발생했습니다: ' + err.message);
+                const msg = err && err.message ? err.message : '알 수 없는 오류';
+                alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
                 document.getElementById('loading').style.display = 'none';
             }
         }
@@ -5033,8 +5663,11 @@ class WebHandler(BaseHTTPRequestHandler):
                     return
                 self._json(200, data)
             except Exception as exc:
-                print("API ERROR:", repr(exc))
-                self._json(500, {"error": "서버 처리 중 오류가 발생했습니다.", "detail": str(exc)[:500]})
+                print(f"API ERROR /api/analyze?q={q!r}: {type(exc).__name__}: {exc}")
+                self._json(500, {
+                    "error": "서버 처리 중 오류가 발생했습니다.",
+                    "detail": f"{type(exc).__name__}: {str(exc)[:400]}"
+                })
             return
 
         html_bytes = HTML_PAGE.encode("utf-8")
@@ -5053,3 +5686,228 @@ def run_web_server():
 
 if __name__ == "__main__":
     run_web_server()
+
+
+# ============================================================
+# 개미GTP 고정 코멘트 로직 - 재료 변수형 테스트
+# 경제 이벤트 문장은 추후 별도 규칙 확정 후 추가
+# ============================================================
+
+def gaemi_fixed_comment(market, industry, stock, flow, material=""):
+    """시장 → 업종 → 종목 → 수급 → 종목 재료"""
+    lines = [
+        f"🐜 개미들아! 오늘 시장 {market['name']}는 {market['change']}% "
+        f"{market['direction']} 중이고, {industry['name']} 업종 {industry['symbol']}는 "
+        f"{industry['change']}% {industry['direction']}!",
+        f"{stock['name']}는 현재 {stock['price']}, {stock['change']}% "
+        f"{stock['direction']} 중이야.",
+    ]
+
+    if flow and flow.get("actor") and flow.get("shares") is not None:
+        side = "순매수" if float(flow["shares"]) >= 0 else "순매도"
+        lines.append(
+            f"최근 5거래일 동안 {flow['actor']}이 "
+            f"{abs(int(float(flow['shares']))):,}주 {side}를 기록했어."
+        )
+
+    if material:
+        lines.append(f"{stock['name']}는 {material} 소식이 있어!")
+
+    return "\n\n".join(lines)
+
+_test = gaemi_fixed_comment(
+    market={"name": "KOSPI", "change": "-1.79", "direction": "하락"},
+    industry={"name": "반도체", "symbol": "SOXX", "change": "-0.40", "direction": "하락"},
+    stock={"name": "SK하이닉스", "price": "1,653,000원", "change": "-4.45", "direction": "하락"},
+    flow={"actor": "외국인", "shares": "-2724956"},
+    material="HBM4 공급 확대",
+)
+
+
+
+# ===== FINAL TOPIC ENGINE V8 =====
+# 확정 구조:
+# 1) 여러 출처 수집
+# 2) 비슷한 뉴스 그룹화
+# 3) 공통 주제 후보 생성
+# 4) 의미가 같은 표현을 하나의 개념으로 통합
+# 5) 대표 뉴스 선택
+# 6) 출처 반복성으로 교차확인
+# 7) 핵심 재료 1개(필요시 2개)만 확정
+# 8) 확정된 고정 문장에 삽입
+#
+# 중요: 고정 문장 영역은 AI가 다시 작성하지 않는다.
+
+TOPIC_STOPWORDS = {
+    "관련","소식","전망","기대","주목","시장","주가","종목","오늘","현재",
+    "최근","증시","기업","업계","분석","가능성","예상","계획","발표",
+    "강세","약세","상승","하락","수혜","영향","확대","증가","감소"
+}
+
+SEMANTIC_GROUPS = {
+    "공급확대": {"공급","공급망","생산","생산능력","생산량","양산","확대","늘려","늘린다"},
+    "수요증가": {"수요","증가","견조","확대","늘어","늘어난다"},
+    "금리인하기대": {"금리인하","인하","완화"},
+    "기대약화": {"약화","후퇴","낮아져","낮아졌다","둔화","축소"},
+    "물가": {"물가","cpi","소비자물가","인플레이션"},
+    "예상상회": {"상회","웃돌아","높아","높게"},
+    "고용": {"고용","일자리","고용시장"},
+    "관세정책": {"관세","관세율","관세정책","무역"},
+    "정책변화": {"변화","조정","변경","개편","검토"},
+}
+
+def _topic_tokens(text):
+    text = re.sub(r"https?://\S+", " ", str(text or ""))
+    text = re.sub(r"[^\w가-힣$%.\- ]+", " ", text.lower())
+    return [x for x in text.split() if len(x) >= 2 and x not in TOPIC_STOPWORDS]
+
+def _semantic_signature(tokens):
+    sig = set()
+    for group, words in SEMANTIC_GROUPS.items():
+        if any(t in words for t in tokens):
+            sig.add(group)
+    if "hbm4" in tokens:
+        sig.add("HBM4")
+    if "fomc" in tokens:
+        sig.add("FOMC")
+    if "연준" in tokens:
+        sig.add("연준")
+    return sig
+
+def extract_final_topic(news_items, max_topics=1):
+    """
+    사용자 방식(B)을 중심으로 의미 통합/출처 교차확인을 추가한 최종 방식.
+    반환: {'topic': str, 'representative_title': str, 'source_count': int}
+    """
+    docs = []
+    seen_titles = set()
+    for item in news_items or []:
+        if isinstance(item, dict):
+            title = str(item.get("title", "")).strip()
+            source = str(item.get("source", "")).strip() or "unknown"
+        else:
+            title, source = str(item), "unknown"
+        if title and title not in seen_titles:
+            docs.append({"title": title, "source": source, "tokens": _topic_tokens(title)})
+            seen_titles.add(title)
+
+    if not docs:
+        return {"topic": "", "representative_title": "", "source_count": 0}
+
+    # 1) 의미 시그니처별 그룹화
+    groups = {}
+    for d in docs:
+        sig = tuple(sorted(_semantic_signature(d["tokens"])))
+        if sig:
+            groups.setdefault(sig, []).append(d)
+
+    # 2) 가장 많은 독립 출처가 공유하는 그룹 선택
+    group_rank = []
+    for sig, ds in groups.items():
+        sources = len(set(d["source"] for d in ds))
+        group_rank.append((sources, len(ds), len(sig), sig, ds))
+    group_rank.sort(reverse=True)
+
+    best = group_rank[0] if group_rank else (1, len(docs), 0, (), docs)
+    _, _, _, signature, group_docs = best
+
+    # 3) 대표 뉴스: 핵심 시그니처를 가장 많이 포함하고 구체적인 제목 우선
+    representative = max(
+        group_docs,
+        key=lambda d: (len(_semantic_signature(d["tokens"])), len(d["tokens"]))
+    )
+
+    # 4) 대표 제목에서 의미 있는 '짧은 구'를 만든다.
+    # HBM4 + 공급확대처럼 의미가 결합된 경우 하나의 재료로 유지.
+    t = representative["tokens"]
+    phrases = []
+    if "HBM4" in signature and "공급확대" in signature:
+        phrases.append("HBM4 공급 확대")
+    elif "FOMC" in signature and "금리인하기대" in signature and "기대약화" in signature:
+        phrases.append("FOMC 금리인하 기대 약화")
+    elif "물가" in signature and "예상상회" in signature:
+        phrases.append("미국 물가 예상 상회")
+    elif "고용" in signature and "기대약화" in signature:
+        phrases.append("미국 고용 둔화")
+    elif "관세정책" in signature and "정책변화" in signature:
+        phrases.append("미국 관세 정책 변화")
+
+    if not phrases:
+        # 일반적인 경우 대표 제목에서 2~4개 핵심 토큰을 유지하되,
+        # 의미군이 있으면 그 군을 우선 결합.
+        if "공급확대" in signature:
+            phrases.append("공급 확대")
+        elif "수요증가" in signature:
+            phrases.append("수요 증가")
+        elif "금리인하기대" in signature and "기대약화" in signature:
+            phrases.append("금리인하 기대 약화")
+        elif "관세정책" in signature:
+            phrases.append("관세 정책")
+        else:
+            candidates = [x for x in t if x not in TOPIC_STOPWORDS]
+            phrases.append(" ".join(candidates[:3]))
+
+    source_count = len(set(d["source"] for d in group_docs))
+    return {
+        "topic": phrases[0] if phrases else "",
+        "representative_title": representative["title"],
+        "source_count": source_count,
+    }
+
+def build_stock_material_fixed(stock_name, topic):
+    if not topic:
+        return ""
+    return f"{stock_name}는 {topic} 소식이 있어!"
+
+def build_market_event_fixed(topic):
+    if not topic:
+        return ""
+    return f"{topic} 소식이 있으니 관련 자료 뉴스를 확인해봐."
+
+
+# ===== V8 테스트 =====
+_stock_news = [
+    {"source":"Reuters","title":"SK하이닉스 HBM4 공급 확대 기대"},
+    {"source":"Bloomberg","title":"SK하이닉스 HBM4 공급망 확대"},
+    {"source":"연합뉴스","title":"HBM4 수요 증가에 SK하이닉스 공급 확대"},
+    {"source":"한국경제","title":"SK하이닉스 HBM4 생산능력 확대"},
+    {"source":"서울경제","title":"HBM4 관련 SK하이닉스 공급 확대"},
+]
+_econ_news = [
+    {"source":"Reuters","title":"FOMC 이후 금리인하 기대 약화"},
+    {"source":"Bloomberg","title":"연준 발언에 금리인하 기대 후퇴"},
+    {"source":"CNBC","title":"FOMC 금리인하 전망 약화"},
+    {"source":"WSJ","title":"연준 발언으로 금리인하 기대 낮아져"},
+]
+
+_s = extract_final_topic(_stock_news)
+_e = extract_final_topic(_econ_news)
+
+print("V8 문법 검사: PASS")
+print("[종목 재료]", _s)
+print("[경제 재료]", _e)
+print("[종목 고정 문장]", build_stock_material_fixed("SK하이닉스", _s["topic"]))
+print("[경제 고정 문장]", build_market_event_fixed(_e["topic"]))
+
+
+
+# ===== FINAL LOCK: MATERIAL + MACRO DEDUPLICATION =====
+# [완전 고정 규칙]
+# 1. 종목 뉴스와 경제/시장 이벤트 뉴스는 각각 여러 출처에서 수집한다.
+# 2. 각 영역에서 반복되는 핵심 주제/의미를 먼저 추출한다.
+# 3. 종목 재료와 경제 이벤트를 하나의 최종 정보 영역으로 묶는다.
+# 4. 두 영역에 같은 핵심 단어가 있으면 중복 제거한다.
+# 5. 같은 단어가 아니어도 같은 의미로 판단되는 재료는 중복 제거 대상이다.
+# 6. 동일 재료가 겹칠 경우 경제/시장 이벤트 쪽 표현을 우선 보존한다.
+# 7. 종목명은 재료 문장에서 반복하지 않는다.
+# 8. 재료 문장의 '소식이 있어!'를 사용하지 않는다.
+# 9. 최종 문장 고정:
+#    - 재료 + 경제 이벤트:
+#      "[종목 재료] [경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐."
+#    - 재료만:
+#      "[종목 재료] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐."
+#    - 경제 이벤트만:
+#      "[경제 이벤트] 관련 소식이 있으니 관련 자료 뉴스를 확인해봐."
+# 10. 중복 제거 후 내용이 완전히 겹치면 경제 이벤트만 출력한다.
+# 11. 시장/업종/종목/수급/마무리 고정 문장은 이 규칙의 영향을 받지 않는다.
+# 12. 이 영역에서는 AI가 임의로 설명을 덧붙이지 않는다.

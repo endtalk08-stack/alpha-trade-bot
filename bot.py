@@ -4501,10 +4501,21 @@ def run_full_pipeline(query):
     df = df[~df.index.duplicated(keep='last')]
 
     candles = []
+    price_history_60d = []
     ma20_line = []
     ma60_line = []
     bb_up_line = []
     bb_dn_line = []
+
+    # 트랙 분석용 60거래일 종가를 OHLC 유효성 검사와 분리해 항상 전달한다.
+    try:
+        for date_idx, close_value in df["Close"].dropna().tail(60).items():
+            close_num = float(close_value)
+            if np.isfinite(close_num):
+                t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d") if hasattr(date_idx, 'strftime') else str(date_idx)[:10]
+                price_history_60d.append({"time": t_str, "close": close_num})
+    except Exception as exc:
+        print(f"[TRACK 60D] price history build failed: {type(exc).__name__}: {exc}")
 
     for date_idx, row in df.tail(65).iterrows():
         t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d") if hasattr(date_idx, 'strftime') else str(date_idx)[:10]
@@ -4578,6 +4589,7 @@ def run_full_pipeline(query):
         "market_calendar": market_calendar,
         "dart_disclosures": dart_disclosures,
         "candles": candles,
+        "price_history_60d": price_history_60d,
         "ma20_line": ma20_line,
         "ma60_line": ma60_line,
         "bb_up_line": bb_up_line,
@@ -5347,8 +5359,53 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .quant-row-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
         .quant-row-name { font-weight: 700; color: var(--text-title); }
         .quant-row-status { font-size: 0.7rem; font-weight: 700; }
-        .quant-row-right { text-align: right; flex-shrink: 0; }
-        .quant-row-val { font-weight: 800; color: var(--text-title); }
+        .quant-row-right {
+            text-align: right;
+            flex: 1 1 auto;
+            min-width: 0;
+            max-width: 72%;
+        }
+        .quant-row-val {
+            font-weight: 750;
+            color: var(--text-title);
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+            word-break: keep-all;
+        }
+        .quant-row-subval {
+            margin-top: 3px;
+            font-size: 0.64rem;
+            color: var(--text-muted);
+            line-height: 1.25;
+        }
+
+        #rowTrack .track-price-chart-wrap {
+            width: 100%;
+            height: 64px;
+            background: var(--bg-subcard);
+            border-radius: 8px;
+            position: relative;
+            border: 1px solid var(--border-line);
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+        #rowTrack #tPriceChart {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        #rowTrack .track-52w-head {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+            gap: 8px;
+            align-items: center;
+            font-size: 0.7rem;
+            line-height: 1.25;
+        }
+        #rowTrack .track-52w-head span:first-child { text-align: left; }
+        #rowTrack .track-52w-head span:nth-child(2) { text-align: center; }
+        #rowTrack .track-52w-head span:last-child { text-align: right; }
+        #rowTrack .track-detail-list { width: 100%; min-width: 0; }
         .movement-evidence-summary { margin: 2px 0 14px; }
         .movement-evidence-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
         .movement-evidence-label { font-size:0.72rem; font-weight:700; color:var(--text-main); }
@@ -5767,6 +5824,59 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 min-height: 560px;
             }
         }
+        /* 트랙 분석 모바일 최종 보정 */
+        @media (max-width: 1200px) {
+            #rowTrack {
+                width: 100%;
+                max-width: 832px;
+                box-sizing: border-box;
+                overflow: hidden;
+            }
+            #rowTrack .quant-row-item {
+                align-items: flex-start;
+                gap: 10px;
+            }
+            #rowTrack .quant-row-left {
+                flex: 0 0 31%;
+                width: 31%;
+                min-width: 0;
+            }
+            #rowTrack .quant-row-right {
+                flex: 1 1 69%;
+                width: 69%;
+                max-width: none;
+                min-width: 0;
+            }
+            #rowTrack .quant-row-val { font-size: 0.78rem; }
+        }
+
+        @media (max-width: 520px) {
+            #rowTrack {
+                padding: 16px 14px !important;
+                border-radius: 14px !important;
+            }
+            #rowTrack .track-price-chart-wrap { height: 58px; border-radius: 7px; }
+            #rowTrack .track-52w-head {
+                grid-template-columns: minmax(0, 1fr) minmax(92px, auto) minmax(0, 1fr);
+                gap: 5px;
+                font-size: 0.61rem;
+            }
+            #rowTrack .quant-row-item { padding: 10px 0; gap: 8px; }
+            #rowTrack .quant-row-left { flex-basis: 34%; width: 34%; }
+            #rowTrack .quant-row-right { flex-basis: 66%; width: 66%; }
+            #rowTrack .quant-row-name { font-size: 0.74rem; line-height: 1.25; overflow-wrap: anywhere; }
+            #rowTrack .quant-row-status { font-size: 0.62rem; }
+            #rowTrack .quant-row-val {
+                font-size: 0.72rem;
+                line-height: 1.32;
+                overflow-wrap: anywhere;
+                word-break: keep-all;
+            }
+            #rowTrack .quant-row-subval { font-size: 0.59rem; line-height: 1.2; }
+            #rowTrack #tPriceVal { font-size: 1.08rem !important; }
+            #rowTrack #tChangeVal { font-size: 1rem !important; }
+        }
+
         @media (max-width: 1200px) {
             .calendar-widget {
                 padding: 18px 16px 14px !important;
@@ -6342,14 +6452,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 주가 흐름</span>
                                     <span style="font-size:0.7rem; color:#38bdf8; font-weight:800;" id="tPriceTrendTxt">현재 -</span>
                                 </div>
-                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
-                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
+                                <div class="track-price-chart-wrap">
+                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
                                 </div>
                             </div>
 
                             <!-- 하단 그래프: 실제 52주 가격 위치 -->
                             <div style="margin:12px 0 12px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                <div class="track-52w-head" style="margin-bottom:6px;">
                                     <span style="color:var(--text-muted);" id="tLow52w"></span>
                                     <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
                                     <span style="color:var(--text-muted);" id="tHigh52w"></span>
@@ -6361,7 +6471,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
 
                             <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
-                                <div id="trackDetailList"></div>
+                                <div id="trackDetailList" class="track-detail-list"></div>
                             </div>
                         </div>
 
@@ -7918,14 +8028,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 : '확인된 근거 부족 · 추가 확인 필요';
                     }
 
-                    // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
+                    // 최근 60거래일: 별도 종가 흐름을 우선 사용하고 candles를 보조로 사용한다.
                     const tPriceChart = document.getElementById('tPriceChart');
+                    const historyRows = Array.isArray(data.price_history_60d) ? data.price_history_60d.slice(-60) : [];
                     const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
+                    const sourceRows = historyRows.length > 1 ? historyRows : candleRows;
 
-                    // 서버가 보내는 candles 필드는 open/high/low/close 형식이다.
-                    // 기존 코드가 x.c를 읽고 있어 차트 값이 전부 비어 있던 문제를 수정한다.
-                    // close를 우선 사용하고, 혹시 다른 응답 형식이 들어와도 c를 보조로 사용한다.
-                    const trackVals = candleRows
+                    const trackVals = sourceRows
                         .map(x => {
                             const close = Number(x && x.close);
                             if (Number.isFinite(close)) return close;

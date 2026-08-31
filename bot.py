@@ -8079,8 +8079,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 bg = '#ef4444';
                                 border = '1px solid #ef4444';
                             } else if (r) {
-                                bg = '#f59e0b';
-                                border = '1px solid #f59e0b';
+                                bg = '#9ca3af';
+                                border = '1px solid #9ca3af';
                             }
                             return `<div title="${r ? (r.label || '근거') : '확인된 근거 없음'}"
                                          style="height:100%; background:${bg}; border:${border}; border-radius:3px; min-width:0;"></div>`;

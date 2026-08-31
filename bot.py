@@ -3163,6 +3163,162 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 print(f"[CONSENSUS][KR] PC research HTML parser failed: {type(exc).__name__}: {exc}")
                 return []
 
+        def _parse_wisereport_consensus_html(html_text):
+            """Naver 기업정보(WiseReport)에서 국내 실제 컨센서스/증권사 리포트를 추출한다.
+
+            - 목표주가: '투자의견 컨센서스' 영역의 목표주가 값을 우선 사용
+            - 개별 리포트: 제공처 / 최종일자 / 목표가 / 투자의견 행을 실제 HTML에서 매핑
+            - 날짜 범위로 제한하지 않는다. 페이지에 공개된 최신 리포트를 사용한다.
+            """
+            try:
+                from html.parser import HTMLParser
+                from html import unescape
+                import re as _re
+
+                class _WiseTableParser(HTMLParser):
+                    def __init__(self):
+                        super().__init__(convert_charrefs=True)
+                        self.rows = []
+                        self.in_tr = False
+                        self.in_cell = False
+                        self.current = []
+                        self.cell = []
+
+                    def handle_starttag(self, tag, attrs):
+                        if tag == "tr":
+                            self.in_tr = True
+                            self.current = []
+                        elif self.in_tr and tag in ("td", "th"):
+                            self.in_cell = True
+                            self.cell = []
+
+                    def handle_data(self, data):
+                        if self.in_tr and self.in_cell:
+                            self.cell.append(data)
+
+                    def handle_endtag(self, tag):
+                        if tag in ("td", "th") and self.in_cell:
+                            txt = " ".join("".join(self.cell).split())
+                            if txt:
+                                self.current.append(txt)
+                            self.cell = []
+                            self.in_cell = False
+                        elif tag == "tr" and self.in_tr:
+                            if self.current:
+                                self.rows.append(self.current)
+                            self.current = []
+                            self.in_tr = False
+
+                parser = _WiseTableParser()
+                parser.feed(html_text or "")
+
+                date_re = _re.compile(r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{2}[./-]\d{1,2}[./-]\d{1,2})")
+                price_re = _re.compile(r"(?<!\d)\d{2,3}(?:,\d{3})+(?!\d)|(?<!\d)\d{5,8}(?!\d)")
+                opinion_terms = (
+                    "buy", "hold", "sell", "strong buy", "strong sell",
+                    "매수", "중립", "매도", "강력매수", "강력 매수", "강력매도", "강력 매도"
+                )
+
+                def clean_cell(v):
+                    return unescape(" ".join(str(v).split())).strip()
+
+                def parse_num(v):
+                    try:
+                        n = float(str(v).replace(",", "").replace("원", "").strip())
+                        return n if n > 0 else None
+                    except Exception:
+                        return None
+
+                # HTML 전체 텍스트에서 WiseReport의 평균 목표주가를 찾는다.
+                plain = re.sub(r"<[^>]+>", " ", html_text or "")
+                plain = unescape(" ".join(plain.split()))
+                target_p = None
+                m = _re.search(r"목표주가\s*\(원\).*?(\d{1,3}(?:,\d{3})+)", plain, flags=_re.I | _re.S)
+                if m:
+                    target_p = parse_num(m.group(1))
+
+                reports = []
+                seen = set()
+                for raw_cells in parser.rows:
+                    cells = [clean_cell(x) for x in raw_cells if clean_cell(x)]
+                    if len(cells) < 4:
+                        continue
+                    joined = " ".join(cells)
+                    if "제공처별 투자의견" not in joined and not any(date_re.search(c) for c in cells):
+                        continue
+
+                    date_txt = ""
+                    for c in cells:
+                        md = date_re.search(c)
+                        if md:
+                            date_txt = md.group(0)
+                            break
+                    if not date_txt:
+                        continue
+
+                    opinion = ""
+                    for c in cells:
+                        low = c.lower()
+                        if any(term in low for term in opinion_terms):
+                            opinion = c
+                            break
+
+                    # 날짜/등락률/EPS 같은 숫자를 피하면서 목표가 후보를 찾는다.
+                    target = None
+                    target_cell_index = -1
+                    for idx, c in enumerate(cells):
+                        if date_re.search(c):
+                            continue
+                        # 목표가 열은 보통 100,000원 이상의 콤마 숫자다.
+                        nums = price_re.findall(c.replace("원", ""))
+                        for raw in nums:
+                            n = parse_num(raw)
+                            if n is not None and n >= 1000:
+                                # 1자리/2자리 등락률과 기관수는 제외
+                                if n <= 100:
+                                    continue
+                                target = n
+                                target_cell_index = idx
+                                break
+                        if target is not None:
+                            break
+                    if target is None:
+                        continue
+
+                    # WiseReport 표의 첫 번째 셀이 제공처인 경우가 일반적이다.
+                    broker = cells[0]
+                    if broker in {date_txt, opinion} or re.fullmatch(r"[+-]?\d+(?:\.\d+)?%?", broker):
+                        broker = ""
+                    if not broker:
+                        for c in cells:
+                            if c not in {date_txt, opinion} and not price_re.fullmatch(c.replace("원", "").strip()):
+                                if len(c) <= 30:
+                                    broker = c
+                                    break
+                    if not broker:
+                        broker = "증권사 리포트"
+
+                    key = (broker, date_txt, int(target), opinion)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
+                    current = _safe_num(raw_price)
+                    upside = ((target - current) / current * 100.0) if target and current else None
+                    reports.append({
+                        "main": broker,
+                        "sub": " · ".join(x for x in (opinion, date_txt) if x) or "실제 리포트",
+                        "val": f"{int(target):,}원",
+                        "sub_val": f"{upside:+.1f}%" if upside is not None else "",
+                        "_id": f"wise:{broker}:{date_txt}:{int(target)}:{opinion}",
+                        "_title": ""
+                    })
+
+                return target_p, reports[:20]
+            except Exception as exc:
+                print(f"[CONSENSUS][KR] WiseReport parser failed: {type(exc).__name__}: {exc}")
+                return None, []
+
         # 국내주식
         if market_name in ["국내주식", "국내증시"]:
             code = str(symbol).replace("A", "").zfill(6)
@@ -3171,6 +3327,34 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             target_source = None
             reports = []
             report_source = None
+
+            # 0) 국내 컨센서스의 기준 경로: Naver 기업정보(WiseReport)
+            # 실제 제공처/최종일자/목표가/투자의견 표를 직접 읽어 매핑한다.
+            try:
+                wise_url = f"https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}"
+                wr = HTTP_SESSION.get(
+                    wise_url, timeout=8.0,
+                    headers={
+                        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
+                        "Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language":"ko-KR,ko;q=0.9,en-US;q=0.8",
+                        "Referer":"https://finance.naver.com/"
+                    }
+                )
+                print(f"[CONSENSUS][KR] WiseReport {code} HTTP {wr.status_code}")
+                if wr.ok:
+                    wise_target, wise_reports = _parse_wisereport_consensus_html(wr.text)
+                    if wise_target:
+                        target_p = wise_target
+                        target_source = "Naver WiseReport 실제 컨센서스"
+                    if wise_reports:
+                        reports = wise_reports
+                        report_source = "Naver WiseReport 실제 증권사 리포트"
+                    print(f"[CONSENSUS][KR] WiseReport {code} target={wise_target} reports={len(wise_reports)}")
+                else:
+                    print(f"[CONSENSUS][KR] WiseReport {code} HTTP {wr.status_code}")
+            except Exception as e:
+                print(f"[CONSENSUS][KR] WiseReport failed {code}: {type(e).__name__}: {e}")
 
             # 1) 기존 mobile integration
             try:
@@ -3207,14 +3391,17 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                             elif isinstance(v, dict):
                                 direct_researches.extend(list(_walk_objects(v)))
 
-                    candidates = direct_researches or _collect_report_dicts(data)
-                    for it in candidates:
-                        row = _parse_report(it)
-                        if row:
-                            reports.append(row)
+                    # WiseReport가 실제 제공처/목표가를 매핑했다면
+                    # Naver integration의 불완전한 중첩 객체를 섞지 않는다.
+                    if not reports:
+                        candidates = direct_researches or _collect_report_dicts(data)
+                        for it in candidates:
+                            row = _parse_report(it)
+                            if row:
+                                reports.append(row)
 
-                    if reports:
-                        report_source = "Naver 통합 리서치"
+                        if reports:
+                            report_source = "Naver 통합 리서치"
                     print(f"[CONSENSUS][KR] integration {code} target={target_p} reports={len(reports)}")
             except Exception as e:
                 print(f"[CONSENSUS][KR] integration failed {code}: {type(e).__name__}: {e}")
@@ -3402,7 +3589,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 unique.append(row)
             reports = unique[:20]
 
-            # 평균 목표가는 반드시 실제 Naver 컨센서스만 사용
+            # 평균 목표가는 실제 Naver/WiseReport 또는 기존 Naver 컨센서스만 사용
             if target_p and current:
                 low_p, high_p = min(current, target_p), max(current, target_p)
                 if high_p <= low_p:
@@ -3420,9 +3607,9 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 slider_mid = "실제 목표가 확인 필요"
 
             if reports:
-                source_tag = f"출처: Naver / {report_source or '실제 증권사 리포트'}"
+                source_tag = f"출처: {report_source or 'Naver / 실제 증권사 리포트'}"
             elif target_p:
-                source_tag = "출처: Naver / 실제 컨센서스"
+                source_tag = f"출처: {target_source or 'Naver / 실제 컨센서스'}"
             else:
                 source_tag = "출처: Naver / 확인 가능한 컨센서스 데이터 없음"
 

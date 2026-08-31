@@ -40,6 +40,24 @@ except ImportError:
     Jsonb = None
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
+
+# ----------------------------------------------------
+# NAVER 뉴스 검색 API
+# - Render 환경변수에서 인증키를 읽는다.
+# - 기존 키 이름과 Search API용 별칭을 모두 지원한다.
+# - 키가 없으면 기존 Google News RSS/Alpha Vantage fallback을 그대로 사용한다.
+# ----------------------------------------------------
+NAVER_CLIENT_ID = (
+    os.environ.get("NAVER_CLIENT_ID", "").strip()
+    or os.environ.get("NAVER_SEARCH_CLIENT_ID", "").strip()
+)
+NAVER_CLIENT_SECRET = (
+    os.environ.get("NAVER_CLIENT_SECRET", "").strip()
+    or os.environ.get("NAVER_SEARCH_CLIENT_SECRET", "").strip()
+)
+NAVER_NEWS_API_URL = "https://openapi.naver.com/v1/search/news.json"
+NAVER_NEWS_CACHE_TTL = 180
+NAVER_NEWS_CACHE = {}
 DB_MODEL_VERSION = "gaemiGTP-db-v1"
 
 
@@ -2463,105 +2481,126 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 # ----------------------------------------------------
 # 4. 크롤러 및 유틸리티 함수
 # ----------------------------------------------------
-def _parse_news_rss_response(content, limit=5):
-    """RSS XML을 사이트 공통 뉴스 형식으로 변환합니다."""
-    headlines = []
-    try:
-        root = ET.fromstring(content)
-    except Exception as exc:
-        print(f"[NEWS RSS] XML parse failed: {type(exc).__name__}: {exc}")
-        return headlines
-
-    for it in root.findall('.//item')[:max(1, int(limit))]:
-        t = it.find('title')
-        pub = it.find('pubDate')
-        link = it.find('link')
-        if t is None or not t.text:
-            continue
-
-        title_clean = html.unescape(t.text).strip()
-        parts = title_clean.rsplit(' - ', 1)
-        title_text = parts[0].strip()
-        media_name = parts[1].strip() if len(parts) > 1 else "언론사"
-        pub_text = pub.text.strip() if pub is not None and pub.text else ""
-        link_text = link.text.strip() if link is not None and link.text else "#"
-        headlines.append({
-            "title": title_text,
-            "media": media_name,
-            "pubDate": pub_text,
-            "link": link_text
-        })
-    return headlines
+def _strip_news_html(value):
+    """네이버 뉴스 API의 title/description HTML 태그를 제거한다."""
+    if value is None:
+        return ""
+    s = html.unescape(str(value))
+    s = re.sub(r"<[^>]+>", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
-def fetch_rss_news(query_keyword, limit=5):
-    """Google News RSS 기반 뉴스 수집기.
+def fetch_naver_news(query_keyword, limit=10):
+    """네이버 뉴스 검색 API. 실패하면 빈 결과를 반환해 기존 fallback을 유지한다."""
+    if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
+        print("[NAVER NEWS] API key not configured; fallback sources will be used.")
+        return []
 
-    기존에는 단일 요청/2.5초 timeout/예외 무시 구조라 Google RSS가 잠깐
-    지연되거나 403/5xx를 반환하면 종목 뉴스와 해외 뉴스가 동시에 빈 화면이 됐습니다.
-    - OR 검색어는 개별 검색어로 분리해 한 소스 실패가 전체 실패가 되지 않게 함
-    - Google News RSS URL 2종을 순차 재시도
-    - timeout/HTTP 상태/파싱 실패를 로그로 남김
-    - 결과는 제목 기준 중복 제거
-    """
-    clean_k = re.sub(r'\(.*?\)', '', str(query_keyword or '')).replace("USDT", "").strip()
+    clean_k = re.sub(r"\(.*?\)", "", str(query_keyword or "")).replace("USDT", "").strip()
     if not clean_k:
         return []
 
-    queries = [q.strip() for q in re.split(r'\s+OR\s+', clean_k, flags=re.IGNORECASE) if q.strip()]
-    if not queries:
-        queries = [clean_k]
+    limit = max(1, min(int(limit or 10), 100))
+    cache_key = f"{clean_k}|{limit}"
+    cached = _cache_get(NAVER_NEWS_CACHE, cache_key, NAVER_NEWS_CACHE_TTL)
+    if cached is not None:
+        return cached
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
-        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
-        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6",
-        "Cache-Control": "no-cache",
+        "X-Naver-Client-Id": NAVER_CLIENT_ID,
+        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
+        "Accept": "application/json",
+        "User-Agent": "gaemiGTP/1.0",
     }
+    params = {"query": clean_k, "display": limit, "start": 1, "sort": "date"}
 
-    seen = set()
+    try:
+        res = HTTP_SESSION.get(
+            NAVER_NEWS_API_URL,
+            params=params,
+            headers=headers,
+            timeout=5.0,
+        )
+        print(f"[NAVER NEWS] query={clean_k!r} HTTP {res.status_code}")
+
+        if not res.ok:
+            body = (res.text or "")[:300].replace("\n", " ")
+            print(f"[NAVER NEWS] HTTP error body={body}")
+            return []
+
+        payload = res.json()
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        out = []
+
+        for item in items[:limit]:
+            if not isinstance(item, dict):
+                continue
+
+            title = _strip_news_html(item.get("title", ""))
+            description = _strip_news_html(item.get("description", ""))
+            link = item.get("originallink") or item.get("link") or "#"
+            pub_date = item.get("pubDate", "")
+            source = ""
+
+            parts = title.rsplit(" - ", 1)
+            if len(parts) == 2 and parts[1].strip():
+                title = parts[0].strip()
+                source = parts[1].strip()
+
+            out.append({
+                "title": title,
+                "description": description,
+                "media": source or "네이버 뉴스",
+                "pubDate": pub_date,
+                "link": link,
+                "source": "Naver News Search API",
+            })
+
+        print(f"[NAVER NEWS] query={clean_k!r} items={len(out)}")
+        return _cache_set(NAVER_NEWS_CACHE, cache_key, out)
+
+    except Exception as exc:
+        print(f"[NAVER NEWS] fetch failed query={clean_k!r}: {type(exc).__name__}: {exc}")
+        return []
+
+
+def fetch_naver_news_queries(query_keywords, limit_each=10):
+    """여러 네이버 뉴스 검색어를 순차 호출하고 중복을 제거한다."""
+    results = []
+    for keyword in query_keywords or []:
+        if str(keyword).strip():
+            results.extend(fetch_naver_news(keyword, limit_each))
+    return merge_news_sources(results)
+
+
+def fetch_rss_news(query_keyword, limit=5):
     headlines = []
-    per_query_limit = max(3, int(limit))
-
-    for q in queries:
-        encoded = urllib.parse.quote(q)
-        urls = [
-            f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko",
-            f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en",
-            f"https://news.google.com/news?hl=ko&gl=KR&ie=UTF-8&output=rss&q={encoded}",
-        ]
-
-        got_for_query = False
-        for url in urls:
-            for attempt in range(2):
-                try:
-                    r = HTTP_SESSION.get(url, timeout=6.0, headers=headers)
-                    if r.status_code != 200:
-                        print(f"[NEWS RSS] HTTP {r.status_code} attempt={attempt+1} query={q}")
-                        continue
-
-                    parsed = _parse_news_rss_response(r.content, per_query_limit)
-                    if not parsed:
-                        print(f"[NEWS RSS] empty feed attempt={attempt+1} query={q}")
-                        continue
-
-                    for item in parsed:
-                        key = re.sub(r"\s+", " ", str(item.get("title", ""))).strip().lower()
-                        if not key or key in seen:
-                            continue
-                        seen.add(key)
-                        headlines.append(item)
-                        if len(headlines) >= int(limit):
-                            return headlines
-
-                    got_for_query = True
-                    break
-                except Exception as exc:
-                    print(f"[NEWS RSS] fetch failed attempt={attempt+1} query={q}: {type(exc).__name__}: {exc}")
-            if got_for_query:
-                break
-
-    return headlines[:int(limit)]
+    clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
+    try:
+        r = HTTP_SESSION.get(url, timeout=2.5)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for it in root.findall('.//item')[:limit]:
+                t = it.find('title')
+                pub = it.find('pubDate')
+                link = it.find('link')
+                if t is not None and t.text:
+                    title_clean = html.unescape(t.text).strip()
+                    parts = title_clean.rsplit(' - ', 1)
+                    title_text = parts[0]
+                    media_name = parts[1] if len(parts) > 1 else "언론사"
+                    pub_text = pub.text if pub is not None else ""
+                    link_text = link.text if link is not None else "#"
+                    headlines.append({
+                        "title": title_text,
+                        "media": media_name,
+                        "pubDate": pub_text,
+                        "link": link_text
+                    })
+    except Exception:
+        pass
+    return headlines
 
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
     if not is_krw or not stock_code or not stock_code.isdigit():
@@ -5288,7 +5327,13 @@ def run_full_pipeline(query):
     except Exception as exc:
         print(f"[DB] 원천 OHLCV 저장 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
-    with ThreadPoolExecutor(max_workers=9) as executor:
+    with ThreadPoolExecutor(max_workers=11) as executor:
+        f_naver_stock_news = executor.submit(fetch_naver_news, formal_name, 10)
+        f_naver_global_news = executor.submit(
+            fetch_naver_news_queries,
+            ["뉴욕증시", "미국증시", "나스닥"],
+            6,
+        )
         f_news = executor.submit(fetch_rss_news, formal_name, 10)
         f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10)
         f_api_news = executor.submit(fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro")
@@ -5297,6 +5342,8 @@ def run_full_pipeline(query):
         f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 5)
         f_domestic_flow = executor.submit(fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None
 
+        naver_stock_news = _safe_future_result(f_naver_stock_news, [], "Naver stock news")
+        naver_global_news = _safe_future_result(f_naver_global_news, [], "Naver global news")
         stock_news_rss = _safe_future_result(f_news, [], "stock RSS")
         global_news_rss = _safe_future_result(f_global_news, [], "global RSS")
         api_news = _safe_future_result(f_api_news, [], "Alpha Vantage news")
@@ -5307,8 +5354,14 @@ def run_full_pipeline(query):
             [], "Alpha ticker news"
         )
         # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
-        stock_news = merge_news_sources(stock_news_rss, ticker_news)
-        global_news = merge_news_sources(global_news_rss, api_news)
+        # 네이버 뉴스 → Google RSS → Alpha Vantage 순으로 합치며 중복을 제거한다.
+        stock_news = merge_news_sources(naver_stock_news, stock_news_rss, ticker_news)
+        global_news = merge_news_sources(naver_global_news, global_news_rss, api_news)
+        print(
+            f"[NEWS] final stock={len(stock_news)} global={len(global_news)} "
+            f"(naver_stock={len(naver_stock_news)}, naver_global={len(naver_global_news)}, "
+            f"rss_stock={len(stock_news_rss)}, rss_global={len(global_news_rss)}, av={len(api_news)})"
+        )
         consensus = _safe_future_result(f_consensus, None, "consensus")
         dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
         domestic_flow = _safe_future_result(f_domestic_flow, None, "domestic flow") if f_domestic_flow else None

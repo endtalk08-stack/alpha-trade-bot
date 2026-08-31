@@ -6811,25 +6811,50 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
         });
 
-        function resetToHome() {
-            document.getElementById('main-view').style.display = 'flex';
-            document.getElementById('result-scroll-view').style.display = 'none';
-            document.getElementById('bottom-bar').style.display = 'none';
-            document.getElementById('result-card-wrap').style.display = 'none';
-            document.getElementById('loading').style.display = 'none';
-            
-            const uCard = document.getElementById('rowConsensus');
-            if (uCard) uCard.style.display = 'none';
-            const dCard = document.getElementById('rowDart');
-            if (dCard) dCard.style.display = 'none';
-            
-            document.getElementById('centerInput').value = '';
-            document.getElementById('bottomInput').value = '';
-            currentSymbol = '';
-            
-            const side = document.getElementById('sidebar-wrapper');
-            if (side) side.classList.remove('open');
-        }
+function resetToHome() {
+    // 메인으로 돌아가면 종목 URL도 초기화
+    window.history.replaceState({}, '', window.location.pathname);
+
+    // 메인 화면 표시
+    document.getElementById('main-view').style.display = 'flex';
+
+    // 검색 결과 화면 숨김
+    document.getElementById('result-scroll-view').style.display = 'none';
+
+    // 하단 검색바 숨김
+    document.getElementById('bottom-bar').style.display = 'none';
+
+    // 결과 카드 영역 숨김
+    document.getElementById('result-card-wrap').style.display = 'none';
+
+    // 로딩 화면 숨김
+    document.getElementById('loading').style.display = 'none';
+
+    // 컨센서스 카드 숨김
+    const uCard = document.getElementById('rowConsensus');
+    if (uCard) {
+        uCard.style.display = 'none';
+    }
+
+    // DART 카드 숨김
+    const dCard = document.getElementById('rowDart');
+    if (dCard) {
+        dCard.style.display = 'none';
+    }
+
+    // 검색창 초기화
+    document.getElementById('centerInput').value = '';
+    document.getElementById('bottomInput').value = '';
+
+    // 현재 종목 초기화
+    currentSymbol = '';
+
+    // 사이드바 닫기
+    const side = document.getElementById('sidebar-wrapper');
+    if (side) {
+        side.classList.remove('open');
+    }
+}
 
         function toggleSignal() {
             const body = document.getElementById('signalBody');

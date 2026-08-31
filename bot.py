@@ -8091,10 +8091,26 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         }
                     }
 
-                    // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
+                    // 상세 근거: 표시 순서만 고정한다. 분석 데이터/점수 계산은 변경하지 않는다.
+                    const trackDisplayOrder = [
+                        'market_5d',
+                        'market',
+                        'theme',
+                        'foreign',
+                        'institution',
+                        'material',
+                        'volume',
+                        'trading_value'
+                    ];
+                    const orderedEvidenceReasons = [...evidenceReasons].sort((a, b) => {
+                        const ai = trackDisplayOrder.indexOf(a.key);
+                        const bi = trackDisplayOrder.indexOf(b.key);
+                        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+                    });
+
                     const trackDetailList = document.getElementById('trackDetailList');
                     if (trackDetailList) {
-                        trackDetailList.innerHTML = evidenceReasons.map(r => {
+                        trackDetailList.innerHTML = orderedEvidenceReasons.map(r => {
                             const score = Number(r.score || 0);
                             const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
                             const statusClass =

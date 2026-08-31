@@ -3164,209 +3164,181 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 return []
 
         def _parse_wisereport_consensus_html(html_text):
-            """Naver WiseReport의 '제공처별 투자의견 및 목표주가' 표를 열 기준으로 정확히 매핑한다.
+            """WiseReport의 '제공처별 투자의견 및 목표주가' 표를 열 기준으로 정확히 읽는다.
 
-            표의 실제 열 순서:
+            핵심: HTML 전체에서 숫자를 추측하지 않고, 실제 컨센서스 표의 헤더를
+            먼저 찾은 뒤 같은 열의 값을 사용한다.
             제공처 | 최종일자 | 목표가 | 직전목표가 | 변동률(%) | 투자의견 | 직전투자의견
-
-            중요:
-            - 행 안에서 아무 숫자나 먼저 찾지 않는다.
-            - 반드시 '최종일자' 뒤에 있는 첫 번째 가격 숫자를 목표가로 사용한다.
-            - 직전목표가/변동률은 목표가로 사용하지 않는다.
             """
             try:
                 from html.parser import HTMLParser
                 from html import unescape
                 import re as _re
 
-                class _WiseTableParser(HTMLParser):
+                class _TableParser(HTMLParser):
                     def __init__(self):
                         super().__init__(convert_charrefs=True)
-                        self.rows = []
+                        self.tables = []
+                        self.table_depth = 0
+                        self.current_table = None
                         self.in_tr = False
                         self.in_cell = False
-                        self.current = []
+                        self.current_row = []
                         self.cell = []
 
                     def handle_starttag(self, tag, attrs):
-                        if tag == "tr":
+                        if tag == "table":
+                            if self.table_depth == 0:
+                                self.current_table = []
+                            self.table_depth += 1
+                        elif self.table_depth == 1 and tag == "tr":
                             self.in_tr = True
-                            self.current = []
-                        elif self.in_tr and tag in ("td", "th"):
+                            self.current_row = []
+                        elif self.table_depth == 1 and self.in_tr and tag in ("td", "th"):
                             self.in_cell = True
                             self.cell = []
 
                     def handle_data(self, data):
-                        if self.in_tr and self.in_cell:
+                        if self.table_depth == 1 and self.in_tr and self.in_cell:
                             self.cell.append(data)
 
                     def handle_endtag(self, tag):
-                        if tag in ("td", "th") and self.in_cell:
+                        if self.table_depth == 1 and tag in ("td", "th") and self.in_cell:
                             txt = " ".join("".join(self.cell).split())
-                            if txt:
-                                self.current.append(txt)
+                            self.current_row.append(txt)
                             self.cell = []
                             self.in_cell = False
-                        elif tag == "tr" and self.in_tr:
-                            if self.current:
-                                self.rows.append(self.current)
-                            self.current = []
+                        elif self.table_depth == 1 and tag == "tr" and self.in_tr:
+                            if self.current_row:
+                                self.current_table.append(self.current_row)
+                            self.current_row = []
                             self.in_tr = False
+                        elif tag == "table" and self.table_depth > 0:
+                            self.table_depth -= 1
+                            if self.table_depth == 0:
+                                if self.current_table:
+                                    self.tables.append(self.current_table)
+                                self.current_table = None
 
-                parser = _WiseTableParser()
+                parser = _TableParser()
                 parser.feed(html_text or "")
 
-                date_re = _re.compile(
-                    r"(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{2}[./-]\d{1,2}[./-]\d{1,2})"
-                )
-                price_re = _re.compile(r"(?<!\d)\d{2,3}(?:,\d{3})+(?!\d)|(?<!\d)\d{5,9}(?!\d)")
-                percent_re = _re.compile(r"^[+-]?\d+(?:\.\d+)?%?$")
-                opinion_terms = (
-                    "buy", "hold", "sell", "strong buy", "strong sell",
-                    "매수", "중립", "매도", "강력매수", "강력 매수",
-                    "강력매도", "강력 매도", "보유"
-                )
-
-                def clean_cell(v):
+                def clean(v):
                     return unescape(" ".join(str(v).split())).strip()
 
-                def parse_num(v):
+                def num(v):
                     try:
-                        s = str(v).replace(",", "").replace("원", "").strip()
-                        n = float(s)
+                        x = str(v).replace(",", "").replace("원", "").strip()
+                        n = float(x)
                         return n if n > 0 else None
                     except Exception:
                         return None
 
-                # 평균 목표가는 컨센서스 영역에서만 가져온다.
+                date_re = _re.compile(r"^(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{2}[./-]\d{1,2}[./-]\d{1,2})$")
+                price_re = _re.compile(r"^\d{2,3}(?:,\d{3})+$|^\d{5,9}$")
+                percent_re = _re.compile(r"^[+-]?\d+(?:\.\d+)?%?$")
+
+                # 평균 목표가는 별도의 컨센서스 영역에서만 읽는다.
                 plain = _re.sub(r"<[^>]+>", " ", html_text or "")
                 plain = unescape(" ".join(plain.split()))
                 target_p = None
-
-                target_patterns = [
+                for pat in (
                     r"목표주가\s*\(원\).*?(\d{1,3}(?:,\d{3})+)",
                     r"목표주가.*?(\d{1,3}(?:,\d{3})+).*?EPS",
-                ]
-                for pat in target_patterns:
+                ):
                     m = _re.search(pat, plain, flags=_re.I | _re.S)
                     if m:
-                        target_p = parse_num(m.group(1))
+                        target_p = num(m.group(1))
                         if target_p:
                             break
 
-                reports = []
-                seen = set()
-
-                for raw_cells in parser.rows:
-                    cells = [clean_cell(x) for x in raw_cells if clean_cell(x)]
-                    if len(cells) < 4:
-                        continue
-
-                    # 실제 '제공처별 투자의견 및 목표주가' 표인지 확인
-                    joined = " ".join(cells)
-                    header_like = (
-                        "제공처" in joined and
-                        "최종일자" in joined and
-                        "목표가" in joined
-                    )
-                    if header_like:
-                        continue
-
-                    # 1) 최종일자 위치를 먼저 찾는다.
-                    date_idx = -1
-                    date_txt = ""
-                    for idx, c in enumerate(cells):
-                        md = date_re.search(c)
-                        if md:
-                            date_idx = idx
-                            date_txt = md.group(0)
-                            break
-                    if date_idx < 0:
-                        continue
-
-                    # 2) 날짜 바로 다음의 가격 열을 목표가로 사용한다.
-                    #    WiseReport 실제 표: 제공처 / 최종일자 / 목표가 / 직전목표가 / 변동률 / 투자의견 ...
-                    target = None
-                    target_idx = -1
-
-                    for idx in range(date_idx + 1, len(cells)):
-                        c = cells[idx]
-
-                        # 의견 열에 도달하면 더 이상 목표가를 찾지 않는다.
-                        low = c.lower()
-                        if any(term in low for term in opinion_terms):
-                            break
-
-                        # 변동률은 목표가가 아니다.
-                        if "%" in c or percent_re.fullmatch(c):
-                            continue
-
-                        nums = price_re.findall(c.replace("원", ""))
-                        if not nums:
-                            continue
-
-                        # 한 셀에 숫자가 여러 개라면 첫 번째 정수 가격을 사용
-                        for raw in nums:
-                            n = parse_num(raw)
-                            if n is not None and n >= 1000:
-                                target = n
-                                target_idx = idx
-                                break
-
-                        if target is not None:
-                            break
-
-                    if target is None:
-                        continue
-
-                    # 3) 투자의견은 목표가 뒤쪽에서 찾는다.
-                    opinion = ""
-                    opinion_idx = -1
-                    for idx in range(max(target_idx + 1, date_idx + 1), len(cells)):
-                        c = cells[idx]
-                        low = c.lower()
-                        if any(term in low for term in opinion_terms):
-                            opinion = c
-                            opinion_idx = idx
-                            break
-
-                    # 4) 제공처는 날짜 바로 앞 셀을 우선 사용한다.
-                    broker = ""
-                    if date_idx > 0:
-                        candidate = cells[date_idx - 1]
+                # 반드시 '제공처별 투자의견 및 목표주가' 헤더가 있는 표만 선택한다.
+                target_table = None
+                header = None
+                for table in parser.tables:
+                    for row in table:
+                        cells = [clean(x) for x in row]
+                        joined = " | ".join(cells)
                         if (
-                            candidate and
-                            not date_re.search(candidate) and
-                            not percent_re.fullmatch(candidate) and
-                            not any(term in candidate.lower() for term in opinion_terms)
+                            "제공처" in joined and
+                            "최종일자" in joined and
+                            "목표가" in joined and
+                            "투자의견" in joined
                         ):
-                            broker = candidate
+                            target_table = table
+                            header = cells
+                            break
+                    if target_table is not None:
+                        break
 
-                    # 일부 HTML에서는 앞쪽에 기업명이 하나 더 들어갈 수 있다.
-                    if not broker:
-                        for idx in range(date_idx):
-                            candidate = cells[idx]
-                            if (
-                                candidate and
-                                not date_re.search(candidate) and
-                                not percent_re.fullmatch(candidate) and
-                                not any(term in candidate.lower() for term in opinion_terms)
-                            ):
-                                # 기업명/코드 같은 값은 제외
-                                if "(000" not in candidate and len(candidate) <= 40:
-                                    broker = candidate
+                reports = []
+                if target_table is None:
+                    print(f"[CONSENSUS][KR] WiseReport target table NOT FOUND tables={len(parser.tables)}")
+                    return target_p, []
 
-                    if not broker:
-                        broker = "증권사 리포트"
+                # 헤더의 실제 열 위치를 사용한다. 고정 인덱스가 아니라 헤더명으로 매핑한다.
+                def col_index(names):
+                    for i, h in enumerate(header):
+                        h2 = h.replace(" ", "")
+                        if any(name.replace(" ", "") in h2 for name in names):
+                            return i
+                    return -1
+
+                broker_i = col_index(["제공처"])
+                date_i = col_index(["최종일자"])
+                target_i = col_index(["목표가"])
+                opinion_i = col_index(["투자의견"])
+
+                if min(broker_i, date_i, target_i, opinion_i) < 0:
+                    print(f"[CONSENSUS][KR] WiseReport header mapping failed header={header}")
+                    return target_p, []
+
+                # 헤더 행 다음의 실제 데이터 행만 처리한다.
+                header_pos = -1
+                for i, row in enumerate(target_table):
+                    if [clean(x) for x in row] == header:
+                        header_pos = i
+                        break
+                if header_pos < 0:
+                    # 같은 헤더를 포함하는 첫 행을 다시 찾는다.
+                    for i, row in enumerate(target_table):
+                        c = [clean(x) for x in row]
+                        if "제공처" in " | ".join(c) and "목표가" in " | ".join(c):
+                            header_pos = i
+                            break
+
+                seen = set()
+                current = _safe_num(raw_price)
+                for raw_row in target_table[header_pos + 1:]:
+                    cells = [clean(x) for x in raw_row]
+                    if len(cells) <= max(broker_i, date_i, target_i, opinion_i):
+                        continue
+
+                    broker = cells[broker_i]
+                    date_txt = cells[date_i]
+                    target_txt = cells[target_i]
+                    opinion = cells[opinion_i]
+
+                    # 실제 데이터 행만 통과시킨다.
+                    if not broker or not date_re.fullmatch(date_txt):
+                        continue
+                    if not target_txt or percent_re.fullmatch(target_txt):
+                        continue
+
+                    # 목표가 열에서만 숫자를 읽는다. 직전 목표가/변동률은 절대 사용하지 않는다.
+                    m_price = _re.search(r"\d{1,3}(?:,\d{3})+|\d{5,9}", target_txt.replace("원", ""))
+                    if not m_price:
+                        continue
+                    target = num(m_price.group(0))
+                    if target is None or target < 1000:
+                        continue
 
                     key = (broker, date_txt, int(target), opinion)
                     if key in seen:
                         continue
                     seen.add(key)
 
-                    current = _safe_num(raw_price)
                     upside = ((target - current) / current * 100.0) if target and current else None
-
                     reports.append({
                         "main": broker,
                         "sub": " · ".join(x for x in (opinion, date_txt) if x) or "실제 리포트",
@@ -3376,7 +3348,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                         "_title": ""
                     })
 
-                print(f"[CONSENSUS][KR] WiseReport parsed rows={len(parser.rows)} reports={len(reports)}")
+                print(f"[CONSENSUS][KR] WiseReport tables={len(parser.tables)} target_table_rows={len(target_table)} header={header} reports={len(reports)}")
                 return target_p, reports[:20]
 
             except Exception as exc:

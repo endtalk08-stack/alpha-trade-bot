@@ -2931,30 +2931,151 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             }
 
         if market_name in ["미국주식","글로벌증시","원자재"]:
-            rec=[]; target_p=None; counts={"Buy":0,"Hold":0,"Sell":0}
+            # 미국/글로벌 종목: Finnhub의 실제 추천의견 + 실제 목표주가를 함께 사용한다.
+            # API 오류/플랜 미지원/데이터 없음은 화면을 깨뜨리지 않고 해당 항목만 미표시한다.
+            rec=[]
+            target_p=None
+            target_low=None
+            target_high=None
+            counts={"Buy":0,"Hold":0,"Sell":0}
+
             if FINNHUB_API_KEY and symbol:
-                key=symbol.upper(); cached=_cache_get(FINNHUB_CONSENSUS_CACHE,key,FINNHUB_CONSENSUS_CACHE_TTL)
-                if cached is None:
-                    try:
+                key=symbol.upper()
+
+                # 1) 최근 추천의견 추세
+                try:
+                    rec_cache_key=f"recommendation:{key}"
+                    cached=_cache_get(FINNHUB_CONSENSUS_CACHE,rec_cache_key,FINNHUB_CONSENSUS_CACHE_TTL)
+                    if cached is None:
                         url="https://finnhub.io/api/v1/stock/recommendation"
-                        rr=HTTP_SESSION.get(url,params={"symbol":key,"token":FINNHUB_API_KEY},timeout=4).json()
-                        cached=rr[0] if isinstance(rr,list) and rr else {}
-                        _cache_set(FINNHUB_CONSENSUS_CACHE,key,cached)
-                    except Exception: cached={}
-                for k,label in [("strongBuy","Buy"),("buy","Buy"),("hold","Hold"),("sell","Sell"),("strongSell","Sell")]:
-                    counts[label]+=int(cached.get(k) or 0)
-                if counts["Buy"]+counts["Hold"]+counts["Sell"]>0:
-                    for label in ("Buy","Hold","Sell"):
-                        if counts[label]: rec.append({"main":label,"sub":"Finnhub recommendation trend","val":str(counts[label]),"sub_val":"실제 집계"})
+                        rr=HTTP_SESSION.get(
+                            url,
+                            params={"symbol":key,"token":FINNHUB_API_KEY},
+                            timeout=4.0
+                        )
+                        if rr.ok:
+                            data=rr.json()
+                            cached=data[0] if isinstance(data,list) and data else {}
+                        else:
+                            cached={}
+                        _cache_set(FINNHUB_CONSENSUS_CACHE,rec_cache_key,cached)
+
+                    if isinstance(cached,dict):
+                        for k,label in [
+                            ("strongBuy","Buy"),
+                            ("buy","Buy"),
+                            ("hold","Hold"),
+                            ("sell","Sell"),
+                            ("strongSell","Sell")
+                        ]:
+                            try:
+                                counts[label]+=int(cached.get(k) or 0)
+                            except (TypeError,ValueError):
+                                pass
+
+                    total_opinions=sum(counts.values())
+                    if total_opinions:
+                        for label in ("Buy","Hold","Sell"):
+                            if counts[label]:
+                                rec.append({
+                                    "main":label,
+                                    "sub":"Finnhub 최근 추천의견 집계",
+                                    "val":str(counts[label]),
+                                    "sub_val":"실제 집계"
+                                })
+                except Exception as e:
+                    print(f"[CONSENSUS] recommendation fetch failed for {key}: {e}")
+
+                # 2) 실제 애널리스트 목표주가
+                # Finnhub price-target 응답: targetHigh / targetLow / targetMean / targetMedian
+                try:
+                    target_cache_key=f"price_target:{key}"
+                    target_cached=_cache_get(FINNHUB_CONSENSUS_CACHE,target_cache_key,FINNHUB_CONSENSUS_CACHE_TTL)
+                    if target_cached is None:
+                        target_url="https://finnhub.io/api/v1/stock/price-target"
+                        target_res=HTTP_SESSION.get(
+                            target_url,
+                            params={"symbol":key,"token":FINNHUB_API_KEY},
+                            timeout=4.0
+                        )
+                        if target_res.ok:
+                            payload=target_res.json()
+                            target_cached=payload if isinstance(payload,dict) else {}
+                        else:
+                            target_cached={}
+                        _cache_set(FINNHUB_CONSENSUS_CACHE,target_cache_key,target_cached)
+
+                    if isinstance(target_cached,dict):
+                        target_p=_safe_float(target_cached.get("targetMean"))
+                        target_low=_safe_float(target_cached.get("targetLow"))
+                        target_high=_safe_float(target_cached.get("targetHigh"))
+                        if target_p is not None and target_p <= 0:
+                            target_p=None
+                        if target_low is not None and target_low <= 0:
+                            target_low=None
+                        if target_high is not None and target_high <= 0:
+                            target_high=None
+                except Exception as e:
+                    print(f"[CONSENSUS] price target fetch failed for {key}: {e}")
+
+            # 목표가 범위가 실제 데이터로 존재할 때만 슬라이더 범위를 표시한다.
+            if target_p and raw_price:
+                primary_val=f"${target_p:,.2f}"
+                upside=((target_p-raw_price)/raw_price)*100
+                primary_label="평균 목표가"
+                secondary_val=f"${raw_price:,.2f}"
+
+                if target_low and target_high and target_high > target_low:
+                    low_p=target_low
+                    high_p=target_high
+                    fill_pct=int(((target_p-low_p)/(high_p-low_p))*100)
+                    fill_pct=min(92,max(8,fill_pct))
+                    slider_left=f"${low_p:,.2f}"
+                    slider_mid=f"평균 ${target_p:,.2f} ({upside:+.1f}%)"
+                    slider_right=f"${high_p:,.2f}"
+                else:
+                    # 범위 데이터가 없으면 가상의 고/저값을 만들지 않는다.
+                    low_p=high_p=None
+                    fill_pct=50
+                    slider_left=f"현재가 ${raw_price:,.2f}"
+                    slider_mid=f"평균 ${target_p:,.2f} ({upside:+.1f}%)"
+                    slider_right="목표범위 미확인"
+            else:
+                primary_label="평균 목표가"
+                primary_val="실제 목표가 데이터 없음"
+                secondary_val=f"${raw_price:,.2f}" if raw_price else "-"
+                low_p=high_p=None
+                fill_pct=50
+                slider_left=f"${raw_price:,.2f}" if raw_price else "-"
+                slider_mid="실제 목표가 확인 필요"
+                slider_right="-"
+
+            total_opinions=sum(counts.values())
+            if total_opinions == 0 and not target_p:
+                source_tag="실제 컨센서스 데이터 없음" if FINNHUB_API_KEY else "FINNHUB API 미연결"
+            elif target_p:
+                source_tag="출처: Finnhub / 추천의견·목표주가 실제 데이터"
+            else:
+                source_tag="출처: Finnhub / 추천의견 실제 데이터"
+
             return {
-                "title":"실제 애널리스트 의견", "gauge_val":str(sum(counts.values())), "gauge_label":"확인 의견",
-                "status_label":"검증 데이터", "badge_text":"실제 데이터만 표시",
+                "title":"애널리스트 컨센서스",
+                "gauge_val":str(total_opinions),
+                "gauge_label":"확인 의견",
+                "status_label":"검증 데이터",
+                "badge_text":"실제 데이터만 표시",
                 "dots":f"Buy {counts['Buy']} · Hold {counts['Hold']} · Sell {counts['Sell']}",
-                "primary_label":"평균 목표가", "primary_val":"실제 목표가 데이터 없음",
-                "secondary_label":"현재가", "secondary_val":f"${raw_price:,.2f}" if raw_price else "-",
-                "slider_left":f"${raw_price:,.2f}" if raw_price else "-", "slider_mid":"목표가 확인 필요",
-                "slider_right":"-", "fill_pct":50, "list_title":"실제 애널리스트 의견",
-                "source_tag":"출처: Finnhub / 확인 가능한 데이터" if FINNHUB_API_KEY else "실제 컨센서스 API 미연결", "items":rec
+                "primary_label":primary_label,
+                "primary_val":primary_val,
+                "secondary_label":"현재가",
+                "secondary_val":secondary_val,
+                "slider_left":slider_left,
+                "slider_mid":slider_mid,
+                "slider_right":slider_right,
+                "fill_pct":fill_pct,
+                "list_title":"실제 애널리스트 의견",
+                "source_tag":source_tag,
+                "items":rec
             }
     except Exception as exc:
         print(f"[CONSENSUS] {symbol} failed: {exc}")

@@ -2927,45 +2927,75 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             return _safe_num(v)
 
         def _collect_report_dicts(payload):
-            """Naver v2/v1 응답이 list/dict 어느 형태여도 실제 리포트 객체를 찾는다."""
+            """Naver 리서치 응답의 버전/필드명 차이를 흡수해 실제 리포트 객체만 수집한다."""
             report_keys = {
-                "researchid", "research_id", "researchno", "reportid",
-                "writecorpname", "brokercode", "brokername", "brokeragename",
-                "firmname", "publishername", "securitiesname", "writername",
-                "investmentopinion", "investmentopinionname", "opinion",
-                "recommendation", "rating", "investopinion",
-                "targetprice", "targetpricevalue", "pricetarget", "targetmeanprice",
-                "writedate", "researchdate", "publishdate", "publishedat",
-                "reportdate", "regdate", "createdat", "title", "reporttitle",
-                "researchtitle", "subject"
+                # id
+                "researchid", "research_id", "researchno", "researchnumber", "reportid", "report_id",
+                # broker / publisher
+                "writecorpname", "writecorp", "brokercode", "brokername", "brokeragename", "brokerage",
+                "firmname", "firm_name", "publishername", "publisher", "securitiesname", "securities",
+                "writername", "writer", "corpname", "corp_name", "companyname", "company_name",
+                # opinion
+                "investmentopinion", "investmentopinionname", "investment_opinion", "opinion",
+                "recommendation", "rating", "investopinion", "opinionname", "opinion_name",
+                # target price
+                "targetprice", "targetpricevalue", "target_price", "pricetarget", "price_target",
+                "targetmeanprice", "targetmean", "target_price_mean", "targetprice_mean",
+                "averageTargetPrice", "average_target_price", "avgTargetPrice", "avg_target_price",
+                # date
+                "writedate", "researchdate", "publishdate", "publishedat", "published_at",
+                "reportdate", "regdate", "createdat", "created_at", "date",
+                # title
+                "title", "reporttitle", "report_title", "researchtitle", "research_title", "subject", "name"
             }
             out=[]; seen=set()
             for node in _walk_objects(payload):
                 keys={str(k).lower() for k in node.keys()}
-                score=len(keys & report_keys)
-                if score >= 2 or (score >= 1 and keys & {"researchid","research_id","reportid"}):
-                    # 너무 작은 메타 객체는 제외
-                    if any(k in keys for k in ("researchid","research_id","reportid","title","reporttitle","researchtitle","subject")):
-                        marker=json.dumps(node, ensure_ascii=False, sort_keys=True, default=str)
-                        if marker not in seen:
-                            seen.add(marker); out.append(node)
+                matched=keys & {str(k).lower() for k in report_keys}
+                # 리서치 endpoint는 report 객체가 nested/list 형태로 내려올 수 있다.
+                # title/ID가 없어도 증권사+목표가/날짜/의견 조합이면 유효 리포트로 인정한다.
+                identity=keys & {"researchid","research_id","researchno","researchnumber","reportid","report_id"}
+                broker_keys=keys & {"writecorpname","writecorp","brokername","brokeragename","brokerage","firmname","firm_name","publishername","publisher","securitiesname","securities","writername","writer","corpname","corp_name","companyname","company_name"}
+                content_keys=keys & {"investmentopinion","investmentopinionname","investment_opinion","opinion","recommendation","rating","investopinion","opinionname","opinion_name","targetprice","targetpricevalue","target_price","pricetarget","price_target","targetmeanprice","targetmean","target_price_mean","targetprice_mean","averageTargetPrice","average_target_price","avgTargetPrice","avg_target_price","writedate","researchdate","publishdate","publishedat","published_at","reportdate","regdate","createdat","created_at","date","title","reporttitle","report_title","researchtitle","research_title","subject","name"}
+                is_report = bool(identity) or (bool(broker_keys) and bool(content_keys)) or len(matched) >= 3
+                if not is_report:
+                    continue
+                marker=json.dumps(node, ensure_ascii=False, sort_keys=True, default=str)
+                if marker not in seen:
+                    seen.add(marker); out.append(node)
             return out
 
         def _parse_report(node):
             if not isinstance(node, dict):
                 return None
-            broker=_value(node,["writeCorpName","brokerName","brokerageName","companyName","firmName","publisherName","broker","securitiesName","writerName","corpName"])
-            title=_value(node,["title","reportTitle","subject","researchTitle","name"])
-            opinion=_value(node,["investmentOpinion","investmentOpinionName","opinion","recommendation","rating","investOpinion","opinionName"])
-            date_val=_value(node,["writeDate","researchDate","publishedAt","publishDate","reportDate","date","regDate","createdAt","createDate"])
-            tp=_number(node,["targetPrice","targetPriceValue","target","priceTarget","targetMean","targetMeanPrice"])
-            rid=_value(node,["researchId","research_id","researchNo","reportId","id"])
-            # 리포트 객체임을 판단할 최소 기준: 제목/ID/증권사/목표가/날짜 중 하나 이상
+            broker=_value(node,[
+                "writeCorpName","writeCorp","brokerName","brokerageName","brokerage",
+                "companyName","company_name","firmName","firm_name","publisherName","publisher",
+                "broker","securitiesName","securities","writerName","writer","corpName","corp_name"
+            ])
+            title=_value(node,["title","reportTitle","report_title","subject","researchTitle","research_title","name"])
+            opinion=_value(node,[
+                "investmentOpinion","investmentOpinionName","investment_opinion",
+                "opinion","recommendation","rating","investOpinion","opinionName","opinion_name"
+            ])
+            date_val=_value(node,[
+                "writeDate","researchDate","publishedAt","published_at","publishDate",
+                "reportDate","date","regDate","createdAt","created_at","createDate"
+            ])
+            tp=_number(node,[
+                "targetPrice","targetPriceValue","target","priceTarget","price_target",
+                "targetMean","targetMeanPrice","target_price_mean","targetprice_mean",
+                "averageTargetPrice","average_target_price","avgTargetPrice","avg_target_price"
+            ])
+            rid=_value(node,["researchId","research_id","researchNo","researchNumber","reportId","report_id","id"])
+
+            # 실제 리포트로 볼 수 있는 최소 정보. 제목/ID가 없어도
+            # 증권사 + 목표가/의견/날짜 조합이면 표시한다.
             if not any([broker,title,opinion,date_val,tp,rid]):
                 return None
-            # 날짜/증권사 없이 단순 nested metadata만 잡히는 것을 줄임
-            if not title and not rid and not broker:
+            if not any([title,rid,broker,tp,opinion]):
                 return None
+
             date_txt=str(date_val)[:10] if date_val else ""
             sub=[]
             if opinion: sub.append(str(opinion))
@@ -2974,7 +3004,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
             upside=((tp-current)/current*100) if tp and current else None
             return {
                 "main":str(broker or "증권사 리포트"),
-                "sub":" · ".join(sub) or "실제 리포트",
+                "sub":" · ".join(sub) or (str(title)[:80] if title else "실제 리포트"),
                 "val":f"{int(tp):,}원" if tp else "목표가 미확인",
                 "sub_val":f"{upside:+.1f}%" if upside is not None else "",
                 "_id":str(rid or ""),
@@ -3111,7 +3141,7 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
 
             if FINNHUB_API_KEY and key:
                 try:
-                    ck=f"recommendation:{key}"; cached=_cache_get(FINNHUB_CONSENSUS_CACHE,ck,FHINHUB_CONSENSUS_CACHE_TTL if 'FHINHUB_CONSENSUS_CACHE_TTL' in globals() else FINNHUB_CONSENSUS_CACHE_TTL)
+                    ck=f"recommendation:{key}"; cached=_cache_get(FINNHUB_CONSENSUS_CACHE,ck,FINNHUB_CONSENSUS_CACHE_TTL)
                     if cached is None:
                         rr=HTTP_SESSION.get("https://finnhub.io/api/v1/stock/recommendation",params={"symbol":key,"token":FINNHUB_API_KEY},timeout=5.0)
                         print(f"[CONSENSUS][US] recommendation {key} HTTP {rr.status_code}")

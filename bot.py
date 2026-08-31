@@ -2491,16 +2491,27 @@ def _strip_news_html(value):
 
 
 def fetch_naver_news(query_keyword, limit=10):
-    """네이버 뉴스 검색 API. 실패하면 빈 결과를 반환해 기존 fallback을 유지한다."""
+    """
+    네이버 뉴스 검색 API.
+    - Render 환경변수 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 사용
+    - 429/5xx는 짧게 재시도
+    - 빈 결과는 캐시하지 않아 일시적인 API 오류가 화면에 오래 남지 않게 함
+    - 실패하면 호출부의 Google RSS / Alpha Vantage fallback이 계속 동작
+    """
     if not NAVER_CLIENT_ID or not NAVER_CLIENT_SECRET:
         print("[NAVER NEWS] API key not configured; fallback sources will be used.")
         return []
 
-    clean_k = re.sub(r"\(.*?\)", "", str(query_keyword or "")).replace("USDT", "").strip()
+    clean_k = re.sub(r"\(.*?\)", "", str(query_keyword or ""))
+    clean_k = re.sub(r"\s+", " ", clean_k.replace("USDT", "")).strip()
     if not clean_k:
         return []
 
-    limit = max(1, min(int(limit or 10), 100))
+    try:
+        limit = max(1, min(int(limit or 10), 100))
+    except (TypeError, ValueError):
+        limit = 10
+
     cache_key = f"{clean_k}|{limit}"
     cached = _cache_get(NAVER_NEWS_CACHE, cache_key, NAVER_NEWS_CACHE_TTL)
     if cached is not None:
@@ -2512,56 +2523,103 @@ def fetch_naver_news(query_keyword, limit=10):
         "Accept": "application/json",
         "User-Agent": "gaemiGTP/1.0",
     }
-    params = {"query": clean_k, "display": limit, "start": 1, "sort": "date"}
+    params = {
+        "query": clean_k,
+        "display": limit,
+        "start": 1,
+        "sort": "date",
+    }
 
-    try:
-        res = HTTP_SESSION.get(
-            NAVER_NEWS_API_URL,
-            params=params,
-            headers=headers,
-            timeout=5.0,
-        )
-        print(f"[NAVER NEWS] query={clean_k!r} HTTP {res.status_code}")
+    for attempt in range(2):
+        try:
+            res = HTTP_SESSION.get(
+                NAVER_NEWS_API_URL,
+                params=params,
+                headers=headers,
+                timeout=6.0,
+            )
+            print(
+                f"[NAVER NEWS] query={clean_k!r} "
+                f"HTTP {res.status_code} attempt={attempt + 1}"
+            )
 
-        if not res.ok:
-            body = (res.text or "")[:300].replace("\n", " ")
-            print(f"[NAVER NEWS] HTTP error body={body}")
-            return []
-
-        payload = res.json()
-        items = payload.get("items", []) if isinstance(payload, dict) else []
-        out = []
-
-        for item in items[:limit]:
-            if not isinstance(item, dict):
+            if res.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+                time.sleep(0.8)
                 continue
 
-            title = _strip_news_html(item.get("title", ""))
-            description = _strip_news_html(item.get("description", ""))
-            link = item.get("originallink") or item.get("link") or "#"
-            pub_date = item.get("pubDate", "")
-            source = ""
+            if not res.ok:
+                body = (res.text or "")[:500].replace("\n", " ")
+                print(
+                    f"[NAVER NEWS] HTTP error "
+                    f"status={res.status_code} body={body}"
+                )
+                return []
 
-            parts = title.rsplit(" - ", 1)
-            if len(parts) == 2 and parts[1].strip():
-                title = parts[0].strip()
-                source = parts[1].strip()
+            try:
+                payload = res.json()
+            except ValueError:
+                print("[NAVER NEWS] JSON parsing failed")
+                return []
 
-            out.append({
-                "title": title,
-                "description": description,
-                "media": source or "네이버 뉴스",
-                "pubDate": pub_date,
-                "link": link,
-                "source": "Naver News Search API",
-            })
+            items = payload.get("items", []) if isinstance(payload, dict) else []
+            if not isinstance(items, list):
+                items = []
 
-        print(f"[NAVER NEWS] query={clean_k!r} items={len(out)}")
-        return _cache_set(NAVER_NEWS_CACHE, cache_key, out)
+            out = []
+            for item in items[:limit]:
+                if not isinstance(item, dict):
+                    continue
 
-    except Exception as exc:
-        print(f"[NAVER NEWS] fetch failed query={clean_k!r}: {type(exc).__name__}: {exc}")
-        return []
+                title = _strip_news_html(item.get("title", ""))
+                description = _strip_news_html(item.get("description", ""))
+                link = (
+                    str(item.get("originallink") or item.get("link") or "#").strip()
+                )
+                pub_date = str(item.get("pubDate") or "").strip()
+
+                if not title or link == "#":
+                    continue
+
+                # 일부 응답에서 제목 뒤에 " - 언론사명"이 붙는 경우 분리
+                source = ""
+                parts = title.rsplit(" - ", 1)
+                if len(parts) == 2 and parts[1].strip():
+                    title = parts[0].strip()
+                    source = parts[1].strip()
+
+                out.append({
+                    "title": title,
+                    "description": description,
+                    "media": source or "네이버 뉴스",
+                    "pubDate": pub_date,
+                    "link": link,
+                    "source": "Naver News Search API",
+                })
+
+            print(f"[NAVER NEWS] query={clean_k!r} items={len(out)}")
+
+            # 실제 뉴스가 있을 때만 캐시한다.
+            if out:
+                return _cache_set(NAVER_NEWS_CACHE, cache_key, out)
+            return []
+
+        except requests.RequestException as exc:
+            print(
+                f"[NAVER NEWS] request failed "
+                f"query={clean_k!r}: {type(exc).__name__}: {exc}"
+            )
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            return []
+        except Exception as exc:
+            print(
+                f"[NAVER NEWS] fetch failed "
+                f"query={clean_k!r}: {type(exc).__name__}: {exc}"
+            )
+            return []
+
+    return []
 
 
 def fetch_naver_news_queries(query_keywords, limit_each=10):
@@ -5331,8 +5389,8 @@ def run_full_pipeline(query):
         f_naver_stock_news = executor.submit(fetch_naver_news, formal_name, 10)
         f_naver_global_news = executor.submit(
             fetch_naver_news_queries,
-            ["뉴욕증시", "미국증시", "나스닥"],
-            6,
+            ["뉴욕증시", "미국증시", "미국 증시", "나스닥", "미국 주식"],
+            5,
         )
         f_news = executor.submit(fetch_rss_news, formal_name, 10)
         f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10)

@@ -2898,59 +2898,194 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
     """
     try:
         if market_name in ["국내주식", "국내증시"]:
-            target_p=None
-            reports=[]
+            # 국내주식은 네이버 통합 API의 consensusInfo/researches를 우선 사용한다.
+            # 기존 /research?page=1&pageSize=5 의 응답 구조 의존을 제거하고,
+            # stockSecurity/researches/v2/company를 fallback으로 사용한다.
+            target_p = None
+            recommendation = None
+            reports = []
+
+            def _first_float(obj, keys):
+                if isinstance(obj, dict):
+                    for k in keys:
+                        if k in obj:
+                            v = _safe_float(obj.get(k))
+                            if v is not None and v > 0:
+                                return v
+                    for v in obj.values():
+                        got = _first_float(v, keys)
+                        if got is not None:
+                            return got
+                elif isinstance(obj, list):
+                    for v in obj:
+                        got = _first_float(v, keys)
+                        if got is not None:
+                            return got
+                return None
+
+            def _first_value(obj, keys):
+                if isinstance(obj, dict):
+                    for k in keys:
+                        v = obj.get(k)
+                        if v not in (None, "", [], {}):
+                            return v
+                    for v in obj.values():
+                        got = _first_value(v, keys)
+                        if got not in (None, "", [], {}):
+                            return got
+                elif isinstance(obj, list):
+                    for v in obj:
+                        got = _first_value(v, keys)
+                        if got not in (None, "", [], {}):
+                            return got
+                return None
+
             try:
-                url=f"https://m.stock.naver.com/api/stock/{symbol}/integration"
-                res=HTTP_SESSION.get(url,timeout=2.0)
+                url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
+                res = HTTP_SESSION.get(url, timeout=5.0)
                 res.raise_for_status()
-                payload=res.json()
-                for item in payload.get("totalInfos",[]):
-                    if item.get("code") in ["targetPrice","consensusTargetPrice"]:
-                        v=_safe_float(item.get("value"))
-                        if v and v>0:
-                            target_p=v
+                payload = res.json()
+
+                # 최신 공개 구조: consensusInfo.priceTargetMean / recommMean
+                ci = payload.get("consensusInfo") or {}
+                target_p = _first_float(ci, [
+                    "priceTargetMean", "targetPriceMean", "targetMean", "averageTargetPrice",
+                    "consensusTargetPrice", "targetPrice"
+                ])
+                recommendation = _first_value(ci, [
+                    "recommMean", "recommendationMean", "investmentOpinion", "opinion", "recommendation"
+                ])
+
+                # integration 안의 researches도 우선 사용
+                integrated_reports = payload.get("researches") or []
+                if isinstance(integrated_reports, dict):
+                    integrated_reports = integrated_reports.get("items") or integrated_reports.get("content") or []
+
+                if isinstance(integrated_reports, list):
+                    for it in integrated_reports:
+                        if not isinstance(it, dict):
+                            continue
+                        broker = _first_value(it, ["writeCorpName", "companyName", "brokerName", "firmName", "publisherName"])
+                        tp = _first_float(it, ["targetPrice", "targetPriceValue", "target", "priceTarget"])
+                        opinion = _first_value(it, ["investmentOpinion", "opinion", "recommendation", "recomm"])
+                        date = _first_value(it, ["writeDate", "researchDate", "publishedDate", "date", "localDate"])
+                        if not broker and tp is None and not opinion:
+                            continue
+                        reports.append({
+                            "main": str(broker or "증권사 리포트"),
+                            "sub": f"{opinion or '의견 확인 필요'} · {str(date or '')[:10]}",
+                            "val": f"{int(tp):,}원" if tp else "목표가 미확인",
+                            "sub_val": f"{((tp-raw_price)/raw_price)*100:+.1f}%" if tp and raw_price else ""
+                        })
+            except Exception as e:
+                print(f"[CONSENSUS][KR] integration failed {symbol}: {type(e).__name__}: {e}")
+
+            # 최신 v2 종목별 리서치 API fallback
+            if not reports:
+                try:
+                    v2_url = "https://m.stock.naver.com/api/stockSecurity/researches/v2/company"
+                    rr = HTTP_SESSION.get(
+                        v2_url,
+                        params={"itemCodes": symbol, "index": 0, "size": 20},
+                        timeout=5.0
+                    )
+                    rr.raise_for_status()
+                    data = rr.json()
+                    items = data.get("company") or data.get("items") or data.get("content") or data.get("researches") or []
+                    if isinstance(items, dict):
+                        items = items.get("content") or items.get("items") or []
+                    if isinstance(items, list):
+                        for it in items:
+                            if not isinstance(it, dict):
+                                continue
+                            broker = _first_value(it, ["writeCorpName", "companyName", "brokerName", "firmName", "publisherName"])
+                            tp = _first_float(it, ["targetPrice", "targetPriceValue", "target", "priceTarget"])
+                            opinion = _first_value(it, ["investmentOpinion", "opinion", "recommendation", "recomm"])
+                            date = _first_value(it, ["writeDate", "researchDate", "publishedDate", "date", "localDate"])
+                            if not broker and tp is None and not opinion:
+                                continue
+                            reports.append({
+                                "main": str(broker or "증권사 리포트"),
+                                "sub": f"{opinion or '의견 확인 필요'} · {str(date or '')[:10]}",
+                                "val": f"{int(tp):,}원" if tp else "목표가 미확인",
+                                "sub_val": f"{((tp-raw_price)/raw_price)*100:+.1f}%" if tp and raw_price else ""
+                            })
+                except Exception as e:
+                    print(f"[CONSENSUS][KR] v2 research failed {symbol}: {type(e).__name__}: {e}")
+
+            # 최후 fallback: 구형 research API. 단, 기간을 5개로 고정하지 않는다.
+            if not reports:
+                try:
+                    rep_url = f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=20"
+                    rr = HTTP_SESSION.get(rep_url, timeout=5.0)
+                    rr.raise_for_status()
+                    data = rr.json()
+                    items = data.get("items") or data.get("researches") or data.get("content") or []
+                    if isinstance(items, list):
+                        for it in items:
+                            if not isinstance(it, dict):
+                                continue
+                            broker = _first_value(it, ["writeCorpName", "companyName", "brokerName", "firmName"])
+                            tp = _first_float(it, ["targetPrice", "targetPriceValue", "target", "priceTarget"])
+                            opinion = _first_value(it, ["investmentOpinion", "opinion", "recommendation"])
+                            date = _first_value(it, ["writeDate", "researchDate", "date"])
+                            if not broker and tp is None and not opinion:
+                                continue
+                            reports.append({
+                                "main": str(broker or "증권사 리포트"),
+                                "sub": f"{opinion or '의견 확인 필요'} · {str(date or '')[:10]}",
+                                "val": f"{int(tp):,}원" if tp else "목표가 미확인",
+                                "sub_val": f"{((tp-raw_price)/raw_price)*100:+.1f}%" if tp and raw_price else ""
+                            })
+                except Exception as e:
+                    print(f"[CONSENSUS][KR] legacy research failed {symbol}: {type(e).__name__}: {e}")
+
+            # integration의 researches에서 목표가를 찾지 못했다면 리포트의 최근 목표가를 보조값으로 사용.
+            # 단, 이것은 '평균 컨센서스'라고 부르지 않고 최신 확인 목표가로 표시한다.
+            if target_p is None:
+                for r in reports:
+                    try:
+                        val = _safe_float(str(r.get("val", "")).replace(",", "").replace("원", ""))
+                        if val and val > 0:
+                            target_p = val
                             break
-            except Exception as e:
-                print(f"[CONSENSUS][KR] target fetch failed {symbol}: {type(e).__name__}: {e}")
-            try:
-                rep_url=f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=5"
-                rr=HTTP_SESSION.get(rep_url,timeout=2.0)
-                rr.raise_for_status()
-                payload=rr.json()
-                for it in (payload.get("items",[]) or payload.get("researches",[]))[:5]:
-                    broker=it.get("writeCorpName") or it.get("companyName")
-                    tp=_safe_float(it.get("targetPrice"))
-                    if not broker and tp is None:
-                        continue
-                    reports.append({
-                        "main":broker or "증권사 리포트",
-                        "sub":f"{it.get('investmentOpinion') or '의견 확인 필요'} · {str(it.get('writeDate') or it.get('date') or '')[:10]}",
-                        "val":f"{int(tp):,}원" if tp else "목표가 미확인",
-                        "sub_val":f"{((tp-raw_price)/raw_price)*100:+.1f}%" if tp and raw_price else ""
-                    })
-            except Exception as e:
-                print(f"[CONSENSUS][KR] research fetch failed {symbol}: {type(e).__name__}: {e}")
+                    except Exception:
+                        pass
+
             if target_p and raw_price:
-                low_p=target_p*0.85
-                high_p=target_p*1.15
-                fill_pct=min(92,max(8,int(((target_p-low_p)/max(1,high_p-low_p))*100)))
-                primary_val=f"{int(target_p):,} 원"
-                slider_mid=f"평균 {int(target_p):,}원"
+                low_p = min(raw_price, target_p)
+                high_p = max(raw_price, target_p)
+                span = max(1, high_p - low_p)
+                fill_pct = int(((target_p - low_p) / span) * 84 + 8)
+                fill_pct = min(92, max(8, fill_pct))
+                primary_val = f"{int(target_p):,} 원"
+                slider_mid = f"목표가 {int(target_p):,}원"
+                primary_label = "평균 목표가" if recommendation is not None else "확인 목표가"
             else:
-                high_p=raw_price*1.05 if raw_price else 0
-                fill_pct=50
-                primary_val="실제 컨센서스 없음"
-                slider_mid="컨센서스 확인 필요"
+                high_p = raw_price * 1.05 if raw_price else 0
+                fill_pct = 50
+                primary_val = "실제 컨센서스 없음"
+                slider_mid = "컨센서스 확인 필요"
+                primary_label = "목표가"
+
             return {
-                "title":"애널리스트 컨센서스", "gauge_val":str(len(reports)), "gauge_label":"확인 리포트",
-                "status_label":"검증 데이터", "badge_text":"실제 데이터만 표시",
-                "dots":"" if not reports else f"확인 리포트 {len(reports)}건",
-                "primary_label":"평균 목표가" if target_p else "목표가", "primary_val":primary_val,
-                "secondary_label":"현재가", "secondary_val":f"{int(raw_price):,} 원" if raw_price else "-",
-                "slider_left":f"{int(raw_price):,}원" if raw_price else "-", "slider_mid":slider_mid,
-                "slider_right":f"{int(high_p):,}원" if high_p else "-", "fill_pct":fill_pct,
-                "list_title":"실제 증권사 리포트", "source_tag":"출처: 네이버 리서치 / 확인 가능한 데이터", "items":reports
+                "title": "애널리스트 컨센서스",
+                "gauge_val": str(len(reports)),
+                "gauge_label": "확인 리포트",
+                "status_label": "검증 데이터",
+                "badge_text": "실제 데이터만 표시",
+                "dots": "" if not reports else f"확인 리포트 {len(reports)}건",
+                "primary_label": primary_label,
+                "primary_val": primary_val,
+                "secondary_label": "현재가",
+                "secondary_val": f"{int(raw_price):,} 원" if raw_price else "-",
+                "slider_left": f"{int(low_p):,}원" if raw_price and low_p else "-",
+                "slider_mid": slider_mid,
+                "slider_right": f"{int(high_p):,}원" if high_p else "-",
+                "fill_pct": fill_pct,
+                "list_title": "실제 증권사 리포트",
+                "source_tag": "출처: 네이버증권 / 확인 가능한 데이터",
+                "items": reports
             }
 
         if market_name in ["미국주식","글로벌증시","원자재"]:

@@ -6376,16 +6376,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                             </div>
 
-                            <!-- 하단 그래프: 실제 52주 가격 위치 -->
+                            <!-- 근거 확인: 8칸 근거 막대 -->
                             <div style="margin:12px 0 12px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
-                                    <span style="color:var(--text-muted);" id="tLow52w"></span>
-                                    <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
-                                    <span style="color:var(--text-muted);" id="tHigh52w"></span>
+                                <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);">근거 확인</span>
+                                    <span style="color:#38bdf8; font-weight:800;" id="tEvidenceBarLabel">- / 8</span>
                                 </div>
-                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="tSliderFill"></div>
-                                    <div class="dot-marker-style" id="tDotMarker"></div>
+                                <div id="tEvidenceBar"
+                                     style="display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:4px; width:100%; height:10px;">
                                 </div>
                             </div>
 
@@ -8059,19 +8057,38 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             trackVals.length === 0 ? '데이터 부족' : '주가 흐름 데이터 부족';
                     }
 
-                    // 52주 가격 위치: 현재 퀀트 데이터와 동일한 실제 값 사용.
-                    const tq = data.quant || {};
-                    setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
-                    setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
-                    setTxt('tPos52wLabel', '52주 가격 위치');
+                    // 근거 확인: 확인된 실제 근거 데이터를 최대 8칸의 색상 막대로 표시한다.
+                    const evidenceBar = document.getElementById('tEvidenceBar');
+                    const evidenceBarLabel = document.getElementById('tEvidenceBarLabel');
+                    if (evidenceBar) {
+                        const evidenceItems = Array.isArray(evidenceReasons) ? evidenceReasons.slice(0, 8) : [];
+                        const confirmedCount = evidenceItems.filter(r => {
+                            const score = Number(r && r.score);
+                            return Number.isFinite(score) && score !== 0;
+                        }).length;
 
-                    const sliderPct = Number(tq.slider_fill_pct);
-                    const tFill = document.getElementById('tSliderFill');
-                    if (tFill && Number.isFinite(sliderPct)) tFill.style.width = `${sliderPct}%`;
+                        evidenceBar.innerHTML = Array.from({length: 8}, (_, idx) => {
+                            const r = evidenceItems[idx];
+                            const score = Number(r && r.score);
+                            let bg = 'var(--bg-subcard)';
+                            let border = '1px solid var(--border-line)';
+                            if (Number.isFinite(score) && score > 0) {
+                                bg = '#10b981';
+                                border = '1px solid #10b981';
+                            } else if (Number.isFinite(score) && score < 0) {
+                                bg = '#ef4444';
+                                border = '1px solid #ef4444';
+                            } else if (r) {
+                                bg = '#f59e0b';
+                                border = '1px solid #f59e0b';
+                            }
+                            return `<div title="${r ? (r.label || '근거') : '확인된 근거 없음'}"
+                                         style="height:100%; background:${bg}; border:${border}; border-radius:3px; min-width:0;"></div>`;
+                        }).join('');
 
-                    const tDot = document.getElementById('tDotMarker');
-                    if (tDot && Number.isFinite(sliderPct)) {
-                        tDot.style.left = `${Math.min(99, Math.max(1, sliderPct))}%`;
+                        if (evidenceBarLabel) {
+                            evidenceBarLabel.innerText = `${confirmedCount} / 8`;
+                        }
                     }
 
                     // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.

@@ -6975,7 +6975,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
             color: var(--text-muted) !important;
         }
 
-    </style>
+    
+/* 오늘 버튼: 텍스트 대신 새로고침 기호(↻) 사용 */
+.cal-today-btn {
+    font-size: 1.15rem !important;
+    line-height: 1 !important;
+    font-weight: 700 !important;
+    padding: 6px 10px !important;
+    min-width: 36px !important;
+    min-height: 34px !important;
+}
+
+</style>
 </head>
 <body>
 
@@ -7230,7 +7241,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                         <span class="cal-current-date" id="earnCalDisplayDate">--</span>
                                         <button class="cal-arrow-btn" onclick="shiftEarningsCalendarDate(1)">&#10095;</button>
                                     </div>
-                                    <button class="cal-today-btn" onclick="resetEarningsCalendarDate()">오늘</button>
+                                    <button class="cal-today-btn" onclick="resetEarningsCalendarDate()" aria-label="실적 캘린더 오늘" title="오늘로 이동">↻</button>
                                 </div>
 
                                 <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
@@ -7262,7 +7273,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                         <span class="cal-current-date" id="ecoCalDisplayDate">--</span>
                                         <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(1)">&#10095;</button>
                                     </div>
-                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()">오늘</button>
+                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()" aria-label="경제 캘린더 오늘" title="오늘로 이동">↻</button>
                                 </div>
 
                                 <div class="calendar-star-filter" role="group" aria-label="중요도 필터">

@@ -7593,6 +7593,11 @@ function resetToHome() {
             const cleanQ = query.trim();
             if (!cleanQ) return;
 
+            // 현재 분석 종목을 URL에 저장하여 새로고침 후에도 같은 종목을 복원
+            const searchUrl = new URL(window.location.href);
+            searchUrl.searchParams.set('q', cleanQ);
+            window.history.replaceState({}, '', searchUrl.toString());
+
             document.getElementById('centerInput').value = cleanQ;
             document.getElementById('bottomInput').value = cleanQ;
 
@@ -8300,7 +8305,17 @@ function resetToHome() {
             window.addEventListener('resize', resizeChart);
         }
 
-        window.addEventListener('DOMContentLoaded', initTheme);
+        window.addEventListener('DOMContentLoaded', () => {
+            initTheme();
+
+            // 새로고침 시 URL에 저장된 마지막 종목을 자동 복원
+            const params = new URLSearchParams(window.location.search);
+            const savedQuery = params.get('q');
+
+            if (savedQuery && savedQuery.trim()) {
+                doSearch(savedQuery.trim());
+            }
+        });
     </script>
 </body>
 </html>

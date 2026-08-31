@@ -2886,429 +2886,421 @@ def fetch_crypto_candles(symbol):
     return None, None, None
 
 def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
-    """실제 확인 가능한 국내/미국 애널리스트 컨센서스만 표시한다.
-
-    국내주식:
-      - Naver integration의 실제 consensus/target 데이터를 우선 사용
-      - Naver 최신 stockSecurity/researches/v2/company 리서치 API를 우선 사용
-      - 구형 research API는 최후 fallback
-
-    미국주식:
-      - Finnhub recommendation은 기존대로 사용
-      - Finnhub price-target이 403/미지원이면 Alpha Vantage OVERVIEW의
-        실제 AnalystTargetPrice를 fallback으로 사용
-      - 어느 경우에도 임의 목표가를 계산하지 않는다.
+    """
+    애널리스트 컨센서스 수집.
+    - 국내주식: Naver integration/research v2를 우선 사용하고,
+      응답 구조가 달라도 실제 데이터 필드를 최대한 안전하게 파싱한다.
+    - 미국주식: Finnhub 추천의견은 유지하고, 목표가는 Finnhub -> Yahoo quoteSummary
+      -> Alpha Vantage OVERVIEW 순으로 실제 데이터만 사용한다.
+    - 실패/빈 응답은 캐시하지 않는다.
     """
     try:
-        # ------------------------------------------------------------
-        # 공통: 중첩 JSON에서 실제 값 찾기
-        # ------------------------------------------------------------
-        def _walk_objects(obj):
+        market = str(market_name or "").strip()
+        symbol = str(symbol or "").strip()
+        formal_name = str(formal_name or "").strip()
+
+        def _num(v):
+            try:
+                if v is None or v == "":
+                    return None
+                if isinstance(v, dict):
+                    for k in ("raw", "value", "val", "amount"):
+                        if k in v:
+                            return _num(v.get(k))
+                    return None
+                return float(str(v).replace(",", "").replace("%", "").strip())
+            except Exception:
+                return None
+
+        def _walk(obj, max_depth=6):
+            if max_depth < 0:
+                return
             if isinstance(obj, dict):
                 yield obj
                 for v in obj.values():
-                    yield from _walk_objects(v)
+                    yield from _walk(v, max_depth - 1)
             elif isinstance(obj, list):
-                for v in obj:
-                    yield from _walk_objects(v)
+                for v in obj[:100]:
+                    yield from _walk(v, max_depth - 1)
 
-        def _first_number_from_keys(obj, keys):
-            wanted = {str(k).lower() for k in keys}
-            for node in _walk_objects(obj):
-                for k, v in node.items():
-                    if str(k).lower() in wanted:
-                        n = _safe_float(v)
+        def _first_num(obj, keys):
+            for d in _walk(obj):
+                for k in keys:
+                    if k in d:
+                        n = _num(d.get(k))
                         if n is not None and n > 0:
                             return n
             return None
 
-        def _first_value_from_keys(obj, keys):
-            wanted = {str(k).lower() for k in keys}
-            for node in _walk_objects(obj):
-                for k, v in node.items():
-                    if str(k).lower() in wanted and v not in (None, "", [], {}):
-                        return v
+        def _first_text(obj, keys):
+            for d in _walk(obj):
+                for k in keys:
+                    v = d.get(k)
+                    if v not in (None, ""):
+                        return str(v).strip()
             return None
 
-        def _extract_research_items(payload):
-            """Naver v2/v1 응답 차이를 흡수해 리서치 item 목록을 추출한다."""
-            candidates = []
-            preferred_keys = {"content", "items", "researches", "company", "results", "list"}
+        def _normalize_report(item):
+            if not isinstance(item, dict):
+                return None
 
-            def visit(obj, depth=0):
-                if depth > 8:
-                    return
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        if str(k).lower() in preferred_keys and isinstance(v, list):
-                            for item in v:
-                                if isinstance(item, dict):
-                                    candidates.append(item)
-                        visit(v, depth + 1)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        visit(item, depth + 1)
+            # 실제 응답에서 자주 쓰이는 이름들을 모두 허용
+            broker = _first_text(item, [
+                "brokerName", "broker", "brokerageName", "companyName",
+                "company", "securitiesName", "firmName", "publisherName"
+            ])
+            title = _first_text(item, ["title", "reportTitle", "subject", "name"])
+            opinion = _first_text(item, [
+                "opinion", "investmentOpinion", "recommendation",
+                "investOpinion", "rating", "consensus"
+            ])
+            target = _first_num(item, [
+                "targetPrice", "target_price", "targetprice",
+                "target", "targetMean", "targetMeanPrice"
+            ])
+            date = _first_text(item, [
+                "date", "publishedAt", "publishDate", "researchDate",
+                "reportDate", "createdAt", "regDate"
+            ])
 
-            visit(payload)
+            if not any([broker, title, opinion, target, date]):
+                return None
 
-            # preferred key를 못 찾은 경우, 리포트 형태의 dict 자체를 수집
-            if not candidates:
-                for node in _walk_objects(payload):
-                    keys = {str(k).lower() for k in node.keys()}
-                    has_report_signal = bool(
-                        keys.intersection({
-                            "writecorpname", "companyname", "brokername", "firmname",
-                            "investmentopinion", "opinion", "recommendation",
-                            "targetprice", "targetpricevalue", "target", "pricetarget",
-                            "researchdate", "writedate", "date"
-                        })
+            return {
+                "broker": broker or "증권사",
+                "title": title or "",
+                "opinion": opinion or "",
+                "targetPrice": target,
+                "date": date or ""
+            }
+
+        # ------------------------------------------------------------
+        # 🇰🇷 국내주식
+        # ------------------------------------------------------------
+        if market in ["국내주식", "국내증시"]:
+            code = symbol.zfill(6)
+
+            target_p = None
+            reports = []
+            source_parts = []
+
+            # 1) Naver integration — 실제 컨센서스 우선
+            integration_urls = [
+                f"https://m.stock.naver.com/api/stock/{code}/integration",
+                f"https://m.stock.naver.com/api/stock/{code}/integration?key=research"
+            ]
+
+            for url in integration_urls:
+                try:
+                    res = HTTP_SESSION.get(
+                        url,
+                        timeout=5.0,
+                        headers={
+                            "User-Agent": "Mozilla/5.0",
+                            "Accept": "application/json, text/plain, */*",
+                            "Referer": f"https://finance.naver.com/item/main.naver?code={code}",
+                        },
                     )
-                    if has_report_signal:
-                        candidates.append(node)
+                    print(f"[CONSENSUS][KR] integration {code} HTTP {res.status_code}")
+                    if res.ok:
+                        data = res.json()
+
+                        # consensusInfo/consensus 계열을 먼저 탐색
+                        for d in _walk(data):
+                            for k in (
+                                "targetMean", "targetMeanPrice", "targetPrice",
+                                "averageTargetPrice", "avgTargetPrice",
+                                "consensusTargetPrice", "consensusTarget"
+                            ):
+                                if k in d:
+                                    n = _num(d.get(k))
+                                    if n and n > 0:
+                                        target_p = n
+                                        break
+                            if target_p:
+                                break
+
+                        # integration 내부 researches/reports도 수집
+                        for d in _walk(data, max_depth=5):
+                            for key in ("researches", "reports", "research", "items", "contents"):
+                                arr = d.get(key)
+                                if isinstance(arr, list):
+                                    for item in arr[:50]:
+                                        rr = _normalize_report(item)
+                                        if rr and (rr["broker"] != "증권사" or rr["targetPrice"] or rr["title"]):
+                                            reports.append(rr)
+
+                        source_parts.append("Naver integration")
+                        if target_p or reports:
+                            break
+                except Exception as exc:
+                    print(f"[CONSENSUS][KR] integration {code} failed: {exc}")
+
+            # 2) 최신 Naver research v2
+            research_urls = [
+                f"https://m.stock.naver.com/api/stockSecurity/researches/v2/company/{code}",
+                f"https://m.stock.naver.com/api/stockSecurity/researches/v2/company?code={code}",
+                f"https://m.stock.naver.com/api/stock/{code}/research?page=1&pageSize=20",
+            ]
+
+            for url in research_urls:
+                try:
+                    res = HTTP_SESSION.get(
+                        url,
+                        timeout=5.0,
+                        headers={
+                            "User-Agent": "Mozilla/5.0",
+                            "Accept": "application/json, text/plain, */*",
+                            "Referer": f"https://finance.naver.com/item/main.naver?code={code}",
+                        },
+                    )
+                    print(f"[CONSENSUS][KR] research {code} HTTP {res.status_code}")
+                    if not res.ok:
+                        continue
+
+                    data = res.json()
+                    found = 0
+                    for d in _walk(data, max_depth=7):
+                        for key in ("researches", "reports", "research", "items", "contents", "list"):
+                            arr = d.get(key)
+                            if not isinstance(arr, list):
+                                continue
+                            for item in arr[:100]:
+                                rr = _normalize_report(item)
+                                if rr:
+                                    # 날짜/증권사/목표가 중 하나라도 있는 실제 리포트만
+                                    if rr["broker"] != "증권사" or rr["date"] or rr["targetPrice"] or rr["title"]:
+                                        reports.append(rr)
+                                        found += 1
+
+                    if found:
+                        source_parts.append("Naver research-v2")
+                        break
+                except Exception as exc:
+                    print(f"[CONSENSUS][KR] research {code} failed: {exc}")
 
             # 중복 제거
             unique = []
             seen = set()
-            for item in candidates:
-                marker = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
-                if marker not in seen:
-                    seen.add(marker)
-                    unique.append(item)
-            return unique
-
-        def _parse_research_item(it):
-            broker = _first_value_from_keys(it, [
-                "writeCorpName", "companyName", "brokerName", "firmName",
-                "publisherName", "broker"
-            ])
-            opinion = _first_value_from_keys(it, [
-                "investmentOpinion", "opinion", "recommendation", "rating"
-            ])
-            date_val = _first_value_from_keys(it, [
-                "writeDate", "researchDate", "date", "publishedAt", "publishDate"
-            ])
-            tp = _first_number_from_keys(it, [
-                "targetPrice", "targetPriceValue", "target", "priceTarget"
-            ])
-            if not broker and not opinion and tp is None:
-                return None
-            return {
-                "main": str(broker or "증권사 리포트"),
-                "sub": f"{opinion or '의견 확인 필요'} · {str(date_val or '')[:10]}",
-                "val": f"{int(tp):,}원" if tp else "목표가 미확인",
-                "sub_val": f"{((tp-raw_price)/raw_price)*100:+.1f}%" if tp and raw_price else ""
-            }
-
-        # ------------------------------------------------------------
-        # 국내주식: Naver 실제 컨센서스 + 최신 리서치 v2
-        # ------------------------------------------------------------
-        if market_name in ["국내주식", "국내증시"]:
-            target_p = None
-            target_source = None
-            reports = []
-            report_source = None
-
-            # 1) Naver integration: consensusInfo/중첩 구조까지 탐색
-            try:
-                url = f"https://m.stock.naver.com/api/stock/{symbol}/integration"
-                res_obj = HTTP_SESSION.get(
-                    url,
-                    timeout=3.0,
-                    headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR,ko;q=0.9"}
+            for r in reports:
+                key = (
+                    r.get("broker", ""),
+                    r.get("title", ""),
+                    r.get("date", ""),
+                    r.get("targetPrice")
                 )
-                print(f"[CONSENSUS][KR] integration {symbol} HTTP {res_obj.status_code}")
-                if res_obj.ok:
-                    res = res_obj.json()
-                    target_p = _first_number_from_keys(res, [
-                        "consensusTargetPrice", "targetPrice", "targetPriceValue", "averageTargetPrice"
-                    ])
-                    if target_p:
-                        target_source = "Naver integration consensus"
-                        print(f"[CONSENSUS][KR] {symbol} target={target_p:,.0f} from Naver integration")
-                else:
-                    print(f"[CONSENSUS][KR] integration failed {symbol}: HTTP {res_obj.status_code}")
-            except Exception as e:
-                print(f"[CONSENSUS][KR] integration failed {symbol}: {type(e).__name__}: {e}")
+                if key in seen:
+                    continue
+                seen.add(key)
+                unique.append(r)
+            reports = unique[:20]
 
-            # 2) 최신 Naver research v2: 공식 현재 리서치 경로
-            v2_urls = [
-                f"https://m.stock.naver.com/api/stockSecurity/researches/v2/company?itemCodes={urllib.parse.quote(str(symbol))}&index=0&size=20",
-                f"https://m.stock.naver.com/api/stockSecurity/researches/v2/company?itemCodes={urllib.parse.quote(str(symbol))}&index=0&size=50",
+            # 리포트에 실제 목표가만 있다면 '평균 컨센서스'라고 부르지 않고
+            # 별도 확인 데이터로 사용할 수 있도록 target_p가 없을 때만 보조값으로 사용
+            verified_targets = [
+                r["targetPrice"] for r in reports
+                if isinstance(r.get("targetPrice"), (int, float)) and r["targetPrice"] > 0
             ]
-            for rep_url in v2_urls:
-                if reports:
-                    break
-                try:
-                    rr = HTTP_SESSION.get(
-                        rep_url,
-                        timeout=4.0,
-                        headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR,ko;q=0.9"}
-                    )
-                    print(f"[CONSENSUS][KR] research-v2 {symbol} HTTP {rr.status_code}")
-                    if not rr.ok:
-                        continue
-                    payload = rr.json()
-                    items = _extract_research_items(payload)
-                    parsed = []
-                    for it in items:
-                        row = _parse_research_item(it)
-                        if row:
-                            parsed.append(row)
-                    if parsed:
-                        reports = parsed[:20]
-                        report_source = "Naver 최신 리서치 v2"
-                        print(f"[CONSENSUS][KR] {symbol} research-v2 reports={len(reports)}")
-                        # 리서치의 실제 목표가를 보조값으로 사용하되 '평균'으로 부르지 않는다.
-                        if target_p is None:
-                            for row in reports:
-                                tp = _safe_float(str(row.get("val", "")).replace(",", "").replace("원", ""))
-                                if tp and tp > 0:
-                                    target_p = tp
-                                    target_source = "Naver research 최신 확인 목표가"
-                                    print(f"[CONSENSUS][KR] {symbol} fallback target={target_p:,.0f} from research")
-                                    break
-                except Exception as e:
-                    print(f"[CONSENSUS][KR] research-v2 failed {symbol}: {type(e).__name__}: {e}")
 
-            # 3) 구형 research API fallback
-            if not reports:
-                try:
-                    legacy_url = f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=20"
-                    rr = HTTP_SESSION.get(
-                        legacy_url,
-                        timeout=3.0,
-                        headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR,ko;q=0.9"}
-                    )
-                    print(f"[CONSENSUS][KR] legacy research {symbol} HTTP {rr.status_code}")
-                    if rr.ok:
-                        payload = rr.json()
-                        items = _extract_research_items(payload)
-                        parsed = []
-                        for it in items:
-                            row = _parse_research_item(it)
-                            if row:
-                                parsed.append(row)
-                        if parsed:
-                            reports = parsed[:20]
-                            report_source = "Naver 리서치 호환 경로"
-                            print(f"[CONSENSUS][KR] {symbol} legacy reports={len(reports)}")
-                except Exception as e:
-                    print(f"[CONSENSUS][KR] legacy research failed {symbol}: {type(e).__name__}: {e}")
-
-            # 실제 목표가가 있을 때만 목표가 그래프를 그린다.
-            if target_p and raw_price:
-                low_p = min(raw_price, target_p)
-                high_p = max(raw_price, target_p)
-                span = max(1, high_p - low_p)
-                fill_pct = int(((target_p - low_p) / span) * 84 + 8)
-                fill_pct = min(92, max(8, fill_pct))
-                primary_val = f"{int(target_p):,} 원"
-                slider_mid = f"목표가 {int(target_p):,}원"
-                primary_label = "평균 목표가" if target_source == "Naver integration consensus" else "확인 목표가"
+            if target_p is not None:
+                consensus_target = target_p
+                target_source = "Naver 실제 컨센서스"
+            elif verified_targets:
+                # 실제 리포트 목표가들의 단순 평균은 '컨센서스'가 아니므로
+                # UI가 별도 확인값으로 쓸 수 있도록 평균값을 만들지 않는다.
+                consensus_target = None
+                target_source = "Naver 실제 리포트 목표가 확인"
             else:
-                low_p = raw_price * 0.95 if raw_price else 0
-                high_p = raw_price * 1.05 if raw_price else 0
-                fill_pct = 50
-                primary_val = "실제 목표가 데이터 없음"
-                slider_mid = "실제 목표가 확인 필요"
-                primary_label = "목표가"
+                consensus_target = None
+                target_source = "Naver 확인 가능한 목표가 없음"
 
-            if reports:
-                source_tag = f"출처: {report_source or 'Naver 리서치'} / 확인 가능한 실제 데이터"
-                if target_source:
-                    source_tag += f" · {target_source}"
-            elif target_p:
-                source_tag = "출처: Naver / 실제 목표가 데이터"
-            else:
-                source_tag = "출처: Naver / 확인 가능한 컨센서스 데이터 없음"
+            total_reports = len(reports)
+            print(
+                f"[CONSENSUS][KR] {formal_name or code} "
+                f"target={consensus_target} reports={total_reports} "
+                f"sources={','.join(source_parts) or 'none'}"
+            )
 
             return {
-                "title": "애널리스트 컨센서스",
-                "gauge_val": str(len(reports)),
-                "gauge_label": "확인 리포트",
-                "status_label": "검증 데이터",
-                "badge_text": "실제 데이터만 표시",
-                "dots": "" if not reports else f"확인 리포트 {len(reports)}건",
-                "primary_label": primary_label,
-                "primary_val": primary_val,
-                "secondary_label": "현재가",
-                "secondary_val": f"{int(raw_price):,} 원" if raw_price else "-",
-                "slider_left": f"{int(low_p):,}원" if low_p else "-",
-                "slider_mid": slider_mid,
-                "slider_right": f"{int(high_p):,}원" if high_p else "-",
-                "fill_pct": fill_pct,
-                "list_title": "실제 증권사 리포트",
-                "source_tag": source_tag,
-                "items": reports
+                "market": market,
+                "symbol": code,
+                "name": formal_name or code,
+                "targetPrice": consensus_target,
+                "currentPrice": _num(raw_price),
+                "targetLow": min(verified_targets) if verified_targets else None,
+                "targetHigh": max(verified_targets) if verified_targets else None,
+                "reports": reports,
+                "reportCount": total_reports,
+                "source": target_source,
+                "isVerified": bool(consensus_target or verified_targets or reports),
+                "status": "ok" if (consensus_target or verified_targets or reports) else "no_data",
             }
 
         # ------------------------------------------------------------
-        # 미국/글로벌: Finnhub 추천의견 + Alpha Vantage 실제 목표가 fallback
+        # 🇺🇸 미국주식
         # ------------------------------------------------------------
-        if market_name in ["미국주식", "글로벌증시", "원자재"]:
-            rec = []
-            target_p = None
-            target_low = None
-            target_high = None
-            counts = {"Buy": 0, "Hold": 0, "Sell": 0}
-            target_source = None
-            target_error = None
+        if market in ["미국주식", "글로벌증시", "원자재"]:
+            key = symbol.upper()
+            rec = {}
+            target = {}
 
-            if FINNHUB_API_KEY and symbol:
-                key = symbol.upper()
+            if not FINNHUB_API_KEY:
+                print(f"[CONSENSUS][US] {key} FINNHUB_API_KEY missing")
 
-                # 1) Finnhub 추천의견
+            # 추천의견: 기존 Finnhub 유지
+            if FINNHUB_API_KEY:
                 try:
-                    rec_cache_key = f"recommendation:{key}"
-                    cached = _cache_get(FINNHUB_CONSENSUS_CACHE, rec_cache_key, FINNHUB_CONSENSUS_CACHE_TTL)
-                    if cached is None:
-                        url = "https://finnhub.io/api/v1/stock/recommendation"
-                        rr = HTTP_SESSION.get(url, params={"symbol": key, "token": FINNHUB_API_KEY}, timeout=4.0)
-                        print(f"[CONSENSUS][US] recommendation {key} HTTP {rr.status_code}")
-                        if rr.ok:
-                            data = rr.json()
-                            # 가장 최근 월을 사용한다. 실패 결과는 캐시하지 않는다.
-                            cached = data[0] if isinstance(data, list) and data else None
-                            if isinstance(cached, dict):
-                                _cache_set(FINNHUB_CONSENSUS_CACHE, rec_cache_key, cached)
-                        else:
-                            cached = None
+                    url = "https://finnhub.io/api/v1/stock/recommendation"
+                    res = HTTP_SESSION.get(
+                        url,
+                        params={"symbol": key, "token": FINNHUB_API_KEY},
+                        timeout=5.0,
+                    )
+                    print(f"[CONSENSUS][US] recommendation {key} HTTP {res.status_code}")
+                    if res.ok:
+                        data = res.json()
+                        if isinstance(data, list) and data:
+                            rec = data[0]
+                except Exception as exc:
+                    print(f"[CONSENSUS][US] recommendation {key} failed: {exc}")
 
-                    if isinstance(cached, dict):
-                        for k, label in [("strongBuy", "Buy"), ("buy", "Buy"), ("hold", "Hold"), ("sell", "Sell"), ("strongSell", "Sell")]:
-                            try:
-                                counts[label] += int(cached.get(k) or 0)
-                            except (TypeError, ValueError):
-                                pass
+            strong_buy = int(_num(rec.get("strongBuy")) or 0)
+            buy = int(_num(rec.get("buy")) or 0)
+            hold = int(_num(rec.get("hold")) or 0)
+            sell = int(_num(rec.get("sell")) or 0)
+            strong_sell = int(_num(rec.get("strongSell")) or 0)
 
-                    for label in ("Buy", "Hold", "Sell"):
-                        if counts[label]:
-                            rec.append({"main": label, "sub": "Finnhub 최근 추천의견 집계", "val": str(counts[label]), "sub_val": "실제 집계"})
-                except Exception as e:
-                    print(f"[CONSENSUS][US] recommendation failed {key}: {type(e).__name__}: {e}")
+            total = strong_buy + buy + hold + sell + strong_sell
 
-                # 2) Finnhub 목표주가: 403이면 Alpha Vantage로 fallback
+            # 목표가 1: Finnhub
+            if FINNHUB_API_KEY:
                 try:
-                    target_cache_key = f"price_target:{key}"
-                    target_cached = _cache_get(FINNHUB_CONSENSUS_CACHE, target_cache_key, FINNHUB_CONSENSUS_CACHE_TTL)
-                    if target_cached is None:
-                        target_url = "https://finnhub.io/api/v1/stock/price-target"
-                        target_res = HTTP_SESSION.get(target_url, params={"symbol": key, "token": FINNHUB_API_KEY}, timeout=4.0)
-                        print(f"[CONSENSUS][US] Finnhub price-target {key} HTTP {target_res.status_code}")
-                        if target_res.ok:
-                            payload = target_res.json()
-                            target_cached = payload if isinstance(payload, dict) else None
-                            if isinstance(target_cached, dict):
-                                _cache_set(FINNHUB_CONSENSUS_CACHE, target_cache_key, target_cached)
-                        else:
-                            target_cached = None
-                            target_error = f"Finnhub HTTP {target_res.status_code}"
+                    url = "https://finnhub.io/api/v1/stock/price-target"
+                    res = HTTP_SESSION.get(
+                        url,
+                        params={"symbol": key, "token": FINNHUB_API_KEY},
+                        timeout=5.0,
+                    )
+                    print(f"[CONSENSUS][US] price-target {key} HTTP {res.status_code}")
+                    if res.ok:
+                        data = res.json()
+                        target = data if isinstance(data, dict) else {}
+                except Exception as exc:
+                    print(f"[CONSENSUS][US] price-target {key} failed: {exc}")
 
-                    if isinstance(target_cached, dict):
-                        target_p = _safe_float(target_cached.get("targetMean"))
-                        target_low = _safe_float(target_cached.get("targetLow"))
-                        target_high = _safe_float(target_cached.get("targetHigh"))
-                        if target_p and target_p > 0:
-                            target_source = "Finnhub"
-                except Exception as e:
-                    target_error = f"Finnhub {type(e).__name__}: {e}"
-                    print(f"[CONSENSUS][US] Finnhub price-target failed {key}: {type(e).__name__}: {e}")
+            target_mean = _num(target.get("targetMean")) or _num(target.get("targetMedian"))
+            target_low = _num(target.get("targetLow"))
+            target_high = _num(target.get("targetHigh"))
 
-                # 3) Finnhub 목표가가 없으면 Alpha Vantage OVERVIEW의 실제 AnalystTargetPrice 사용
-                if target_p is None and ALPHA_VANTAGE_API_KEY:
+            # 목표가 2: Yahoo Finance quoteSummary
+            if not target_mean:
+                yahoo_urls = [
+                    f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{key}",
+                    f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{key}",
+                ]
+                for url in yahoo_urls:
                     try:
-                        av_cache_key = f"alpha_overview:{key}"
-                        av_cached = _cache_get(FINNHUB_CONSENSUS_CACHE, av_cache_key, 3600)
-                        if av_cached is None:
-                            av_url = "https://www.alphavantage.co/query"
-                            av_res = HTTP_SESSION.get(
-                                av_url,
-                                params={"function": "OVERVIEW", "symbol": key, "apikey": ALPHA_VANTAGE_API_KEY},
-                                timeout=6.0
-                            )
-                            print(f"[CONSENSUS][US] Alpha Vantage OVERVIEW {key} HTTP {av_res.status_code}")
-                            if av_res.ok:
-                                payload = av_res.json()
-                                # Alpha Vantage 제한/오류 응답은 캐시하지 않는다.
-                                if isinstance(payload, dict) and payload.get("AnalystTargetPrice"):
-                                    av_cached = payload
-                                    _cache_set(FINNHUB_CONSENSUS_CACHE, av_cache_key, av_cached)
-                                else:
-                                    av_cached = None
-                                    print(f"[CONSENSUS][US] Alpha Vantage OVERVIEW {key} no AnalystTargetPrice")
-                            else:
-                                av_cached = None
-                                print(f"[CONSENSUS][US] Alpha Vantage OVERVIEW {key} HTTP {av_res.status_code}")
+                        res = HTTP_SESSION.get(
+                            url,
+                            params={"modules": "financialData,price"},
+                            timeout=5.0,
+                            headers={"User-Agent": "Mozilla/5.0"},
+                        )
+                        print(f"[CONSENSUS][US] Yahoo target {key} HTTP {res.status_code}")
+                        if not res.ok:
+                            continue
+                        data = res.json()
+                        result = (
+                            data.get("quoteSummary", {}).get("result", [])
+                            if isinstance(data, dict) else []
+                        )
+                        if result:
+                            fd = result[0].get("financialData", {}) or {}
+                            target_mean = _num((fd.get("targetMeanPrice") or {}).get("raw"))
+                            target_low = _num((fd.get("targetLowPrice") or {}).get("raw"))
+                            target_high = _num((fd.get("targetHighPrice") or {}).get("raw"))
+                            if target_mean:
+                                break
+                    except Exception as exc:
+                        print(f"[CONSENSUS][US] Yahoo target {key} failed: {exc}")
 
-                        if isinstance(av_cached, dict):
-                            target_p = _safe_float(av_cached.get("AnalystTargetPrice"))
-                            if target_p and target_p > 0:
-                                target_source = "Alpha Vantage OVERVIEW"
-                                target_low = None
-                                target_high = None
-                                print(f"[CONSENSUS][US] {key} target={target_p:,.2f} from Alpha Vantage OVERVIEW")
-                    except Exception as e:
-                        print(f"[CONSENSUS][US] Alpha Vantage target failed {key}: {type(e).__name__}: {e}")
+            # 목표가 3: Alpha Vantage OVERVIEW
+            if not target_mean and ALPHA_VANTAGE_KEY:
+                try:
+                    url = "https://www.alphavantage.co/query"
+                    res = HTTP_SESSION.get(
+                        url,
+                        params={
+                            "function": "OVERVIEW",
+                            "symbol": key,
+                            "apikey": ALPHA_VANTAGE_KEY,
+                        },
+                        timeout=8.0,
+                    )
+                    print(f"[CONSENSUS][US] Alpha OVERVIEW {key} HTTP {res.status_code}")
+                    if res.ok:
+                        data = res.json()
+                        target_mean = _num(data.get("AnalystTargetPrice"))
+                        if target_mean:
+                            target_low = target_low or None
+                            target_high = target_high or None
+                except Exception as exc:
+                    print(f"[CONSENSUS][US] Alpha OVERVIEW {key} failed: {exc}")
 
-            if target_p and raw_price:
-                primary_val = f"${target_p:,.2f}"
-                upside = ((target_p - raw_price) / raw_price) * 100
-                primary_label = "평균 목표가"
-                secondary_val = f"${raw_price:,.2f}"
-                if target_low and target_high and target_high > target_low:
-                    low_p = target_low
-                    high_p = target_high
-                    fill_pct = int(((target_p - low_p) / (high_p - low_p)) * 100)
-                    fill_pct = min(92, max(8, fill_pct))
-                    slider_left = f"${low_p:,.2f}"
-                    slider_mid = f"평균 ${target_p:,.2f} ({upside:+.1f}%)"
-                    slider_right = f"${high_p:,.2f}"
-                else:
-                    low_p = high_p = None
-                    fill_pct = 50
-                    slider_left = f"현재가 ${raw_price:,.2f}"
-                    slider_mid = f"평균 ${target_p:,.2f} ({upside:+.1f}%)"
-                    slider_right = "목표범위 미확인"
-            else:
-                primary_label = "평균 목표가"
-                primary_val = "실제 목표가 데이터 없음"
-                secondary_val = f"${raw_price:,.2f}" if raw_price else "-"
-                low_p = high_p = None
-                fill_pct = 50
-                slider_left = f"${raw_price:,.2f}" if raw_price else "-"
-                slider_mid = "실제 목표가 확인 필요"
-                slider_right = "-"
-
-            total_opinions = sum(counts.values())
-            if target_p:
-                source_tag = f"출처: {target_source} / 실제 목표주가" + (" + Finnhub 추천의견" if total_opinions else "")
-            elif total_opinions:
-                source_tag = "출처: Finnhub / 추천의견 실제 데이터" + (f" · {target_error}" if target_error else "")
-            else:
-                source_tag = "실제 컨센서스 데이터 없음" if FINNHUB_API_KEY else "FINNHUB API 미연결"
+            source = []
+            if total:
+                source.append("Finnhub 추천의견")
+            if target_mean:
+                source.append("실제 목표가")
 
             return {
-                "title": "애널리스트 컨센서스",
-                "gauge_val": str(total_opinions),
-                "gauge_label": "확인 의견",
-                "status_label": "검증 데이터",
-                "badge_text": "실제 데이터만 표시",
-                "dots": f"Buy {counts['Buy']} · Hold {counts['Hold']} · Sell {counts['Sell']}",
-                "primary_label": primary_label,
-                "primary_val": primary_val,
-                "secondary_label": "현재가",
-                "secondary_val": secondary_val,
-                "slider_left": slider_left,
-                "slider_mid": slider_mid,
-                "slider_right": slider_right,
-                "fill_pct": fill_pct,
-                "list_title": "실제 애널리스트 의견",
-                "source_tag": source_tag,
-                "items": rec
+                "market": market,
+                "symbol": key,
+                "name": formal_name or key,
+                "strongBuy": strong_buy,
+                "buy": buy,
+                "hold": hold,
+                "sell": sell,
+                "strongSell": strong_sell,
+                "total": total,
+                "targetPrice": target_mean,
+                "targetLow": target_low,
+                "targetHigh": target_high,
+                "currentPrice": _num(raw_price),
+                "reports": [],
+                "reportCount": 0,
+                "source": " / ".join(source) if source else "확인 가능한 컨센서스 데이터 없음",
+                "isVerified": bool(total or target_mean),
+                "status": "ok" if (total or target_mean) else "no_data",
             }
+
+        return {
+            "market": market,
+            "symbol": symbol,
+            "name": formal_name or symbol,
+            "targetPrice": None,
+            "currentPrice": _num(raw_price),
+            "reports": [],
+            "reportCount": 0,
+            "source": "지원하지 않는 시장",
+            "isVerified": False,
+            "status": "no_data",
+        }
+
     except Exception as exc:
-        print(f"[CONSENSUS] {symbol} failed: {type(exc).__name__}: {exc}")
-    return None
+        print(f"[CONSENSUS] unified failed symbol={symbol} market={market_name}: {exc}")
+        return {
+            "market": str(market_name or ""),
+            "symbol": str(symbol or ""),
+            "name": str(formal_name or symbol or ""),
+            "targetPrice": None,
+            "currentPrice": _num(raw_price) if "_num" in locals() else None,
+            "reports": [],
+            "reportCount": 0,
+            "source": "컨센서스 조회 오류",
+            "isVerified": False,
+            "status": "error",
+        }
 
 def _fred_series(series_id, limit=8):
     """FRED 실제 관측값. 캐시와 요청 간격을 적용해 429를 예방한다."""

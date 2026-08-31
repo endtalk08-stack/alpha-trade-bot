@@ -2463,34 +2463,105 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 # ----------------------------------------------------
 # 4. 크롤러 및 유틸리티 함수
 # ----------------------------------------------------
-def fetch_rss_news(query_keyword, limit=5):
+def _parse_news_rss_response(content, limit=5):
+    """RSS XML을 사이트 공통 뉴스 형식으로 변환합니다."""
     headlines = []
-    clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
-    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
     try:
-        r = HTTP_SESSION.get(url, timeout=2.5)
-        if r.status_code == 200:
-            root = ET.fromstring(r.content)
-            for it in root.findall('.//item')[:limit]:
-                t = it.find('title')
-                pub = it.find('pubDate')
-                link = it.find('link')
-                if t is not None and t.text:
-                    title_clean = html.unescape(t.text).strip()
-                    parts = title_clean.rsplit(' - ', 1)
-                    title_text = parts[0]
-                    media_name = parts[1] if len(parts) > 1 else "언론사"
-                    pub_text = pub.text if pub is not None else ""
-                    link_text = link.text if link is not None else "#"
-                    headlines.append({
-                        "title": title_text,
-                        "media": media_name,
-                        "pubDate": pub_text,
-                        "link": link_text
-                    })
-    except Exception:
-        pass
+        root = ET.fromstring(content)
+    except Exception as exc:
+        print(f"[NEWS RSS] XML parse failed: {type(exc).__name__}: {exc}")
+        return headlines
+
+    for it in root.findall('.//item')[:max(1, int(limit))]:
+        t = it.find('title')
+        pub = it.find('pubDate')
+        link = it.find('link')
+        if t is None or not t.text:
+            continue
+
+        title_clean = html.unescape(t.text).strip()
+        parts = title_clean.rsplit(' - ', 1)
+        title_text = parts[0].strip()
+        media_name = parts[1].strip() if len(parts) > 1 else "언론사"
+        pub_text = pub.text.strip() if pub is not None and pub.text else ""
+        link_text = link.text.strip() if link is not None and link.text else "#"
+        headlines.append({
+            "title": title_text,
+            "media": media_name,
+            "pubDate": pub_text,
+            "link": link_text
+        })
     return headlines
+
+
+def fetch_rss_news(query_keyword, limit=5):
+    """Google News RSS 기반 뉴스 수집기.
+
+    기존에는 단일 요청/2.5초 timeout/예외 무시 구조라 Google RSS가 잠깐
+    지연되거나 403/5xx를 반환하면 종목 뉴스와 해외 뉴스가 동시에 빈 화면이 됐습니다.
+    - OR 검색어는 개별 검색어로 분리해 한 소스 실패가 전체 실패가 되지 않게 함
+    - Google News RSS URL 2종을 순차 재시도
+    - timeout/HTTP 상태/파싱 실패를 로그로 남김
+    - 결과는 제목 기준 중복 제거
+    """
+    clean_k = re.sub(r'\(.*?\)', '', str(query_keyword or '')).replace("USDT", "").strip()
+    if not clean_k:
+        return []
+
+    queries = [q.strip() for q in re.split(r'\s+OR\s+', clean_k, flags=re.IGNORECASE) if q.strip()]
+    if not queries:
+        queries = [clean_k]
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
+        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.7,en;q=0.6",
+        "Cache-Control": "no-cache",
+    }
+
+    seen = set()
+    headlines = []
+    per_query_limit = max(3, int(limit))
+
+    for q in queries:
+        encoded = urllib.parse.quote(q)
+        urls = [
+            f"https://news.google.com/rss/search?q={encoded}&hl=ko&gl=KR&ceid=KR:ko",
+            f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en",
+            f"https://news.google.com/news?hl=ko&gl=KR&ie=UTF-8&output=rss&q={encoded}",
+        ]
+
+        got_for_query = False
+        for url in urls:
+            for attempt in range(2):
+                try:
+                    r = HTTP_SESSION.get(url, timeout=6.0, headers=headers)
+                    if r.status_code != 200:
+                        print(f"[NEWS RSS] HTTP {r.status_code} attempt={attempt+1} query={q}")
+                        continue
+
+                    parsed = _parse_news_rss_response(r.content, per_query_limit)
+                    if not parsed:
+                        print(f"[NEWS RSS] empty feed attempt={attempt+1} query={q}")
+                        continue
+
+                    for item in parsed:
+                        key = re.sub(r"\s+", " ", str(item.get("title", ""))).strip().lower()
+                        if not key or key in seen:
+                            continue
+                        seen.add(key)
+                        headlines.append(item)
+                        if len(headlines) >= int(limit):
+                            return headlines
+
+                    got_for_query = True
+                    break
+                except Exception as exc:
+                    print(f"[NEWS RSS] fetch failed attempt={attempt+1} query={q}: {type(exc).__name__}: {exc}")
+            if got_for_query:
+                break
+
+    return headlines[:int(limit)]
 
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
     if not is_krw or not stock_code or not stock_code.isdigit():
@@ -6975,18 +7046,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             color: var(--text-muted) !important;
         }
 
-    
-/* 오늘 버튼: 텍스트 대신 새로고침 기호(↻) 사용 */
-.cal-today-btn {
-    font-size: 1.15rem !important;
-    line-height: 1 !important;
-    font-weight: 700 !important;
-    padding: 6px 10px !important;
-    min-width: 36px !important;
-    min-height: 34px !important;
-}
-
-</style>
+    </style>
 </head>
 <body>
 
@@ -7241,7 +7301,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                         <span class="cal-current-date" id="earnCalDisplayDate">--</span>
                                         <button class="cal-arrow-btn" onclick="shiftEarningsCalendarDate(1)">&#10095;</button>
                                     </div>
-                                    <button class="cal-today-btn" onclick="resetEarningsCalendarDate()" aria-label="실적 캘린더 오늘" title="오늘로 이동">↻</button>
+                                    <button class="cal-today-btn" onclick="resetEarningsCalendarDate()">오늘</button>
                                 </div>
 
                                 <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
@@ -7273,7 +7333,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                         <span class="cal-current-date" id="ecoCalDisplayDate">--</span>
                                         <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(1)">&#10095;</button>
                                     </div>
-                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()" aria-label="경제 캘린더 오늘" title="오늘로 이동">↻</button>
+                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()">오늘</button>
                                 </div>
 
                                 <div class="calendar-star-filter" role="group" aria-label="중요도 필터">

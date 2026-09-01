@@ -3106,16 +3106,33 @@ def fetch_domestic_candles(code, anchor_price=None):
 
     return None
 
+# ===== SPEED OPTIMIZATION 2: overseas candle cache =====
+# 5년치 일봉을 매 검색마다 Yahoo에서 다시 받지 않는다.
+# 기본 TTL은 10분이며, 캐시가 없거나 만료된 경우에만 갱신한다.
+OVERSEAS_CANDLE_CACHE = {}
+OVERSEAS_CANDLE_CACHE_TTL = 10 * 60
+
 def fetch_overseas_candles(symbol):
     """
-    해외주식 차트 데이터 조회.
-    - 차트는 기존 Yahoo Chart API의 일봉 데이터를 사용한다.
-    - 현재가를 일봉 마지막 Close로 오인하지 않는다.
-    - 데이터 누락/HTTP 오류를 조용히 삼키지 않고 로그로 남긴다.
-    - 현재가/세션 가격은 별도 quote snapshot에서 가져올 수 있도록 분리한다.
+    해외주식 차트 데이터 조회 + 서버 메모리 TTL 캐시.
+    - 최초 요청에만 Yahoo 5년 일봉을 가져온다.
+    - 캐시가 살아 있으면 외부 요청 없이 즉시 반환한다.
+    - 반환값은 기존과 동일한 DataFrame 형태다.
     """
+    key = str(symbol or "").strip().upper()
+    if not key:
+        return None
+
+    now = time.time()
+    cached = OVERSEAS_CANDLE_CACHE.get(key)
+    if cached and (now - cached["time"]) < OVERSEAS_CANDLE_CACHE_TTL:
+        try:
+            return cached["df"].copy()
+        except Exception:
+            OVERSEAS_CANDLE_CACHE.pop(key, None)
+
     try:
-        encoded_sym = urllib.parse.quote(symbol.upper())
+        encoded_sym = urllib.parse.quote(key)
         url = (
             f"https://query1.finance.yahoo.com/v8/finance/chart/"
             f"{encoded_sym}?range=5y&interval=1d&includePrePost=false"
@@ -3126,8 +3143,8 @@ def fetch_overseas_candles(symbol):
             headers={"User-Agent": "Mozilla/5.0"}
         )
         response.raise_for_status()
-        res = response.json()
 
+        res = response.json()
         chart = res.get("chart") or {}
         if chart.get("error"):
             raise RuntimeError(f"Yahoo chart error: {chart.get('error')}")
@@ -3144,7 +3161,6 @@ def fetch_overseas_candles(symbol):
         if not ts or not quote:
             raise RuntimeError("Yahoo chart에 timestamp/quote 데이터가 없습니다.")
 
-        records = []
         opens = quote.get("open") or []
         highs = quote.get("high") or []
         lows = quote.get("low") or []
@@ -3152,6 +3168,7 @@ def fetch_overseas_candles(symbol):
         volumes = quote.get("volume") or []
 
         n = min(len(ts), len(opens), len(highs), len(lows), len(closes), len(volumes))
+        records = []
         for i in range(n):
             if any(v is None for v in (opens[i], highs[i], lows[i], closes[i])):
                 continue
@@ -3169,14 +3186,21 @@ def fetch_overseas_candles(symbol):
 
         df = pd.DataFrame(records).set_index("Date").sort_index()
 
-        # 중요: 여기서 반환하는 가격은 '실시간 현재가'가 아니라
-        # 차트의 마지막 정규장 일봉 종가임을 명확히 한다.
-        chart_close = float(df["Close"].iloc[-1])
-        return chart_close, f"{chart_close:,.2f} 달러", df
+        # 다른 분석 함수에서 원본 데이터를 참조하는 기존 구조 보존
+        try:
+            df.attrs["_gaemi_raw_df"] = df.copy()
+        except Exception:
+            pass
+
+        OVERSEAS_CANDLE_CACHE[key] = {
+            "time": now,
+            "df": df.copy(),
+        }
+        return df
 
     except Exception as exc:
-        print(f"[YAHOO CHART ERROR] {symbol}: {type(exc).__name__}: {exc}")
-        return None, None, None
+        print(f"[OVERSEAS CANDLE] {key} failed: {type(exc).__name__}: {exc}")
+        return None
 
 
 def fetch_overseas_quote_snapshot(symbol):
@@ -5671,8 +5695,13 @@ def run_full_pipeline(query):
     elif clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.strip()
-        chart_price, _, df = fetch_overseas_candles(symbol)
-        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
+        # 차트와 실시간 시세는 서로 의존하지 않으므로 동시에 조회한다.
+        with ThreadPoolExecutor(max_workers=2) as price_executor:
+            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
+            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
+            chart_price, _, df = chart_future.result()
+            quote_snapshot = quote_future.result()
+
         if quote_snapshot:
             raw_price = quote_snapshot["price"]
             price_str = f"{raw_price:,.2f} 달러"
@@ -5684,8 +5713,13 @@ def run_full_pipeline(query):
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()
         formal_name = symbol
-        chart_price, _, df = fetch_overseas_candles(symbol)
-        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
+        # 차트와 실시간 시세를 병렬 조회한다.
+        with ThreadPoolExecutor(max_workers=2) as price_executor:
+            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
+            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
+            chart_price, _, df = chart_future.result()
+            quote_snapshot = quote_future.result()
+
         if quote_snapshot:
             raw_price = quote_snapshot["price"]
             price_str = f"{raw_price:,.2f} 달러"
@@ -5751,23 +5785,38 @@ def run_full_pipeline(query):
         dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
         domestic_flow = _safe_future_result(f_domestic_flow, None, "domestic flow") if f_domestic_flow else None
 
-    if CACHED_WORLD_BOARD:
-        world_board = CACHED_WORLD_BOARD
-    else:
-        try:
-            world_board = fetch_all_world_board_parallel() or []
-        except Exception as exc:
-            print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
-            world_board = []
+    # 세계시장 보드와 경제 캘린더도 서로 독립적이므로
+    # 둘 다 캐시가 없을 때만 병렬 조회한다.
+    world_board = CACHED_WORLD_BOARD
+    market_calendar = CACHED_MARKET_CALENDAR
 
-    if CACHED_MARKET_CALENDAR:
-        market_calendar = CACHED_MARKET_CALENDAR
-    else:
-        try:
-            market_calendar = fetch_real_market_calendar_live() or []
-        except Exception as exc:
-            print("[MARKET CALENDAR] 조회 실패:", repr(exc))
-            market_calendar = []
+    need_world = not world_board
+    need_calendar = not market_calendar
+
+    if need_world or need_calendar:
+        with ThreadPoolExecutor(max_workers=2) as board_executor:
+            world_future = (
+                board_executor.submit(fetch_all_world_board_parallel)
+                if need_world else None
+            )
+            calendar_future = (
+                board_executor.submit(fetch_real_market_calendar_live)
+                if need_calendar else None
+            )
+
+            if need_world:
+                try:
+                    world_board = world_future.result() or []
+                except Exception as exc:
+                    print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
+                    world_board = []
+
+            if need_calendar:
+                try:
+                    market_calendar = calendar_future.result() or []
+                except Exception as exc:
+                    print("[MARKET CALENDAR] 조회 실패:", repr(exc))
+                    market_calendar = []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 

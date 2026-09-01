@@ -7198,11 +7198,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 
 /* US Leading Sectors: give sector names more room while keeping 4 return columns compact */
-.us-leading-sectors table { table-layout: fixed; width: 100%; }
-.us-leading-sectors th:first-child,
-.us-leading-sectors td:first-child { width: 118px; text-align: left; }
-.us-leading-sectors th:not(:first-child),
-.us-leading-sectors td:not(:first-child) { width: auto; text-align: right; }
+.us-leading-sector-table { table-layout: fixed; width: 100%; }
+.us-leading-sector-table th:first-child,
+.us-leading-sector-table td:first-child { width: 36%; text-align: left; }
+.us-leading-sector-table th:not(:first-child),
+.us-leading-sector-table td:not(:first-child) { width: 16%; text-align: right; }
+.us-leading-sector-table .us-leading-name { width: 36%; }
 </style>
 </head>
 <body>

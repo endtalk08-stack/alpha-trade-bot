@@ -9665,10 +9665,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     '<thead><tr><th>업종</th><th>현재</th><th>1W</th><th>1M</th><th>3M</th></tr></thead><tbody>';
 
                 rows.forEach(row => {
-                    const safeName = String(row.name || '').replace(/'/g, "\\'");
-                    const safeSym = String(row.sym || '').replace(/'/g, "\\'");
-                    html += `<tr class="us-leading-sector-row" title="${safeName} 업종 차트 보기" onclick="loadSectorChart('${safeSym}', '${safeName}')">` +
-                        `<td class="us-leading-name">${row.name}</td>` +
+                    const safeName = String(row.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const safeSym = String(row.sym || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    html += `<tr class="us-leading-sector-row" title="${safeName} 업종 차트 보기" data-sector-symbol="${safeSym}" data-sector-name="${safeName}">` +
+                        `<td class="us-leading-name">${safeName}</td>` +
                         `<td class="${cls(row.current)}">${pct(row.current)}</td>` +
                         `<td class="${cls(row.week1)}">${pct(row.week1)}</td>` +
                         `<td class="${cls(row.month1)}">${pct(row.month1)}</td>` +
@@ -9677,6 +9677,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 });
                 html += '</tbody></table>';
                 box.innerHTML = html;
+
+                // 인라인 onclick에 의존하지 않고 명시적인 이벤트 리스너로 연결한다.
+                // CSP가 적용된 배포 환경에서도 업종 클릭이 동작하도록 한다.
+                box.querySelectorAll('.us-leading-sector-row').forEach(rowEl => {
+                    rowEl.addEventListener('click', () => {
+                        const sectorSymbol = rowEl.dataset.sectorSymbol || '';
+                        const sectorName = rowEl.dataset.sectorName || '';
+                        loadSectorChart(sectorSymbol, sectorName);
+                    });
+                });
             } catch (error) {
                 console.error('US leading sectors:', error);
                 box.innerHTML = '<div class="us-leading-sector-loading">업종 데이터를 잠시 후 다시 불러옵니다.</div>';

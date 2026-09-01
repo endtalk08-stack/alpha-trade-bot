@@ -8578,7 +8578,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
     </div>
 
     <script>
-        let chart = null;
         let selectedMode = 'gaemi';
         let currentSymbol = '';
         let globalMarketCalendar = [];
@@ -8634,15 +8633,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`
                 : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
         }
-
-        function resizeChart() {
-            const container = document.getElementById('tvChart');
-            if (chart && container && container.clientWidth > 0) {
-                chart.applyOptions({ width: container.clientWidth });
-            }
-        }
-
-        window.addEventListener('resize', resizeChart);
 
         function toggleSidebar() {
             const side = document.getElementById('sidebar-wrapper');
@@ -9521,6 +9511,9 @@ const voteKey = 'vote_' + symbol;
                     console.table(data._perf.slowest_http || []);
                 }
 
+                // 차트 심볼은 분석 응답의 실제 symbol을 사용한다.
+                currentSymbol = data.symbol || '';
+
                 // 차트는 전체 분석 완료를 기다리지 않는다.
                 if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
                     setTimeout(() => {
@@ -10244,49 +10237,82 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
+        function getTradingViewSymbol() {
+            const q = String(currentSymbol || '').trim().toUpperCase();
+            const crypto = {
+                BTCUSDT: 'BINANCE:BTCUSDT', ETHUSDT: 'BINANCE:ETHUSDT',
+                XRPUSDT: 'BINANCE:XRPUSDT', DOGEUSDT: 'BINANCE:DOGEUSDT',
+                SOLUSDT: 'BINANCE:SOLUSDT', ADAUSDT: 'BINANCE:ADAUSDT',
+                AVAXUSDT: 'BINANCE:AVAXUSDT', SKYUSDT: 'BINANCE:SKYUSDT'
+            };
+            if (crypto[q]) return crypto[q];
+
+            const us = {
+                NVDA: 'NASDAQ:NVDA', TSLA: 'NASDAQ:TSLA', AAPL: 'NASDAQ:AAPL',
+                MSFT: 'NASDAQ:MSFT', AMZN: 'NASDAQ:AMZN', GOOGL: 'NASDAQ:GOOGL',
+                META: 'NASDAQ:META', AMD: 'NASDAQ:AMD', IONQ: 'NYSE:IONQ',
+                PLTR: 'NASDAQ:PLTR', TSM: 'NYSE:TSM', QQQ: 'NASDAQ:QQQ',
+                SPY: 'AMEX:SPY', SOXL: 'AMEX:SOXL', TQQQ: 'NASDAQ:TQQQ',
+                DIA: 'AMEX:DIA', SOXX: 'NASDAQ:SOXX'
+            };
+            if (us[q]) return us[q];
+
+            const korea = String(currentSymbol || '').trim();
+            if (/^\d{6}$/.test(korea)) return 'KRX:' + korea;
+
+            const global = {
+                '^KS11': 'KRX:KOSPI', '^KQ11': 'KRX:KOSDAQ',
+                '^VIX': 'CBOE:VIX', 'CL=F': 'NYMEX:CL1!',
+                'GC=F': 'COMEX:GC1!', 'KRW=X': 'FX_IDC:USDKRW'
+            };
+            if (global[currentSymbol]) return global[currentSymbol];
+            return currentSymbol || '';
+        }
+
         function initTvChart(candles) {
             const container = document.getElementById('tvChart');
             if (!container) return;
             container.innerHTML = '';
 
+            const symbol = getTradingViewSymbol();
+            if (!symbol) return;
+
             const isLight = document.body.classList.contains('light-theme');
+            const wrap = document.createElement('div');
+            wrap.className = 'tradingview-widget-container';
+            wrap.style.width = '100%';
+            wrap.style.height = '100%';
 
-            chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 700,
-                height: 300,
-                layout: {
-                    background: { color: isLight ? '#ffffff' : '#1e1f20' },
-                    textColor: isLight ? '#5f6368' : '#8e918f'
-                },
-                grid: {
-                    vertLines: { color: 'rgba(0,0,0,0)' },
-                    horzLines: { color: 'rgba(0,0,0,0)' }
-                },
-                crosshair: {
-                    vertLine: { visible: false },
-                    horzLine: { visible: false }
-                },
-                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
-                rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
+            const widget = document.createElement('div');
+            widget.className = 'tradingview-widget-container__widget';
+            widget.style.width = '100%';
+            widget.style.height = '100%';
+
+            const script = document.createElement('script');
+            script.type = 'text/javascript';
+            script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+            script.async = true;
+            script.text = JSON.stringify({
+                autosize: true,
+                symbol: symbol,
+                interval: 'D',
+                timezone: 'Asia/Seoul',
+                theme: isLight ? 'light' : 'dark',
+                style: '1',
+                locale: 'kr',
+                hide_top_toolbar: true,
+                hide_legend: false,
+                allow_symbol_change: false,
+                save_image: false,
+                calendar: false,
+                hide_volume: false,
+                support_host: 'https://www.tradingview.com'
             });
 
-            const candleSeries = chart.addCandlestickSeries({
-                upColor: '#ef4444',
-                downColor: '#38bdf8',
-                borderDownColor: '#38bdf8',
-                borderUpColor: '#ef4444',
-                wickDownColor: '#38bdf8',
-                wickUpColor: '#ef4444',
-                priceLineVisible: false,
-                lastValueVisible: true
-            });
-            candleSeries.setData(candles || []);
-
-            chart.timeScale().fitContent();
-            // resize 리스너는 전역에서 한 번만 등록한다.
+            wrap.appendChild(widget);
+            wrap.appendChild(script);
+            container.appendChild(wrap);
         }
-
-
 
         function formatUsStockPrice(value) {
             const n = Number(value);

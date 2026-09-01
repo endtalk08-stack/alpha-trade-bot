@@ -1080,6 +1080,257 @@ def fetch_naver_index_5day_returns(index_code="KOSPI", world_item=None):
         print(f"[MARKET 5D] {index_name} failed: {exc}")
         return None
 
+
+# ===== 미국 주도업종 위젯 =====
+US_LEADING_SECTORS = [
+    {"name": "반도체", "sym": "SOXX"},
+    {"name": "AI·데이터센터", "sym": "AIQ"},
+    {"name": "소프트웨어", "sym": "IGV"},
+    {"name": "인터넷·플랫폼", "sym": "FDN"},
+    {"name": "금융", "sym": "XLF"},
+    {"name": "바이오·제약", "sym": "XBI"},
+    {"name": "헬스케어", "sym": "XLV"},
+    {"name": "전기차·자동차", "sym": "DRIV"},
+    {"name": "방산·항공우주", "sym": "ITA"},
+    {"name": "에너지·석유", "sym": "XLE"},
+    {"name": "원자력·전력", "sym": "NLR"},
+    {"name": "소재·화학", "sym": "XLB"},
+    {"name": "산업재", "sym": "XLI"},
+    {"name": "소비재·유통", "sym": "XLY"},
+    {"name": "부동산·리츠", "sym": "XLRE"},
+]
+CACHED_US_LEADING_SECTORS = []
+LAST_US_LEADING_SECTORS_FETCH = 0.0
+US_LEADING_SECTORS_TTL = 300
+
+def _fetch_us_sector_history(symbol):
+    try:
+        encoded = urllib.parse.quote(symbol)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=6mo&interval=1d"
+        res = HTTP_SESSION.get(url, timeout=5.0)
+        res.raise_for_status()
+        payload = res.json()
+        result = (payload.get("chart", {}).get("result") or [None])[0]
+        if not result:
+            return None
+        closes = (result.get("indicators", {}).get("quote", [{}])[0].get("close") or [])
+        closes = [float(x) for x in closes if x is not None and np.isfinite(float(x))]
+        if len(closes) < 65:
+            return None
+        latest = closes[-1]
+        prev = closes[-2]
+        def pct(ago):
+            base = closes[-(ago + 1)]
+            return (latest / base - 1.0) * 100.0 if base else 0.0
+        return {
+            "current": (latest / prev - 1.0) * 100.0 if prev else 0.0,
+            "week1": pct(5),
+            "month1": pct(21),
+            "month3": pct(63),
+        }
+    except Exception as exc:
+        print(f"[US SECTOR] {symbol} failed: {type(exc).__name__}: {exc}")
+        return None
+
+def fetch_us_leading_sectors(force=False):
+    global CACHED_US_LEADING_SECTORS, LAST_US_LEADING_SECTORS_FETCH
+    now = time.time()
+    if (not force and CACHED_US_LEADING_SECTORS
+            and now - LAST_US_LEADING_SECTORS_FETCH < US_LEADING_SECTORS_TTL):
+        return CACHED_US_LEADING_SECTORS
+
+    rows = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        histories = list(executor.map(
+            lambda item: _fetch_us_sector_history(item["sym"]),
+            US_LEADING_SECTORS
+        ))
+
+    for meta, history in zip(US_LEADING_SECTORS, histories):
+        if history is not None:
+            rows.append({"name": meta["name"], "sym": meta["sym"], **history})
+
+    if not rows:
+        return CACHED_US_LEADING_SECTORS
+
+    for row in rows:
+        values_by_key = {key: [r[key] for r in rows]
+                         for key in ("current", "week1", "month1", "month3")}
+        score = 0.0
+        for key, values in values_by_key.items():
+            mean = float(np.mean(values))
+            std = float(np.std(values))
+            z = (row[key] - mean) / std if std > 1e-9 else 0.0
+            score += 0.25 * z
+        row["_selection_score"] = score
+
+    rows.sort(key=lambda r: r["_selection_score"], reverse=True)
+    CACHED_US_LEADING_SECTORS = [
+        {k: v for k, v in row.items() if k != "_selection_score"}
+        for row in rows[:10]
+    ]
+    LAST_US_LEADING_SECTORS_FETCH = now
+    return CACHED_US_LEADING_SECTORS
+
+
+# ===== 미국 주도종목 위젯 (2단계: 실제 데이터) =====
+# 업종별 후보군은 명시적으로 관리하고, 실제 순위는 Yahoo Finance 가격 데이터로 매번 계산한다.
+# 즉, 후보군 자체를 고정 TOP5로 박아두지 않고 현재/1주/1개월 모멘텀을 합산해 TOP5를 자동 선정한다.
+US_SECTOR_STOCK_UNIVERSE = {
+    "SOXX": [
+        ("NVDA", "엔비디아"), ("AVGO", "브로드컴"), ("AMD", "AMD"),
+        ("MU", "마이크론"), ("MRVL", "마벨"), ("QCOM", "퀄컴"),
+        ("TSM", "TSMC"), ("LRCX", "램리서치"), ("AMAT", "어플라이드"), ("KLAC", "KLA"),
+    ],
+    "AIQ": [
+        ("NVDA", "엔비디아"), ("AVGO", "브로드컴"), ("ANET", "아리스타"),
+        ("VRT", "버티브"), ("DELL", "델"), ("PLTR", "팔란티어"),
+        ("SMCI", "슈퍼마이크로"), ("ARM", "ARM"), ("MRVL", "마벨"), ("CDNS", "케이던스"),
+    ],
+    "IGV": [
+        ("MSFT", "마이크로소프트"), ("ORCL", "오라클"), ("CRM", "세일즈포스"),
+        ("ADBE", "어도비"), ("NOW", "서비스나우"), ("INTU", "인튜이트"),
+        ("PANW", "팔로알토"), ("PLTR", "팔란티어"), ("SNPS", "시놉시스"), ("CDNS", "케이던스"),
+    ],
+    "FDN": [
+        ("META", "메타"), ("GOOGL", "알파벳"), ("AMZN", "아마존"),
+        ("NFLX", "넷플릭스"), ("UBER", "우버"), ("ABNB", "에어비앤비"),
+        ("DASH", "도어대시"), ("PINS", "핀터레스트"), ("RDDT", "레딧"), ("SNAP", "스냅"),
+    ],
+    "XLF": [
+        ("JPM", "JP모건"), ("BAC", "뱅크오브아메리카"), ("GS", "골드만삭스"),
+        ("MS", "모건스탠리"), ("C", "씨티그룹"), ("WFC", "웰스파고"),
+        ("BLK", "블랙록"), ("SCHW", "찰스슈왑"), ("AXP", "아메리칸익스프레스"), ("V", "비자"),
+    ],
+    "XBI": [
+        ("REGN", "리제네론"), ("VRTX", "버텍스"), ("AMGN", "암젠"),
+        ("GILD", "길리어드"), ("BIIB", "바이오젠"), ("MRNA", "모더나"),
+        ("ILMN", "일루미나"), ("INCY", "인사이트"), ("BMRN", "바이오마린"), ("ALNY", "앨나일람"),
+    ],
+    "XLV": [
+        ("LLY", "일라이릴리"), ("UNH", "유나이티드헬스"), ("JNJ", "존슨앤드존슨"),
+        ("ABBV", "애브비"), ("MRK", "머크"), ("TMO", "써모피셔"),
+        ("ABT", "애보트"), ("ISRG", "인튜이티브서지컬"), ("DHR", "다나허"), ("PFE", "화이자"),
+    ],
+    "DRIV": [
+        ("TSLA", "테슬라"), ("GM", "GM"), ("F", "포드"), ("RIVN", "리비안"),
+        ("LCID", "루시드"), ("LI", "리오토"), ("NIO", "니오"), ("XPEV", "샤오펑"),
+        ("UBER", "우버"), ("APTV", "앱티브"),
+    ],
+    "ITA": [
+        ("RTX", "RTX"), ("LMT", "록히드마틴"), ("NOC", "노스럽그루먼"),
+        ("GD", "제너럴다이내믹스"), ("HII", "헌팅턴잉걸스"), ("LHX", "L3해리스"),
+        ("GE", "GE에어로스페이스"), ("BA", "보잉"), ("TDG", "트랜스다임"), ("HEI", "하이코"),
+    ],
+    "XLE": [
+        ("XOM", "엑슨모빌"), ("CVX", "셰브론"), ("COP", "코노코필립스"), ("EOG", "EOG리소스"),
+        ("SLB", "SLB"), ("OXY", "옥시덴탈"), ("MPC", "마라톤페트롤리엄"),
+        ("PSX", "필립스66"), ("VLO", "발레로"), ("HAL", "할리버튼"),
+    ],
+    "NLR": [
+        ("CEG", "컨스텔레이션"), ("VST", "비스트라"), ("GEV", "GE버노바"),
+        ("NEE", "넥스트에라"), ("DUK", "듀크에너지"), ("SO", "서던컴퍼니"),
+        ("AEP", "아메리칸일렉트릭"), ("ETN", "이튼"), ("CARR", "캐리어"), ("BWXT", "BWX테크놀로지"),
+    ],
+    "XLB": [
+        ("LIN", "린데"), ("SHW", "셔윈윌리엄스"), ("APD", "에어프로덕츠"),
+        ("ECL", "에코랩"), ("FCX", "프리포트맥모란"), ("NEM", "뉴몬트"),
+        ("NUE", "뉴코"), ("DD", "듀폰"), ("ALB", "앨버말"), ("DOW", "다우"),
+    ],
+    "XLI": [
+        ("GE", "GE에어로스페이스"), ("CAT", "캐터필러"), ("DE", "디어"), ("HON", "허니웰"),
+        ("UNP", "유니언퍼시픽"), ("UPS", "UPS"), ("WM", "웨이스트매니지먼트"),
+        ("RTX", "RTX"), ("ETN", "이튼"), ("MMM", "3M"),
+    ],
+    "XLY": [
+        ("AMZN", "아마존"), ("TSLA", "테슬라"), ("HD", "홈디포"), ("MCD", "맥도날드"),
+        ("TJX", "TJX"), ("LOW", "로우스"), ("NKE", "나이키"), ("BKNG", "부킹홀딩스"),
+        ("SBUX", "스타벅스"), ("TGT", "타깃"),
+    ],
+    "XLRE": [
+        ("PLD", "프로로지스"), ("AMT", "아메리칸타워"), ("EQIX", "에퀴닉스"),
+        ("CCI", "크라운캐슬"), ("WELL", "웰타워"), ("SPG", "사이먼프로퍼티"),
+        ("O", "리얼티인컴"), ("VICI", "VICI프로퍼티"), ("DLR", "디지털리얼티"), ("PSA", "퍼블릭스토리지"),
+    ],
+}
+
+CACHED_US_LEADING_STOCKS = {}
+LAST_US_LEADING_STOCKS_FETCH = {}
+US_LEADING_STOCKS_TTL = 300
+
+def _fetch_us_stock_snapshot(item):
+    symbol, name = item
+    try:
+        encoded = urllib.parse.quote(symbol)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=3mo&interval=1d"
+        res = HTTP_SESSION.get(url, timeout=5.0)
+        res.raise_for_status()
+        payload = res.json()
+        result = (payload.get("chart", {}).get("result") or [None])[0]
+        if not result:
+            return None
+        closes = (result.get("indicators", {}).get("quote", [{}])[0].get("close") or [])
+        closes = [float(x) for x in closes if x is not None and np.isfinite(float(x))]
+        if len(closes) < 22:
+            return None
+
+        latest = closes[-1]
+        prev = closes[-2]
+        week_base = closes[-6] if len(closes) >= 6 else closes[0]
+        month_base = closes[-22] if len(closes) >= 22 else closes[0]
+        current = (latest / prev - 1.0) * 100.0 if prev else 0.0
+        week1 = (latest / week_base - 1.0) * 100.0 if week_base else 0.0
+        month1 = (latest / month_base - 1.0) * 100.0 if month_base else 0.0
+
+        # 최근 20거래일을 카드 폭에 맞게 0~34로 정규화한 실제 가격 흐름
+        spark_src = closes[-20:]
+        lo, hi = min(spark_src), max(spark_src)
+        if hi - lo < 1e-12:
+            spark = [17.0] * len(spark_src)
+        else:
+            spark = [round(31.0 - ((v - lo) / (hi - lo)) * 28.0, 1) for v in spark_src]
+
+        return {
+            "symbol": symbol,
+            "name": name,
+            "price": latest,
+            "current": current,
+            "week1": week1,
+            "month1": month1,
+            "sparkline": spark,
+        }
+    except Exception as exc:
+        print(f"[US STOCK] {symbol} failed: {type(exc).__name__}: {exc}")
+        return None
+
+def fetch_us_leading_stocks(sector_symbol, force=False):
+    sector_symbol = str(sector_symbol or "").strip().upper()
+    candidates = US_SECTOR_STOCK_UNIVERSE.get(sector_symbol)
+    if not candidates:
+        return []
+
+    now = time.time()
+    if (not force and sector_symbol in CACHED_US_LEADING_STOCKS
+            and now - LAST_US_LEADING_STOCKS_FETCH.get(sector_symbol, 0.0) < US_LEADING_STOCKS_TTL):
+        return CACHED_US_LEADING_STOCKS[sector_symbol]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        snapshots = list(executor.map(_fetch_us_stock_snapshot, candidates))
+    snapshots = [x for x in snapshots if x]
+    if not snapshots:
+        return []
+
+    # 현재/1주/1개월을 같은 비중으로 표준화하여 업종 내부 상대강도를 계산한다.
+    for row in snapshots:
+        row["_score"] = 0.45 * row["current"] + 0.35 * row["week1"] + 0.20 * row["month1"]
+    snapshots.sort(key=lambda x: x["_score"], reverse=True)
+
+    top = [{k: v for k, v in row.items() if k != "_score"} for row in snapshots[:5]]
+    CACHED_US_LEADING_STOCKS[sector_symbol] = top
+    LAST_US_LEADING_STOCKS_FETCH[sector_symbol] = now
+    return top
+
+
 def fetch_single_world_item(item):
     name = item["name"]
     sym = item["sym"]
@@ -3751,6 +4002,128 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "items":reports
             }
 
+        # 비트코인: 주식의 Buy/Hold/Sell 컨센서스가 아니라 실제 기관별 BTC 가격 전망을 사용한다.
+        if market_name == "암호화폐" and str(symbol or "").upper().startswith("BTC"):
+            current = _safe_float(raw_price)
+
+            # 2026년 공개 리서치에서 확인된 기관 전망 스냅샷.
+            # 서로 다른 목표 시점/방법론을 가진 전망이므로 '공식 컨센서스'라고 부르지 않는다.
+            # 평균값은 명시된 Base/Target 전망만 계산하고, 시나리오 자료는 평균에서 제외한다.
+            btc_forecasts = [
+                {"firm":"Citi", "target":82000, "horizon":"12개월 · 2027년 중반", "stance":"Bear/Base 범위 중 Base", "date":"2026-07", "include_avg":True},
+                {"firm":"Standard Chartered", "target":100000, "horizon":"2026년 말", "stance":"Bullish", "date":"2026-07", "include_avg":True},
+                {"firm":"Bernstein", "target":150000, "horizon":"2026년 말", "stance":"Bullish", "date":"2026-07", "include_avg":True},
+                {"firm":"JPMorgan", "target":160000, "horizon":"2026년", "stance":"Bullish · $150K~$170K 범위 중간값", "date":"2026-07", "include_avg":True},
+                {"firm":"Tiger Research", "target":143000, "horizon":"12개월", "stance":"Bullish", "date":"2026-04", "include_avg":True},
+                {"firm":"NYDIG", "target":38500, "horizon":"2026년 10월경", "stance":"Bearish 시나리오", "date":"2026-07", "include_avg":False},
+            ]
+
+            valid = [x for x in btc_forecasts if x.get("include_avg") and x.get("target")]
+            avg_target = (sum(x["target"] for x in valid) / len(valid)) if valid else None
+            targets = [x["target"] for x in valid]
+            low_target = min(targets) if targets else None
+            high_target = max(targets) if targets else None
+
+            items = []
+            for item in btc_forecasts:
+                tp = item["target"]
+                upside = ((tp-current)/current*100) if current else None
+                items.append({
+                    "main": item["firm"],
+                    "sub": f"{item['horizon']} · {item['date']} · {item['stance']}",
+                    "val": f"${tp:,.0f}",
+                    "sub_val": f"{upside:+.1f}%" if upside is not None else ""
+                })
+
+            # 평균 목표가 대비 현재가의 상승/하락 여력.
+            avg_upside = ((avg_target-current)/current*100) if avg_target and current else None
+            if avg_target and current:
+                primary_val = f"${avg_target:,.0f}"
+                fill_pct = max(8, min(92, int(((current-low_target) / max(1, high_target-low_target))*100))) if high_target and low_target and high_target > low_target else 50
+                slider_mid = f"평균 ${avg_target:,.0f}"
+            else:
+                primary_val = "기관 전망 확인 필요"
+                fill_pct = 50
+                slider_mid = "기관 전망 확인 필요"
+
+            return {
+                "title":"기관 BTC 전망",
+                "gauge_val":str(len(btc_forecasts)),
+                "gauge_label":"확인 전망",
+                "status_label":"검증 데이터",
+                "badge_text":"실제 기관 전망만 표시",
+                "dots":f"확인 전망 {len(btc_forecasts)}건",
+                "primary_label":"기관 평균 전망",
+                "primary_val":primary_val,
+                "secondary_label":"현재가",
+                "secondary_val":f"${current:,.2f}" if current else "-",
+                "slider_left":f"${low_target:,.0f}" if low_target else "-",
+                "slider_mid":slider_mid,
+                "slider_right":f"${high_target:,.0f}" if high_target else "-",
+                "fill_pct":fill_pct,
+                "list_title":"실제 기관 전망",
+                "source_tag":"출처: Citi · Standard Chartered · Bernstein · JPMorgan · Tiger Research · NYDIG / 2026 공개 전망",
+                "items":items
+            }
+
+        # 이더리움: 기관별 실제 가격 전망이 충분히 확인되는 경우에만 BTC와 같은 기관 전망 카드로 표시한다.
+        # SOL/XRP 및 기타 코인은 현재 이 분기에 포함하지 않아 기존 동작(컨센서스 미표시)을 유지한다.
+        if market_name == "암호화폐" and str(symbol or "").upper().startswith("ETH"):
+            current = _safe_float(raw_price)
+
+            eth_forecasts = [
+                {"firm":"Citi", "target":2240, "horizon":"12개월", "stance":"Bear/Base 범위 중 Base", "date":"2026-07", "include_avg":True},
+                {"firm":"Standard Chartered", "target":7500, "horizon":"2026년 말", "stance":"Bullish", "date":"2026-01", "include_avg":True},
+                {"firm":"Fundstrat · Tom Lee", "target":12000, "horizon":"2026년 전망", "stance":"Bullish", "date":"2026-08", "include_avg":True},
+            ]
+
+            valid = [x for x in eth_forecasts if x.get("include_avg") and x.get("target")]
+            avg_target = (sum(x["target"] for x in valid) / len(valid)) if valid else None
+            targets = [x["target"] for x in valid]
+            low_target = min(targets) if targets else None
+            high_target = max(targets) if targets else None
+
+            items = []
+            for item in eth_forecasts:
+                tp = item["target"]
+                upside = ((tp-current)/current*100) if current else None
+                items.append({
+                    "main": item["firm"],
+                    "sub": f"{item['horizon']} · {item['date']} · {item['stance']}",
+                    "val": f"${tp:,.0f}",
+                    "sub_val": f"{upside:+.1f}%" if upside is not None else ""
+                })
+
+            if avg_target and current:
+                primary_val = f"${avg_target:,.0f}"
+                avg_upside = (avg_target-current)/current*100
+                fill_pct = max(8, min(92, int(((current-low_target) / max(1, high_target-low_target))*100))) if high_target and low_target and high_target > low_target else 50
+                slider_mid = f"평균 ${avg_target:,.0f} ({avg_upside:+.1f}%)"
+            else:
+                primary_val = "기관 전망 확인 필요"
+                fill_pct = 50
+                slider_mid = "기관 전망 확인 필요"
+
+            return {
+                "title":"기관 ETH 전망",
+                "gauge_val":str(len(eth_forecasts)),
+                "gauge_label":"확인 전망",
+                "status_label":"검증 데이터",
+                "badge_text":"실제 기관 전망만 표시",
+                "dots":f"확인 전망 {len(eth_forecasts)}건",
+                "primary_label":"기관 평균 전망",
+                "primary_val":primary_val,
+                "secondary_label":"현재가",
+                "secondary_val":f"${current:,.2f}" if current else "-",
+                "slider_left":f"${low_target:,.0f}" if low_target else "-",
+                "slider_mid":slider_mid,
+                "slider_right":f"${high_target:,.0f}" if high_target else "-",
+                "fill_pct":fill_pct,
+                "list_title":"실제 기관 전망",
+                "source_tag":"출처: Citi · Standard Chartered · Fundstrat / Tom Lee · 2026 공개 전망",
+                "items":items
+            }
+
         # 미국/글로벌
         if market_name in ["미국주식", "글로벌증시", "원자재"]:
             key = str(symbol or "").upper(); current = _safe_float(raw_price)
@@ -5688,6 +6061,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             max-width: 1196px;
             justify-content: center;
             align-items: stretch;
+            position: relative;
         }
 
         /* 1행: 왜 움직였을까? — 코멘트 전용 */
@@ -6487,7 +6861,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
             #rowEarningsCalendar { order: 13; }
             #rowEconomicCalendar { order: 14; }
-            #rowDart { order: 15; }
+            #usLeadingRightStack {
+                position: static;
+                grid-column: auto;
+                grid-row: auto;
+                order: 15;
+                width: 100%;
+                max-width: 832px;
+                z-index: auto;
+            }
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                width: 100%;
+                max-width: 832px;
+            }
+
+            #rowDart { order: 16; }
 
             .bottom-bar-grid-wrapper {
                 display: flex;
@@ -7062,6 +7451,370 @@ HTML_PAGE = r"""<!DOCTYPE html>
     min-height: 34px !important;
 }
 
+
+        .consensus-more-btn {
+            display: block;
+            width: 100%;
+            margin-top: 7px;
+            padding: 6px 0;
+            border: 1px solid var(--border-line);
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.72rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .consensus-more-btn:hover {
+            color: var(--text-title);
+        }
+
+        /* 미국 주도업종: PC 애널리스트 오른쪽 / 모바일 경제 캘린더 바로 아래 */
+        #rowUsLeadingSectors {
+            grid-column: 2;
+            grid-row: 6;
+            min-height: 0;
+            align-self: stretch;
+        }
+
+        .us-leading-sector-card {
+            padding: 16px;
+            box-sizing: border-box;
+            background: var(--bg-card);
+            border: 1px solid var(--border-line);
+            border-radius: 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            overflow: hidden;
+        }
+
+        .us-leading-sector-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-line);
+            flex: 0 0 auto;
+        }
+
+        .us-leading-sector-title {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-sub {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .us-leading-sector-table th {
+            font-size: 0.60rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            padding: 4px 2px 6px;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-table th:first-child { text-align: left; }
+
+        .us-leading-sector-table td {
+            font-size: 0.70rem;
+            color: var(--text-sub);
+            padding: 7px 2px;
+            border-top: 1px solid var(--border-line);
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-table td:first-child { text-align: left; }
+
+        .us-leading-sector-row {
+            cursor: pointer;
+        }
+
+        .us-leading-name {
+            width: 116px;
+            color: var(--text-title) !important;
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .us-leading-up { color: #ef4444 !important; font-weight: 700; }
+        .us-leading-down { color: #38bdf8 !important; font-weight: 700; }
+
+        .us-leading-sector-loading {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            padding: 16px 0;
+            text-align: center;
+        }
+
+        /* 미국 주도종목: 1단계 디자인 전용 */
+        /* 미국 주도업종 + 주도종목을 오른쪽 전용 스택으로 분리.
+           왼쪽 개미투표와 그리드 행 높이를 공유하지 않도록 한다. */
+        #usLeadingRightStack {
+            grid-column: 2;
+            grid-row: 6;
+            position: absolute;
+            align-self: start;
+            justify-self: stretch;
+            width: 100%;
+            min-width: 0;
+            min-height: 0;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            z-index: 2;
+        }
+
+        #usLeadingRightStack > .card {
+            width: 100%;
+            min-width: 0;
+        }
+
+        #rowUsLeadingStocks {
+            grid-column: auto;
+            grid-row: auto;
+            align-self: auto;
+            min-height: 0;
+        }
+
+        .us-leading-stock-card {
+            padding: 16px;
+            box-sizing: border-box;
+            background: var(--bg-card);
+            border: 1px solid var(--border-line);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        .us-leading-stock-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-line);
+        }
+
+        .us-leading-stock-title {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-sub {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-list {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .us-leading-stock-item {
+            display: grid;
+            grid-template-columns: minmax(72px, 1fr) 74px minmax(72px, 1.15fr);
+            align-items: center;
+            gap: 8px;
+            min-height: 58px;
+            padding: 7px 8px;
+            box-sizing: border-box;
+            background: var(--bg-subcard);
+            border: 1px solid var(--border-line);
+            border-radius: 10px;
+        }
+
+        .us-leading-stock-name {
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .us-leading-stock-ticker {
+            font-size: 0.78rem;
+            line-height: 1.15;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .us-leading-stock-company {
+            margin-top: 3px;
+            font-size: 0.62rem;
+            line-height: 1.15;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .us-leading-stock-price {
+            min-width: 0;
+            text-align: right;
+        }
+
+        .us-leading-stock-value {
+            font-size: 0.75rem;
+            line-height: 1.15;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-change {
+            margin-top: 3px;
+            font-size: 0.68rem;
+            line-height: 1.15;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-change.up { color: #ef4444; }
+        .us-leading-stock-change.down { color: #38bdf8; }
+
+        .us-leading-stock-spark {
+            width: 100%;
+            min-width: 72px;
+            height: 34px;
+            display: block;
+            overflow: visible;
+            justify-self: end;
+            filter: drop-shadow(0 2px 3px rgba(16, 185, 129, 0.20));
+        }
+
+        .us-leading-stock-spark polyline {
+            fill: none;
+            stroke: #10b981;
+            stroke-width: 2.2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            vector-effect: non-scaling-stroke;
+        }
+
+
+        /* 모바일 최종 배치 고정:
+           PC의 오른쪽 독립 배치는 유지하고 모바일에서는 1열 일반 흐름으로 복귀 */
+        @media (max-width: 1200px) {
+            .dashboard-master-grid {
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                max-width: 832px;
+                gap: 14px;
+            }
+
+            #usLeadingRightStack {
+                position: static !important;
+                grid-column: auto !important;
+                grid-row: auto !important;
+                order: 15 !important;
+                align-self: center !important;
+                justify-self: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 14px !important;
+                z-index: auto !important;
+            }
+
+            #usLeadingRightStack > .card,
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                box-sizing: border-box !important;
+            }
+        }
+
+
+        /* 모바일 최종 폭/흐름 보정 */
+        @media (max-width: 1200px) {
+            #result-scroll-view {
+                width: 100% !important;
+                box-sizing: border-box !important;
+                overflow-x: hidden !important;
+            }
+
+            .result-inner {
+                width: 100% !important;
+                max-width: 832px !important;
+                box-sizing: border-box !important;
+                margin: 0 auto !important;
+            }
+
+            .dashboard-master-grid {
+                display: flex !important;
+                flex-direction: column !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                margin: 0 auto !important;
+                box-sizing: border-box !important;
+                gap: 14px !important;
+                overflow: visible !important;
+            }
+
+            .dashboard-master-grid > .card,
+            .dashboard-master-grid > .signal-premium-card,
+            .dashboard-master-grid > .signal-premium-btn,
+            #usLeadingRightStack {
+                position: static !important;
+                float: none !important;
+                left: auto !important;
+                right: auto !important;
+                top: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                box-sizing: border-box !important;
+                transform: none !important;
+            }
+
+            #usLeadingRightStack {
+                order: 15 !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 14px !important;
+            }
+
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                box-sizing: border-box !important;
+            }
+        }
 </style>
 </head>
 <body>
@@ -7176,6 +7929,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
+
+
+                        <!-- 미국 주도업종: 기존 위젯과 독립된 카드 -->
+                        <div id="usLeadingRightStack">
+<div class="card us-leading-sector-card" id="rowUsLeadingSectors">
+                            <div class="us-leading-sector-head">
+                                <span class="us-leading-sector-title">미국 주도업종</span>
+                                <span class="us-leading-sector-sub">TOP 10</span>
+                            </div>
+                            <div id="usLeadingSectorList" class="us-leading-sector-loading">데이터 불러오는 중…</div>
+                        </div>
+<div class="card us-leading-stock-card" id="rowUsLeadingStocks">
+                            <div class="us-leading-stock-head">
+                                <span class="us-leading-stock-title" id="usLeadingStockTitle">미국 주도종목 TOP 5</span>
+                                <span class="us-leading-stock-sub">TOP 5</span>
+                            </div>
+                            <div id="usLeadingStockList" class="us-leading-stock-list">
+                                <div class="us-leading-sector-loading">업종을 선택하면 주도종목을 불러옵니다.</div>
+                            </div>
+                        </div>
+</div>
 
                         <!-- 4행 좌측: 퀀트 분석 (832px) -->
                         <div class="card" id="rowQuant">
@@ -9103,11 +9877,21 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                     const iList = document.getElementById('uItemList');
                     if (iList) {
-                        iList.innerHTML = '';
-                        if (c.items && c.items.length > 0) {
-                            c.items.forEach((it, idx) => {
-                                const isLast = idx === c.items.length - 1;
-                                iList.innerHTML += `
+                        let consensusExpanded = false;
+
+                        const renderConsensusItems = (items, expanded = false) => {
+                            // 국내주식 리포트와 BTC 기관 전망은 기본 2개만 표시해
+                            // 미국주식 Buy/Hold/Sell 영역과 기본 높이를 맞춘다.
+                            const isTwoItemConsensus =
+                                c.list_title === '실제 증권사 리포트' ||
+                                c.list_title === '실제 기관 전망';
+                            const defaultVisibleCount = isTwoItemConsensus ? 2 : 3;
+                            const visibleItems = expanded ? items : items.slice(0, defaultVisibleCount);
+                            let html = '';
+
+                            visibleItems.forEach((it, idx) => {
+                                const isLast = idx === visibleItems.length - 1;
+                                html += `
                                     <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${isLast ? '' : 'border-bottom:1px solid var(--border-line);'} font-size:0.82rem;">
                                         <div>
                                             <div style="color:var(--text-title); font-weight:700;">${it.main}</div>
@@ -9120,6 +9904,38 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     </div>
                                 `;
                             });
+
+                            if (isTwoItemConsensus && items.length > defaultVisibleCount) {
+                                if (expanded) {
+                                    html += `
+                                        <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
+                                            접기
+                                        </button>
+                                    `;
+                                } else {
+                                    html += `
+                                        <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
+                                            더보기 <span>(${items.length - defaultVisibleCount}건)</span>
+                                        </button>
+                                    `;
+                                }
+                            }
+
+                            return html;
+                        };
+
+                        // 버튼을 다시 만들어도 클릭 이벤트가 유지되도록
+                        // 목록 자체에 이벤트 위임을 한 번만 연결한다.
+                        iList.onclick = (event) => {
+                            const btn = event.target.closest('.consensus-more-btn');
+                            if (!btn) return;
+
+                            consensusExpanded = !consensusExpanded;
+                            iList.innerHTML = renderConsensusItems(c.items || [], consensusExpanded);
+                        };
+
+                        if (c.items && c.items.length > 0) {
+                            iList.innerHTML = renderConsensusItems(c.items, false);
                         }
                     }
                     uCard.style.display = 'block';
@@ -9219,6 +10035,185 @@ HTML_PAGE = r"""<!DOCTYPE html>
             window.addEventListener('resize', resizeChart);
         }
 
+
+        async function loadSectorChart(symbol, sectorName) {
+            const cleanSymbol = String(symbol || '').trim().toUpperCase();
+            const cleanName = String(sectorName || '').trim();
+            if (!cleanSymbol) return;
+
+            const chartContainer = document.getElementById('tvChart');
+            if (!chartContainer) return;
+
+            const previousHtml = chartContainer.innerHTML;
+            chartContainer.innerHTML = '<div style="height:300px; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-size:0.78rem;">업종 차트 불러오는 중…</div>';
+
+            try {
+                // 기존 /api/analyze 파이프라인을 그대로 사용하되,
+                // 현재 종목 전체 분석 화면은 건드리지 않고 차트 데이터만 사용한다.
+                const response = await fetch('/api/analyze?q=' + encodeURIComponent(cleanSymbol));
+                const data = await response.json();
+
+                if (!response.ok || data.error || !Array.isArray(data.candles) || !data.candles.length) {
+                    throw new Error(data.error || '업종 차트 데이터를 가져오지 못했습니다.');
+                }
+
+                initTvChart(
+                    data.candles,
+                    data.ma20_line,
+                    data.ma60_line,
+                    data.bb_up_line,
+                    data.bb_dn_line
+                );
+
+                // 차트 영역의 현재 모드를 가볍게 표시. 기존 레이아웃/카드 높이는 변경하지 않는다.
+                const meta = document.getElementById('rMeta');
+                if (meta) {
+                    meta.dataset.previousText = meta.dataset.previousText || meta.textContent;
+                    meta.innerText = `차트: ${cleanName} 업종 · ${cleanSymbol} · Yahoo Finance`;
+                }
+            } catch (error) {
+                console.error('Sector chart:', error);
+                chartContainer.innerHTML = previousHtml;
+                alert(`${cleanName || cleanSymbol} 업종 차트를 불러오지 못했습니다.`);
+            }
+        }
+
+        function formatUsStockPrice(value) {
+            const n = Number(value);
+            if (!Number.isFinite(n)) return '-';
+            if (n >= 1000) return '$' + n.toLocaleString('en-US', {maximumFractionDigits: 0});
+            if (n >= 100) return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+
+        function buildUsStockSparkline(values) {
+            if (!Array.isArray(values) || values.length < 2) return '';
+            const safe = values
+                .map(Number)
+                .filter(v => Number.isFinite(v));
+            if (safe.length < 2) return '';
+
+            const width = 120;
+            const height = 34;
+            const padX = 2;
+            const padY = 3;
+            const lo = Math.min(...safe);
+            const hi = Math.max(...safe);
+            const span = hi - lo || 1;
+            const step = (width - padX * 2) / Math.max(1, safe.length - 1);
+
+            const points = safe.map((value, i) => {
+                const x = padX + i * step;
+                const y = (height - padY) - ((value - lo) / span) * (height - padY * 2);
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+            }).join(' ');
+
+            return `<svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-label="최근 가격 흐름">
+                        <polyline points="${points}"></polyline>
+                    </svg>`;
+        }
+
+        async function loadUsLeadingStocks(sectorSymbol, sectorName) {
+            const list = document.getElementById('usLeadingStockList');
+            const title = document.getElementById('usLeadingStockTitle');
+            if (!list || !sectorSymbol) return;
+
+            const cleanName = String(sectorName || '').trim();
+            if (title) title.textContent = `미국 ${cleanName} 주도종목`;
+            list.innerHTML = '<div class="us-leading-sector-loading">실제 주도종목 데이터를 불러오는 중…</div>';
+
+            try {
+                const response = await fetch('/api/us-leading-stocks?sector=' + encodeURIComponent(sectorSymbol));
+                const data = await response.json();
+                if (!response.ok || data.error) throw new Error(data.error || '데이터 오류');
+
+                const rows = Array.isArray(data.data) ? data.data : [];
+                if (!rows.length) {
+                    list.innerHTML = '<div class="us-leading-sector-loading">현재 주도종목 데이터를 불러오지 못했습니다.</div>';
+                    return;
+                }
+
+                const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
+                const cls = value => Number(value) >= 0 ? 'up' : 'down';
+                list.innerHTML = rows.map(row => `
+                    <div class="us-leading-stock-item">
+                        <div class="us-leading-stock-name">
+                            <div class="us-leading-stock-ticker">${String(row.symbol || '')}</div>
+                            <div class="us-leading-stock-company">${String(row.name || '')}</div>
+                        </div>
+                        <div class="us-leading-stock-price">
+                            <div class="us-leading-stock-value">${formatUsStockPrice(row.price)}</div>
+                            <div class="us-leading-stock-change ${cls(row.current)}">${pct(row.current)}</div>
+                        </div>
+                        ${buildUsStockSparkline(row.sparkline)}
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('US leading stocks:', error);
+                list.innerHTML = '<div class="us-leading-sector-loading">주도종목 데이터를 잠시 후 다시 불러옵니다.</div>';
+            }
+        }
+
+        async function loadUsLeadingSectors() {
+            const box = document.getElementById('usLeadingSectorList');
+            if (!box) return;
+            try {
+                const response = await fetch('/api/us-leading-sectors');
+                const data = await response.json();
+                if (!response.ok || data.error) throw new Error(data.error || '데이터 오류');
+
+                const rows = Array.isArray(data.data) ? data.data : [];
+                if (!rows.length) {
+                    box.innerHTML = '<div class="us-leading-sector-loading">현재 업종 데이터를 불러오지 못했습니다.</div>';
+                    return;
+                }
+
+                const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(1)}%`;
+                const cls = value => Number(value) >= 0 ? 'us-leading-up' : 'us-leading-down';
+
+                let html = '<table class="us-leading-sector-table">' +
+                    '<thead><tr><th>업종</th><th>현재</th><th>1W</th><th>1M</th><th>3M</th></tr></thead><tbody>';
+
+                rows.forEach(row => {
+                    const safeName = String(row.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    const safeSym = String(row.sym || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    html += `<tr class="us-leading-sector-row" title="${safeName} 업종 차트 보기" data-sector-symbol="${safeSym}" data-sector-name="${safeName}">` +
+                        `<td class="us-leading-name">${safeName}</td>` +
+                        `<td class="${cls(row.current)}">${pct(row.current)}</td>` +
+                        `<td class="${cls(row.week1)}">${pct(row.week1)}</td>` +
+                        `<td class="${cls(row.month1)}">${pct(row.month1)}</td>` +
+                        `<td class="${cls(row.month3)}">${pct(row.month3)}</td>` +
+                        `</tr>`;
+                });
+                html += '</tbody></table>';
+                box.innerHTML = html;
+
+                // 인라인 onclick에 의존하지 않고 명시적인 이벤트 리스너로 연결한다.
+                // CSP가 적용된 배포 환경에서도 업종 클릭이 동작하도록 한다.
+                box.querySelectorAll('.us-leading-sector-row').forEach(rowEl => {
+                    rowEl.addEventListener('click', () => {
+                        const sectorSymbol = rowEl.dataset.sectorSymbol || '';
+                        const sectorName = rowEl.dataset.sectorName || '';
+                        loadSectorChart(sectorSymbol, sectorName);
+                        loadUsLeadingStocks(sectorSymbol, sectorName);
+                    });
+                });
+
+                // 업종을 클릭하지 않아도 현재 주도업종 1위의 TOP 5가
+                // 처음부터 자동으로 표시되도록 한다.
+                const strongestRow = box.querySelector('.us-leading-sector-row');
+                if (strongestRow) {
+                    const sectorSymbol = strongestRow.dataset.sectorSymbol || '';
+                    const sectorName = strongestRow.dataset.sectorName || '';
+                    loadUsLeadingStocks(sectorSymbol, sectorName);
+                }
+            } catch (error) {
+                console.error('US leading sectors:', error);
+                box.innerHTML = '<div class="us-leading-sector-loading">업종 데이터를 잠시 후 다시 불러옵니다.</div>';
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', loadUsLeadingSectors);
         window.addEventListener('DOMContentLoaded', () => {
             initTheme();
 
@@ -9311,6 +10306,29 @@ class WebHandler(BaseHTTPRequestHandler):
                     "data": recent,
                 }
             )
+            return
+
+
+        if parsed.path == "/api/us-leading-stocks":
+            try:
+                sector_symbol = str(params.get("sector", [""])[0]).strip().upper()
+                if not sector_symbol:
+                    self._json(400, {"ok": False, "error": "sector가 필요합니다."})
+                    return
+                rows = fetch_us_leading_stocks(sector_symbol)
+                self._json(200, {"ok": True, "sector": sector_symbol, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/us-leading-stocks: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "미국 주도종목 데이터를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/us-leading-sectors":
+            try:
+                rows = fetch_us_leading_sectors()
+                self._json(200, {"ok": True, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/us-leading-sectors: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "미국 업종 데이터를 가져오지 못했습니다."})
             return
 
         if parsed.path == "/api/analyze":

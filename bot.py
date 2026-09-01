@@ -8139,7 +8139,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="price-title" id="rTitle"></div>
                                 <div class="price-val" id="rPrice"></div>
                                 <div class="price-meta" id="rMeta"></div>
-                                <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
+                                <div class="chart-legend">
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span>  (슬림)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
                                     <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
                                     <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
                                 </div>

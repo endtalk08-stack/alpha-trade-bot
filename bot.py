@@ -7677,14 +7677,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         .us-leading-stock-spark {
             width: 100%;
+            min-width: 72px;
             height: 34px;
             display: block;
+            overflow: visible;
         }
 
         .us-leading-stock-spark polyline {
             fill: none;
-            stroke: var(--accent);
+            stroke: #10b981;
             stroke-width: 2.2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
             vector-effect: non-scaling-stroke;
         }
 
@@ -9961,9 +9965,29 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function buildUsStockSparkline(values) {
             if (!Array.isArray(values) || values.length < 2) return '';
-            const step = 120 / Math.max(1, values.length - 1);
-            const points = values.map((y, i) => `${(i * step).toFixed(1)},${Number(y).toFixed(1)}`).join(' ');
-            return `<svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}"></polyline></svg>`;
+            const safe = values
+                .map(Number)
+                .filter(v => Number.isFinite(v));
+            if (safe.length < 2) return '';
+
+            const width = 120;
+            const height = 34;
+            const padX = 2;
+            const padY = 3;
+            const lo = Math.min(...safe);
+            const hi = Math.max(...safe);
+            const span = hi - lo || 1;
+            const step = (width - padX * 2) / Math.max(1, safe.length - 1);
+
+            const points = safe.map((value, i) => {
+                const x = padX + i * step;
+                const y = (height - padY) - ((value - lo) / span) * (height - padY * 2);
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+            }).join(' ');
+
+            return `<svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-label="최근 가격 흐름">
+                        <polyline points="${points}"></polyline>
+                    </svg>`;
         }
 
         async function loadUsLeadingStocks(sectorSymbol, sectorName) {

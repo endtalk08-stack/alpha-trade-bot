@@ -1192,11 +1192,12 @@ ECO_TITLE_KO_MAP = {
     "Housing Starts": "주택착공건수",
     "Trade Balance": "무역수지",
     "Flash Manufacturing PMI": "제조업 PMI (속보치)",
-    "Flash Services PMI": "서비스업 PMI (속보치)"
+    "Flash Services PMI": "서비스업 PMI (속보치)",
+    "FOMC Member Barr Speaks": "미 연준 바 이사 발언"
 }
 
 COUNTRY_PREFIX_MAP = {
-    "USD": "美 ", "EUR": "유로존 ", "GBP": "영국 ", "JPY": "일본 ",
+    "USD": "미 ", "EUR": "유로존 ", "GBP": "영국 ", "JPY": "일본 ",
     "CNY": "중국 ", "KRW": "한국 ", "CAD": "캐나다 ", "AUD": "호주 "
 }
 
@@ -1297,14 +1298,15 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
 
     now_utc = datetime.now(timezone.utc)
     has_actual = actual_eps is not None or actual_rev is not None
-    if has_actual:
+    is_past_date = kst_dt.date() < datetime.now(timezone(timedelta(hours=9))).date()
+    if has_actual or is_past_date:
         val_str = "발표완료"
     elif dt_utc <= now_utc:
         val_str = "발표확인중"
     else:
         val_str = "발표예정"
     hour_code = str(hour).lower().strip()
-    hour_label = "(美장마감후)" if hour_code == "amc" else ("(美장시작전)" if hour_code == "bmo" else "")
+    hour_label = "(미국 장 마감 후)" if hour_code == "amc" else ("(미국 장 시작 전)" if hour_code == "bmo" else "")
 
     return [{
         "ts": dt_utc.timestamp(),
@@ -1338,7 +1340,9 @@ def build_earnings_event(sym, ko_name, dt_utc, eps_str="예상치 집계중", re
             else "★☆☆"
         ),
         "type": "earn",
-        "name": f"{ko_name} ({sym}) 실적 {hour_label}".strip(),
+        # 기업명과 발표 시점은 화면에서 두 줄로 표시할 수 있도록 분리합니다.
+        "name": f"{ko_name} ({sym}) 실적".strip(),
+        "timing_label": hour_label,
         "ticker": sym,
         "val": val_str,
         "exp": eps_str,
@@ -1421,177 +1425,255 @@ def _fetch_yahoo_earnings_timestamps(symbols):
 
 def fetch_all_real_earnings():
     """
-    실적 캘린더 실제 데이터 수집기.
+    국내 + 미국 주요기업 실적 캘린더 수집기.
 
-    핵심 원칙
-    - Finnhub에서 조회된 실적 일정을 고정 종목 목록으로 제한하지 않는다.
-    - 오늘(KST)부터 앞으로 30일의 실적을 빠짐없이 화면 데이터로 만든다.
-    - 과거 7일은 발표완료/발표확인 상태를 위해 보조적으로 허용한다.
-    - 주요 기업은 기존 중요도 기준으로 별표를 부여하고,
-      목록에 없는 기업도 일정이 있으면 ★☆☆로 표시한다.
-    - Yahoo는 Finnhub에서 누락된 기존 주요 종목의 보조 수집원으로만 사용한다.
-    - 최종 날짜는 KST 기준으로 계산한다.
+    설계 원칙
+    - 과거 30일 + 오늘 + 앞으로 30일의 실적을 KST 기준으로 표시한다.
+    - Finnhub의 국제 실적 캘린더를 사용하되, 무작위 소형/해외 종목이
+      화면에 섞이지 않도록 사이트에서 추적하는 주요 미국/한국 기업만 허용한다.
+    - 미국: Finnhub + Yahoo timestamp 보정.
+    - 한국: Finnhub international=true + Yahoo timestamp 보정.
+    - DART는 '미래 발표 예정일'을 제공하는 API가 아니므로 예정일 생성에
+      가상 날짜를 만들지 않는다. DART는 기존 공시 기능에서 실제 발표/공시 확인용으로 사용한다.
+    - API가 주는 날짜가 과거 30일~미래 30일 범위를 벗어나면 표시하지 않는다.
+    - 같은 기업/같은 날짜/같은 시간은 1건으로 합친다.
     """
 
     events = []
-
-    # ----------------------------------------------------
-    # 기준 날짜
-    # ----------------------------------------------------
-    kst = timezone(timedelta(hours=9))
-    now_kst = datetime.now(kst)
+    now_kst = datetime.now(timezone(timedelta(hours=9)))
     today_kst = now_kst.date()
-    future_end_kst = today_kst + timedelta(days=30)
-
-    # 미국 현지 날짜와 KST 날짜의 경계 때문에 API는 약간 넓게 조회한다.
-    api_from = today_kst - timedelta(days=7)
-    api_to = future_end_kst + timedelta(days=1)
+    history_start = today_kst - timedelta(days=30)
+    future_end = today_kst + timedelta(days=30)
 
     # ----------------------------------------------------
-    # 종목명 사전
+    # 추적 대상
     # ----------------------------------------------------
-    known_names = {
+    us_name_map = {
         str(sym).upper(): ko
         for sym, ko in MAJOR_US_TECH_TICKERS
     }
 
+    # 사이트 성격상 시장 영향력이 큰 미국 기업을 조금 더 보강한다.
+    extra_us = {
+        "PLTR": "팔란티어",
+        "CRWD": "크라우드스트라이크",
+        "INTU": "인튜이트",
+        "NOW": "서비스나우",
+        "AMGN": "암젠",
+        "GILD": "길리어드 사이언스",
+        "V": "비자",
+        "MA": "마스터카드",
+        "JPM": "JP모건",
+        "BAC": "뱅크오브아메리카",
+        "WMT": "월마트",
+        "HD": "홈디포",
+        "LOW": "로우스",
+        "PEP": "펩시코",
+        "KO": "코카콜라",
+        "MCD": "맥도날드",
+        "DIS": "디즈니",
+        "UBER": "우버",
+        "ABNB": "에어비앤비",
+        "SNPS": "시놉시스",
+        "CDNS": "케이던스",
+        "LRCX": "램리서치",
+        "KLAC": "KLA",
+        "TXN": "텍사스 인스트루먼트",
+        "ARM": "ARM",
+        "MRNA": "모더나",
+        "LLY": "일라이 릴리",
+    }
+    us_name_map.update(extra_us)
+
+    kr_name_map = {}
     for k_code, k_name in MAJOR_KR_EARNINGS.items():
-        known_names[str(k_code).upper()] = k_name
+        key = str(k_code).upper().strip()
+        kr_name_map[key] = k_name
+        if key.isdigit() and len(key) == 6:
+            kr_name_map[f"{key}.KS"] = k_name
+            kr_name_map[f"{key}.KQ"] = k_name
 
-    # ----------------------------------------------------
-    # 중요도 기준
-    # build_earnings_event()와 동일하게 유지한다.
-    # ----------------------------------------------------
-    tier3_symbols = {
-        "NVDA", "AVGO", "AAPL", "MSFT", "AMZN",
-        "GOOGL", "META", "TSLA", "AMD", "ORCL",
-        "MU", "COST"
+    # Finnhub/Yahoo가 국내 종목을 6자리 또는 .KS 형태로 줄 수 있으므로
+    # 두 형태를 모두 canonical 6자리로 맞춘다.
+    def normalize_kr_symbol(sym):
+        value = str(sym or "").upper().strip()
+        value = value.replace(".KS", "").replace(".KQ", "")
+        if value.isdigit() and len(value) == 6:
+            return value
+        return value
+
+    allowed_us = set(us_name_map.keys())
+    allowed_kr = set()
+    for key in kr_name_map:
+        canonical = normalize_kr_symbol(key)
+        if canonical.isdigit() and len(canonical) == 6:
+            allowed_kr.add(canonical)
+
+    # 중요도
+    us_tier3 = {
+        "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META",
+        "TSLA", "AVGO", "AMD", "ORCL", "MU", "PLTR",
+        "JPM", "LLY", "WMT"
     }
+    us_tier2 = allowed_us - us_tier3
 
-    tier2_symbols = {
-        "ADBE", "CRM", "NFLX", "INTC", "QCOM",
-        "AMAT", "CSCO", "PANW", "SNOW", "DELL",
-        "HPE", "FDX", "NKE", "ACN", "CTAS",
-        "CIEN", "ADSK", "MRVL"
+    kr_tier3 = {
+        "005930", "000660", "005380", "000270",
+        "012450", "042660", "034020", "373220"
     }
+    kr_tier2 = allowed_kr - kr_tier3
 
-    def get_star_info(sym):
-        sym = str(sym or "").upper().strip()
-        if sym in tier3_symbols:
+    def star_info(sym, market):
+        if market == "US":
+            s = str(sym).upper()
+            if s in us_tier3:
+                return 3, "★★★"
+            if s in us_tier2:
+                return 2, "★★☆"
+            return 1, "★☆☆"
+
+        s = normalize_kr_symbol(sym)
+        if s in kr_tier3:
             return 3, "★★★"
-        if sym in tier2_symbols:
+        if s in kr_tier2:
             return 2, "★★☆"
         return 1, "★☆☆"
 
     # ----------------------------------------------------
-    # Yahoo 실제 timestamp는 주요 종목에 대해서만 사용한다.
+    # Yahoo 실제 발표시각 조회
     # ----------------------------------------------------
-    us_symbols = [
-        str(item[0]).upper()
-        for item in MAJOR_US_TECH_TICKERS
-    ]
+    yahoo_symbols = list(allowed_us)
+    yahoo_symbols += [f"{code}.KS" for code in sorted(allowed_kr)]
+    yahoo_times = _fetch_yahoo_earnings_timestamps(yahoo_symbols)
 
-    try:
-        yahoo_times = _fetch_yahoo_earnings_timestamps(us_symbols) or {}
-    except Exception as exc:
-        yahoo_times = {}
-        print("[CALENDAR][EARN] Yahoo timestamp 조회 실패:", repr(exc))
+    def get_yahoo_time(sym, market):
+        candidates = [str(sym).upper().strip()]
+        if market == "KR":
+            canonical = normalize_kr_symbol(sym)
+            candidates.extend([canonical, f"{canonical}.KS", f"{canonical}.KQ"])
+        for candidate in candidates:
+            if candidate in yahoo_times:
+                return yahoo_times[candidate]
+        return None
 
     # ----------------------------------------------------
-    # 개별 이벤트 생성
+    # 날짜/시간 → UTC
     # ----------------------------------------------------
-    def append_event(it, source="Finnhub", yahoo_override=None):
-        sym = str(it.get("symbol", "")).upper().strip()
+    def make_utc_datetime(raw_date, hour, market, sym):
+        try:
+            base_date = datetime.strptime(
+                str(raw_date).strip(), "%Y-%m-%d"
+            ).date()
+        except Exception:
+            return None, hour
+
+        hour = str(hour or "amc").lower().strip()
+
+        # Yahoo의 실제 timestamp가 있으면 우선 사용한다.
+        yahoo_dt = get_yahoo_time(sym, market)
+        if yahoo_dt is not None:
+            try:
+                if abs((yahoo_dt.date() - base_date).days) <= 1:
+                    normalized_dt, normalized_hour = _normalize_earnings_timestamp(
+                        str(sym).upper(), yahoo_dt
+                    )
+                    if normalized_dt is not None:
+                        return normalized_dt, normalized_hour
+            except Exception:
+                pass
+
+        # 미국: Finnhub amc/bmo/dmh → 미국 동부시간
+        if market == "US":
+            if ZoneInfo is not None:
+                try:
+                    et = ZoneInfo("America/New_York")
+                    if hour == "bmo":
+                        local_text = f"{raw_date} 06:00"
+                    elif hour == "dmh":
+                        local_text = f"{raw_date} 09:30"
+                    else:
+                        local_text = f"{raw_date} 16:00"
+                    local_dt = datetime.strptime(
+                        local_text, "%Y-%m-%d %H:%M"
+                    ).replace(tzinfo=et)
+                    return local_dt.astimezone(timezone.utc), hour
+                except Exception:
+                    pass
+
+            base_utc = datetime.combine(
+                base_date,
+                datetime.min.time(),
+                tzinfo=timezone.utc
+            )
+            if hour == "bmo":
+                return base_utc + timedelta(hours=10), hour
+            return base_utc + timedelta(hours=20), hour
+
+        # 한국: Finnhub에 시간이 없으면 한국시간 16:00을 안전한 표시 기준으로 사용.
+        # '확정된 실제 발표시각'이라고 주장하지 않고 예정일만 정확히 표시한다.
+        kst = timezone(timedelta(hours=9))
+        local_dt = datetime.combine(
+            base_date,
+            datetime.min.time().replace(hour=16),
+            tzinfo=kst
+        )
+        return local_dt.astimezone(timezone.utc), "amc"
+
+    # ----------------------------------------------------
+    # 이벤트 추가
+    # ----------------------------------------------------
+    def append_event(it, market):
+        if not isinstance(it, dict):
+            return
+
         raw_date = str(it.get("date", "")).strip()
-
-        if not sym or not raw_date:
+        if not raw_date:
             return
 
         try:
-            us_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
+            source_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
         except Exception:
             return
 
-        # API 날짜 범위를 벗어난 데이터는 제거한다.
-        if us_date < api_from or us_date > api_to:
+        # 과거 30일 + 오늘 + 앞으로 30일의 실적을 표시한다.
+        # 과거 날짜는 실제 발표가 끝난 실적으로 표시할 수 있다.
+        if source_date < history_start or source_date > future_end:
             return
 
-        hour = str(it.get("hour", "amc") or "amc").lower().strip()
+        raw_sym = str(it.get("symbol", "")).upper().strip()
+        if not raw_sym:
+            return
+
+        if market == "US":
+            sym = raw_sym
+            if sym not in allowed_us:
+                return
+            ko_name = us_name_map.get(sym, sym)
+        else:
+            sym = normalize_kr_symbol(raw_sym)
+            if sym not in allowed_kr:
+                return
+            ko_name = kr_name_map.get(sym, sym)
+
+        hour = str(it.get("hour", "amc")).lower().strip()
+        dt_utc, hour = make_utc_datetime(raw_date, hour, market, raw_sym)
+        if dt_utc is None:
+            return
+
+        # KST 날짜가 실제 화면 기준 범위를 벗어나면 제외.
+        kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
+        if kst_dt.date() < history_start or kst_dt.date() > future_end:
+            return
 
         eps_est = it.get("epsEstimate")
         rev_est = it.get("revenueEstimate")
         eps_actual = it.get("epsActual")
         rev_actual = it.get("revenueActual")
 
-        # 기본 발표 시각: 미국 동부시간
-        dt_utc = None
-        if ZoneInfo is not None:
-            try:
-                et_zone = ZoneInfo("America/New_York")
-                if hour == "bmo":
-                    et_time = "06:00"
-                elif hour == "amc":
-                    et_time = "16:00"
-                else:
-                    # dmh/알 수 없는 값은 안전하게 장마감 후로 정규화
-                    et_time = "16:00"
-
-                local_dt = datetime.strptime(
-                    raw_date + " " + et_time,
-                    "%Y-%m-%d %H:%M"
-                ).replace(tzinfo=et_zone)
-                dt_utc = local_dt.astimezone(timezone.utc)
-            except Exception:
-                dt_utc = None
-
-        if dt_utc is None:
-            base_utc = datetime.strptime(
-                raw_date,
-                "%Y-%m-%d"
-            ).replace(tzinfo=timezone.utc)
-
-            if hour == "bmo":
-                dt_utc = base_utc + timedelta(hours=10)
-            else:
-                dt_utc = base_utc + timedelta(hours=20)
-
-        # Yahoo 실제 timestamp가 있고 Finnhub 날짜와 하루 이내라면 우선한다.
-        yahoo_dt = yahoo_override
-        if yahoo_dt is None:
-            yahoo_dt = yahoo_times.get(sym)
-
-        if yahoo_dt is not None:
-            try:
-                if abs((yahoo_dt.date() - us_date).days) <= 1:
-                    normalized_dt, normalized_hour = _normalize_earnings_timestamp(
-                        sym,
-                        yahoo_dt
-                    )
-                    if normalized_dt is not None:
-                        dt_utc = normalized_dt
-                        hour = normalized_hour
-            except Exception:
-                pass
-
-        # 실제 화면 날짜(KST) 기준으로 최종 30일 범위를 판정한다.
-        try:
-            event_kst_date = dt_utc.astimezone(kst).date()
-        except Exception:
-            return
-
-        if event_kst_date < today_kst - timedelta(days=7):
-            return
-        if event_kst_date > future_end_kst:
-            return
-
-        ko_name = known_names.get(sym, sym)
-        stars, star_str = get_star_info(sym)
-
         try:
             eps_str = (
                 f"예상 EPS ${float(eps_est):.2f}"
-                if eps_est is not None
-                else "예상치 집계중"
+                if eps_est is not None else "예상치 집계중"
             )
         except Exception:
             eps_str = "예상치 집계중"
@@ -1599,15 +1681,14 @@ def fetch_all_real_earnings():
         try:
             rev_str = (
                 f"예상 매출 ${float(rev_est) / 1e9:.1f}B"
-                if rev_est is not None
-                else "-"
+                if rev_est is not None else "-"
             )
         except Exception:
             rev_str = "-"
 
         try:
             built = build_earnings_event(
-                sym,
+                raw_sym if market == "US" else sym,
                 ko_name,
                 dt_utc,
                 eps_str,
@@ -1616,159 +1697,188 @@ def fetch_all_real_earnings():
                 actual_eps=eps_actual,
                 actual_rev=rev_actual,
                 expected_eps=eps_est,
-                expected_rev=rev_est,
-                us_date_key=us_date.strftime("%Y.%m.%d")
+                expected_rev=rev_est
             )
         except Exception as exc:
             print(
-                f"[CALENDAR][EARN] 이벤트 생성 실패: "
-                f"{sym} {raw_date} {repr(exc)}"
+                f"[CALENDAR][EARN] 이벤트 생성 실패 "
+                f"{market}/{raw_sym}/{raw_date}: {repr(exc)}"
             )
             return
 
+        stars, star_str = star_info(sym, market)
         for ev in built:
             ev["stars"] = stars
             ev["star_str"] = star_str
-            ev["source"] = source
+            ev["market"] = market
+            ev["source"] = "Finnhub"
+            ev["confirmed"] = False
             ev["expected_revenue"] = rev_est
             ev["expected_revenue_str"] = rev_str
             events.append(ev)
 
     # ----------------------------------------------------
-    # Tier 1: Finnhub
-    # 가장 중요한 변경점:
-    # sym_to_ko에 없는 종목도 버리지 않는다.
+    # Finnhub
+    #
+    # 미국 + 국제시장(KR)을 한 번에 조회한다.
+    # international=true가 중요하다.
+    # 기존 코드의 기본값(false)은 미국 중심 데이터만 반환한다.
     # ----------------------------------------------------
-    finnhub_symbols = set()
-
     if FINNHUB_API_KEY:
-        try:
-            from_d = api_from.strftime("%Y-%m-%d")
-            to_d = api_to.strftime("%Y-%m-%d")
+        from_d = history_start.strftime("%Y-%m-%d")
+        to_d = future_end.strftime("%Y-%m-%d")
 
-            url = (
-                "https://finnhub.io/api/v1/calendar/earnings"
-                f"?from={from_d}&to={to_d}&token={FINNHUB_API_KEY}"
-            )
-
-            res = HTTP_SESSION.get(url, timeout=5.0).json()
-            items = res.get("earningsCalendar", [])
-
-            print(
-                f"[EARNINGS DEBUG] Finnhub 조회기간: "
-                f"{from_d} ~ {to_d} / 원본 {len(items)}건"
-            )
-
-            for it in items:
-                sym = str(it.get("symbol", "")).upper().strip()
-                if not sym:
-                    continue
-
-                # 고정 종목 목록 여부와 관계없이 모두 반영한다.
-                append_event(
-                    it,
-                    source="Finnhub",
-                    yahoo_override=yahoo_times.get(sym)
+        for international in (False, True):
+            try:
+                url = (
+                    "https://finnhub.io/api/v1/calendar/earnings"
+                    f"?from={from_d}"
+                    f"&to={to_d}"
+                    f"&international={'true' if international else 'false'}"
+                    f"&token={FINNHUB_API_KEY}"
                 )
-                finnhub_symbols.add(sym)
 
-            print(
-                f"[EARNINGS DEBUG] Finnhub 반영 후 이벤트: "
-                f"{len(events)}건 / 종목 {len(finnhub_symbols)}개"
-            )
+                res = HTTP_SESSION.get(url, timeout=5.0).json()
+                items = res.get("earningsCalendar", []) or []
 
-        except Exception as exc:
-            print("[CALENDAR][EARN] Finnhub 오류:", repr(exc))
+                print(
+                    f"[EARNINGS DEBUG] Finnhub "
+                    f"international={international}: {len(items)}건"
+                )
+
+                for it in items:
+                    sym = str(it.get("symbol", "")).upper().strip()
+
+                    # 미국 주요 기업
+                    if sym in allowed_us:
+                        append_event(it, "US")
+                        continue
+
+                    # 한국 주요 기업
+                    if normalize_kr_symbol(sym) in allowed_kr:
+                        append_event(it, "KR")
+
+            except Exception as exc:
+                print(
+                    f"[CALENDAR][EARN] Finnhub "
+                    f"international={international} 오류: {repr(exc)}"
+                )
 
     else:
-        print("[CALENDAR][EARN] FINNHUB_API_KEY가 없어 Finnhub을 건너뜁니다.")
+        print("[CALENDAR][EARN] FINNHUB_API_KEY가 없어 Finnhub 조회를 건너뜁니다.")
 
     # ----------------------------------------------------
-    # Tier 2: Yahoo 보조
-    # Finnhub에 없는 '기존 주요 종목'만 보완한다.
+    # Yahoo 보조 수집
+    # Finnhub이 놓친 '추적 대상' 종목만 보완한다.
     # ----------------------------------------------------
-    try:
-        captured_symbols = {
-            str(ev.get("ticker", "")).upper()
-            for ev in events
-            if ev.get("ticker")
-        }
+    captured = set()
+    for ev in events:
+        ticker = str(ev.get("ticker", "")).upper().strip()
+        date_key = str(ev.get("date_key", "")).strip()
+        captured.add((ticker, date_key))
 
-        missing = [
-            sym for sym in us_symbols
-            if sym not in captured_symbols
-        ]
+    # Yahoo quote endpoint에서 이미 가져온 timestamp를 활용한다.
+    # Yahoo quote timestamp는 현재/다음 실적용이므로 미래 보완에만 사용한다.
+    for us_sym in sorted(allowed_us):
+        dt_utc = get_yahoo_time(us_sym, "US")
+        if dt_utc is None:
+            continue
 
-        if missing:
-            url = (
-                "https://query1.finance.yahoo.com/v7/finance/quote"
-                f"?symbols={','.join(missing)}"
+        try:
+            kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
+            if not (today_kst <= kst_dt.date() <= future_end):
+                continue
+
+            date_key = kst_dt.strftime("%Y.%m.%d")
+            if (us_sym, date_key) in captured:
+                continue
+
+            normalized_dt, hour = _normalize_earnings_timestamp(us_sym, dt_utc)
+            if normalized_dt is None:
+                continue
+
+            built = build_earnings_event(
+                us_sym,
+                us_name_map.get(us_sym, us_sym),
+                normalized_dt,
+                "예상치 집계중",
+                "-",
+                hour
             )
 
-            res = HTTP_SESSION.get(url, timeout=3.0).json()
-            items = res.get("quoteResponse", {}).get("result", [])
+            stars, star_str = star_info(us_sym, "US")
+            for ev in built:
+                ev["stars"] = stars
+                ev["star_str"] = star_str
+                ev["market"] = "US"
+                ev["source"] = "Yahoo"
+                ev["confirmed"] = False
+                events.append(ev)
 
+        except Exception as exc:
             print(
-                f"[YAHOO DEBUG] Finnhub 누락 주요종목 보조조회: "
-                f"{len(items)}건"
+                f"[CALENDAR][EARN] Yahoo US 보완 실패 {us_sym}: {repr(exc)}"
             )
 
-            for it in items:
-                sym = str(it.get("symbol", "")).upper().strip()
-                raw_ts = (
-                    it.get("earningsTimestamp")
-                    or it.get("earningsTimestampStart")
-                )
+    for kr_code in sorted(allowed_kr):
+        yahoo_candidates = [
+            f"{kr_code}.KS",
+            f"{kr_code}.KQ",
+            kr_code,
+        ]
+        dt_utc = None
+        for candidate in yahoo_candidates:
+            if candidate in yahoo_times:
+                dt_utc = yahoo_times[candidate]
+                break
 
-                if not sym or not raw_ts:
-                    continue
+        if dt_utc is None:
+            continue
 
-                try:
-                    dt_utc = datetime.fromtimestamp(
-                        int(raw_ts),
-                        tz=timezone.utc
-                    )
-                except Exception:
-                    continue
+        try:
+            kst_dt = dt_utc.astimezone(timezone(timedelta(hours=9)))
+            if not (today_kst <= kst_dt.date() <= future_end):
+                continue
 
-                # Yahoo 결과를 기존 append_event 입력 형식으로 변환
-                kst_date = dt_utc.astimezone(kst).date()
-                if kst_date < today_kst or kst_date > future_end_kst:
-                    continue
+            date_key = kst_dt.strftime("%Y.%m.%d")
+            if (kr_code, date_key) in captured:
+                continue
 
-                hour = _classify_earnings_hour(dt_utc)
+            normalized_dt, hour = _normalize_earnings_timestamp(
+                f"{kr_code}.KS",
+                dt_utc
+            )
+            if normalized_dt is None:
+                continue
 
-                yahoo_item = {
-                    "symbol": sym,
-                    "date": dt_utc.astimezone(
-                        ZoneInfo("America/New_York")
-                    ).strftime("%Y-%m-%d") if ZoneInfo is not None else dt_utc.strftime("%Y-%m-%d"),
-                    "hour": hour,
-                    "epsEstimate": it.get("epsForward"),
-                    "revenueEstimate": None,
-                    "epsActual": None,
-                    "revenueActual": None,
-                }
+            built = build_earnings_event(
+                kr_code,
+                kr_name_map.get(kr_code, kr_code),
+                normalized_dt,
+                "예상치 집계중",
+                "-",
+                hour
+            )
 
-                append_event(
-                    yahoo_item,
-                    source="Yahoo",
-                    yahoo_override=dt_utc
-                )
+            stars, star_str = star_info(kr_code, "KR")
+            for ev in built:
+                ev["ticker"] = kr_code
+                ev["stars"] = stars
+                ev["star_str"] = star_str
+                ev["market"] = "KR"
+                ev["source"] = "Yahoo"
+                ev["confirmed"] = False
+                events.append(ev)
 
-        else:
-            print("[YAHOO DEBUG] Finnhub 누락 주요종목 없음")
-
-    except Exception as exc:
-        print("[CALENDAR][EARN] Yahoo 보조 조회 오류:", repr(exc))
+        except Exception as exc:
+            print(
+                f"[CALENDAR][EARN] Yahoo KR 보완 실패 {kr_code}: {repr(exc)}"
+            )
 
     # ----------------------------------------------------
     # 중복 제거
-    # type + ticker + KST 날짜 + 시간 기준
-    # Finnhub을 Yahoo보다 우선한다.
     # ----------------------------------------------------
     unique = {}
-
     source_priority = {
         "Finnhub": 2,
         "Yahoo": 1,
@@ -1778,63 +1888,66 @@ def fetch_all_real_earnings():
         ticker = str(ev.get("ticker", "")).upper().strip()
         date_key = str(ev.get("date_key", "")).strip()
         event_time = str(ev.get("time", "")).strip()
+        market = str(ev.get("market", "")).upper().strip()
 
         if not ticker or not date_key:
             continue
 
         key = (
-            "earn",
+            market,
             ticker,
             date_key,
             event_time,
         )
 
-        if key not in unique:
+        old = unique.get(key)
+        if old is None:
             unique[key] = ev
             continue
 
-        old_source = str(unique[key].get("source", ""))
-        new_source = str(ev.get("source", ""))
+        old_priority = source_priority.get(
+            str(old.get("source", "")), 0
+        )
+        new_priority = source_priority.get(
+            str(ev.get("source", "")), 0
+        )
 
-        if source_priority.get(new_source, 0) > source_priority.get(old_source, 0):
+        if new_priority > old_priority:
             unique[key] = ev
 
-    # ----------------------------------------------------
-    # 날짜순 / 시간순 / 종목순 정렬
-    # ----------------------------------------------------
     final_events = sorted(
         unique.values(),
         key=lambda x: (
             str(x.get("date_key", "")),
             str(x.get("time", "")),
+            0 if str(x.get("market", "")) == "KR" else 1,
             str(x.get("ticker", "")),
         )
     )
 
     # ----------------------------------------------------
-    # 앞으로 30일 통계 로그
+    # 디버그: 과거 30일 + 오늘 + 앞으로 30일 날짜별 건수
     # ----------------------------------------------------
-    future_events = []
     date_counts = {}
+    market_counts = {"KR": 0, "US": 0}
 
     for ev in final_events:
-        try:
-            date_key = str(ev.get("date_key", ""))
-            y, m, d = map(int, date_key.split("."))
-            event_date = datetime(y, m, d).date()
+        dk = str(ev.get("date_key", ""))
+        if dk:
+            date_counts[dk] = date_counts.get(dk, 0) + 1
 
-            if today_kst <= event_date <= future_end_kst:
-                future_events.append(ev)
-                date_counts[date_key] = date_counts.get(date_key, 0) + 1
-        except Exception:
-            continue
+        market = str(ev.get("market", "")).upper()
+        if market in market_counts:
+            market_counts[market] += 1
 
     print(
-        f"[EARNINGS FINAL] 전체={len(final_events)}건 / "
-        f"앞으로30일={len(future_events)}건 / "
+        f"[EARNINGS FINAL] 과거30일~미래30일: {len(final_events)}건 / "
+        f"국내={market_counts['KR']}건 / 미국={market_counts['US']}건 / "
         f"일정있는날={len(date_counts)}일"
     )
-    print("[EARNINGS FINAL] 앞으로30일 날짜별:", date_counts)
+    print(
+        f"[EARNINGS FINAL] 날짜별: {date_counts}"
+    )
 
     return final_events
 
@@ -2193,7 +2306,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 
                         prefix = COUNTRY_PREFIX_MAP.get(
                             "USD" if country.lower() == "united states" else country,
-                            "美 " if country.lower() == "united states" else "",
+                            "미 " if country.lower() == "united states" else "",
                         )
 
                         title_ko = ECO_TITLE_KO_MAP.get(
@@ -2350,10 +2463,81 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 # ----------------------------------------------------
 # 4. 크롤러 및 유틸리티 함수
 # ----------------------------------------------------
+def fetch_naver_news(query_keyword, limit=5):
+    """Google News RSS 실패/빈 결과 시 사용하는 Naver News API fallback."""
+    headlines = []
+    client_id = os.environ.get("NAVER_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
+
+    if not client_id or not client_secret:
+        print("[NAVER NEWS] API credentials not configured; fallback skipped")
+        return headlines
+
+    clean_k = re.sub(r'\(.*?\)', '', str(query_keyword or "")).replace("USDT", "").strip()
+    if not clean_k:
+        return headlines
+
+    try:
+        r = HTTP_SESSION.get(
+            "https://openapi.naver.com/v1/search/news.json",
+            params={
+                "query": clean_k,
+                "display": max(1, min(int(limit), 100)),
+                "start": 1,
+                "sort": "date",
+            },
+            headers={
+                "X-Naver-Client-Id": client_id,
+                "X-Naver-Client-Secret": client_secret,
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=3.0,
+        )
+        print(f"[NAVER NEWS] query={clean_k} HTTP {r.status_code}")
+        if r.status_code != 200:
+            return headlines
+
+        data = r.json()
+        for item in (data.get("items") or [])[:limit]:
+            title = html.unescape(
+                re.sub(r"<[^>]+>", "", str(item.get("title") or ""))
+            ).strip()
+            description = html.unescape(
+                re.sub(r"<[^>]+>", "", str(item.get("description") or ""))
+            ).strip()
+
+            if not title:
+                continue
+
+            parts = title.rsplit(" - ", 1)
+            if len(parts) > 1 and len(parts[1]) <= 80:
+                title_text = parts[0].strip()
+                media_name = parts[1].strip()
+            else:
+                title_text = title
+                media_name = "Naver 뉴스"
+
+            headlines.append({
+                "title": title_text,
+                "media": media_name,
+                "pubDate": str(item.get("pubDate") or "").strip(),
+                "link": str(item.get("originallink") or item.get("link") or "#").strip(),
+                "description": description,
+                "source": "Naver",
+            })
+    except Exception as exc:
+        print(f"[NAVER NEWS] fallback failed: {type(exc).__name__}: {exc}")
+
+    return headlines
+
+
 def fetch_rss_news(query_keyword, limit=5):
+    """Google News RSS 우선. 실패/빈 결과이면 Naver News API로 fallback."""
     headlines = []
     clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
+
     try:
         r = HTTP_SESSION.get(url, timeout=2.5)
         if r.status_code == 200:
@@ -2375,8 +2559,13 @@ def fetch_rss_news(query_keyword, limit=5):
                         "pubDate": pub_text,
                         "link": link_text
                     })
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[GOOGLE NEWS] RSS failed: {type(exc).__name__}: {exc}")
+
+    if not headlines:
+        print(f"[NEWS FALLBACK] Google News empty -> Naver News: {clean_k}")
+        headlines = fetch_naver_news(clean_k, limit)
+
     return headlines
 
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
@@ -2773,79 +2962,891 @@ def fetch_crypto_candles(symbol):
     return None, None, None
 
 def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
-    """검증된 컨센서스만 표시한다. 데이터가 없으면 목표가/기관명을 만들어내지 않는다."""
+    """실제 확인 가능한 국내/미국 애널리스트 컨센서스만 표시한다.
+    국내 리포트는 Naver mobile/front-api/v2/legacy HTML을 순차적으로 확인한다.
+    """
     try:
-        if market_name in ["국내주식","국내증시"]:
-            target_p=None
-            reports=[]
+        def _walk_objects(obj, depth=0):
+            if depth > 14:
+                return
+            if isinstance(obj, dict):
+                yield obj
+                for v in obj.values():
+                    yield from _walk_objects(v, depth + 1)
+            elif isinstance(obj, list):
+                for v in obj[:500]:
+                    yield from _walk_objects(v, depth + 1)
+
+        def _safe_num(v):
             try:
-                url=f"https://m.stock.naver.com/api/stock/{symbol}/integration"
-                res=HTTP_SESSION.get(url,timeout=2.0).json()
-                for item in res.get("totalInfos",[]):
-                    if item.get("code") in ["targetPrice","consensusTargetPrice"]:
-                        v=_safe_float(item.get("value"))
-                        if v and v>0: target_p=v; break
-            except Exception: pass
-            try:
-                rep_url=f"https://m.stock.naver.com/api/stock/{symbol}/research?page=1&pageSize=5"
-                rr=HTTP_SESSION.get(rep_url,timeout=2.0).json()
-                for it in (rr.get("items",[]) or rr.get("researches",[]))[:5]:
-                    broker=it.get("writeCorpName") or it.get("companyName")
-                    tp=_safe_float(it.get("targetPrice"))
-                    if not broker and tp is None: continue
-                    reports.append({"main":broker or "증권사 리포트",
-                                    "sub":f"{it.get('investmentOpinion') or '의견 확인 필요'} · {str(it.get('writeDate') or it.get('date') or '')[:10]}",
-                                    "val":f"{int(tp):,}원" if tp else "목표가 미확인",
-                                    "sub_val":f"{((tp-raw_price)/raw_price)*100:+.1f}%" if tp and raw_price else ""})
-            except Exception: pass
-            if target_p and raw_price:
-                low_p=target_p*0.85; high_p=target_p*1.15
-                fill_pct=min(92,max(8,int(((target_p-low_p)/max(1,high_p-low_p))*100)))
-                primary_val=f"{int(target_p):,} 원"
-                slider_mid=f"평균 {int(target_p):,}원"
-            else:
-                low_p=raw_price*0.95 if raw_price else 0; high_p=raw_price*1.05 if raw_price else 0
-                fill_pct=50; primary_val="실제 컨센서스 없음"; slider_mid="컨센서스 확인 필요"
+                if isinstance(v, dict):
+                    for k in ("raw", "value", "amount", "targetPrice", "price", "val"):
+                        if k in v:
+                            n = _safe_num(v[k])
+                            if n is not None:
+                                return n
+                    return None
+                if v is None or v == "":
+                    return None
+                s = str(v).replace(",", "").replace("원", "").replace("KRW", "").strip()
+                n = float(s)
+                return n if n > 0 else None
+            except Exception:
+                return None
+
+        def _value(node, keys):
+            if not isinstance(node, dict):
+                return None
+            wanted = {str(k).lower() for k in keys}
+            for k, v in node.items():
+                if str(k).lower() in wanted and v not in (None, "", [], {}):
+                    return v
+            return None
+
+        def _number(node, keys):
+            return _safe_num(_value(node, keys))
+
+        # Naver 응답은 API 버전에 따라 키 이름/중첩 구조가 조금씩 달라진다.
+        # "리포트 객체 자체"에 증권사/제목 + 날짜/의견/목표가 중 하나가 있으면 채택한다.
+        def _collect_report_dicts(payload):
+            broker_keys = {
+                "writecorpname","writecorp","brokercode","brokername","brokeragename","brokerage",
+                "firmname","firm_name","publishername","publisher","securitiesname","securities",
+                "writername","writer","corpname","corp_name","companyname","company_name","broker"
+            }
+            opinion_keys = {
+                "investmentopinion","investmentopinionname","investment_opinion","opinion",
+                "recommendation","rating","investopinion","opinionname","opinion_name"
+            }
+            target_keys = {
+                "targetprice","targetpricevalue","target_price","pricetarget","price_target",
+                "targetmeanprice","targetmean","target_price_mean","targetprice_mean",
+                "averagetargetprice","average_target_price","avgtargetprice","avg_target_price",
+                "target"
+            }
+            date_keys = {
+                "writedate","researchdate","publishdate","publishedat","published_at",
+                "reportdate","regdate","createdat","created_at","createdate","date"
+            }
+            title_keys = {
+                "title","reporttitle","report_title","researchtitle","research_title","subject","name"
+            }
+            id_keys = {"researchid","research_id","researchno","researchnumber","reportid","report_id","id"}
+
+            out, seen = [], set()
+
+            for node in _walk_objects(payload):
+                if not isinstance(node, dict):
+                    continue
+                keys = {str(k).lower() for k in node.keys()}
+                broker_hit = bool(keys & broker_keys)
+                content_hit = bool(keys & (opinion_keys | target_keys | date_keys | title_keys | id_keys))
+                # 리포트 객체의 직접 필드가 충분한 경우만 채택한다.
+                if not (broker_hit and content_hit):
+                    continue
+
+                marker = json.dumps(node, ensure_ascii=False, sort_keys=True, default=str)
+                if marker not in seen:
+                    seen.add(marker)
+                    out.append(node)
+
+            return out
+
+        def _parse_report(node):
+            if not isinstance(node, dict):
+                return None
+
+            broker = _value(node, [
+                "writeCorpName","writeCorp","brokerName","brokerageName","brokerage",
+                "companyName","company_name","firmName","firm_name","publisherName","publisher",
+                "broker","securitiesName","securities","writerName","writer","corpName","corp_name"
+            ])
+            title = _value(node, [
+                "title","reportTitle","report_title","subject","researchTitle","research_title","name"
+            ])
+            opinion = _value(node, [
+                "investmentOpinion","investmentOpinionName","investment_opinion",
+                "opinion","recommendation","rating","investOpinion","opinionName","opinion_name"
+            ])
+            date_val = _value(node, [
+                "writeDate","researchDate","publishedAt","published_at","publishDate",
+                "reportDate","date","regDate","createdAt","created_at","createDate"
+            ])
+            tp = _number(node, [
+                "targetPrice","targetPriceValue","target","priceTarget","price_target",
+                "targetMean","targetMeanPrice","target_price_mean","targetprice_mean",
+                "averageTargetPrice","average_target_price","avgTargetPrice","avg_target_price"
+            ])
+            rid = _value(node, [
+                "researchId","research_id","researchNo","researchNumber","reportId","report_id","id"
+            ])
+
+            # 제목/증권사/의견/날짜/목표가 중 실제 내용이 하나도 없으면 제외
+            if not any([broker, title, opinion, date_val, tp, rid]):
+                return None
+
+            date_txt = str(date_val)[:10] if date_val else ""
+            sub = []
+            if opinion:
+                sub.append(str(opinion))
+            if date_txt:
+                sub.append(date_txt)
+            if not sub and title:
+                sub.append(str(title)[:100])
+
+            current = _safe_num(raw_price)
+            upside = ((tp-current)/current*100) if tp and current else None
+
             return {
-                "title":"실제 애널리스트 컨센서스", "gauge_val":str(len(reports)), "gauge_label":"확인 리포트",
-                "status_label":"검증 데이터", "badge_text":"실제 데이터만 표시",
-                "dots": "" if not reports else f"확인 리포트 {len(reports)}건",
-                "primary_label":"평균 목표가" if target_p else "목표가", "primary_val":primary_val,
-                "secondary_label":"현재가", "secondary_val":f"{int(raw_price):,} 원" if raw_price else "-",
-                "slider_left":f"{int(raw_price):,}원" if raw_price else "-", "slider_mid":slider_mid,
-                "slider_right":f"{int(high_p):,}원" if high_p else "-", "fill_pct":fill_pct,
-                "list_title":"실제 증권사 리포트", "source_tag":"출처: 네이버 리서치 / 확인 가능한 데이터", "items":reports
+                "main": str(broker or "증권사 리포트"),
+                "sub": " · ".join(sub) or "실제 리포트",
+                "val": f"{int(tp):,}원" if tp else "목표가 미확인",
+                "sub_val": f"{upside:+.1f}%" if upside is not None else "",
+                "_id": str(rid or ""),
+                "_title": str(title or "")
             }
 
-        if market_name in ["미국주식","글로벌증시","원자재"]:
-            rec=[]; target_p=None; counts={"Buy":0,"Hold":0,"Sell":0}
-            if FINNHUB_API_KEY and symbol:
-                key=symbol.upper(); cached=_cache_get(FINNHUB_CONSENSUS_CACHE,key,FINNHUB_CONSENSUS_CACHE_TTL)
-                if cached is None:
+        def _parse_naver_pc_research_html(html_text):
+            """Naver PC 리서치 종목분석 HTML fallback.
+            API가 200이지만 JSON 구조가 바뀌었을 때 실제 공개 리포트 목록을 복구한다.
+            """
+            try:
+                from html.parser import HTMLParser
+                from html import unescape
+                import re as _re
+
+                class _RowParser(HTMLParser):
+                    def __init__(self):
+                        super().__init__(convert_charrefs=True)
+                        self.rows = []
+                        self.in_tr = False
+                        self.in_td = False
+                        self.in_a = False
+                        self.current = []
+                        self.cell = []
+                        self.href = ""
+
+                    def handle_starttag(self, tag, attrs):
+                        attrs = dict(attrs)
+                        if tag == "tr":
+                            self.in_tr = True
+                            self.current = []
+                        elif self.in_tr and tag in ("td", "th"):
+                            self.in_td = True
+                            self.cell = []
+                        elif self.in_tr and self.in_td and tag == "a":
+                            self.in_a = True
+                            self.href = attrs.get("href", "")
+
+                    def handle_data(self, data):
+                        if self.in_tr and self.in_td:
+                            self.cell.append(data)
+
+                    def handle_endtag(self, tag):
+                        if tag in ("td", "th") and self.in_td:
+                            txt = " ".join("".join(self.cell).split())
+                            self.current.append(txt)
+                            self.cell = []
+                            self.in_td = False
+                        elif tag == "a" and self.in_a:
+                            self.in_a = False
+                        elif tag == "tr" and self.in_tr:
+                            if self.current:
+                                self.rows.append(self.current)
+                            self.current = []
+                            self.in_tr = False
+
+                parser = _RowParser()
+                parser.feed(html_text)
+
+                results = []
+                date_re = _re.compile(r"20\d{2}[./-]\d{1,2}[./-]\d{1,2}")
+                price_re = _re.compile(r"(?<!\d)\d{2,3}(?:,\d{3})+(?!\d)|(?<!\d)\d{5,8}(?!\d)")
+
+                for cells in parser.rows:
+                    cells = [unescape(c).strip() for c in cells if c.strip()]
+                    if len(cells) < 3:
+                        continue
+
+                    joined = " ".join(cells)
+                    if formal_name and formal_name not in joined and symbol not in joined:
+                        continue
+                    if "작성일" in joined or "종목명" in joined:
+                        continue
+
+                    date_txt = ""
+                    for c in cells:
+                        md = date_re.search(c)
+                        if md:
+                            date_txt = md.group(0)
+                            break
+
+                    # 실제 리포트 행은 보통 제목/증권사/의견/목표가/작성일 중 여러 칸을 가진다.
+                    price = None
+                    for c in cells:
+                        # 날짜가 포함된 셀은 가격 후보에서 제외
+                        if date_re.search(c):
+                            continue
+                        nums = price_re.findall(c.replace("원", ""))
+                        for raw in nums:
+                            n = _safe_num(raw)
+                            if n and n >= 1000:
+                                price = n
+                                break
+                        if price:
+                            break
+
+                    opinion = ""
+                    for c in cells:
+                        if any(x in c.lower() for x in (
+                            "buy","hold","sell","strong buy","strong sell",
+                            "매수","중립","매도","강력매수","강력 매수"
+                        )):
+                            opinion = c
+                            break
+
+                    # 네이버 종목분석 목록의 일반적인 순서를 활용하되,
+                    # 고정 인덱스에 의존하지 않고 텍스트 특성으로 선택한다.
+                    broker = ""
+                    for c in cells:
+                        if any(x in c for x in ("증권", "투자", "자산운용", "리서치")):
+                            broker = c
+                            break
+                    if not broker and len(cells) >= 4:
+                        broker = cells[-2]
+
+                    title = ""
+                    for c in cells:
+                        if c != broker and c != date_txt and c != opinion and c:
+                            if len(c) >= 5 and not price_re.fullmatch(c.replace("원","").strip()):
+                                title = c
+                                break
+
+                    if not (broker or title or price or opinion or date_txt):
+                        continue
+
+                    results.append({
+                        "main": broker or "증권사 리포트",
+                        "sub": " · ".join(x for x in (opinion, date_txt) if x) or (title[:100] if title else "실제 리포트"),
+                        "val": f"{int(price):,}원" if price else "목표가 미확인",
+                        "sub_val": "",
+                        "_id": "",
+                        "_title": title
+                    })
+
+                return results[:20]
+            except Exception as exc:
+                print(f"[CONSENSUS][KR] PC research HTML parser failed: {type(exc).__name__}: {exc}")
+                return []
+
+        def _parse_wisereport_consensus_html(html_text):
+            """WiseReport의 '제공처별 투자의견 및 목표주가' 표를 열 기준으로 정확히 읽는다.
+
+            핵심: HTML 전체에서 숫자를 추측하지 않고, 실제 컨센서스 표의 헤더를
+            먼저 찾은 뒤 같은 열의 값을 사용한다.
+            제공처 | 최종일자 | 목표가 | 직전목표가 | 변동률(%) | 투자의견 | 직전투자의견
+            """
+            try:
+                from html.parser import HTMLParser
+                from html import unescape
+                import re as _re
+
+                class _TableParser(HTMLParser):
+                    def __init__(self):
+                        super().__init__(convert_charrefs=True)
+                        self.tables = []
+                        self.table_depth = 0
+                        self.current_table = None
+                        self.in_tr = False
+                        self.in_cell = False
+                        self.current_row = []
+                        self.cell = []
+
+                    def handle_starttag(self, tag, attrs):
+                        if tag == "table":
+                            if self.table_depth == 0:
+                                self.current_table = []
+                            self.table_depth += 1
+                        elif self.table_depth == 1 and tag == "tr":
+                            self.in_tr = True
+                            self.current_row = []
+                        elif self.table_depth == 1 and self.in_tr and tag in ("td", "th"):
+                            self.in_cell = True
+                            self.cell = []
+
+                    def handle_data(self, data):
+                        if self.table_depth == 1 and self.in_tr and self.in_cell:
+                            self.cell.append(data)
+
+                    def handle_endtag(self, tag):
+                        if self.table_depth == 1 and tag in ("td", "th") and self.in_cell:
+                            txt = " ".join("".join(self.cell).split())
+                            self.current_row.append(txt)
+                            self.cell = []
+                            self.in_cell = False
+                        elif self.table_depth == 1 and tag == "tr" and self.in_tr:
+                            if self.current_row:
+                                self.current_table.append(self.current_row)
+                            self.current_row = []
+                            self.in_tr = False
+                        elif tag == "table" and self.table_depth > 0:
+                            self.table_depth -= 1
+                            if self.table_depth == 0:
+                                if self.current_table:
+                                    self.tables.append(self.current_table)
+                                self.current_table = None
+
+                parser = _TableParser()
+                parser.feed(html_text or "")
+
+                def clean(v):
+                    return unescape(" ".join(str(v).split())).strip()
+
+                def num(v):
                     try:
-                        url="https://finnhub.io/api/v1/stock/recommendation"
-                        rr=HTTP_SESSION.get(url,params={"symbol":key,"token":FINNHUB_API_KEY},timeout=4).json()
-                        cached=rr[0] if isinstance(rr,list) and rr else {}
-                        _cache_set(FINNHUB_CONSENSUS_CACHE,key,cached)
-                    except Exception: cached={}
-                for k,label in [("strongBuy","Buy"),("buy","Buy"),("hold","Hold"),("sell","Sell"),("strongSell","Sell")]:
-                    counts[label]+=int(cached.get(k) or 0)
-                if counts["Buy"]+counts["Hold"]+counts["Sell"]>0:
-                    for label in ("Buy","Hold","Sell"):
-                        if counts[label]: rec.append({"main":label,"sub":"Finnhub recommendation trend","val":str(counts[label]),"sub_val":"실제 집계"})
+                        x = str(v).replace(",", "").replace("원", "").strip()
+                        n = float(x)
+                        return n if n > 0 else None
+                    except Exception:
+                        return None
+
+                date_re = _re.compile(r"^(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{2}[./-]\d{1,2}[./-]\d{1,2})$")
+                price_re = _re.compile(r"^\d{2,3}(?:,\d{3})+$|^\d{5,9}$")
+                percent_re = _re.compile(r"^[+-]?\d+(?:\.\d+)?%?$")
+
+                # 평균 목표가는 별도의 컨센서스 영역에서만 읽는다.
+                plain = _re.sub(r"<[^>]+>", " ", html_text or "")
+                plain = unescape(" ".join(plain.split()))
+                target_p = None
+                for pat in (
+                    r"목표주가\s*\(원\).*?(\d{1,3}(?:,\d{3})+)",
+                    r"목표주가.*?(\d{1,3}(?:,\d{3})+).*?EPS",
+                ):
+                    m = _re.search(pat, plain, flags=_re.I | _re.S)
+                    if m:
+                        target_p = num(m.group(1))
+                        if target_p:
+                            break
+
+                # 반드시 '제공처별 투자의견 및 목표주가' 헤더가 있는 표만 선택한다.
+                target_table = None
+                header = None
+                for table in parser.tables:
+                    for row in table:
+                        cells = [clean(x) for x in row]
+                        joined = " | ".join(cells)
+                        if (
+                            "제공처" in joined and
+                            "최종일자" in joined and
+                            "목표가" in joined and
+                            "투자의견" in joined
+                        ):
+                            target_table = table
+                            header = cells
+                            break
+                    if target_table is not None:
+                        break
+
+                reports = []
+                if target_table is None:
+                    print(f"[CONSENSUS][KR] WiseReport target table NOT FOUND tables={len(parser.tables)}")
+                    return target_p, []
+
+                # 헤더의 실제 열 위치를 사용한다. 고정 인덱스가 아니라 헤더명으로 매핑한다.
+                def col_index(names):
+                    for i, h in enumerate(header):
+                        h2 = h.replace(" ", "")
+                        if any(name.replace(" ", "") in h2 for name in names):
+                            return i
+                    return -1
+
+                broker_i = col_index(["제공처"])
+                date_i = col_index(["최종일자"])
+                target_i = col_index(["목표가"])
+                opinion_i = col_index(["투자의견"])
+
+                if min(broker_i, date_i, target_i, opinion_i) < 0:
+                    print(f"[CONSENSUS][KR] WiseReport header mapping failed header={header}")
+                    return target_p, []
+
+                # 헤더 행 다음의 실제 데이터 행만 처리한다.
+                header_pos = -1
+                for i, row in enumerate(target_table):
+                    if [clean(x) for x in row] == header:
+                        header_pos = i
+                        break
+                if header_pos < 0:
+                    # 같은 헤더를 포함하는 첫 행을 다시 찾는다.
+                    for i, row in enumerate(target_table):
+                        c = [clean(x) for x in row]
+                        if "제공처" in " | ".join(c) and "목표가" in " | ".join(c):
+                            header_pos = i
+                            break
+
+                seen = set()
+                current = _safe_num(raw_price)
+                for raw_row in target_table[header_pos + 1:]:
+                    cells = [clean(x) for x in raw_row]
+                    if len(cells) <= max(broker_i, date_i, target_i, opinion_i):
+                        continue
+
+                    broker = cells[broker_i]
+                    date_txt = cells[date_i]
+                    target_txt = cells[target_i]
+                    opinion = cells[opinion_i]
+
+                    # 실제 데이터 행만 통과시킨다.
+                    if not broker or not date_re.fullmatch(date_txt):
+                        continue
+                    if not target_txt or percent_re.fullmatch(target_txt):
+                        continue
+
+                    # 목표가 열에서만 숫자를 읽는다. 직전 목표가/변동률은 절대 사용하지 않는다.
+                    m_price = _re.search(r"\d{1,3}(?:,\d{3})+|\d{5,9}", target_txt.replace("원", ""))
+                    if not m_price:
+                        continue
+                    target = num(m_price.group(0))
+                    if target is None or target < 1000:
+                        continue
+
+                    key = (broker, date_txt, int(target), opinion)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
+                    upside = ((target - current) / current * 100.0) if target and current else None
+                    reports.append({
+                        "main": broker,
+                        "sub": " · ".join(x for x in (opinion, date_txt) if x) or "실제 리포트",
+                        "val": f"{int(target):,}원",
+                        "sub_val": f"{upside:+.1f}%" if upside is not None else "",
+                        "_id": f"wise:{broker}:{date_txt}:{int(target)}:{opinion}",
+                        "_title": ""
+                    })
+
+                print(f"[CONSENSUS][KR] WiseReport tables={len(parser.tables)} target_table_rows={len(target_table)} header={header} reports={len(reports)}")
+                return target_p, reports[:20]
+
+            except Exception as exc:
+                print(f"[CONSENSUS][KR] WiseReport parser failed: {type(exc).__name__}: {exc}")
+                return None, []
+
+        # 국내주식
+        if market_name in ["국내주식", "국내증시"]:
+            code = str(symbol).replace("A", "").zfill(6)
+            current = _safe_num(raw_price)
+            target_p = None
+            target_source = None
+            reports = []
+            report_source = None
+
+            # 0) 국내 컨센서스의 기준 경로: Naver 기업정보(WiseReport)
+            # 실제 제공처/최종일자/목표가/투자의견 표를 직접 읽어 매핑한다.
+            try:
+                wise_url = f"https://navercomp.wisereport.co.kr/v2/company/c1010001.aspx?cmp_cd={code}"
+                wr = HTTP_SESSION.get(
+                    wise_url, timeout=8.0,
+                    headers={
+                        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
+                        "Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language":"ko-KR,ko;q=0.9,en-US;q=0.8",
+                        "Referer":"https://finance.naver.com/"
+                    }
+                )
+                print(f"[CONSENSUS][KR] WiseReport {code} HTTP {wr.status_code}")
+                if wr.ok:
+                    wise_target, wise_reports = _parse_wisereport_consensus_html(wr.text)
+                    if wise_target:
+                        target_p = wise_target
+                        target_source = "Naver WiseReport 실제 컨센서스"
+                    if wise_reports:
+                        reports = wise_reports
+                        report_source = "Naver WiseReport 실제 증권사 리포트"
+                    print(f"[CONSENSUS][KR] WiseReport {code} target={wise_target} reports={len(wise_reports)}")
+                else:
+                    print(f"[CONSENSUS][KR] WiseReport {code} HTTP {wr.status_code}")
+            except Exception as e:
+                print(f"[CONSENSUS][KR] WiseReport failed {code}: {type(e).__name__}: {e}")
+
+            # 1) 기존 mobile integration
+            try:
+                url = f"https://m.stock.naver.com/api/stock/{code}/integration"
+                res = HTTP_SESSION.get(
+                    url, timeout=5.0,
+                    headers={
+                        "User-Agent":"Mozilla/5.0",
+                        "Accept":"application/json, text/plain, */*",
+                        "Accept-Language":"ko-KR,ko;q=0.9",
+                        "Referer":f"https://m.stock.naver.com/domestic/stock/{code}/total"
+                    }
+                )
+                print(f"[CONSENSUS][KR] integration {code} HTTP {res.status_code}")
+                if res.ok:
+                    data = res.json()
+                    ci = data.get("consensusInfo") if isinstance(data, dict) else None
+                    for obj in (ci, data):
+                        if target_p is None and obj is not None:
+                            target_p = _number(obj, [
+                                "priceTargetMean","consensusTargetPrice","targetPriceMean",
+                                "averageTargetPrice","avgTargetPrice","targetPrice"
+                            ])
+                            if target_p:
+                                target_source = "Naver 실제 컨센서스"
+
+                    # integration.researches가 직접 존재하는 현재 구조를 우선 처리
+                    direct_researches = []
+                    if isinstance(data, dict):
+                        for k in ("researches", "research", "researchList", "researchesList"):
+                            v = data.get(k)
+                            if isinstance(v, list):
+                                direct_researches.extend(v)
+                            elif isinstance(v, dict):
+                                direct_researches.extend(list(_walk_objects(v)))
+
+                    # WiseReport가 실제 제공처/목표가를 매핑했다면
+                    # Naver integration의 불완전한 중첩 객체를 섞지 않는다.
+                    if not reports:
+                        candidates = direct_researches or _collect_report_dicts(data)
+                        for it in candidates:
+                            row = _parse_report(it)
+                            if row:
+                                reports.append(row)
+
+                        if reports:
+                            report_source = "Naver 통합 리서치"
+                    print(f"[CONSENSUS][KR] integration {code} target={target_p} reports={len(reports)}")
+            except Exception as e:
+                print(f"[CONSENSUS][KR] integration failed {code}: {type(e).__name__}: {e}")
+
+            # 2) 현재 관찰되는 Naver front-api integration
+            if not reports:
+                try:
+                    url = f"https://m.stock.naver.com/front-api/stock/domestic/integration?code={code}&endType=stock"
+                    res = HTTP_SESSION.get(
+                        url, timeout=5.0,
+                        headers={
+                            "User-Agent":"Mozilla/5.0",
+                            "Accept":"application/json, text/plain, */*",
+                            "Accept-Language":"ko-KR,ko;q=0.9",
+                            "Referer":f"https://m.stock.naver.com/domestic/stock/{code}/total"
+                        }
+                    )
+                    print(f"[CONSENSUS][KR] front-api integration {code} HTTP {res.status_code}")
+                    if res.ok:
+                        data = res.json()
+                        for obj in (
+                            data.get("consensusInfo") if isinstance(data, dict) else None,
+                            data
+                        ):
+                            if target_p is None and obj is not None:
+                                target_p = _number(obj, [
+                                    "priceTargetMean","consensusTargetPrice","targetPriceMean",
+                                    "averageTargetPrice","avgTargetPrice","targetPrice"
+                                ])
+                                if target_p:
+                                    target_source = "Naver 실제 컨센서스"
+
+                        direct = []
+                        if isinstance(data, dict):
+                            for k in ("researches","research","researchList","researchesList"):
+                                v = data.get(k)
+                                if isinstance(v, list):
+                                    direct.extend(v)
+                                elif isinstance(v, dict):
+                                    direct.extend(list(_walk_objects(v)))
+
+                        for it in direct or _collect_report_dicts(data):
+                            row = _parse_report(it)
+                            if row:
+                                reports.append(row)
+
+                        if reports:
+                            report_source = "Naver front-api 리서치"
+                        print(f"[CONSENSUS][KR] front-api integration {code} target={target_p} reports={len(reports)}")
+                except Exception as e:
+                    print(f"[CONSENSUS][KR] front-api integration failed {code}: {type(e).__name__}: {e}")
+
+            # 3) 최신 v2 company / by-items
+            v2_urls = [
+                f"https://m.stock.naver.com/api/stockSecurity/researches/v2/company?itemCodes={urllib.parse.quote(code)}&index=0&size=20",
+                f"https://m.stock.naver.com/api/stockSecurity/researches/v2/company/by-items?itemCodes={urllib.parse.quote(code)}&size=20",
+            ]
+            for v2_url in v2_urls:
+                if reports:
+                    break
+                try:
+                    rr = HTTP_SESSION.get(
+                        v2_url, timeout=5.0,
+                        headers={
+                            "User-Agent":"Mozilla/5.0",
+                            "Accept":"application/json, text/plain, */*",
+                            "Accept-Language":"ko-KR,ko;q=0.9",
+                            "Referer":f"https://m.stock.naver.com/domestic/stock/{code}/research"
+                        }
+                    )
+                    print(f"[CONSENSUS][KR] research-v2 {code} HTTP {rr.status_code} path={'by-items' if 'by-items' in v2_url else 'company'}")
+                    if not rr.ok:
+                        continue
+                    payload = rr.json()
+                    parsed = []
+                    for it in _collect_report_dicts(payload):
+                        row = _parse_report(it)
+                        if row:
+                            parsed.append(row)
+                    if parsed:
+                        reports = parsed[:20]
+                        report_source = "Naver 최신 리서치 v2"
+                    print(f"[CONSENSUS][KR] research-v2 {code} reports={len(parsed)}")
+                except Exception as e:
+                    print(f"[CONSENSUS][KR] research-v2 failed {code}: {type(e).__name__}: {e}")
+
+            # 4) v1 호환
+            if not reports:
+                for v1_url in [
+                    f"https://m.stock.naver.com/api/stockSecurity/researches/v1/company/by-items?itemCodes={urllib.parse.quote(code)}&size=20",
+                    f"https://m.stock.naver.com/api/stockSecurity/researches/v1/company?index=0&size=20",
+                ]:
+                    try:
+                        rr = HTTP_SESSION.get(
+                            v1_url, timeout=5.0,
+                            headers={"User-Agent":"Mozilla/5.0","Accept":"application/json, text/plain, */*"}
+                        )
+                        print(f"[CONSENSUS][KR] research-v1 {code} HTTP {rr.status_code}")
+                        if not rr.ok:
+                            continue
+                        parsed = []
+                        for it in _collect_report_dicts(rr.json()):
+                            row = _parse_report(it)
+                            if row:
+                                parsed.append(row)
+                        if parsed:
+                            reports = parsed[:20]
+                            report_source = "Naver 리서치 v1 호환"
+                            break
+                    except Exception as e:
+                        print(f"[CONSENSUS][KR] research-v1 failed {code}: {type(e).__name__}: {e}")
+
+            # 5) legacy JSON
+            if not reports:
+                try:
+                    legacy = f"https://m.stock.naver.com/api/stock/{code}/research?page=1&pageSize=20"
+                    rr = HTTP_SESSION.get(
+                        legacy, timeout=4.0,
+                        headers={"User-Agent":"Mozilla/5.0","Accept":"application/json, text/plain, */*"}
+                    )
+                    print(f"[CONSENSUS][KR] legacy research {code} HTTP {rr.status_code}")
+                    if rr.ok:
+                        parsed = []
+                        for it in _collect_report_dicts(rr.json()):
+                            row = _parse_report(it)
+                            if row:
+                                parsed.append(row)
+                        if parsed:
+                            reports = parsed[:20]
+                            report_source = "Naver 리서치 호환 경로"
+                except Exception as e:
+                    print(f"[CONSENSUS][KR] legacy research failed {code}: {type(e).__name__}: {e}")
+
+            # 6) 최후 fallback: 공개 PC 종목분석 리서치 목록 HTML
+            # 검색 URL은 실제 Naver research/company_list.naver의 itemCode 필터 형식을 사용한다.
+            if not reports:
+                try:
+                    params = {
+                        "keyword": "",
+                        "brokerCode": "",
+                        "writeFromDate": "",
+                        "writeToDate": "",
+                        "searchType": "itemCode",
+                        "itemName": formal_name or "",
+                        "itemCode": code,
+                        "x": "55",
+                        "y": "24",
+                    }
+                    url = "https://finance.naver.com/research/company_list.naver"
+                    rr = HTTP_SESSION.get(
+                        url, params=params, timeout=7.0,
+                        headers={
+                            "User-Agent":"Mozilla/5.0",
+                            "Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                            "Accept-Language":"ko-KR,ko;q=0.9",
+                            "Referer":"https://finance.naver.com/research/",
+                        }
+                    )
+                    print(f"[CONSENSUS][KR] PC research HTML {code} HTTP {rr.status_code}")
+                    if rr.ok:
+                        parsed = _parse_naver_pc_research_html(rr.text)
+                        if parsed:
+                            reports = parsed[:20]
+                            report_source = "Naver 종목분석 리포트"
+                        print(f"[CONSENSUS][KR] PC research HTML {code} reports={len(parsed)}")
+                except Exception as e:
+                    print(f"[CONSENSUS][KR] PC research HTML failed {code}: {type(e).__name__}: {e}")
+
+            # 중복 제거
+            unique = []
+            seen = set()
+            for row in reports:
+                key = (
+                    row.get("_id") or "",
+                    row.get("main"),
+                    row.get("sub"),
+                    row.get("val"),
+                    row.get("_title")
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                row.pop("_id", None)
+                row.pop("_title", None)
+                unique.append(row)
+            reports = unique[:20]
+
+            # 평균 목표가는 실제 Naver/WiseReport 또는 기존 Naver 컨센서스만 사용
+            if target_p and current:
+                low_p, high_p = min(current, target_p), max(current, target_p)
+                if high_p <= low_p:
+                    high_p = low_p + 1
+                fill_pct = min(92, max(8, int(((target_p-low_p)/(high_p-low_p))*84+8)))
+                upside = (target_p-current)/current*100
+                primary_label = "평균 목표가"
+                primary_val = f"{int(target_p):,} 원"
+                slider_mid = f"목표가 {int(target_p):,}원 ({upside:+.1f}%)"
+            else:
+                low_p = high_p = current or 0
+                fill_pct = 50
+                primary_label = "평균 목표가"
+                primary_val = "실제 목표가 데이터 없음"
+                slider_mid = "실제 목표가 확인 필요"
+
+            if reports:
+                source_tag = f"출처: {report_source or 'Naver / 실제 증권사 리포트'}"
+            elif target_p:
+                source_tag = f"출처: {target_source or 'Naver / 실제 컨센서스'}"
+            else:
+                source_tag = "출처: Naver / 확인 가능한 컨센서스 데이터 없음"
+
+            print(
+                f"[CONSENSUS][KR] FINAL {code} "
+                f"target={target_p} reports={len(reports)} "
+                f"report_source={report_source or '-'}"
+            )
+
             return {
-                "title":"실제 애널리스트 의견", "gauge_val":str(sum(counts.values())), "gauge_label":"확인 의견",
-                "status_label":"검증 데이터", "badge_text":"실제 데이터만 표시",
-                "dots":f"Buy {counts['Buy']} · Hold {counts['Hold']} · Sell {counts['Sell']}",
-                "primary_label":"평균 목표가", "primary_val":"실제 목표가 데이터 없음",
-                "secondary_label":"현재가", "secondary_val":f"${raw_price:,.2f}" if raw_price else "-",
-                "slider_left":f"${raw_price:,.2f}" if raw_price else "-", "slider_mid":"목표가 확인 필요",
-                "slider_right":"-", "fill_pct":50, "list_title":"실제 애널리스트 의견",
-                "source_tag":"출처: Finnhub / 확인 가능한 데이터" if FINNHUB_API_KEY else "실제 컨센서스 API 미연결", "items":rec
+                "title":"애널리스트 컨센서스",
+                "gauge_val":str(len(reports)),
+                "gauge_label":"확인 리포트",
+                "status_label":"검증 데이터",
+                "badge_text":"실제 데이터만 표시",
+                "dots":f"확인 리포트 {len(reports)}건" if reports else "",
+                "primary_label":primary_label,
+                "primary_val":primary_val,
+                "secondary_label":"현재가",
+                "secondary_val":f"{int(current):,} 원" if current else "-",
+                "slider_left":f"{int(low_p):,}원" if low_p else "-",
+                "slider_mid":slider_mid,
+                "slider_right":f"{int(high_p):,}원" if high_p else "-",
+                "fill_pct":fill_pct,
+                "list_title":"실제 증권사 리포트",
+                "source_tag":source_tag,
+                "items":reports
             }
+
+        # 미국/글로벌
+        if market_name in ["미국주식", "글로벌증시", "원자재"]:
+            key = str(symbol or "").upper(); current = _safe_float(raw_price)
+            counts = {"Buy":0,"Hold":0,"Sell":0}; rec_items=[]
+            target_p=target_low=target_high=None; target_source=None; target_error=None
+
+            if FINNHUB_API_KEY and key:
+                try:
+                    ck=f"recommendation:{key}"; cached=_cache_get(FINNHUB_CONSENSUS_CACHE,ck,FINNHUB_CONSENSUS_CACHE_TTL)
+                    if cached is None:
+                        rr=HTTP_SESSION.get("https://finnhub.io/api/v1/stock/recommendation",params={"symbol":key,"token":FINNHUB_API_KEY},timeout=5.0)
+                        print(f"[CONSENSUS][US] recommendation {key} HTTP {rr.status_code}")
+                        cached=(rr.json()[0] if rr.ok and isinstance(rr.json(),list) and rr.json() else None)
+                        if isinstance(cached,dict): _cache_set(FINNHUB_CONSENSUS_CACHE,ck,cached)
+                    if isinstance(cached,dict):
+                        counts["Buy"]=int(cached.get("strongBuy") or 0)+int(cached.get("buy") or 0)
+                        counts["Hold"]=int(cached.get("hold") or 0)
+                        counts["Sell"]=int(cached.get("sell") or 0)+int(cached.get("strongSell") or 0)
+                    for label in ("Buy","Hold","Sell"):
+                        if counts[label]: rec_items.append({"main":label,"sub":"Finnhub 최근 추천의견 집계","val":str(counts[label]),"sub_val":"실제 집계"})
+                except Exception as e: print(f"[CONSENSUS][US] recommendation failed {key}: {type(e).__name__}: {e}")
+
+            if FINNHUB_API_KEY and key:
+                try:
+                    tr=HTTP_SESSION.get("https://finnhub.io/api/v1/stock/price-target",params={"symbol":key,"token":FINNHUB_API_KEY},timeout=5.0)
+                    print(f"[CONSENSUS][US] Finnhub price-target {key} HTTP {tr.status_code}")
+                    if tr.ok:
+                        p=tr.json(); target_p=_safe_float(p.get("targetMean")); target_low=_safe_float(p.get("targetLow")); target_high=_safe_float(p.get("targetHigh")); target_source="Finnhub" if target_p else None
+                    else: target_error=f"Finnhub HTTP {tr.status_code}"
+                except Exception as e: target_error=f"Finnhub {type(e).__name__}: {e}"
+
+            # Yahoo quoteSummary
+            if target_p is None and key:
+                for yurl in [f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{urllib.parse.quote(key)}?modules=financialData",f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{urllib.parse.quote(key)}?modules=financialData"]:
+                    try:
+                        yr=HTTP_SESSION.get(yurl,timeout=6.0,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json,text/plain,*/*"})
+                        print(f"[CONSENSUS][US] Yahoo target {key} HTTP {yr.status_code}")
+                        if not yr.ok: continue
+                        result=(yr.json().get("quoteSummary",{}).get("result",[]) or [])
+                        if result:
+                            fd=result[0].get("financialData",{}) or {}
+                            def yv(k):
+                                v=fd.get(k); return v.get("raw") if isinstance(v,dict) else v
+                            target_p=_safe_float(yv("targetMeanPrice")); target_low=_safe_float(yv("targetLowPrice")); target_high=_safe_float(yv("targetHighPrice"))
+                            if target_p: target_source="Yahoo Finance"; break
+                    except Exception as e: print(f"[CONSENSUS][US] Yahoo target failed {key}: {type(e).__name__}: {e}")
+
+            # StockAnalysis 공개 forecast fallback
+            if target_p is None and key:
+                try:
+                    sr=HTTP_SESSION.get(f"https://stockanalysis.com/stocks/{urllib.parse.quote(key.lower())}/forecast/",timeout=8.0,headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36","Accept-Language":"en-US,en;q=0.9"})
+                    print(f"[CONSENSUS][US] StockAnalysis forecast {key} HTTP {sr.status_code}")
+                    if sr.ok:
+                        html=sr.text
+                        for pat in [r"average price target[^$]{0,160}\$([0-9][0-9,]*(?:\.[0-9]+)?)",r"Price Target:\s*\$([0-9][0-9,]*(?:\.[0-9]+)?)",r'"targetMeanPrice"\s*:\s*([0-9.]+)']:
+                            m=re.search(pat,html,flags=re.I|re.S)
+                            if m:
+                                target_p=_safe_float(m.group(1).replace(",",""))
+                                if target_p: target_source="StockAnalysis / S&P Global"; break
+                        if target_p:
+                            ml=re.search(r'lowest[^$]{0,120}\$([0-9][0-9,]*(?:\.[0-9]+)?)',html,flags=re.I|re.S); mh=re.search(r'highest[^$]{0,120}\$([0-9][0-9,]*(?:\.[0-9]+)?)',html,flags=re.I|re.S)
+                            if ml: target_low=_safe_float(ml.group(1).replace(",",""))
+                            if mh: target_high=_safe_float(mh.group(1).replace(",",""))
+                    else: target_error=target_error or f"StockAnalysis HTTP {sr.status_code}"
+                except Exception as e: print(f"[CONSENSUS][US] StockAnalysis failed {key}: {type(e).__name__}: {e}")
+
+            # Alpha Vantage OVERVIEW fallback
+            if target_p is None and ALPHA_VANTAGE_API_KEY and key:
+                try:
+                    ar=HTTP_SESSION.get("https://www.alphavantage.co/query",params={"function":"OVERVIEW","symbol":key,"apikey":ALPHA_VANTAGE_API_KEY},timeout=8.0)
+                    print(f"[CONSENSUS][US] Alpha Vantage OVERVIEW {key} HTTP {ar.status_code}")
+                    if ar.ok:
+                        p=ar.json(); candidate=_safe_float(p.get("AnalystTargetPrice")) if isinstance(p,dict) else None
+                        if candidate: target_p=candidate; target_source="Alpha Vantage OVERVIEW"
+                except Exception as e: print(f"[CONSENSUS][US] Alpha Vantage failed {key}: {type(e).__name__}: {e}")
+
+            total=sum(counts.values())
+            if target_p and current:
+                upside=((target_p-current)/current)*100; primary_val=f"${target_p:,.2f}"; secondary_val=f"${current:,.2f}"
+                if target_low and target_high and target_high>target_low:
+                    low_p,high_p=target_low,target_high; fill_pct=min(92,max(8,int(((target_p-low_p)/(high_p-low_p))*100))); slider_left=f"${low_p:,.2f}"; slider_mid=f"평균 ${target_p:,.2f} ({upside:+.1f}%)"; slider_right=f"${high_p:,.2f}"
+                else:
+                    fill_pct=min(92,max(8,50+int(max(-40,min(40,upside))/2))); slider_left=f"현재가 ${current:,.2f}"; slider_mid=f"평균 ${target_p:,.2f} ({upside:+.1f}%)"; slider_right="목표범위 미확인"
+            else:
+                primary_val="실제 목표가 데이터 없음"; secondary_val=f"${current:,.2f}" if current else "-"; fill_pct=50; slider_left=f"${current:,.2f}" if current else "-"; slider_mid="실제 목표가 확인 필요"; slider_right="-"
+
+            if target_p: source_tag=f"출처: {target_source} / 실제 목표주가" + (" + Finnhub 추천의견" if total else "")
+            elif total: source_tag="출처: Finnhub / 추천의견 실제 데이터" + (f" · {target_error}" if target_error else "")
+            else: source_tag="확인 가능한 컨센서스 데이터 없음"
+            print(f"[CONSENSUS][US] FINAL {key} target={target_p} opinions={total} source={target_source or '-'}")
+            return {"title":"애널리스트 컨센서스","gauge_val":str(total),"gauge_label":"확인 의견","status_label":"검증 데이터","badge_text":"실제 데이터만 표시","dots":f"Buy {counts['Buy']} · Hold {counts['Hold']} · Sell {counts['Sell']}","primary_label":"평균 목표가","primary_val":primary_val,"secondary_label":"현재가","secondary_val":secondary_val,"slider_left":slider_left,"slider_mid":slider_mid,"slider_right":slider_right,"fill_pct":fill_pct,"list_title":"실제 애널리스트 의견","source_tag":source_tag,"items":rec_items}
+
+        return None
     except Exception as exc:
-        print(f"[CONSENSUS] {symbol} failed: {exc}")
-    return None
+        print(f"[CONSENSUS] {symbol} failed: {type(exc).__name__}: {exc}")
+        return None
 
 def _fred_series(series_id, limit=8):
     """FRED 실제 관측값. 캐시와 요청 간격을 적용해 429를 예방한다."""
@@ -3291,7 +4292,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     low_52w = float(df_1y['Low'].min())
     if high_52w > low_52w:
         pos_52w = ((raw_price - low_52w) / (high_52w - low_52w)) * 100.0
-        pos_52w_str = f"{pos_52w:.1f}% (고:{round_fn(high_52w)}/저:{round_fn(low_52w)})"
+        pos_52w_str = f"{pos_52w:.1f}%"
         slider_fill_pct = int(min(92, max(8, int(pos_52w))))
     else:
         pos_52w_str = "-"
@@ -3546,7 +4547,7 @@ def analyze_news_clusters(news_list, target_name="", symbol=""):
         neg = sum(1 for x in items_c if _news_polarity(x) < 0)
         source_count = len(sources)
         repeat_count = len(items_c)
-        # 서로 다른 출처 + 반복 횟수 + 방향 일치 + 핵심주제 단어 수
+        # 출처 수 + 반복 횟수 + 방향 일치 + 핵심주제 단어 수
         score = repeat_count * 1.0 + source_count * 2.0 + min(3, len(c["keywords"])) * 0.7
         if polarity > 0 and pos >= max(2, neg + 1): score += 2.0
         elif polarity < 0 and neg >= max(2, pos + 1): score += 2.0
@@ -3576,7 +4577,7 @@ def build_clustered_material_evidence(news_list, target_name="", symbol=""):
     elif top["repeat_count"] >= 2 and direction != 0: score = direction
     else: score = 0
     topic = "·".join(top["keywords"][:3]) or "관련 재료"
-    detail = f"{topic} 관련 내용이 {top['repeat_count']}건, 서로 다른 출처 {top['source_count']}곳에서 반복 확인"
+    detail = f"{topic} 관련 내용이 {top['repeat_count']}건"
     if direction > 0: detail += " · 긍정 방향"
     elif direction < 0: detail += " · 부정 방향"
     return {"score": score, "detail": detail, "evidence": top["items"][:5], "clusters": clusters[:5]}
@@ -4896,6 +5897,40 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .calendar-widget .cal-event-meta {
             color: var(--text-sub);
         }
+        /* 실적 캘린더: 기업명 아래에 미국 장 발표 시점을 한 줄로 표시 */
+        /* 실적 카드 표시 순서 고정:
+           별점/발표상태 → 기업명 → (미국 장 마감 후) → 예상 EPS/매출 */
+        .calendar-widget .cal-earn-item .cal-detail-col {
+            display: flex !important;
+            flex-direction: column !important;
+            min-width: 0 !important;
+        }
+        .calendar-widget .cal-earn-item .cal-event-topline {
+            order: 1 !important;
+            display: flex !important;
+        }
+        .calendar-widget .cal-earn-item .cal-event-title {
+            order: 2 !important;
+            display: block !important;
+            width: 100% !important;
+            margin-top: 1px !important;
+            margin-bottom: 0 !important;
+        }
+        .calendar-widget .cal-earn-item .cal-earn-timing {
+            order: 3 !important;
+            display: block !important;
+            width: 100% !important;
+            margin-top: 1px !important;
+            font-size: 0.70rem !important;
+            line-height: 1.25 !important;
+            font-weight: 700 !important;
+            color: var(--text-sub) !important;
+            white-space: normal !important;
+        }
+        .calendar-widget .cal-earn-item .cal-event-meta {
+            order: 4 !important;
+        }
+
 
         .calendar-widget .cal-date-ctrl {
             display: flex;
@@ -5437,20 +6472,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 max-width: 832px;
             }
             
-            #rowChart { order: 1; }
-            #rowNews { order: 2; }
-            #rowTrack { order: 3; }
-            #rowEarningsCalendar { order: 4; }
+            /* 모바일 위젯 표시 순서 — PC 그리드에는 영향 없음 */
+            #rowCause { order: 1; }
+            #rowChart { order: 2; }
+            #rowNews { order: 3; }
+            #rowTrack { order: 4; }
             #rowQuant { order: 5; }
-            #rowEconomicCalendar { order: 6; }
-            #rowConsensus { order: 4; }
-            #rowVote { order: 5; }
-            #rowComment { order: 6; }
-            #rowDart { order: 7; }
-            #rowSignal { order: 8; }
-            #rowTelegram { order: 9; }
-            #rowWorld { order: 10; width: 100%; max-width: 832px; }
+            #rowConsensus { order: 6; }
+            #rowVote { order: 7; }
+            #rowComment { order: 8; }
+            #rowSignal { order: 9; }
+            #rowTelegram { order: 10; }
+            #rowWorld { order: 11; width: 100%; max-width: 832px; }
             #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
+            #rowEarningsCalendar { order: 13; }
+            #rowEconomicCalendar { order: 14; }
+            #rowDart { order: 15; }
 
             .bottom-bar-grid-wrapper {
                 display: flex;
@@ -6014,7 +7051,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
             color: var(--text-muted) !important;
         }
 
-    </style>
+    
+/* 오늘 버튼: 텍스트 대신 새로고침 기호(↻) 사용 */
+.cal-today-btn {
+    font-size: 1.15rem !important;
+    line-height: 1 !important;
+    font-weight: 700 !important;
+    padding: 6px 10px !important;
+    min-width: 36px !important;
+    min-height: 34px !important;
+}
+
+</style>
 </head>
 <body>
 
@@ -6098,7 +7146,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         <div id="result-scroll-view">
             <div class="result-inner">
-                <div class="loading" id="loading">......</div>
+                <div class="loading" id="loading"></div>
                 <div id="result-card-wrap" style="display:none;">
                     
                     <!-- [마스터 그리드] PC: 832px + 348px 2열 / 모바일: 순차 1열 -->
@@ -6227,6 +7275,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                             </div>
 
+                            <!-- 근거 확인: 8칸 근거 막대 -->
+                            <div style="margin:12px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);">근거 확인</span>
+                                    <span style="color:#38bdf8; font-weight:800;" id="tEvidenceBarLabel">- / 8</span>
+                                </div>
+                                <div id="tEvidenceBar"
+                                     style="display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:4px; width:100%; height:10px;">
+                                </div>
+                            </div>
+
                             <!-- 상단 그래프: 실제 종목 최근 60거래일 주가 흐름 -->
                             <div style="margin:16px 0 12px; position:relative;">
                                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
@@ -6235,19 +7294,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                                 <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
                                     <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
-                                </div>
-                            </div>
-
-                            <!-- 하단 그래프: 실제 52주 가격 위치 -->
-                            <div style="margin:12px 0 12px; position:relative;">
-                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
-                                    <span style="color:var(--text-muted);" id="tLow52w"></span>
-                                    <span style="color:#38bdf8; font-weight:700;" id="tPos52wLabel">52주 가격 위치</span>
-                                    <span style="color:var(--text-muted);" id="tHigh52w"></span>
-                                </div>
-                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="tSliderFill"></div>
-                                    <div class="dot-marker-style" id="tDotMarker"></div>
                                 </div>
                             </div>
 
@@ -6271,7 +7317,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                         <span class="cal-current-date" id="earnCalDisplayDate">--</span>
                                         <button class="cal-arrow-btn" onclick="shiftEarningsCalendarDate(1)">&#10095;</button>
                                     </div>
-                                    <button class="cal-today-btn" onclick="resetEarningsCalendarDate()">오늘</button>
+                                    <button class="cal-today-btn" onclick="resetEarningsCalendarDate()" aria-label="실적 캘린더 오늘" title="오늘로 이동">↻</button>
                                 </div>
 
                                 <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
@@ -6303,7 +7349,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                         <span class="cal-current-date" id="ecoCalDisplayDate">--</span>
                                         <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(1)">&#10095;</button>
                                     </div>
-                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()">오늘</button>
+                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()" aria-label="경제 캘린더 오늘" title="오늘로 이동">↻</button>
                                 </div>
 
                                 <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
@@ -6677,7 +7723,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
             document.getElementById('centerInput').value = '';
             document.getElementById('bottomInput').value = '';
             currentSymbol = '';
-            
+
+            // 홈으로 돌아가면 저장된 종목 URL도 제거
+            const homeUrl = new URL(window.location.href);
+            homeUrl.searchParams.delete('q');
+            window.history.replaceState({}, '', homeUrl.toString());
             const side = document.getElementById('sidebar-wrapper');
             if (side) side.classList.remove('open');
         }
@@ -6896,7 +7946,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let earningsCalendarAutoJumped = false;
 
         // 경제 캘린더는 오늘 발표가 없을 때 최초 1회만
-        // '오늘 이전의 가장 최근 발표일'로 이동합니다.
+        // '오늘 이후 가장 가까운 예정 일정'으로 이동합니다.
+        // 앞으로 일정이 없으면 오늘 이전 가장 최근 일정으로 이동합니다.
         // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
         let economicCalendarAutoJumped = false;
 
@@ -6945,9 +7996,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
             // 실적 캘린더에서는 티커(NVDA 등)와 기업 마크를 표시하지 않습니다.
             const rawEventName = ev.name || (isEarn ? '실적 발표' : '경제지표');
-            const eventName = isEarn
+            let eventName = isEarn
                 ? String(rawEventName).replace(/\s*\([A-Za-z0-9.\-]+\)/g, '').trim()
                 : String(rawEventName);
+
+            // 이전 데이터 형식에서 이름에 발표시점이 붙어 있어도 화면에서는 분리합니다.
+            let timingLabel = isEarn ? String(ev.timing_label || '').trim() : '';
+            if (isEarn && !timingLabel) {
+                const timingMatch = eventName.match(/\s*(\((?:미국 )?장 (?:마감 후|시작 전)\))\s*$/);
+                if (timingMatch) {
+                    timingLabel = timingMatch[1];
+                    eventName = eventName.slice(0, timingMatch.index).trim();
+                }
+            }
 
             return `
                 <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
@@ -6958,6 +8019,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <span class="cal-event-status">${status}</span>
                         </div>
                         <div class="cal-event-title">${eventName}</div>
+                        ${isEarn && timingLabel ? `<div class="cal-earn-timing">${timingLabel}</div>` : ''}
                         ${meta ? `<div class="cal-event-meta">${meta}</div>` : ''}
                     </div>
                     <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
@@ -7012,7 +8074,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             return kstString.replace(/-/g, '.');
         }
 
-        function findLatestEconomicOffset() {
+        function findNearestEconomicOffset() {
             const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
             const todayKey = getTodayKstDateKey();
             const [yyyy, mm, dd] = todayKey.split('.').map(Number);
@@ -7024,17 +8086,38 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
             )].sort();
 
-            // 화면에 실제로 표시할 수 있는 오늘 일정이 있으면 오늘을 유지합니다.
-            const todayHasEvents = economicDates.includes(todayKey);
-            if (todayHasEvents) return 0;
+            if (!economicDates.length) return 0;
 
-            // 오늘 이전의 가장 최근 경제 일정 날짜를 직접 찾습니다.
+            // 1. 오늘 경제 일정이 있으면 오늘을 그대로 유지합니다.
+            if (economicDates.includes(todayKey)) {
+                return 0;
+            }
+
+            // 2. 오늘 이후 가장 가까운 경제 일정 날짜를 먼저 찾습니다.
+            //    주말/공휴일처럼 오늘 일정이 없는 경우 예정된 다음 일정으로 이동합니다.
+            for (const key of economicDates) {
+                const parts = key.split('.').map(Number);
+                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
+
+                const candidate = new Date(
+                    Date.UTC(parts[0], parts[1] - 1, parts[2])
+                );
+
+                if (candidate >= today) {
+                    return Math.round((candidate - today) / 86400000);
+                }
+            }
+
+            // 3. 미래 일정도 없으면 오늘 이전의 가장 최근 일정으로 이동합니다.
             let latestKey = null;
             for (const key of economicDates) {
                 const parts = key.split('.').map(Number);
                 if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
 
-                const candidate = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+                const candidate = new Date(
+                    Date.UTC(parts[0], parts[1] - 1, parts[2])
+                );
+
                 if (candidate < today) {
                     latestKey = key;
                 }
@@ -7056,9 +8139,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                 // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
                 if (hasEconomicData) {
-                    const latestOffset = findLatestEconomicOffset();
-                    if (latestOffset < 0) {
-                        economicCalOffset = latestOffset;
+                    const nearestOffset = findNearestEconomicOffset();
+                    if (nearestOffset !== 0) {
+                        economicCalOffset = nearestOffset;
                     }
                     economicCalendarAutoJumped = true;
                 }
@@ -7175,7 +8258,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 container.innerHTML = `
                     <div style="display:flex;align-items:center;justify-content:center;height:100%;
                                 color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        이 날짜에 예정된 실적 일정이 없습니다.
+                        이 날짜에 실적 일정이 없습니다.
                     </div>
                 `;
                 scheduleCalendarHeightSync();
@@ -7207,8 +8290,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function resetEconomicCalendarDate() {
-            economicCalOffset = 0;
+            // [오늘] 버튼은 실제 오늘 날짜가 아니라,
+            // 경제지표가 현재 표시되는 기준점(오늘 일정이 없으면 가장 가까운 예정 일정)으로 돌아갑니다.
+            economicCalOffset = findNearestEconomicOffset();
             economicCalPage = 1;
+            economicCalendarAutoJumped = true;
             renderEconomicCalendarView();
         }
 
@@ -7224,7 +8310,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         function resetEarningsCalendarDate() {
-            earningsCalOffset = 0;
+            // [오늘]을 누르면 단순히 오늘 날짜(실적이 없을 수 있음)로 가지 않고
+            // 초기 화면과 동일하게 '오늘 이후 가장 가까운 실적 발표일'로 돌아갑니다.
+            // 예: 오늘 8/30이고 다음 실적이 9/2라면 [오늘] → 9/2
+            const nearestOffset = findNearestEarningsOffset();
+            earningsCalOffset = nearestOffset;
             earningsCalPage = 1;
             earningsCalendarAutoJumped = true;
             renderEarningsCalendarView();
@@ -7382,13 +8472,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const cleanQ = query.trim();
             if (!cleanQ) return;
 
+            // 현재 분석 종목을 URL에 저장하여 새로고침해도 같은 종목을 유지
+            const searchUrl = new URL(window.location.href);
+            searchUrl.searchParams.set('q', cleanQ);
+            window.history.replaceState({}, '', searchUrl.toString());
+
             document.getElementById('centerInput').value = cleanQ;
             document.getElementById('bottomInput').value = cleanQ;
 
             document.getElementById('main-view').style.display = 'none';
             document.getElementById('result-scroll-view').style.display = 'block';
             document.getElementById('bottom-bar').style.display = 'flex';
-            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading').style.display = 'none';
             document.getElementById('result-card-wrap').style.display = 'none';
 
             if (window.innerWidth <= 900) {
@@ -7812,8 +8907,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
                     const tPriceChart = document.getElementById('tPriceChart');
                     const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
+
+                    // 서버가 보내는 candles 필드는 open/high/low/close 형식이다.
+                    // 기존 코드가 x.c를 읽고 있어 차트 값이 전부 비어 있던 문제를 수정한다.
+                    // close를 우선 사용하고, 혹시 다른 응답 형식이 들어와도 c를 보조로 사용한다.
                     const trackVals = candleRows
-                        .map(x => Number(x && x.c))
+                        .map(x => {
+                            const close = Number(x && x.close);
+                            if (Number.isFinite(close)) return close;
+                            const legacyClose = Number(x && x.c);
+                            return Number.isFinite(legacyClose) ? legacyClose : NaN;
+                        })
                         .filter(Number.isFinite);
 
                     if (tPriceChart && trackVals.length > 1) {
@@ -7857,34 +8961,64 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             }
                         }
                     } else if (trackPriceTrendTxt) {
-                        trackPriceTrendTxt.innerText = '데이터 부족';
+                        trackPriceTrendTxt.innerText =
+                            trackVals.length === 0 ? '데이터 부족' : '주가 흐름 데이터 부족';
                     }
 
-                    // 52주 가격 위치: 현재 퀀트 데이터와 동일한 실제 값 사용.
-                    const tq = data.quant || {};
-                    setTxt('tLow52w', tq.low_52w !== undefined ? `최저 ${tq.low_52w}` : '최저 -');
-                    setTxt('tHigh52w', tq.high_52w !== undefined ? `최고 ${tq.high_52w}` : '최고 -');
-                    setTxt('tPos52wLabel', tq.pos_52w ? `52주 가격 위치 ${tq.pos_52w}` : '52주 가격 위치');
+                    // 근거 확인: 확인된 실제 근거 데이터를 최대 8칸의 색상 막대로 표시한다.
+                    const evidenceBar = document.getElementById('tEvidenceBar');
+                    const evidenceBarLabel = document.getElementById('tEvidenceBarLabel');
+                    if (evidenceBar) {
+                        const evidenceItems = Array.isArray(evidenceReasons) ? evidenceReasons.slice(0, 8) : [];
+                        const confirmedCount = evidenceItems.filter(r => {
+                            const score = Number(r && r.score);
+                            return Number.isFinite(score) && score !== 0;
+                        }).length;
 
-                    const sliderPct = Number(tq.slider_fill_pct);
-                    const tFill = document.getElementById('tSliderFill');
-                    if (tFill && Number.isFinite(sliderPct)) tFill.style.width = `${sliderPct}%`;
+                        evidenceBar.innerHTML = Array.from({length: 8}, (_, idx) => {
+                            const r = evidenceItems[idx];
+                            const score = Number(r && r.score);
+                            let bg = 'var(--bg-subcard)';
+                            let border = '1px solid var(--border-line)';
+                            if (Number.isFinite(score) && score > 0) {
+                                bg = '#10b981';
+                                border = '1px solid #10b981';
+                            } else if (Number.isFinite(score) && score < 0) {
+                                bg = '#ef4444';
+                                border = '1px solid #ef4444';
+                            } else if (r) {
+                                bg = '#9ca3af';
+                                border = '1px solid #9ca3af';
+                            }
+                            return `<div title="${r ? (r.label || '근거') : '확인된 근거 없음'}"
+                                         style="height:100%; background:${bg}; border:${border}; border-radius:3px; min-width:0;"></div>`;
+                        }).join('');
 
-                    const tDot = document.getElementById('tDotMarker');
-                    if (tDot && Number.isFinite(sliderPct)) {
-                        tDot.style.left = `${Math.min(99, Math.max(1, sliderPct))}%`;
+                        if (evidenceBarLabel) {
+                            evidenceBarLabel.innerText = `${confirmedCount} / 8`;
+                        }
                     }
 
-                    // 상세 근거: 현재 movement_reason.reasons의 실제 데이터만 표시한다.
+                    // 상세 근거: 표시 순서만 고정한다. 분석 데이터/점수 계산은 변경하지 않는다.
+                    const trackDisplayOrder = [
+                        'market_5d',
+                        'market',
+                        'theme',
+                        'foreign',
+                        'institution',
+                        'material',
+                        'volume',
+                        'trading_value'
+                    ];
+                    const orderedEvidenceReasons = [...evidenceReasons].sort((a, b) => {
+                        const ai = trackDisplayOrder.indexOf(a.key);
+                        const bi = trackDisplayOrder.indexOf(b.key);
+                        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+                    });
+
                     const trackDetailList = document.getElementById('trackDetailList');
                     if (trackDetailList) {
-                        const iconForTrack = {
-                            '거래대금':'▥','외국인 수급':'♙','기관 수급':'⌂',
-                            '시장':'⌁','업종·테마':'◇','기업 재료':'▤',
-                            '거래량':'♧','시장 5일 흐름':'⌁'
-                        };
-
-                        trackDetailList.innerHTML = evidenceReasons.map(r => {
+                        trackDetailList.innerHTML = orderedEvidenceReasons.map(r => {
                             const score = Number(r.score || 0);
                             const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
                             const statusClass =
@@ -7893,12 +9027,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                             return `<div class="quant-row-item">
                                 <div class="quant-row-left">
-                                    <span class="quant-row-name">${iconForTrack[r.label] || '•'} ${r.label || '-'}</span>
+                                    <span class="quant-row-name">${r.label || '-'}</span>
                                     <span class="quant-row-status ${statusClass}">${status}</span>
                                 </div>
                                 <div class="quant-row-right">
                                     <div class="quant-row-val">${String(r.detail || '-')}</div>
-                                    <div class="quant-row-subval">실제 확인 데이터</div>
                                 </div>
                             </div>`;
                         }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
@@ -8086,7 +9219,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
             window.addEventListener('resize', resizeChart);
         }
 
-        window.addEventListener('DOMContentLoaded', initTheme);
+        window.addEventListener('DOMContentLoaded', () => {
+            initTheme();
+
+            // 새로고침 시 URL에 저장된 종목을 자동 복원
+            const params = new URLSearchParams(window.location.search);
+            const savedQuery = params.get('q');
+
+            if (savedQuery && savedQuery.trim()) {
+                doSearch(savedQuery.trim());
+            }
+        });
     </script>
 </body>
 </html>
@@ -8436,4 +9579,3 @@ print("[경제 고정 문장]", build_market_event_fixed(_e["topic"]))
 # 10. 중복 제거 후 내용이 완전히 겹치면 경제 이벤트만 출력한다.
 # 11. 시장/업종/종목/수급/마무리 고정 문장은 이 규칙의 영향을 받지 않는다.
 # 12. 이 영역에서는 AI가 임의로 설명을 덧붙이지 않는다.
-

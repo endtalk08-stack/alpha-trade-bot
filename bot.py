@@ -7064,188 +7064,87 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 
         .tsm-card{overflow:hidden}.tsm-head{display:flex;justify-content:space-between;align-items:center;gap:8px}.tsm-title{font-size:1.05rem;font-weight:800;color:var(--text-title)}.tsm-sub{font-size:.68rem;color:var(--text-muted);margin-top:2px}.tsm-research{margin-top:5px;font-size:.68rem;line-height:1.45;color:var(--text-muted);word-break:keep-all}.tsm-score-badge{font-size:.68rem;font-weight:800;padding:3px 7px;border:1px solid var(--border-line);border-radius:8px}.tsm-overview{display:grid;grid-template-columns:145px 1fr;gap:12px;margin-top:12px;padding:10px 0;border-top:1px solid var(--border-line);border-bottom:1px solid var(--border-line)}.tsm-gauge-wrap{height:145px;position:relative;text-align:center}.tsm-gauge-svg{width:118px}.tsm-gauge-text{position:absolute;top:45px;left:0;right:0}.tsm-gauge-text b{font-size:1.7rem}.tsm-gauge-text span{font-size:.6rem;color:var(--text-muted)}.tsm-gauge-caption{font-size:.7rem;font-weight:800;margin-top:-7px}.tsm-price-box{padding-top:16px}.tsm-label{font-size:.66rem;color:var(--text-muted)}.tsm-name{font-size:1rem;font-weight:800;margin-top:3px}.tsm-price-row{display:flex;align-items:baseline;gap:8px;margin-top:7px}.tsm-price-row b{font-size:1.35rem}.tsm-price-row span{font-size:.72rem}.tsm-direction{font-size:1.15rem;font-weight:900;margin-top:3px}.tsm-section-label{font-size:.73rem;font-weight:800;color:var(--text-title);margin:13px 0 7px}.tsm-seven{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}
-/* [기관형 추세추종 1번 확정 레이아웃] 8카드 2열 x 4행 */
-.tsm-section-1{margin-top:18px;margin-bottom:9px;font-size:.84rem}
-.tsm-seven-final{
+/* [1번 전용] 퀀트 분석의 가용폭/카드/반응형 원칙 적용 */
+.tsm-section-1{margin-top:13px;margin-bottom:7px}
+.tsm-seven-quant{
     display:grid;
     grid-template-columns:repeat(2,minmax(0,1fr));
-    gap:12px;
+    gap:7px;
 }
-.tsm-mini-card-final{
+.tsm-mini-card-quant{
     min-width:0;
-    min-height:178px;
-    padding:16px 18px 13px;
-    border-radius:10px;
+    padding:9px 10px 8px;
     background:var(--bg-subcard);
     border:1px solid var(--border-line);
-    text-align:left;
+    border-radius:7px;
+    text-align:center;
     overflow:hidden;
 }
-.tsm-card-top{
+.tsm-q-card-top{
     display:flex;
-    align-items:center;
     justify-content:space-between;
-    gap:10px;
-    min-height:25px;
+    align-items:center;
+    gap:8px;
+    min-width:0;
 }
-.tsm-card-top span{
-    font-size:.83rem;
-    color:var(--text-title);
+.tsm-q-card-top span{
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
     white-space:nowrap;
+    font-size:.72rem;
+    color:var(--text-muted);
+    text-align:left;
 }
-.tsm-card-top b{
-    font-size:1.05rem;
-    font-weight:800;
-    color:var(--text-title);
-    white-space:nowrap;
-}
-.tsm-bars-final{
-    height:88px;
-    margin:12px 8px 0;
-    padding:0 4px;
-    display:flex;
-    align-items:flex-end;
-    justify-content:center;
-    gap:18px;
-    border-bottom:1px dashed rgba(148,163,184,.25);
-}
-.tsm-bars-final i{
-    width:28px;
-    min-height:8px;
-    background:#b9bdc2;
-    border-radius:2px 2px 0 0;
-    opacity:.95;
-    position:relative;
-}
-.tsm-bars-final i:last-child{
-    background:#e0e2e5;
-}
-.tsm-bar-label{
-    position:absolute;
-    top:100%;
-    left:50%;
-    transform:translateX(-50%);
-    margin-top:7px;
-    font-size:.68rem;
-    color:var(--text-sub);
-    font-weight:500;
-}
-.tsm-card-caption{
-    text-align:center;
-    margin-top:20px;
+.tsm-q-card-top b{
+    flex-shrink:0;
     font-size:.82rem;
     color:var(--text-title);
-    min-height:20px;
     white-space:nowrap;
 }
-@media(max-width:820px){
-    .tsm-seven-final{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-    .tsm-mini-card-final{min-height:150px;padding:11px 10px 10px}
-    .tsm-card-top span{font-size:.68rem}
-    .tsm-card-top b{font-size:.82rem}
-    .tsm-bars-final{height:66px;margin:9px 3px 0;gap:8px;padding:0 2px}
-    .tsm-bars-final i{width:16px}
-    .tsm-bar-label{font-size:.54rem;margin-top:5px}
-    .tsm-card-caption{font-size:.66rem;margin-top:16px}
-}
-.tsm-mini-card{min-width:0;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:7px 4px;text-align:center}.tsm-mini-card>span{font-size:.56rem;color:var(--text-muted);white-space:nowrap}.tsm-mini-card>b{font-size:.72rem;display:block;margin-top:3px}.tsm-mini-bars{height:39px;display:flex;align-items:end;justify-content:center;gap:2px;border-bottom:1px solid var(--border-line);margin:5px 2px 3px}.tsm-mini-bars i{width:4px;background:#18a96a;border-radius:1px 1px 0 0}.tsm-grid2{display:grid;grid-template-columns:1fr 1.4fr;gap:7px}.tsm-panel{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:9px}.tsm-big{font-size:1.15rem;font-weight:800;margin-top:4px}.tsm-progress{height:6px;background:rgba(148,163,184,.12);border-radius:99px;overflow:hidden;margin-top:7px}.tsm-progress i{display:block;height:100%;width:0;background:#18b96b;border-radius:99px}.tsm-scale{display:flex;justify-content:space-between;font-size:.55rem;color:var(--text-muted);margin-top:3px}.tsm-periods{display:grid;grid-template-columns:repeat(4,1fr);margin-top:6px;border:1px solid var(--border-line);border-radius:5px;overflow:hidden}.tsm-periods div{text-align:center;padding:6px 2px;font-size:.57rem;border-right:1px solid var(--border-line)}.tsm-periods div:last-child{border:0}.tsm-periods b{display:block;font-size:.68rem;margin-top:3px}.tsm-chart-panel{padding:8px 9px}.tsm-chart-head{display:flex;justify-content:space-between;font-size:.62rem;color:var(--text-muted);margin-bottom:4px}.tsm-chart-head b{color:var(--text-title)}.tsm-chart-panel svg{width:100%;height:74px;display:block}.tsm-signal{display:grid;grid-template-columns:1fr 1fr;gap:9px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}.tsm-signal-main{font-size:1.05rem;font-weight:900;color:#18b96b;margin-top:4px}.tsm-signal-meta{font-size:.62rem;color:var(--text-muted);margin-top:4px}.tsm-timeline{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:2px;text-align:center}.tsm-line{position:absolute;left:9%;right:9%;top:8px;height:1px;background:#667078}.tsm-timeline div:not(.tsm-line){position:relative}.tsm-timeline i{display:block;width:12px;height:12px;border:2px solid #18b96b;border-radius:50%;background:var(--bg-subcard);margin:2px auto 5px}.tsm-timeline b{display:block;font-size:.62rem}.tsm-timeline span{display:block;color:var(--text-muted);font-size:.55rem;margin-top:2px}.tsm-hbars{display:grid;gap:7px;margin-top:8px}.tsm-hbars>div{display:grid;grid-template-columns:70px 1fr 28px;gap:6px;align-items:center;font-size:.59rem}.tsm-hbars em{height:10px;background:rgba(148,163,184,.12);border-radius:2px;overflow:hidden}.tsm-hbars em i{display:block;height:100%;background:#69717a}.tsm-hbars>div:last-child em i{background:#18b96b}.tsm-hbars b{text-align:right}.tsm-interpret{display:grid;grid-template-columns:1.4fr .8fr;gap:8px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}.tsm-interpret p{font-size:.68rem;line-height:1.6;color:var(--text-sub);margin:5px 0 0;word-break:keep-all}.tsm-interpret-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.tsm-interpret-stats div{border-left:1px solid var(--border-line);padding-left:6px}.tsm-interpret-stats span{display:block;font-size:.55rem;color:var(--text-muted)}.tsm-interpret-stats b{font-size:.8rem;display:block;margin-top:4px}.tsm-footer{text-align:center;color:var(--text-muted);font-size:.58rem;margin-top:9px}@media(max-width:820px){.tsm-seven{grid-template-columns:repeat(2,1fr)}.tsm-overview,.tsm-grid2,.tsm-signal,.tsm-interpret{grid-template-columns:1fr}}
-
-/* [1번 최종 PC + 모바일 기준 보정]
-   - 모바일에서도 게이지 + 종목정보를 좌우로 유지
-   - 7개 막대는 어두운 화이트/그레이
-   - 막대 하단 1~7 숫자 제거
-   - 1번 카드 내부 비율을 PC/모바일 모두 균일하게 유지
-*/
-.tsm-overview{grid-template-columns:145px minmax(0,1fr);align-items:center}
-.tsm-mini-card-final .tsm-bars-final i{
-    background:#b9bdc2 !important;
-    box-shadow:none !important;
-}
-.tsm-mini-card-final .tsm-bars-final i:last-child{
-    background:#d7dade !important;
-}
-.tsm-mini-card-final .tsm-bar-label{display:none !important}
-.tsm-bars-final{
+.tsm-mini-bars-quant{
+    width:100%;
+    height:62px;
+    margin:6px 0 3px;
+    padding:0 10px;
+    display:flex;
     align-items:flex-end;
     justify-content:center;
+    gap:6px;
+    border-bottom:1px solid var(--border-line);
 }
-@media(max-width:820px){
-    .tsm-overview{
-        grid-template-columns:112px minmax(0,1fr) !important;
-        gap:10px;
-        padding:8px 0;
-        align-items:center;
-    }
-    .tsm-gauge-wrap{
-        height:112px;
-    }
-    .tsm-gauge-svg{
-        width:94px;
-    }
-    .tsm-gauge-text{
-        top:33px;
-    }
-    .tsm-gauge-text b{
-        font-size:1.45rem;
-    }
-    .tsm-gauge-caption{
-        margin-top:-5px;
-        font-size:.64rem;
-    }
-    .tsm-price-box{
-        padding-top:0;
-        min-width:0;
-    }
-    .tsm-name{
-        font-size:.92rem;
-        white-space:nowrap;
-        overflow:hidden;
-        text-overflow:ellipsis;
-    }
-    .tsm-price-row{
+.tsm-mini-bars-quant i{
+    width:10px;
+    min-height:7px;
+    background:#aeb3b8 !important;
+    border-radius:1px 1px 0 0;
+}
+.tsm-q-card-caption{
+    min-height:18px;
+    margin-top:4px;
+    font-size:.68rem;
+    line-height:1.2;
+    color:var(--text-sub);
+    white-space:nowrap;
+}
+@media(max-width:520px){
+    .tsm-seven-quant{
+        grid-template-columns:repeat(2,minmax(0,1fr));
         gap:6px;
-        margin-top:6px;
-        white-space:nowrap;
     }
-    .tsm-price-row b{
-        font-size:1.08rem;
+    .tsm-mini-card-quant{padding:8px 7px 7px}
+    .tsm-q-card-top span{font-size:.62rem}
+    .tsm-q-card-top b{font-size:.72rem}
+    .tsm-mini-bars-quant{
+        height:52px;
+        padding:0 3px;
+        gap:4px;
+        margin-top:5px;
     }
-    .tsm-price-row span{
-        font-size:.62rem;
-    }
-    .tsm-direction{
-        font-size:.98rem;
-    }
-    .tsm-mini-card-final{
-        min-height:150px;
-        padding:11px 10px 9px;
-    }
-    .tsm-card-top{
-        min-height:22px;
-    }
-    .tsm-card-top span{
-        font-size:.66rem;
-    }
-    .tsm-card-top b{
-        font-size:.78rem;
-    }
-    .tsm-bars-final{
-        height:68px;
-        margin:8px 2px 0;
-        gap:7px;
-        padding:0 2px;
-    }
-    .tsm-bars-final i{
-        width:15px;
-        min-height:7px;
-    }
-    .tsm-card-caption{
-        font-size:.64rem;
-        margin-top:13px;
-        min-height:18px;
-    }
+    .tsm-mini-bars-quant i{width:8px}
+    .tsm-q-card-caption{font-size:.6rem}
 }
-
+.tsm-mini-card{min-width:0;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:7px 4px;text-align:center}.tsm-mini-card>span{font-size:.56rem;color:var(--text-muted);white-space:nowrap}.tsm-mini-card>b{font-size:.72rem;display:block;margin-top:3px}.tsm-mini-bars{height:39px;display:flex;align-items:end;justify-content:center;gap:2px;border-bottom:1px solid var(--border-line);margin:5px 2px 3px}.tsm-mini-bars i{width:4px;background:#18a96a;border-radius:1px 1px 0 0}.tsm-grid2{display:grid;grid-template-columns:1fr 1.4fr;gap:7px}.tsm-panel{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:9px}.tsm-big{font-size:1.15rem;font-weight:800;margin-top:4px}.tsm-progress{height:6px;background:rgba(148,163,184,.12);border-radius:99px;overflow:hidden;margin-top:7px}.tsm-progress i{display:block;height:100%;width:0;background:#18b96b;border-radius:99px}.tsm-scale{display:flex;justify-content:space-between;font-size:.55rem;color:var(--text-muted);margin-top:3px}.tsm-periods{display:grid;grid-template-columns:repeat(4,1fr);margin-top:6px;border:1px solid var(--border-line);border-radius:5px;overflow:hidden}.tsm-periods div{text-align:center;padding:6px 2px;font-size:.57rem;border-right:1px solid var(--border-line)}.tsm-periods div:last-child{border:0}.tsm-periods b{display:block;font-size:.68rem;margin-top:3px}.tsm-chart-panel{padding:8px 9px}.tsm-chart-head{display:flex;justify-content:space-between;font-size:.62rem;color:var(--text-muted);margin-bottom:4px}.tsm-chart-head b{color:var(--text-title)}.tsm-chart-panel svg{width:100%;height:74px;display:block}.tsm-signal{display:grid;grid-template-columns:1fr 1fr;gap:9px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}.tsm-signal-main{font-size:1.05rem;font-weight:900;color:#18b96b;margin-top:4px}.tsm-signal-meta{font-size:.62rem;color:var(--text-muted);margin-top:4px}.tsm-timeline{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:2px;text-align:center}.tsm-line{position:absolute;left:9%;right:9%;top:8px;height:1px;background:#667078}.tsm-timeline div:not(.tsm-line){position:relative}.tsm-timeline i{display:block;width:12px;height:12px;border:2px solid #18b96b;border-radius:50%;background:var(--bg-subcard);margin:2px auto 5px}.tsm-timeline b{display:block;font-size:.62rem}.tsm-timeline span{display:block;color:var(--text-muted);font-size:.55rem;margin-top:2px}.tsm-hbars{display:grid;gap:7px;margin-top:8px}.tsm-hbars>div{display:grid;grid-template-columns:70px 1fr 28px;gap:6px;align-items:center;font-size:.59rem}.tsm-hbars em{height:10px;background:rgba(148,163,184,.12);border-radius:2px;overflow:hidden}.tsm-hbars em i{display:block;height:100%;background:#69717a}.tsm-hbars>div:last-child em i{background:#18b96b}.tsm-hbars b{text-align:right}.tsm-interpret{display:grid;grid-template-columns:1.4fr .8fr;gap:8px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}.tsm-interpret p{font-size:.68rem;line-height:1.6;color:var(--text-sub);margin:5px 0 0;word-break:keep-all}.tsm-interpret-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.tsm-interpret-stats div{border-left:1px solid var(--border-line);padding-left:6px}.tsm-interpret-stats span{display:block;font-size:.55rem;color:var(--text-muted)}.tsm-interpret-stats b{font-size:.8rem;display:block;margin-top:4px}.tsm-footer{text-align:center;color:var(--text-muted);font-size:.58rem;margin-top:9px}@media(max-width:820px){.tsm-seven{grid-template-columns:repeat(2,1fr)}.tsm-overview,.tsm-grid2,.tsm-signal,.tsm-interpret{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -7458,46 +7357,46 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
 
                             <div class="tsm-section-label tsm-section-1">1. 7가지 추세 모멘텀 종합 결과</div>
-                            <div class="tsm-seven tsm-seven-final">
-                                <div class="tsm-mini-card tsm-mini-card-final">
-                                    <div class="tsm-card-top"><span>① 추세 방향</span><b id="tsmTrendValue">-</b></div>
-                                    <div class="tsm-mini-bars tsm-bars-final" id="tsmTrendBars"></div>
-                                    <div class="tsm-card-caption" id="tsmTrendCaptionFinal">강한 상승 추세</div>
+                            <div class="tsm-seven tsm-seven-quant">
+                                <div class="tsm-mini-card tsm-mini-card-quant">
+                                    <div class="tsm-q-card-top"><span>① 추세 방향</span><b id="tsmTrendValue">-</b></div>
+                                    <div class="tsm-mini-bars tsm-mini-bars-quant" id="tsmTrendBars"></div>
+                                    <div class="tsm-q-card-caption" id="tsmTrendCaption1">강한 상승 추세</div>
                                 </div>
-                                <div class="tsm-mini-card tsm-mini-card-final">
-                                    <div class="tsm-card-top"><span>② 추세 강도</span><b id="tsmStrengthValue">-</b></div>
-                                    <div class="tsm-mini-bars tsm-bars-final" id="tsmStrengthBars"></div>
-                                    <div class="tsm-card-caption">/100 · 강함</div>
+                                <div class="tsm-mini-card tsm-mini-card-quant">
+                                    <div class="tsm-q-card-top"><span>② 추세 강도</span><b id="tsmStrengthValue">-</b></div>
+                                    <div class="tsm-mini-bars tsm-mini-bars-quant" id="tsmStrengthBars"></div>
+                                    <div class="tsm-q-card-caption">/100 · 강함</div>
                                 </div>
-                                <div class="tsm-mini-card tsm-mini-card-final">
-                                    <div class="tsm-card-top"><span>③ 변동성</span><b id="tsmVolValue">-</b></div>
-                                    <div class="tsm-mini-bars tsm-bars-final" id="tsmVolBars"></div>
-                                    <div class="tsm-card-caption" id="tsmVolCaptionFinal">낮음</div>
+                                <div class="tsm-mini-card tsm-mini-card-quant">
+                                    <div class="tsm-q-card-top"><span>③ 변동성</span><b id="tsmVolValue">-</b></div>
+                                    <div class="tsm-mini-bars tsm-mini-bars-quant" id="tsmVolBars"></div>
+                                    <div class="tsm-q-card-caption" id="tsmVolCaption1">낮음</div>
                                 </div>
-                                <div class="tsm-mini-card tsm-mini-card-final">
-                                    <div class="tsm-card-top"><span>④ 모멘텀</span><b id="tsmMomValue">-</b></div>
-                                    <div class="tsm-mini-bars tsm-bars-final" id="tsmMomBars"></div>
-                                    <div class="tsm-card-caption">강함</div>
+                                <div class="tsm-mini-card tsm-mini-card-quant">
+                                    <div class="tsm-q-card-top"><span>④ 모멘텀</span><b id="tsmMomValue">-</b></div>
+                                    <div class="tsm-mini-bars tsm-mini-bars-quant" id="tsmMomBars"></div>
+                                    <div class="tsm-q-card-caption">강함</div>
                                 </div>
-                                <div class="tsm-mini-card tsm-mini-card-final">
-                                    <div class="tsm-card-top"><span>⑤ 거래량</span><b id="tsmVolumeValue">-</b></div>
-                                    <div class="tsm-mini-bars tsm-bars-final" id="tsmVolumeBars"></div>
-                                    <div class="tsm-card-caption" id="tsmVolumeCaptionFinal">증가</div>
+                                <div class="tsm-mini-card tsm-mini-card-quant">
+                                    <div class="tsm-q-card-top"><span>⑤ 거래량</span><b id="tsmVolumeValue">-</b></div>
+                                    <div class="tsm-mini-bars tsm-mini-bars-quant" id="tsmVolumeBars"></div>
+                                    <div class="tsm-q-card-caption" id="tsmVolumeCaption1">증가</div>
                                 </div>
-                                <div class="tsm-mini-card tsm-mini-card-final">
-                                    <div class="tsm-card-top"><span>⑥ 시장 강도</span><b id="tsmMarketValue">-</b></div>
-                                    <div class="tsm-mini-bars tsm-bars-final" id="tsmMarketBars"></div>
-                                    <div class="tsm-card-caption" id="tsmMarketCaptionFinal">중립</div>
+                                <div class="tsm-mini-card tsm-mini-card-quant">
+                                    <div class="tsm-q-card-top"><span>⑥ 시장 강도</span><b id="tsmMarketValue">-</b></div>
+                                    <div class="tsm-mini-bars tsm-mini-bars-quant" id="tsmMarketBars"></div>
+                                    <div class="tsm-q-card-caption" id="tsmMarketCaption1">중립</div>
                                 </div>
-                                <div class="tsm-mini-card tsm-mini-card-final">
-                                    <div class="tsm-card-top"><span>⑦ 심리 지표</span><b id="tsmSentimentValue">-</b></div>
-                                    <div class="tsm-mini-bars tsm-bars-final" id="tsmSentimentBars"></div>
-                                    <div class="tsm-card-caption">중립</div>
+                                <div class="tsm-mini-card tsm-mini-card-quant">
+                                    <div class="tsm-q-card-top"><span>⑦ 심리 지표</span><b id="tsmSentimentValue">-</b></div>
+                                    <div class="tsm-mini-bars tsm-mini-bars-quant" id="tsmSentimentBars"></div>
+                                    <div class="tsm-q-card-caption">중립</div>
                                 </div>
-                                <div class="tsm-mini-card tsm-mini-card-final">
-                                    <div class="tsm-card-top"><span>⑧ 종합 점수</span><b id="tsmCompositeValue">-</b></div>
-                                    <div class="tsm-mini-bars tsm-bars-final" id="tsmCompositeBars"></div>
-                                    <div class="tsm-card-caption" id="tsmCompositeCaptionFinal">7개 지표 평균 · 상승 우세</div>
+                                <div class="tsm-mini-card tsm-mini-card-quant">
+                                    <div class="tsm-q-card-top"><span>⑧ 종합 점수</span><b id="tsmCompositeValue">-</b></div>
+                                    <div class="tsm-mini-bars tsm-mini-bars-quant" id="tsmCompositeBars"></div>
+                                    <div class="tsm-q-card-caption" id="tsmCompositeCaption1">7개 지표 평균 · 상승 우세</div>
                                 </div>
                             </div>
 
@@ -9160,20 +9059,21 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         const el=document.getElementById(id);
                         if(!el)return;
                         el.innerHTML='';
-                        const base=Math.max(8,Math.min(68,(Number(val)||0)/100*68));
+                        const score=Math.max(0,Math.min(100,Number(val)||0));
                         for(let i=1;i<=7;i++){
                             const b=document.createElement('i');
-                            const factor=.72+(i-1)*.055;
-                            b.style.height=`${Math.max(8,Math.min(68,base*factor))}px`;
+                            const h=8+(score/100*47)*(0.76+(i-1)*0.055);
+                            b.style.height=`${Math.max(8,Math.min(55,h))}px`;
+                            b.style.background='#aeb3b8';
                             el.appendChild(b);
                         }
                     });
                     set('tsmCompositeValue',`${Math.round(qScore)} /100`);
-                    set('tsmCompositeCaptionFinal',`7개 지표 평균 · ${trendText==='상승'?'상승 우세':trendText==='하락'?'하락 우세':'혼조'}`);
-                    set('tsmTrendCaptionFinal',trendText==='상승'?'강한 상승 추세':trendText==='하락'?'하락 추세':'혼조 국면');
-                    set('tsmVolCaptionFinal',vol===null?'-':(vol>=30?'높음':vol>=18?'보통':'낮음'));
-                    set('tsmVolumeCaptionFinal',trendText==='상승'?'증가':'확인');
-                    set('tsmMarketCaptionFinal',trendText==='상승'?'중립':trendText==='하락'?'약세':'중립');
+                    set('tsmCompositeCaption1',`7개 지표 평균 · ${trendText==='상승'?'상승 우세':trendText==='하락'?'하락 우세':'혼조'}`);
+                    set('tsmTrendCaption1',trendText==='상승'?'강한 상승 추세':trendText==='하락'?'하락 추세':'혼조 국면');
+                    set('tsmVolCaption1',vol===null?'-':(vol>=30?'높음':vol>=18?'보통':'낮음'));
+                    set('tsmVolumeCaption1',trendText==='상승'?'증가':'확인');
+                    set('tsmMarketCaption1',trendText==='상승'?'중립':trendText==='하락'?'약세':'중립');
 
                     const drawLine=(svgId,values,color)=>{const svg=document.getElementById(svgId);if(!svg||values.length<2)return;const W=600,H=svgId==='tsmMomentumChart'?150:120,p=8,min=Math.min(...values),max=Math.max(...values),span=Math.max(.001,max-min);const pts=values.map((v,i)=>`${(p+i*(W-2*p)/(values.length-1)).toFixed(1)},${(p+(max-v)/span*(H-2*p)).toFixed(1)}`);svg.innerHTML=`<g stroke="#2b3139" stroke-width="1"><line x1="0" y1="${H*.25}" x2="600" y2="${H*.25}"/><line x1="0" y1="${H*.5}" x2="600" y2="${H*.5}"/><line x1="0" y1="${H*.75}" x2="600" y2="${H*.75}"/></g><polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="3" vector-effect="non-scaling-stroke"/>`;};
                     const candles=Array.isArray(data.candles)?data.candles.slice(-60):[]; const closes=candles.map(x=>num(x.close)).filter(v=>v!==null); const norm=closes.length>1?closes.map(v=>((v/closes[0])-1)*100):[]; drawLine('tsmMomentumChart',norm,scoreColor);

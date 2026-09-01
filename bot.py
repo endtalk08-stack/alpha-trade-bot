@@ -6061,8 +6061,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
             max-width: 1196px;
             justify-content: center;
             align-items: stretch;
-        }
-
+            position: relative;
+        
         /* 1행: 왜 움직였을까? — 코멘트 전용 */
         #rowCause { grid-column: 1; grid-row: 1; }
 
@@ -7573,7 +7573,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
             align-self: start;
             justify-self: stretch;
             width: 100%;
+            min-width: 0;
             min-height: 0;
+            box-sizing: border-box;
             display: flex;
             flex-direction: column;
             gap: 12px;

@@ -566,6 +566,8 @@ HTTP_SESSION.headers.update({
 # ----------------------------------------------------
 # 1. 기본 설정 및 종목/지수 매핑
 # ----------------------------------------------------
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "gaemigtp_bot").strip()
 DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 FRED_API_KEY = os.environ.get("FRED_API_KEY", "").strip()
@@ -5851,8 +5853,6 @@ def run_full_pipeline(query):
     return result_data
 
 # ----------------------------------------------------
-# 7. 텔레그램 봇 실시간 인터랙션 엔진
-# ----------------------------------------------------
 # 8. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -6257,7 +6257,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #rowComment { grid-column: 1; grid-row: 8; }
         #rowDart { grid-column: 1; grid-row: 9; }
         #rowSignal { grid-column: 1; grid-row: 10; }
-        #rowTelegram { grid-column: 1; grid-row: 11; }
 
         .card {
             background: var(--bg-card);
@@ -6781,7 +6780,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowVote { order: 7; }
             #rowComment { order: 8; }
             #rowSignal { order: 9; }
-            #rowTelegram { order: 10; }
             #rowWorld { order: 11; width: 100%; max-width: 832px; }
             #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
             #rowEarningsCalendar { order: 13; }
@@ -7810,7 +7808,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowVote { order: 7 !important; }
             #rowComment { order: 8 !important; }
             #rowSignal { order: 9 !important; }
-            #rowTelegram { order: 10 !important; }
             #rowWorld { order: 11 !important; }
             #rowGlobalNews { order: 12 !important; }
             #rowEarningsCalendar { order: 13 !important; }
@@ -7873,26 +7870,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
         }
 
-        /* 시그널: 항상 열림, 닫힘/접기 기능 제거 */
-        .signal-always-open,
-        .signal-always-open .signal-content,
-        .signal-always-open .signal-body,
-        .signal-always-open [data-signal-content] {
-            display: block !important;
-            height: auto !important;
-            max-height: none !important;
-            overflow: visible !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-        }
-        .signal-always-open .signal-toggle,
-        .signal-always-open .signal-close,
-        .signal-always-open .signal-collapse,
-        .signal-always-open [aria-expanded] {
-            display: none !important;
-        }
-
-        /* 시그널 항상 열림 최종 고정 */
+        /* gaemiGTP 시그널: 항상 열림 */
         #rowSignal #signalBody {
             display: block !important;
             height: auto !important;
@@ -8337,7 +8315,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
 
                         <!-- 8행: gaemiGTP 시그널 박스 (832px) -->
-                        <div class="signal-premium-card" id="rowSignal" class="signal-always-open">
+                        <div class="signal-premium-card" id="rowSignal">
                             <div class="signal-card-header">
                                 <span class="signal-card-title">gaemiGTP 시그널</span>
                             </div>
@@ -8402,8 +8380,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                             </div>
                         </div>
-
-                    </div>
+</div>
 
                 </div>
             </div>
@@ -8584,16 +8561,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (side) side.classList.remove('open');
         }
 
-        function toggleSignal() {
-            const body = document.getElementById('signalBody');
-            if (body) body.style.display = 'block';
-        } else {
-                body.style.display = 'block';
-                arrow.style.transform = 'rotate(180deg)';
-            }
-        }
-
-        function renderSparklineSVG(points, isUp) {
+function renderSparklineSVG(points, isUp) {
             if (!points || points.length < 2) return '';
             const min = Math.min(...points);
             const max = Math.max(...points);
@@ -9209,6 +9177,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;
+            const targetName = displayName || symbol;
 const voteKey = 'vote_' + symbol;
             const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
             let vData = JSON.parse(rawVote);
@@ -10324,7 +10293,8 @@ class WebHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
 
-        if parsed.path == "/health": 
+        if parsed.path == "/health":
+            self._json(200, {"ok": True, "telegram_configured": bool(TELEGRAM_TOKEN)})
             return
 
         # PostgreSQL 연결 상태 확인

@@ -8816,8 +8816,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     }
 
                     parts.push(
-                        Number.isFinite(pct)
-                            ? `${displayName}${topicParticle} 현재 ${priceText}, ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
+                        Number.isFinite(trackPct)
+                            ? `${displayName}${topicParticle} 현재 ${priceText}, ${trackPct >= 0 ? '+' : ''}${trackPct.toFixed(2)}% ${directionText} 중이야.`
                             : `${displayName}${topicParticle} 현재 ${priceText} ${directionText} 중이야.`
                     );
 

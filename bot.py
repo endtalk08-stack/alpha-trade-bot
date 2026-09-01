@@ -9438,6 +9438,8 @@ const voteKey = 'vote_' + symbol;
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
         let activeSearchToken = 0;
+        const FAST_CHART_CACHE = new Map();
+        const FAST_CHART_CACHE_TTL = 30 * 1000;
 
         async function doSearch(query) {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
@@ -9474,9 +9476,21 @@ const voteKey = 'vote_' + symbol;
             }
 
             const searchToken = ++activeSearchToken;
-            const fastChartPromise = fetch('/api/chart?q=' + encodeURIComponent(cleanQ))
-                .then(r => r.ok ? r.json() : null)
-                .catch(() => null);
+            const fastChartKey = cleanQ.toUpperCase();
+            const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
+            const fastChartPromise = (
+                fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
+            )
+                ? Promise.resolve(fastChartCached.data)
+                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ))
+                    .then(r => r.ok ? r.json() : null)
+                    .then(chartData => {
+                        if (chartData) {
+                            FAST_CHART_CACHE.set(fastChartKey, {time: Date.now(), data: chartData});
+                        }
+                        return chartData;
+                    })
+                    .catch(() => null);
 
             try {
                 const cacheKey = cleanQ.toUpperCase();
@@ -9508,7 +9522,10 @@ const voteKey = 'vote_' + symbol;
                 }
 
                 if (data._perf) {
-                    console.info('[gaemiGTP 성능]', cleanQ, data._perf);
+                    console.log(
+                        `[gaemiGTP 성능] ${cleanQ} | 전체 ${data._perf.total_ms}ms | HTTP ${data._perf.http_call_count}회`
+                    );
+                    console.table(data._perf.slowest_http || []);
                 }
 
                 // 차트는 전체 분석 완료를 기다리지 않는다.
@@ -9521,7 +9538,10 @@ const voteKey = 'vote_' + symbol;
                 } else {
                     fastChartPromise.then(chartData => {
                         if (chartData?._perf) {
-                            console.info('[gaemiGTP 차트 성능]', cleanQ, chartData._perf);
+                            console.log(
+                                `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
+                            );
+                            console.table(chartData._perf.slowest_http || []);
                         }
                         if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
                         initTvChart(chartData.candles, chartData.ma20_line, chartData.ma60_line, chartData.bb_up_line, chartData.bb_dn_line);
@@ -10530,6 +10550,9 @@ if ((response && !response.ok) || data.error) {
 """
 
 # ----------------------------------------------------
+FAST_CHART_PAYLOAD_CACHE = {}
+FAST_CHART_PAYLOAD_TTL = 30
+
 # 차트 전용 초고속 경로
 # 전체 분석(/api/analyze)이 끝날 때까지 차트를 기다리지 않게 한다.
 # ----------------------------------------------------
@@ -10572,13 +10595,51 @@ def _build_chart_payload(df):
 
 
 def _fetch_fast_domestic_chart(code):
+    # 차트 화면은 최근 데이터만 필요하므로 120일만 요청한다.
+    # 기존 fetch_domestic_candles()의 1200일 요청을 여기서는 사용하지 않는다.
     try:
-        # 기존 사이트에서 검증된 Naver 차트 함수 사용.
-        # anchor_price 없이 호출하여 불필요한 추가 요청은 하지 않는다.
-        return fetch_domestic_candles(code)
+        url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=120&requestType=0"
+        res = HTTP_SESSION.get(url, timeout=1.5)
+        if res.status_code == 200 and '<item data=' in res.text:
+            root = ET.fromstring(res.content)
+            records = []
+            for it in root.findall(".//item"):
+                p = it.get("data", "").split("|")
+                if len(p) >= 6:
+                    records.append({
+                        "Date": pd.to_datetime(p[0]),
+                        "Open": float(p[1]),
+                        "High": float(p[2]),
+                        "Low": float(p[3]),
+                        "Close": float(p[4]),
+                        "Volume": float(p[5])
+                    })
+            if len(records) >= 65:
+                return pd.DataFrame(records).set_index("Date").sort_index()
     except Exception as exc:
         print(f"[FAST DOMESTIC CHART] {code} failed: {type(exc).__name__}: {exc}")
-        return None
+
+    # fchart가 실패하면 최근 120일 Naver 모바일 API를 한 번 시도한다.
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
+        res = HTTP_SESSION.get(url, timeout=1.5)
+        data = res.json()
+        if isinstance(data, list) and len(data) >= 65:
+            records = []
+            for it in data:
+                records.append({
+                    "Date": pd.to_datetime(it["localTrdDd"]),
+                    "Open": float(str(it["openPrice"]).replace(",", "")),
+                    "High": float(str(it["highPrice"]).replace(",", "")),
+                    "Low": float(str(it["lowPrice"]).replace(",", "")),
+                    "Close": float(str(it["closePrice"]).replace(",", "")),
+                    "Volume": float(str(it.get("accumulatedTradingVolume", 0)).replace(",", "")),
+                })
+            return pd.DataFrame(records).set_index("Date").sort_index()
+    except Exception:
+        pass
+
+    return None
 
 
 def _fetch_fast_overseas_chart(symbol):
@@ -10635,18 +10696,31 @@ def run_fast_chart_pipeline(query):
     if not clean_q:
         return None
 
+    cached_payload = FAST_CHART_PAYLOAD_CACHE.get(clean_q)
+    if cached_payload and (time.time() - cached_payload["time"]) < FAST_CHART_PAYLOAD_TTL:
+        return dict(cached_payload["data"])
+
+    def _finish(df):
+        payload = _build_chart_payload(df) if df is not None else None
+        if payload:
+            FAST_CHART_PAYLOAD_CACHE[clean_q] = {
+                "time": time.time(),
+                "data": dict(payload),
+            }
+        return payload
+
     # 글로벌 지수
     if clean_q in GLOBAL_INDEX_MAP:
         symbol = GLOBAL_INDEX_MAP[clean_q]
         df = _fetch_fast_overseas_chart(symbol)
-        return _build_chart_payload(df) if df is not None else None
+        return _finish(df)
 
     # 암호화폐
     if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
         symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
         try:
             _, _, df = fetch_crypto_candles(symbol)
-            return _build_chart_payload(df) if df is not None else None
+            return _finish(df)
         except Exception:
             return None
 
@@ -10654,7 +10728,7 @@ def run_fast_chart_pipeline(query):
     if clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
         df = _fetch_fast_overseas_chart(symbol)
-        return _build_chart_payload(df) if df is not None else None
+        return _finish(df)
 
     if any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()

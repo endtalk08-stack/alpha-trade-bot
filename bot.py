@@ -7392,6 +7392,127 @@ HTML_PAGE = r"""<!DOCTYPE html>
             text-align: center;
         }
 
+        /* 미국 주도종목: 1단계 디자인 전용 */
+        #rowUsLeadingStocks {
+            grid-column: 2;
+            grid-row: 7;
+            align-self: start;
+            min-height: 0;
+        }
+
+        .us-leading-stock-card {
+            padding: 16px;
+            box-sizing: border-box;
+            background: var(--bg-card);
+            border: 1px solid var(--border-line);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        .us-leading-stock-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-line);
+        }
+
+        .us-leading-stock-title {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-sub {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-list {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .us-leading-stock-item {
+            display: grid;
+            grid-template-columns: minmax(72px, 1fr) 74px minmax(72px, 1.15fr);
+            align-items: center;
+            gap: 8px;
+            min-height: 58px;
+            padding: 7px 8px;
+            box-sizing: border-box;
+            background: var(--bg-subcard);
+            border: 1px solid var(--border-line);
+            border-radius: 10px;
+        }
+
+        .us-leading-stock-name {
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .us-leading-stock-ticker {
+            font-size: 0.78rem;
+            line-height: 1.15;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .us-leading-stock-company {
+            margin-top: 3px;
+            font-size: 0.62rem;
+            line-height: 1.15;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .us-leading-stock-price {
+            min-width: 0;
+            text-align: right;
+        }
+
+        .us-leading-stock-value {
+            font-size: 0.75rem;
+            line-height: 1.15;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-change {
+            margin-top: 3px;
+            font-size: 0.68rem;
+            line-height: 1.15;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-change.up { color: #ef4444; }
+        .us-leading-stock-change.down { color: #38bdf8; }
+
+        .us-leading-stock-spark {
+            width: 100%;
+            height: 34px;
+            display: block;
+        }
+
+        .us-leading-stock-spark polyline {
+            fill: none;
+            stroke: var(--accent);
+            stroke-width: 2.2;
+            vector-effect: non-scaling-stroke;
+        }
+
 </style>
 </head>
 <body>
@@ -7515,6 +7636,86 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <span class="us-leading-sector-sub">TOP 10</span>
                             </div>
                             <div id="usLeadingSectorList" class="us-leading-sector-loading">데이터 불러오는 중…</div>
+                        </div>
+
+                        <!-- 미국 주도종목: 1단계 디자인 전용 / 추후 미국 주도업종 클릭과 연결 -->
+                        <div class="card us-leading-stock-card" id="rowUsLeadingStocks">
+                            <div class="us-leading-stock-head">
+                                <span class="us-leading-stock-title">미국 반도체 주도종목</span>
+                                <span class="us-leading-stock-sub">TOP 5</span>
+                            </div>
+
+                            <div class="us-leading-stock-list">
+                                <div class="us-leading-stock-item">
+                                    <div class="us-leading-stock-name">
+                                        <div class="us-leading-stock-ticker">NVDA</div>
+                                        <div class="us-leading-stock-company">NVIDIA</div>
+                                    </div>
+                                    <div class="us-leading-stock-price">
+                                        <div class="us-leading-stock-value">$188.42</div>
+                                        <div class="us-leading-stock-change up">+5.20%</div>
+                                    </div>
+                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                                        <polyline points="2,26 12,21 22,23 32,15 42,18 52,10 62,14 72,8 82,12 92,5 104,9 118,3"></polyline>
+                                    </svg>
+                                </div>
+
+                                <div class="us-leading-stock-item">
+                                    <div class="us-leading-stock-name">
+                                        <div class="us-leading-stock-ticker">AVGO</div>
+                                        <div class="us-leading-stock-company">Broadcom</div>
+                                    </div>
+                                    <div class="us-leading-stock-price">
+                                        <div class="us-leading-stock-value">$312.16</div>
+                                        <div class="us-leading-stock-change up">+4.10%</div>
+                                    </div>
+                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                                        <polyline points="2,23 12,25 22,18 32,20 42,14 52,16 62,10 72,12 82,7 92,10 104,5 118,8"></polyline>
+                                    </svg>
+                                </div>
+
+                                <div class="us-leading-stock-item">
+                                    <div class="us-leading-stock-name">
+                                        <div class="us-leading-stock-ticker">AMD</div>
+                                        <div class="us-leading-stock-company">Advanced Micro Devices</div>
+                                    </div>
+                                    <div class="us-leading-stock-price">
+                                        <div class="us-leading-stock-value">$171.08</div>
+                                        <div class="us-leading-stock-change up">+3.70%</div>
+                                    </div>
+                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                                        <polyline points="2,27 12,19 22,21 32,17 42,19 52,12 62,15 72,9 82,13 92,7 104,11 118,5"></polyline>
+                                    </svg>
+                                </div>
+
+                                <div class="us-leading-stock-item">
+                                    <div class="us-leading-stock-name">
+                                        <div class="us-leading-stock-ticker">MU</div>
+                                        <div class="us-leading-stock-company">Micron Technology</div>
+                                    </div>
+                                    <div class="us-leading-stock-price">
+                                        <div class="us-leading-stock-value">$118.63</div>
+                                        <div class="us-leading-stock-change up">+3.30%</div>
+                                    </div>
+                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                                        <polyline points="2,25 12,23 22,25 32,17 42,20 52,14 62,16 72,9 82,12 92,6 104,8 118,4"></polyline>
+                                    </svg>
+                                </div>
+
+                                <div class="us-leading-stock-item">
+                                    <div class="us-leading-stock-name">
+                                        <div class="us-leading-stock-ticker">MRVL</div>
+                                        <div class="us-leading-stock-company">Marvell Technology</div>
+                                    </div>
+                                    <div class="us-leading-stock-price">
+                                        <div class="us-leading-stock-value">$82.47</div>
+                                        <div class="us-leading-stock-change up">+2.90%</div>
+                                    </div>
+                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
+                                        <polyline points="2,24 12,20 22,23 32,16 42,18 52,13 62,15 72,10 82,12 92,8 104,11 118,6"></polyline>
+                                    </svg>
+                                </div>
+                            </div>
                         </div>
 
                         <!-- 4행 좌측: 퀀트 분석 (832px) -->

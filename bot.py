@@ -1259,7 +1259,7 @@ LAST_US_LEADING_STOCKS_FETCH = {}
 US_LEADING_STOCKS_TTL = 300
 
 def _fetch_us_stock_snapshot(item):
-    """Yahoo Finance 실제 가격/거래량으로 업종 후보 종목의 상대강도를 계산한다."""
+    """업종별 핵심 후보의 실제 현재가/당일 등락률/시가총액을 조회한다."""
     symbol, name = item
     try:
         encoded = urllib.parse.quote(symbol)
@@ -1270,69 +1270,60 @@ def _fetch_us_stock_snapshot(item):
             headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
         )
         res.raise_for_status()
-        payload = res.json()
-        result = (payload.get("chart", {}).get("result") or [None])[0]
+        result = (res.json().get("chart", {}).get("result") or [None])[0]
         if not result:
             return None
 
         quote = (result.get("indicators", {}).get("quote") or [{}])[0]
         closes = quote.get("close") or []
-        volumes = quote.get("volume") or []
-
         clean = []
-        clean_volumes = []
-        for i, value in enumerate(closes):
+        for value in closes:
             try:
                 v = float(value)
-                if not np.isfinite(v):
-                    continue
-                clean.append(v)
-                vol = volumes[i] if i < len(volumes) else None
-                try:
-                    vol = float(vol) if vol is not None else 0.0
-                    if not np.isfinite(vol):
-                        vol = 0.0
-                except Exception:
-                    vol = 0.0
-                clean_volumes.append(vol)
+                if np.isfinite(v):
+                    clean.append(v)
             except Exception:
                 continue
-
-        if len(clean) < 22:
+        if len(clean) < 2:
             return None
 
         latest = clean[-1]
         prev = clean[-2]
-        week_base = clean[-6]
-        month_base = clean[-22]
+        current = ((latest / prev) - 1.0) * 100.0 if prev else 0.0
 
-        # 실제 가격 데이터에서 계산한 수익률
-        current = (latest / prev - 1.0) * 100.0 if prev else 0.0
-        week1 = (latest / week_base - 1.0) * 100.0 if week_base else 0.0
-        month1 = (latest / month_base - 1.0) * 100.0 if month_base else 0.0
-
-        # 최근 20거래일 미니차트
+        # 기존 카드의 최근 20거래일 미니차트 유지
         spark_src = clean[-20:]
         lo, hi = min(spark_src), max(spark_src)
         if hi - lo < 1e-12:
             spark = [17.0] * len(spark_src)
         else:
-            spark = [round(31.0 - ((v - lo) / (hi - lo)) * 28.0, 1) for v in spark_src]
+            spark = [
+                round(31.0 - ((v - lo) / (hi - lo)) * 28.0, 1)
+                for v in spark_src
+            ]
 
-        avg_volume = (
-            float(np.mean(clean_volumes[-20:]))
-            if clean_volumes and any(clean_volumes[-20:])
-            else 0.0
-        )
+        # 시가총액은 후보군의 "핵심 10개" 검증/구성용 실제 데이터
+        market_cap = None
+        try:
+            qurl = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={encoded}"
+            qres = HTTP_SESSION.get(
+                qurl,
+                timeout=5.0,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
+            )
+            if qres.ok:
+                rows = qres.json().get("quoteResponse", {}).get("result") or []
+                if rows and rows[0].get("marketCap") is not None:
+                    market_cap = float(rows[0]["marketCap"])
+        except Exception:
+            pass
 
         return {
             "symbol": symbol,
             "name": name,
             "price": latest,
             "current": current,
-            "week1": week1,
-            "month1": month1,
-            "avg_volume": avg_volume,
+            "market_cap": market_cap,
             "sparkline": spark,
         }
     except Exception as exc:
@@ -1340,29 +1331,15 @@ def _fetch_us_stock_snapshot(item):
         return None
 
 
-def _percentile_rank(values, value):
-    """동일 업종 후보군 안에서 실제 수익률의 백분위 순위를 반환한다."""
-    if not values:
-        return 50.0
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return 100.0
-    lower = sum(1 for x in ordered if x < value)
-    equal = sum(1 for x in ordered if x == value)
-    return ((lower + max(0, equal - 1) * 0.5) / (len(ordered) - 1)) * 100.0
-
-
 def fetch_us_leading_stocks(sector_symbol, force=False):
     """
-    미국 주도업종의 실제 후보 종목을 Yahoo Finance 가격 데이터로 비교해 TOP 5를 자동 선정한다.
+    업종별 핵심 종목군 10개 중 당일 상승률이 높은 TOP 5를 선정한다.
 
-    선정 기준
-    - 현재 1D 상대강도 45%
-    - 최근 1W 상대강도 35%
-    - 최근 1M 상대강도 20%
-
-    각 수익률을 업종 후보군 내부 백분위로 변환한 뒤 합산하므로
-    가격 수준($100 vs $300)이 순위에 영향을 주지 않는다.
+    - 후보군: 업종별 핵심 종목 10개
+    - 선정: 당일 상승률 내림차순
+    - 거래대금/1W/1M/20일 평균 거래대금은 선정에 사용하지 않음
+    - 시가총액은 후보군 자체를 핵심 종목으로 구성하는 기준이며,
+      TOP 5의 당일 순위에는 직접 가중하지 않음
     """
     sector_symbol = str(sector_symbol or "").strip().upper()
     candidates = US_SECTOR_STOCK_UNIVERSE.get(sector_symbol)
@@ -1378,56 +1355,39 @@ def fetch_us_leading_stocks(sector_symbol, force=False):
         return CACHED_US_LEADING_STOCKS[sector_symbol]
 
     with ThreadPoolExecutor(max_workers=min(10, max(1, len(candidates)))) as executor:
-        snapshots = list(executor.map(_fetch_us_stock_snapshot, candidates))
+        rows = list(executor.map(_fetch_us_stock_snapshot, candidates))
 
-    snapshots = [row for row in snapshots if row and row.get("price") is not None]
-    if not snapshots:
+    rows = [r for r in rows if r and r.get("price") is not None]
+    if not rows:
         return []
 
-    current_values = [row["current"] for row in snapshots]
-    week_values = [row["week1"] for row in snapshots]
-    month_values = [row["month1"] for row in snapshots]
-
-    for row in snapshots:
-        current_rank = _percentile_rank(current_values, row["current"])
-        week_rank = _percentile_rank(week_values, row["week1"])
-        month_rank = _percentile_rank(month_values, row["month1"])
-
-        # 업종 내부 상대강도 점수. 0~100.
-        row["_selection_score"] = (
-            current_rank * 0.45
-            + week_rank * 0.35
-            + month_rank * 0.20
-        )
-
-    snapshots.sort(
-        key=lambda row: (
-            row["_selection_score"],
-            row["current"],
-            row["week1"],
-            row["month1"],
+    # 핵심 10개 안에서 "오늘 가장 많이 오른 종목" 순.
+    # 동률일 때만 시가총액을 보조 기준으로 사용한다.
+    rows.sort(
+        key=lambda r: (
+            r.get("current", float("-inf")),
+            r.get("market_cap") or 0.0,
         ),
         reverse=True,
     )
 
-    top = []
-    for row in snapshots[:5]:
-        top.append({
-            "symbol": row["symbol"],
-            "name": row["name"],
-            "price": row["price"],
-            "current": row["current"],
-            "week1": row["week1"],
-            "month1": row["month1"],
-            "sparkline": row["sparkline"],
-        })
+    top = [
+        {
+            "symbol": r["symbol"],
+            "name": r["name"],
+            "price": r["price"],
+            "current": r["current"],
+            "sparkline": r["sparkline"],
+        }
+        for r in rows[:5]
+    ]
 
     CACHED_US_LEADING_STOCKS[sector_symbol] = top
     LAST_US_LEADING_STOCKS_FETCH[sector_symbol] = now
 
     print(
         f"[US LEADING STOCKS] {sector_symbol} TOP5: "
-        + ", ".join(f"{x['symbol']}({x['current']:+.2f}%)" for x in top)
+        + ", ".join(f"{r['symbol']}({r['current']:+.2f}%)" for r in top)
     )
     return top
 

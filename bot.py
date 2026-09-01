@@ -1259,36 +1259,71 @@ LAST_US_LEADING_STOCKS_FETCH = {}
 US_LEADING_STOCKS_TTL = 300
 
 def _fetch_us_stock_snapshot(item):
+    """Yahoo Finance 실제 가격/거래량으로 업종 후보 종목의 상대강도를 계산한다."""
     symbol, name = item
     try:
         encoded = urllib.parse.quote(symbol)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=3mo&interval=1d"
-        res = HTTP_SESSION.get(url, timeout=5.0)
+        res = HTTP_SESSION.get(
+            url,
+            timeout=5.0,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
+        )
         res.raise_for_status()
         payload = res.json()
         result = (payload.get("chart", {}).get("result") or [None])[0]
         if not result:
             return None
-        closes = (result.get("indicators", {}).get("quote", [{}])[0].get("close") or [])
-        closes = [float(x) for x in closes if x is not None and np.isfinite(float(x))]
-        if len(closes) < 22:
+
+        quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+        closes = quote.get("close") or []
+        volumes = quote.get("volume") or []
+
+        clean = []
+        clean_volumes = []
+        for i, value in enumerate(closes):
+            try:
+                v = float(value)
+                if not np.isfinite(v):
+                    continue
+                clean.append(v)
+                vol = volumes[i] if i < len(volumes) else None
+                try:
+                    vol = float(vol) if vol is not None else 0.0
+                    if not np.isfinite(vol):
+                        vol = 0.0
+                except Exception:
+                    vol = 0.0
+                clean_volumes.append(vol)
+            except Exception:
+                continue
+
+        if len(clean) < 22:
             return None
 
-        latest = closes[-1]
-        prev = closes[-2]
-        week_base = closes[-6] if len(closes) >= 6 else closes[0]
-        month_base = closes[-22] if len(closes) >= 22 else closes[0]
+        latest = clean[-1]
+        prev = clean[-2]
+        week_base = clean[-6]
+        month_base = clean[-22]
+
+        # 실제 가격 데이터에서 계산한 수익률
         current = (latest / prev - 1.0) * 100.0 if prev else 0.0
         week1 = (latest / week_base - 1.0) * 100.0 if week_base else 0.0
         month1 = (latest / month_base - 1.0) * 100.0 if month_base else 0.0
 
-        # 최근 20거래일을 카드 폭에 맞게 0~34로 정규화한 실제 가격 흐름
-        spark_src = closes[-20:]
+        # 최근 20거래일 미니차트
+        spark_src = clean[-20:]
         lo, hi = min(spark_src), max(spark_src)
         if hi - lo < 1e-12:
             spark = [17.0] * len(spark_src)
         else:
             spark = [round(31.0 - ((v - lo) / (hi - lo)) * 28.0, 1) for v in spark_src]
+
+        avg_volume = (
+            float(np.mean(clean_volumes[-20:]))
+            if clean_volumes and any(clean_volumes[-20:])
+            else 0.0
+        )
 
         return {
             "symbol": symbol,
@@ -1297,39 +1332,104 @@ def _fetch_us_stock_snapshot(item):
             "current": current,
             "week1": week1,
             "month1": month1,
+            "avg_volume": avg_volume,
             "sparkline": spark,
         }
     except Exception as exc:
         print(f"[US STOCK] {symbol} failed: {type(exc).__name__}: {exc}")
         return None
 
+
+def _percentile_rank(values, value):
+    """동일 업종 후보군 안에서 실제 수익률의 백분위 순위를 반환한다."""
+    if not values:
+        return 50.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return 100.0
+    lower = sum(1 for x in ordered if x < value)
+    equal = sum(1 for x in ordered if x == value)
+    return ((lower + max(0, equal - 1) * 0.5) / (len(ordered) - 1)) * 100.0
+
+
 def fetch_us_leading_stocks(sector_symbol, force=False):
+    """
+    미국 주도업종의 실제 후보 종목을 Yahoo Finance 가격 데이터로 비교해 TOP 5를 자동 선정한다.
+
+    선정 기준
+    - 현재 1D 상대강도 45%
+    - 최근 1W 상대강도 35%
+    - 최근 1M 상대강도 20%
+
+    각 수익률을 업종 후보군 내부 백분위로 변환한 뒤 합산하므로
+    가격 수준($100 vs $300)이 순위에 영향을 주지 않는다.
+    """
     sector_symbol = str(sector_symbol or "").strip().upper()
     candidates = US_SECTOR_STOCK_UNIVERSE.get(sector_symbol)
     if not candidates:
         return []
 
     now = time.time()
-    if (not force and sector_symbol in CACHED_US_LEADING_STOCKS
-            and now - LAST_US_LEADING_STOCKS_FETCH.get(sector_symbol, 0.0) < US_LEADING_STOCKS_TTL):
+    if (
+        not force
+        and sector_symbol in CACHED_US_LEADING_STOCKS
+        and now - LAST_US_LEADING_STOCKS_FETCH.get(sector_symbol, 0.0) < US_LEADING_STOCKS_TTL
+    ):
         return CACHED_US_LEADING_STOCKS[sector_symbol]
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    with ThreadPoolExecutor(max_workers=min(10, max(1, len(candidates)))) as executor:
         snapshots = list(executor.map(_fetch_us_stock_snapshot, candidates))
-    snapshots = [x for x in snapshots if x]
+
+    snapshots = [row for row in snapshots if row and row.get("price") is not None]
     if not snapshots:
         return []
 
-    # 현재/1주/1개월을 같은 비중으로 표준화하여 업종 내부 상대강도를 계산한다.
-    for row in snapshots:
-        row["_score"] = 0.45 * row["current"] + 0.35 * row["week1"] + 0.20 * row["month1"]
-    snapshots.sort(key=lambda x: x["_score"], reverse=True)
+    current_values = [row["current"] for row in snapshots]
+    week_values = [row["week1"] for row in snapshots]
+    month_values = [row["month1"] for row in snapshots]
 
-    top = [{k: v for k, v in row.items() if k != "_score"} for row in snapshots[:5]]
+    for row in snapshots:
+        current_rank = _percentile_rank(current_values, row["current"])
+        week_rank = _percentile_rank(week_values, row["week1"])
+        month_rank = _percentile_rank(month_values, row["month1"])
+
+        # 업종 내부 상대강도 점수. 0~100.
+        row["_selection_score"] = (
+            current_rank * 0.45
+            + week_rank * 0.35
+            + month_rank * 0.20
+        )
+
+    snapshots.sort(
+        key=lambda row: (
+            row["_selection_score"],
+            row["current"],
+            row["week1"],
+            row["month1"],
+        ),
+        reverse=True,
+    )
+
+    top = []
+    for row in snapshots[:5]:
+        top.append({
+            "symbol": row["symbol"],
+            "name": row["name"],
+            "price": row["price"],
+            "current": row["current"],
+            "week1": row["week1"],
+            "month1": row["month1"],
+            "sparkline": row["sparkline"],
+        })
+
     CACHED_US_LEADING_STOCKS[sector_symbol] = top
     LAST_US_LEADING_STOCKS_FETCH[sector_symbol] = now
-    return top
 
+    print(
+        f"[US LEADING STOCKS] {sector_symbol} TOP5: "
+        + ", ".join(f"{x['symbol']}({x['current']:+.2f}%)" for x in top)
+    )
+    return top
 
 def fetch_single_world_item(item):
     name = item["name"]

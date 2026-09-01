@@ -1167,7 +1167,7 @@ def fetch_us_leading_sectors(force=False):
     rows.sort(key=lambda r: r["_selection_score"], reverse=True)
     CACHED_US_LEADING_SECTORS = [
         {k: v for k, v in row.items() if k != "_selection_score"}
-        for row in rows[:5]
+        for row in rows[:10]
     ]
     LAST_US_LEADING_SECTORS_FETCH = now
     return CACHED_US_LEADING_SECTORS
@@ -7349,7 +7349,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         .us-leading-sector-table th {
-            font-size: 0.56rem;
+            font-size: 0.60rem;
             font-weight: 700;
             color: var(--text-muted);
             padding: 4px 2px 6px;
@@ -7360,7 +7360,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .us-leading-sector-table th:first-child { text-align: left; }
 
         .us-leading-sector-table td {
-            font-size: 0.66rem;
+            font-size: 0.70rem;
             color: var(--text-sub);
             padding: 7px 2px;
             border-top: 1px solid var(--border-line);
@@ -7371,7 +7371,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .us-leading-sector-table td:first-child { text-align: left; }
 
         .us-leading-name {
-            width: 108px;
+            width: 116px;
             color: var(--text-title) !important;
             font-weight: 700;
             overflow: hidden;
@@ -7508,7 +7508,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         <div class="card us-leading-sector-card" id="rowUsLeadingSectors">
                             <div class="us-leading-sector-head">
                                 <span class="us-leading-sector-title">미국 주도업종</span>
-                                <span class="us-leading-sector-sub">TOP 5</span>
+                                <span class="us-leading-sector-sub">TOP 10</span>
                             </div>
                             <div id="usLeadingSectorList" class="us-leading-sector-loading">데이터 불러오는 중…</div>
                         </div>
@@ -9610,7 +9610,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 const cls = value => Number(value) >= 0 ? 'us-leading-up' : 'us-leading-down';
 
                 let html = '<table class="us-leading-sector-table">' +
-                    '<thead><tr><th>업종</th><th>현재</th><th>1주</th><th>1개월</th><th>3개월</th></tr></thead><tbody>';
+                    '<thead><tr><th>업종</th><th>현재</th><th>1W</th><th>1M</th><th>3M</th></tr></thead><tbody>';
 
                 rows.forEach(row => {
                     html += `<tr>` +

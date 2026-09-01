@@ -1080,7 +1080,8 @@ def fetch_naver_index_5day_returns(index_code="KOSPI", world_item=None):
         print(f"[MARKET 5D] {index_name} failed: {exc}")
         return None
 
-# ===== 미국 주도업종 위젯: 원본과 독립된 데이터/계산 영역 =====
+
+# ===== 미국 주도업종 위젯: 원본 기능과 독립된 추가 영역 =====
 US_LEADING_SECTORS = [
     {"name": "반도체", "sym": "SOXX"},
     {"name": "AI·데이터센터", "sym": "AIQ"},
@@ -1105,7 +1106,7 @@ US_LEADING_SECTORS_TTL = 300
 
 
 def _fetch_us_sector_history(symbol):
-    """Yahoo chart의 일봉 종가를 이용해 현재/1주/1개월/3개월 수익률을 계산."""
+    """Yahoo Finance 일봉으로 현재/1주/1개월/3개월 수익률을 계산한다."""
     try:
         encoded = urllib.parse.quote(symbol)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=6mo&interval=1d"
@@ -1115,15 +1116,19 @@ def _fetch_us_sector_history(symbol):
         result = (payload.get("chart", {}).get("result") or [None])[0]
         if not result:
             return None
+
         closes = (result.get("indicators", {}).get("quote", [{}])[0].get("close") or [])
         closes = [float(x) for x in closes if x is not None and np.isfinite(float(x))]
         if len(closes) < 65:
             return None
+
         latest = closes[-1]
         prev = closes[-2]
+
         def pct(ago):
-            base = closes[-(ago+1)]
+            base = closes[-(ago + 1)]
             return (latest / base - 1.0) * 100.0 if base else 0.0
+
         return {
             "current": (latest / prev - 1.0) * 100.0 if prev else 0.0,
             "week1": pct(5),
@@ -1138,35 +1143,49 @@ def _fetch_us_sector_history(symbol):
 
 def fetch_us_leading_sectors(force=False):
     global CACHED_US_LEADING_SECTORS, LAST_US_LEADING_SECTORS_FETCH
+
     now = time.time()
-    if (not force) and CACHED_US_LEADING_SECTORS and now - LAST_US_LEADING_SECTORS_FETCH < US_LEADING_SECTORS_TTL:
+    if (
+        not force
+        and CACHED_US_LEADING_SECTORS
+        and now - LAST_US_LEADING_SECTORS_FETCH < US_LEADING_SECTORS_TTL
+    ):
         return CACHED_US_LEADING_SECTORS
 
     rows = []
     with ThreadPoolExecutor(max_workers=8) as executor:
-        histories = list(executor.map(lambda x: _fetch_us_sector_history(x["sym"]), US_LEADING_SECTORS))
-    for meta, h in zip(US_LEADING_SECTORS, histories):
-        if h is None:
-            continue
-        rows.append({"name": meta["name"], "sym": meta["sym"], **h})
+        histories = list(
+            executor.map(
+                lambda item: _fetch_us_sector_history(item["sym"]),
+                US_LEADING_SECTORS,
+            )
+        )
+
+    for meta, history in zip(US_LEADING_SECTORS, histories):
+        if history is not None:
+            rows.append({"name": meta["name"], "sym": meta["sym"], **history})
 
     if not rows:
         return CACHED_US_LEADING_SECTORS
 
-    # 각 기간의 단면 z-score를 평균해 '선정용 강도'만 계산한다. 화면에는 점수를 표시하지 않는다.
-    keys_weights = [("current", 0.25), ("week1", 0.25), ("month1", 0.25), ("month3", 0.25)]
+    # 선정용 강도: 4개 기간의 단면 z-score 평균.
+    # 화면에는 점수를 표시하지 않고 실제 수익률만 표시한다.
     for row in rows:
         score = 0.0
-        for key, weight in keys_weights:
-            vals = [r[key] for r in rows]
-            mean = float(np.mean(vals)) if vals else 0.0
-            std = float(np.std(vals)) if vals else 0.0
+        for key in ("current", "week1", "month1", "month3"):
+            values = [r[key] for r in rows]
+            mean = float(np.mean(values)) if values else 0.0
+            std = float(np.std(values)) if values else 0.0
             z = (row[key] - mean) / std if std > 1e-9 else 0.0
-            score += z * weight
-        row["selection_score"] = score
+            score += z * 0.25
+        row["_selection_score"] = score
 
-    rows.sort(key=lambda r: r["selection_score"], reverse=True)
-    result = [{k: v for k, v in r.items() if k != "selection_score"} for r in rows[:5]]
+    rows.sort(key=lambda r: r["_selection_score"], reverse=True)
+    result = [
+        {k: v for k, v in row.items() if k != "_selection_score"}
+        for row in rows[:5]
+    ]
+
     CACHED_US_LEADING_SECTORS = result
     LAST_US_LEADING_SECTORS_FETCH = now
     return result
@@ -5792,45 +5811,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
         #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* [신규] 미국 주도업종: 증시는 지금과 별도의 독립 카드 */
-        #rowUsLeadingSectors {
-            grid-column: 2;
-            grid-row: 3;
-            height: 100%;
-            min-height: 0;
-            align-self: stretch;
-        }
-        .us-leading-sector-card {
-            padding: 16px;
-            box-sizing: border-box;
-            background: var(--bg-card);
-            border: 1px solid var(--border-line);
-            border-radius: 16px;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-        .us-leading-sector-head {
-            display:flex; align-items:center; justify-content:space-between;
-            gap:8px; margin-bottom:8px; padding-bottom:6px;
-            border-bottom:1px solid var(--border-line); flex:0 0 auto;
-        }
-        .us-leading-sector-title { font-size:0.95rem; font-weight:800; color:var(--text-title); }
-        .us-leading-sector-sub { font-size:0.68rem; color:var(--text-muted); white-space:nowrap; }
-        .us-leading-sector-table { width:100%; border-collapse:collapse; table-layout:fixed; }
-        .us-leading-sector-table th { font-size:0.56rem; font-weight:700; color:var(--text-muted); padding:4px 2px 6px; text-align:right; white-space:nowrap; }
-        .us-leading-sector-table th:nth-child(1), .us-leading-sector-table th:nth-child(2) { text-align:left; }
-        .us-leading-sector-table td { font-size:0.66rem; color:var(--text-sub); padding:7px 2px; border-top:1px solid var(--border-line); text-align:right; white-space:nowrap; }
-        .us-leading-sector-table td:nth-child(1), .us-leading-sector-table td:nth-child(2) { text-align:left; }
-        .us-leading-rank { width:22px; color:var(--text-muted) !important; font-weight:800; }
-        .us-leading-name { width:92px; color:var(--text-title) !important; font-weight:700; overflow:hidden; text-overflow:ellipsis; }
-        .us-leading-up { color:#ef4444 !important; font-weight:700; }
-        .us-leading-down { color:#38bdf8 !important; font-weight:700; }
-        .us-leading-loading { font-size:0.72rem; color:var(--text-muted); padding:16px 0; text-align:center; }
-
         /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) */
         #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
-        #rowGlobalNews { grid-column: 2; grid-row: 4; height: 100%; }
+        #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
 
         /* 4행: 트랙 분석(좌) & 실적 일정(우) */
         #rowTrack {
@@ -5842,7 +5825,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
         #rowEarningsCalendar {
             grid-column: 2;
-            grid-row: 5;
+            grid-row: 4;
             height: 100%;
             min-height: 0;
             align-self: stretch;
@@ -5858,7 +5841,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
         #rowEconomicCalendar {
             grid-column: 2;
-            grid-row: 6;
+            grid-row: 5;
             height: 100%;
             min-height: 0;
             align-self: stretch;
@@ -6083,12 +6066,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
         /* 좌측 832px 단독 배치 행들 */
         #rowConsensus { grid-column: 1; grid-row: 6; }
         #rowVote { grid-column: 1; grid-row: 7; }
-        #rowComment { grid-column: 1; grid-row: 9; }
+        #rowComment { grid-column: 1; grid-row: 8; }
         #rowDart { grid-column: 1; grid-row: 9; }
         #rowSignal { grid-column: 1; grid-row: 10; }
         #rowTelegram { grid-column: 1; grid-row: 11; }
-        /* 기존 좌측 카드가 오른쪽 캘린더의 행 높이에 강제로 늘어나지 않도록 함 */
-        #rowNews, #rowTrack, #rowQuant, #rowConsensus, #rowVote, #rowComment, #rowDart, #rowSignal, #rowTelegram { align-self: start; }
 
         .card {
             background: var(--bg-card);
@@ -6100,11 +6081,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             display: flex;
             flex-direction: column;
             justify-content: space-between;
-        }
-
-        /* 미국 주도업종: 카드 내부 콘텐츠를 위에서부터 자연스럽게 배치 */
-        .us-leading-sector-card {
-            justify-content: flex-start;
         }
 
         .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
@@ -6619,11 +6595,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowSignal { order: 9; }
             #rowTelegram { order: 10; }
             #rowWorld { order: 11; width: 100%; max-width: 832px; }
-            #rowUsLeadingSectors { order: 12; width: 100%; max-width: 832px; }
-            #rowGlobalNews { order: 13; width: 100%; max-width: 832px; }
-            #rowEarningsCalendar { order: 14; }
-            #rowEconomicCalendar { order: 15; }
-            #rowDart { order: 16; }
+            #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
+            #rowEarningsCalendar { order: 13; }
+            #rowEconomicCalendar { order: 14; }
+            #rowDart { order: 15; }
 
             .bottom-bar-grid-wrapper {
                 display: flex;
@@ -7199,13 +7174,124 @@ HTML_PAGE = r"""<!DOCTYPE html>
 }
 
 
-/* US Leading Sectors: give sector names more room while keeping 4 return columns compact */
-.us-leading-sector-table { table-layout: fixed; width: 100%; }
-.us-leading-sector-table th:first-child,
-.us-leading-sector-table td:first-child { width: 36%; text-align: left; }
-.us-leading-sector-table th:not(:first-child),
-.us-leading-sector-table td:not(:first-child) { width: 16%; text-align: right; }
-.us-leading-sector-table .us-leading-name { width: 36%; }
+        /* ============================================================
+           미국 주도업종 위젯 — 원본 레이아웃과 독립
+           PC: 기존 행을 건드리지 않고 별도 12행에 임시 배치
+           모바일: 전체 위젯 중 맨 마지막
+        ============================================================ */
+        #rowUsLeadingSectors {
+            grid-column: 2;
+            grid-row: 12;
+            min-height: 0;
+            align-self: start;
+        }
+
+        .us-leading-sector-card {
+            padding: 16px;
+            box-sizing: border-box;
+            background: var(--bg-card);
+            border: 1px solid var(--border-line);
+            border-radius: 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            overflow: hidden;
+        }
+
+        .us-leading-sector-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-line);
+            flex: 0 0 auto;
+        }
+
+        .us-leading-sector-title {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-sub {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .us-leading-sector-table th {
+            font-size: 0.56rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            padding: 4px 2px 6px;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-table th:first-child {
+            text-align: left;
+        }
+
+        .us-leading-sector-table td {
+            font-size: 0.66rem;
+            color: var(--text-sub);
+            padding: 7px 2px;
+            border-top: 1px solid var(--border-line);
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-table td:first-child {
+            text-align: left;
+        }
+
+        .us-leading-name {
+            width: 108px;
+            color: var(--text-title) !important;
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .us-leading-up {
+            color: #ef4444 !important;
+            font-weight: 700;
+        }
+
+        .us-leading-down {
+            color: #38bdf8 !important;
+            font-weight: 700;
+        }
+
+        .us-leading-sector-loading {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            padding: 16px 0;
+            text-align: center;
+        }
+
+        @media (max-width: 1200px) {
+            #rowUsLeadingSectors {
+                order: 999;
+                width: 100%;
+                max-width: 832px;
+                align-self: center;
+            }
+
+            .us-leading-name {
+                width: 108px;
+            }
+        }
+
 </style>
 </head>
 <body>
@@ -7321,6 +7407,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div class="board-2col-grid" id="worldBoardGrid"></div>
                         </div>
 
+
+                        <!-- 미국 주도업종: 기존 위젯과 독립된 추가 카드 -->
                         <div class="card us-leading-sector-card" id="rowUsLeadingSectors">
                             <div class="us-leading-sector-head">
                                 <span class="us-leading-sector-title">🔥 미국 주도업종</span>
@@ -8700,7 +8788,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     }
                 }
 
-                // 신규 독립 위젯: 증시는 지금의 기존 렌더링과 분리
                 loadUsLeadingSectors();
 
                 // 2. 캘린더 데이터 저장 및 렌더링
@@ -9374,30 +9461,56 @@ HTML_PAGE = r"""<!DOCTYPE html>
             window.addEventListener('resize', resizeChart);
         }
 
+
         async function loadUsLeadingSectors() {
             const box = document.getElementById('usLeadingSectorList');
             if (!box) return;
+
             try {
                 box.innerHTML = '<div class="us-leading-sector-loading">데이터 불러오는 중…</div>';
+
                 const response = await fetch('/api/us-leading-sectors');
                 const data = await response.json();
-                if (!response.ok || data.error) throw new Error(data.error || '데이터 오류');
+
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || '데이터 오류');
+                }
+
                 const rows = Array.isArray(data.data) ? data.data : [];
+
                 if (!rows.length) {
                     box.innerHTML = '<div class="us-leading-sector-loading">현재 업종 데이터를 불러오지 못했습니다.</div>';
                     return;
                 }
-                const pct = (v) => `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(1)}%`;
-                const cls = (v) => Number(v) >= 0 ? 'us-leading-up' : 'us-leading-down';
-                let html = '<table class="us-leading-sector-table"><thead><tr><th>업종</th><th>현재</th><th>1주</th><th>1개월</th><th>3개월</th></tr></thead><tbody>';
-                rows.forEach((r, i) => {
-                    html += `<tr><td class="us-leading-name" title="${r.name}">${r.name}</td><td class="${cls(r.current)}">${pct(r.current)}</td><td class="${cls(r.week1)}">${pct(r.week1)}</td><td class="${cls(r.month1)}">${pct(r.month1)}</td><td class="${cls(r.month3)}">${pct(r.month3)}</td></tr>`;
+
+                const pct = (value) =>
+                    `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(1)}%`;
+
+                const cls = (value) =>
+                    Number(value) >= 0 ? 'us-leading-up' : 'us-leading-down';
+
+                let html =
+                    '<table class="us-leading-sector-table">' +
+                    '<thead><tr><th>업종</th><th>현재</th><th>1주</th><th>1개월</th><th>3개월</th></tr></thead>' +
+                    '<tbody>';
+
+                rows.forEach((row) => {
+                    html +=
+                        `<tr>` +
+                        `<td class="us-leading-name" title="${row.name}">${row.name}</td>` +
+                        `<td class="${cls(row.current)}">${pct(row.current)}</td>` +
+                        `<td class="${cls(row.week1)}">${pct(row.week1)}</td>` +
+                        `<td class="${cls(row.month1)}">${pct(row.month1)}</td>` +
+                        `<td class="${cls(row.month3)}">${pct(row.month3)}</td>` +
+                        `</tr>`;
                 });
+
                 html += '</tbody></table>';
                 box.innerHTML = html;
-            } catch (e) {
-                console.error('US leading sectors:', e);
-                box.innerHTML = '<div class="us-leading-sector-loading">업종 데이터를 잠시 후 다시 불러옵니다.</div>';
+            } catch (error) {
+                console.error('US leading sectors:', error);
+                box.innerHTML =
+                    '<div class="us-leading-sector-loading">업종 데이터를 잠시 후 다시 불러옵니다.</div>';
             }
         }
 
@@ -9494,6 +9607,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 }
             )
             return
+
 
         if parsed.path == "/api/us-leading-sectors":
             try:

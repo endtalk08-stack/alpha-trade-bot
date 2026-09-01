@@ -2902,13 +2902,25 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
         def _safe_num(v):
             try:
                 if isinstance(v, dict):
-                    for k in ("raw", "value", "amount", "targetPrice"):
+                    for k in ("raw", "value", "amount", "targetPrice", "targetPriceValue", "price", "displayValue"):
                         if k in v:
-                            return _safe_num(v[k])
+                            candidate=_safe_num(v[k])
+                            if candidate is not None:
+                                return candidate
+                    return None
+                if isinstance(v, (list, tuple)):
+                    for item in v:
+                        candidate=_safe_num(item)
+                        if candidate is not None:
+                            return candidate
                     return None
                 if v is None or v == "":
                     return None
-                n = float(str(v).replace(",", "").replace("원", "").strip())
+                s=str(v).replace(",", "").replace("원", "").replace("KRW", "").strip()
+                nums=re.findall(r"[-+]?\d+(?:\.\d+)?", s)
+                if not nums:
+                    return None
+                n=float(nums[-1])
                 return n if n > 0 else None
             except Exception:
                 return None
@@ -2936,8 +2948,9 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "recommendation", "rating", "investopinion",
                 "targetprice", "targetpricevalue", "pricetarget", "targetmeanprice",
                 "writedate", "researchdate", "publishdate", "publishedat",
-                "reportdate", "regdate", "createdat", "title", "reporttitle",
-                "researchtitle", "subject"
+                "reportdate", "regdate", "createdat", "date", "title", "reporttitle",
+                "researchtitle", "researchname", "reportname", "subject", "itemname",
+                "companyname", "brokerage", "brokeragecompanyname", "authorname"
             }
             out=[]; seen=set()
             for node in _walk_objects(payload):
@@ -2954,11 +2967,11 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
         def _parse_report(node):
             if not isinstance(node, dict):
                 return None
-            broker=_value(node,["writeCorpName","brokerName","brokerageName","companyName","firmName","publisherName","broker","securitiesName","writerName","corpName"])
-            title=_value(node,["title","reportTitle","subject","researchTitle","name"])
+            broker=_value(node,["writeCorpName","brokerName","brokerageName","companyName","firmName","publisherName","broker","securitiesName","writerName","corpName","brokerage","brokerageCompanyName"])
+            title=_value(node,["title","reportTitle","subject","researchTitle","researchName","reportName","name"])
             opinion=_value(node,["investmentOpinion","investmentOpinionName","opinion","recommendation","rating","investOpinion","opinionName"])
             date_val=_value(node,["writeDate","researchDate","publishedAt","publishDate","reportDate","date","regDate","createdAt","createDate"])
-            tp=_number(node,["targetPrice","targetPriceValue","target","priceTarget","targetMean","targetMeanPrice"])
+            tp=_number(node,["targetPrice","targetPriceValue","target","priceTarget","targetMean","targetMeanPrice","consensusTargetPrice","averageTargetPrice"])
             rid=_value(node,["researchId","research_id","researchNo","reportId","id"])
             # 리포트 객체임을 판단할 최소 기준: 제목/ID/증권사/목표가/날짜 중 하나 이상
             if not any([broker,title,opinion,date_val,tp,rid]):
@@ -3066,6 +3079,103 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                             reports=parsed[:20]; report_source="Naver 리서치 호환 경로"
                 except Exception as e:
                     print(f"[CONSENSUS][KR] legacy research failed {code}: {type(e).__name__}: {e}")
+
+            # 5) finance.naver.com 종목분석 HTML fallback
+            # API 응답 구조가 바뀌어도 실제 네이버 종목분석 리포트 목록을 복구한다.
+            if not reports:
+                try:
+                    html_headers={
+                        "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36",
+                        "Accept-Language":"ko-KR,ko;q=0.9",
+                        "Referer":"https://finance.naver.com/research/",
+                    }
+                    html_reports=[]
+                    for page_no in (1, 2):
+                        hurl=(
+                            "https://finance.naver.com/research/company_list.naver"
+                            f"?searchType=itemCode&itemCode={urllib.parse.quote(code)}&page={page_no}"
+                        )
+                        hr=HTTP_SESSION.get(hurl,timeout=7.0,headers=html_headers)
+                        print(f"[CONSENSUS][KR] finance research HTML {code} page={page_no} HTTP {hr.status_code}")
+                        if not hr.ok:
+                            continue
+                        try:
+                            hr.encoding = hr.apparent_encoding or "euc-kr"
+                            tables=pd.read_html(io.StringIO(hr.text))
+                        except Exception as table_exc:
+                            print(f"[CONSENSUS][KR] finance research HTML parse failed {code} page={page_no}: {type(table_exc).__name__}: {table_exc}")
+                            continue
+
+                        for tbl in tables:
+                            if tbl is None or tbl.empty:
+                                continue
+                            for _, rec in tbl.iterrows():
+                                vals=[str(v).strip() for v in rec.tolist()
+                                      if str(v).strip() not in ("", "nan", "None")]
+                                if len(vals) < 3:
+                                    continue
+                                joined=" | ".join(vals)
+
+                                dm=re.search(r"(20\d{2}[.\\-/]\d{1,2}[.\\-/]\d{1,2}|\d{2}[.\\-/]\d{1,2}[.\\-/]\d{1,2})", joined)
+                                if not dm:
+                                    continue
+                                date_txt=dm.group(1).replace("/", ".").replace("-", ".")
+                                if len(date_txt.split(".")[0]) == 2:
+                                    date_txt="20"+date_txt
+
+                                opinion=next(
+                                    (v for v in vals if any(k in v for k in
+                                     ("매수","중립","매도","Buy","Hold","Sell","적극매수"))),
+                                    ""
+                                )
+                                broker=next(
+                                    (v for v in vals
+                                     if len(v) <= 40 and
+                                     any(k in v for k in ("증권","투자","한국IR협의회"))),
+                                    ""
+                                )
+
+                                nums=[]
+                                for v in vals:
+                                    for nm in re.findall(r"(?<![A-Za-z])([0-9]{2,3}(?:,[0-9]{3})+|[0-9]{4,8})(?:\s*원)?", v):
+                                        try:
+                                            n=float(nm.replace(",",""))
+                                            if n >= 1000:
+                                                nums.append(n)
+                                        except Exception:
+                                            pass
+                                tp=max(nums) if nums else None
+
+                                title=""
+                                for v in vals:
+                                    if v in {broker, opinion, date_txt}:
+                                        continue
+                                    if re.fullmatch(r"[0-9, .→원%+\-]+", v):
+                                        continue
+                                    if len(v) >= 4:
+                                        title=v
+                                        break
+
+                                if not broker and not title:
+                                    continue
+
+                                current_num=_safe_num(raw_price)
+                                upside=((tp-current_num)/current_num*100) if tp and current_num else None
+                                html_reports.append({
+                                    "main":broker or "증권사 리포트",
+                                    "sub":" · ".join([x for x in (opinion,date_txt) if x]) or "실제 리포트",
+                                    "val":f"{int(tp):,}원" if tp else "목표가 미확인",
+                                    "sub_val":f"{upside:+.1f}%" if upside is not None else "",
+                                    "_id":f"html-{code}-{page_no}-{len(html_reports)}",
+                                    "_title":title,
+                                })
+
+                    if html_reports:
+                        reports=html_reports[:20]
+                        report_source="Naver 종목분석 리포트"
+                        print(f"[CONSENSUS][KR] finance research HTML {code} reports={len(reports)}")
+                except Exception as e:
+                    print(f"[CONSENSUS][KR] finance research HTML failed {code}: {type(e).__name__}: {e}")
 
             # 중복 제거
             unique=[]; seen=set()

@@ -7551,10 +7551,27 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
         /* 미국 주도종목: 1단계 디자인 전용 */
-        #rowUsLeadingStocks {
+        /* 미국 주도업종 + 주도종목을 오른쪽 전용 스택으로 분리.
+           왼쪽 개미투표와 그리드 행 높이를 공유하지 않도록 한다. */
+        #usLeadingRightStack {
             grid-column: 2;
-            grid-row: 7;
+            grid-row: 6 / span 2;
             align-self: start;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        #usLeadingRightStack > .card {
+            width: 100%;
+            min-width: 0;
+        }
+
+        #rowUsLeadingStocks {
+            grid-column: auto;
+            grid-row: auto;
+            align-self: auto;
             min-height: 0;
         }
 
@@ -7788,16 +7805,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
 
                         <!-- 미국 주도업종: 기존 위젯과 독립된 카드 -->
-                        <div class="card us-leading-sector-card" id="rowUsLeadingSectors">
+                        <div id="usLeadingRightStack">
+<div class="card us-leading-sector-card" id="rowUsLeadingSectors">
                             <div class="us-leading-sector-head">
                                 <span class="us-leading-sector-title">미국 주도업종</span>
                                 <span class="us-leading-sector-sub">TOP 10</span>
                             </div>
                             <div id="usLeadingSectorList" class="us-leading-sector-loading">데이터 불러오는 중…</div>
                         </div>
-
-                        <!-- 미국 주도종목: 1단계 디자인 전용 / 추후 미국 주도업종 클릭과 연결 -->
-                        <div class="card us-leading-stock-card" id="rowUsLeadingStocks">
+<div class="card us-leading-stock-card" id="rowUsLeadingStocks">
                             <div class="us-leading-stock-head">
                                 <span class="us-leading-stock-title" id="usLeadingStockTitle">미국 반도체 주도종목</span>
                                 <span class="us-leading-stock-sub">TOP 5</span>
@@ -7806,6 +7822,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="us-leading-sector-loading">업종을 선택하면 주도종목을 불러옵니다.</div>
                             </div>
                         </div>
+</div>
 
                         <!-- 4행 좌측: 퀀트 분석 (832px) -->
                         <div class="card" id="rowQuant">

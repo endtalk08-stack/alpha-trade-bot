@@ -7891,6 +7891,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .signal-always-open [aria-expanded] {
             display: none !important;
         }
+
+        /* 시그널 항상 열림 최종 고정 */
+        #rowSignal #signalBody {
+            display: block !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
 </style>
 </head>
 <body>
@@ -8330,10 +8340,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         <div class="signal-premium-card" id="rowSignal" class="signal-always-open">
                             <div class="signal-card-header">
                                 <span class="signal-card-title">gaemiGTP 시그널</span>
-                                <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
                             </div>
                             
-                            <div id="signalBody" style="display:none; margin-top:16px;">
+                            <div id="signalBody" style="display:block; margin-top:16px;">
                                 <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid rgba(16,185,129,0.2);">
                                     <div class="gauge-inner-box">
                                         <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="rWinRateGauge"></span>
@@ -8577,12 +8586,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function toggleSignal() {
             const body = document.getElementById('signalBody');
-            const arrow = document.getElementById('signalArrow');
-            if (!body || !arrow) return;
-            if (body.style.display === 'block') {
-                body.style.display = 'none';
-                arrow.style.transform = 'rotate(0deg)';
-            } else {
+            if (body) body.style.display = 'block';
+        } else {
                 body.style.display = 'block';
                 arrow.style.transform = 'rotate(180deg)';
             }

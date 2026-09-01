@@ -8941,6 +8941,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     set('tsmInterpretTitle',trendText==='상승'?'상승 추세 우세':trendText==='하락'?'하락 추세 우세':'혼조 국면');
                     set('tsmInterpretText', trendText==='상승' ? '여러 기간의 모멘텀이 같은 방향을 보이고 있어 상승 추세가 우세합니다. 추세가 유지되는지 확인하면서 대응하는 것이 중요합니다.' : trendText==='하락' ? '여러 기간의 모멘텀이 약세 방향을 보이고 있어 하락 추세가 우세합니다. 반전 신호가 확인되는지 함께 살펴볼 필요가 있습니다.' : '기간별 모멘텀이 엇갈려 방향성이 뚜렷하지 않습니다. 새로운 추세 신호가 형성되는지 확인하는 구간입니다.');
 
+                    }
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {

@@ -7370,6 +7370,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         .us-leading-sector-table td:first-child { text-align: left; }
 
+        .us-leading-sector-row {
+            cursor: pointer;
+        }
+
         .us-leading-name {
             width: 116px;
             color: var(--text-title) !important;
@@ -9598,6 +9602,48 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
 
+        async function loadSectorChart(symbol, sectorName) {
+            const cleanSymbol = String(symbol || '').trim().toUpperCase();
+            const cleanName = String(sectorName || '').trim();
+            if (!cleanSymbol) return;
+
+            const chartContainer = document.getElementById('tvChart');
+            if (!chartContainer) return;
+
+            const previousHtml = chartContainer.innerHTML;
+            chartContainer.innerHTML = '<div style="height:300px; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-size:0.78rem;">업종 차트 불러오는 중…</div>';
+
+            try {
+                // 기존 /api/analyze 파이프라인을 그대로 사용하되,
+                // 현재 종목 전체 분석 화면은 건드리지 않고 차트 데이터만 사용한다.
+                const response = await fetch('/api/analyze?q=' + encodeURIComponent(cleanSymbol));
+                const data = await response.json();
+
+                if (!response.ok || data.error || !Array.isArray(data.candles) || !data.candles.length) {
+                    throw new Error(data.error || '업종 차트 데이터를 가져오지 못했습니다.');
+                }
+
+                initTvChart(
+                    data.candles,
+                    data.ma20_line,
+                    data.ma60_line,
+                    data.bb_up_line,
+                    data.bb_dn_line
+                );
+
+                // 차트 영역의 현재 모드를 가볍게 표시. 기존 레이아웃/카드 높이는 변경하지 않는다.
+                const meta = document.getElementById('rMeta');
+                if (meta) {
+                    meta.dataset.previousText = meta.dataset.previousText || meta.textContent;
+                    meta.innerText = `차트: ${cleanName} 업종 · ${cleanSymbol} · Yahoo Finance`;
+                }
+            } catch (error) {
+                console.error('Sector chart:', error);
+                chartContainer.innerHTML = previousHtml;
+                alert(`${cleanName || cleanSymbol} 업종 차트를 불러오지 못했습니다.`);
+            }
+        }
+
         async function loadUsLeadingSectors() {
             const box = document.getElementById('usLeadingSectorList');
             if (!box) return;
@@ -9619,8 +9665,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     '<thead><tr><th>업종</th><th>현재</th><th>1W</th><th>1M</th><th>3M</th></tr></thead><tbody>';
 
                 rows.forEach(row => {
-                    html += `<tr>` +
-                        `<td class="us-leading-name" title="${row.name}">${row.name}</td>` +
+                    const safeName = String(row.name || '').replace(/'/g, "\\'");
+                    const safeSym = String(row.sym || '').replace(/'/g, "\\'");
+                    html += `<tr class="us-leading-sector-row" title="${safeName} 업종 차트 보기" onclick="loadSectorChart('${safeSym}', '${safeName}')">` +
+                        `<td class="us-leading-name">${row.name}</td>` +
                         `<td class="${cls(row.current)}">${pct(row.current)}</td>` +
                         `<td class="${cls(row.week1)}">${pct(row.week1)}</td>` +
                         `<td class="${cls(row.month1)}">${pct(row.month1)}</td>` +

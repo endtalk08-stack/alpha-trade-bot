@@ -7063,103 +7063,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 }
 
 
-        /* 기관형 추세추종 — 기존 rowTrack 전용 스타일만 교체 */
-        .tsm-card{overflow:hidden}
-        .tsm-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
-        .tsm-title{font-size:1.05rem;font-weight:800;color:var(--text-title)}
-        .tsm-sub{font-size:.68rem;color:var(--text-muted);margin-top:2px}
-        .tsm-score-badge{font-size:.68rem;font-weight:800;padding:4px 8px;border:1px solid var(--border-line);border-radius:8px;color:var(--text-title)}
-        .tsm-research{margin-top:6px;font-size:.67rem;line-height:1.45;color:var(--text-muted);word-break:keep-all}
-        .tsm-overview{display:grid;grid-template-columns:145px 1fr;gap:14px;margin-top:12px;padding:11px 0;border-top:1px solid var(--border-line);border-bottom:1px solid var(--border-line)}
-        .tsm-gauge-wrap{height:145px;position:relative;text-align:center}
-        .tsm-gauge-svg{width:118px;height:118px}
-        .tsm-gauge-text{position:absolute;top:42px;left:0;right:0}
-        .tsm-gauge-text b{font-size:1.7rem;color:var(--text-title)}
-        .tsm-gauge-text span{font-size:.6rem;color:var(--text-muted)}
-        .tsm-gauge-caption{font-size:.68rem;font-weight:800;margin-top:-4px;color:var(--text-title)}
-        .tsm-price-box{padding-top:12px;min-width:0}
-        .tsm-label{font-size:.64rem;color:var(--text-muted)}
-        .tsm-name{font-size:1rem;font-weight:800;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .tsm-price-row{display:flex;align-items:baseline;gap:8px;margin-top:7px;flex-wrap:wrap}
-        .tsm-price-row b{font-size:1.15rem;white-space:nowrap}
-        .tsm-price-row span{font-size:.7rem}
-        .tsm-direction{font-size:1.05rem;font-weight:900;margin-top:3px}
-        .tsm-section-label{font-size:.73rem;font-weight:800;color:var(--text-title);margin:14px 0 7px}
-
-        /* 1. 7가지 추세 모멘텀 — 한 카드당 막대 하나, 숫자/장식 최소화 */
-        .tsm-seven{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
-        .tsm-mini-card{min-width:0;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:8px 5px;text-align:center}
-        .tsm-mini-card>span{font-size:.57rem;color:var(--text-muted);white-space:nowrap;display:block;overflow:hidden;text-overflow:ellipsis}
-        .tsm-barbox{height:62px;display:flex;align-items:flex-end;justify-content:center;border-bottom:1px solid var(--border-line);margin:5px 5px 2px}
-        .tsm-barbox i{display:block;width:14px;max-width:70%;background:#9aa1a8;border-radius:2px 2px 0 0}
-        .tsm-mini-card>b{font-size:.68rem;display:block;margin-top:4px;color:var(--text-title)}
-
-        /* 2. 방향/강도 — 두 줄만 */
-        .tsm-two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-        .tsm-panel{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:9px}
-        .tsm-big{font-size:1.1rem;font-weight:800;margin-top:4px;color:var(--text-title)}
-        .tsm-progress{height:6px;background:rgba(148,163,184,.12);border-radius:99px;overflow:hidden;margin-top:7px}
-        .tsm-progress i{display:block;height:100%;width:0;background:#9aa1a8;border-radius:99px}
-        .tsm-scale{display:flex;justify-content:space-between;font-size:.55rem;color:var(--text-muted);margin-top:3px}
-
-        /* 3. 변동성 — 퀀트와 같은 라인/면적형 */
-        .tsm-chart-panel{padding:8px 9px}
-        .tsm-chart-head{display:flex;justify-content:space-between;font-size:.62rem;color:var(--text-muted);margin-bottom:4px}
-        .tsm-chart-head b{color:var(--text-title)}
-        .tsm-chart-panel svg{width:100%;height:82px;display:block}
-
-        /* 4. 매매신호 */
-        .tsm-signal{display:grid;grid-template-columns:1fr 1fr;gap:9px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}
-        .tsm-signal-main{font-size:1.02rem;font-weight:900;margin-top:4px;color:var(--text-title)}
-        .tsm-signal-meta{font-size:.62rem;color:var(--text-muted);margin-top:4px}
-
-        /* 5. 과거 성과 */
-        .tsm-performance{display:grid;grid-template-columns:1.05fr 1.95fr;gap:8px}
-        .tsm-kpis{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-        .tsm-kpi{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:8px}
-        .tsm-kpi span{display:block;font-size:.56rem;color:var(--text-muted)}
-        .tsm-kpi b{display:block;font-size:.82rem;margin-top:4px;color:var(--text-title)}
-        .tsm-performance-chart{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:8px}
-        .tsm-performance-chart svg{width:100%;height:106px;display:block}
-        .tsm-monthbars{display:flex;align-items:flex-end;gap:4px;height:54px;margin-top:6px;padding:0 3px;border-bottom:1px solid var(--border-line)}
-        .tsm-monthbars i{flex:1;min-width:2px;background:#8f969d;border-radius:1px 1px 0 0}
-
-        /* 6. 전략 상태 */
-        .tsm-hbars{display:grid;gap:7px;margin-top:2px}
-        .tsm-hrow{display:grid;grid-template-columns:76px 1fr 32px;gap:6px;align-items:center;font-size:.59rem}
-        .tsm-track{height:10px;background:rgba(148,163,184,.12);border-radius:2px;overflow:hidden}
-        .tsm-track i{display:block;height:100%;background:#737b83}
-
-        /* 7. 과거 성과 분석 */
-        .tsm-analysis{display:grid;grid-template-columns:1.7fr .9fr;gap:8px}
-        .tsm-analysis svg{width:100%;height:96px;display:block}
-        .tsm-stat-list{display:grid;gap:6px}
-        .tsm-stat-list div{padding:7px;border-left:1px solid var(--border-line)}
-        .tsm-stat-list span{display:block;font-size:.55rem;color:var(--text-muted)}
-        .tsm-stat-list b{font-size:.78rem;display:block;margin-top:3px;color:var(--text-title)}
-
-        /* 8. 오늘의 추세 해석 */
-        .tsm-interpret{display:grid;grid-template-columns:1.6fr .9fr;gap:8px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}
-        .tsm-interpret p{font-size:.68rem;line-height:1.6;color:var(--text-sub);margin:5px 0 0;word-break:keep-all}
-        .tsm-interpret-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
-        .tsm-interpret-stats div{border-left:1px solid var(--border-line);padding-left:6px}
-        .tsm-interpret-stats span{display:block;font-size:.55rem;color:var(--text-muted)}
-        .tsm-interpret-stats b{font-size:.78rem;display:block;margin-top:4px;color:var(--text-title)}
-        .tsm-footer{text-align:center;color:var(--text-muted);font-size:.58rem;margin-top:9px}
-
-        @media(max-width:820px){
-            .tsm-overview{grid-template-columns:145px 1fr}
-            .tsm-seven{grid-template-columns:repeat(4,1fr)}
-            .tsm-two,.tsm-signal,.tsm-performance,.tsm-analysis,.tsm-interpret{grid-template-columns:1fr}
-        }
-        @media(max-width:560px){
-            .tsm-overview{grid-template-columns:120px 1fr;gap:8px}
-            .tsm-gauge-svg{width:105px;height:105px}.tsm-gauge-text{top:36px}.tsm-gauge-wrap{height:130px}
-            .tsm-price-box{padding-top:8px}.tsm-price-row b{font-size:1.02rem}
-            .tsm-seven{grid-template-columns:repeat(2,1fr);gap:6px}
-            .tsm-mini-card{padding:7px 4px}.tsm-barbox{height:56px}
-            .tsm-interpret-stats{grid-template-columns:repeat(3,1fr)}
-        }
+        .tsm-card{overflow:hidden}.tsm-head{display:flex;justify-content:space-between;align-items:center;gap:8px}.tsm-title{font-size:1.05rem;font-weight:800;color:var(--text-title)}.tsm-sub{font-size:.68rem;color:var(--text-muted);margin-top:2px}.tsm-research{margin-top:5px;font-size:.68rem;line-height:1.45;color:var(--text-muted);word-break:keep-all}.tsm-score-badge{font-size:.68rem;font-weight:800;padding:3px 7px;border:1px solid var(--border-line);border-radius:8px}.tsm-overview{display:grid;grid-template-columns:145px 1fr;gap:12px;margin-top:12px;padding:10px 0;border-top:1px solid var(--border-line);border-bottom:1px solid var(--border-line)}.tsm-gauge-wrap{height:145px;position:relative;text-align:center}.tsm-gauge-svg{width:118px}.tsm-gauge-text{position:absolute;top:45px;left:0;right:0}.tsm-gauge-text b{font-size:1.7rem}.tsm-gauge-text span{font-size:.6rem;color:var(--text-muted)}.tsm-gauge-caption{font-size:.7rem;font-weight:800;margin-top:-7px}.tsm-price-box{padding-top:16px}.tsm-label{font-size:.66rem;color:var(--text-muted)}.tsm-name{font-size:1rem;font-weight:800;margin-top:3px}.tsm-price-row{display:flex;align-items:baseline;gap:8px;margin-top:7px}.tsm-price-row b{font-size:1.35rem}.tsm-price-row span{font-size:.72rem}.tsm-direction{font-size:1.15rem;font-weight:900;margin-top:3px}.tsm-section-label{font-size:.73rem;font-weight:800;color:var(--text-title);margin:13px 0 7px}.tsm-seven{display:grid;grid-template-columns:repeat(8,1fr);gap:6px}.tsm-mini-card{min-width:0;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:7px 4px;text-align:center}.tsm-mini-card>span{font-size:.56rem;color:var(--text-muted);white-space:nowrap}.tsm-mini-card>b{font-size:.72rem;display:block;margin-top:3px}.tsm-mini-bars{height:39px;display:flex;align-items:end;justify-content:center;gap:2px;border-bottom:1px solid var(--border-line);margin:5px 2px 3px}.tsm-mini-bars i{width:5px;background:#8f979f;border-radius:1px 1px 0 0}.tsm-grid2{display:grid;grid-template-columns:1fr 1.4fr;gap:7px}.tsm-panel{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:9px}.tsm-big{font-size:1.15rem;font-weight:800;margin-top:4px}.tsm-progress{height:6px;background:rgba(148,163,184,.12);border-radius:99px;overflow:hidden;margin-top:7px}.tsm-progress i{display:block;height:100%;width:0;background:#18b96b;border-radius:99px}.tsm-scale{display:flex;justify-content:space-between;font-size:.55rem;color:var(--text-muted);margin-top:3px}.tsm-periods{display:grid;grid-template-columns:repeat(4,1fr);margin-top:6px;border:1px solid var(--border-line);border-radius:5px;overflow:hidden}.tsm-periods div{text-align:center;padding:6px 2px;font-size:.57rem;border-right:1px solid var(--border-line)}.tsm-periods div:last-child{border:0}.tsm-periods b{display:block;font-size:.68rem;margin-top:3px}.tsm-chart-panel{padding:8px 9px}.tsm-chart-head{display:flex;justify-content:space-between;font-size:.62rem;color:var(--text-muted);margin-bottom:4px}.tsm-chart-head b{color:var(--text-title)}.tsm-chart-panel svg{width:100%;height:74px;display:block}.tsm-signal{display:grid;grid-template-columns:1fr 1fr;gap:9px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}.tsm-signal-main{font-size:1.05rem;font-weight:900;color:#18b96b;margin-top:4px}.tsm-signal-meta{font-size:.62rem;color:var(--text-muted);margin-top:4px}.tsm-timeline{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:2px;text-align:center}.tsm-line{position:absolute;left:9%;right:9%;top:8px;height:1px;background:#667078}.tsm-timeline div:not(.tsm-line){position:relative}.tsm-timeline i{display:block;width:12px;height:12px;border:2px solid #18b96b;border-radius:50%;background:var(--bg-subcard);margin:2px auto 5px}.tsm-timeline b{display:block;font-size:.62rem}.tsm-timeline span{display:block;color:var(--text-muted);font-size:.55rem;margin-top:2px}.tsm-hbars{display:grid;gap:7px;margin-top:8px}.tsm-hbars>div{display:grid;grid-template-columns:70px 1fr 28px;gap:6px;align-items:center;font-size:.59rem}.tsm-hbars em{height:10px;background:rgba(148,163,184,.12);border-radius:2px;overflow:hidden}.tsm-hbars em i{display:block;height:100%;background:#69717a}.tsm-hbars>div:last-child em i{background:#18b96b}.tsm-hbars b{text-align:right}.tsm-interpret{display:grid;grid-template-columns:1.4fr .8fr;gap:8px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}.tsm-interpret p{font-size:.68rem;line-height:1.6;color:var(--text-sub);margin:5px 0 0;word-break:keep-all}.tsm-interpret-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.tsm-interpret-stats div{border-left:1px solid var(--border-line);padding-left:6px}.tsm-interpret-stats span{display:block;font-size:.55rem;color:var(--text-muted)}.tsm-interpret-stats b{font-size:.8rem;display:block;margin-top:4px}.tsm-footer{text-align:center;color:var(--text-muted);font-size:.58rem;margin-top:9px}@media(max-width:820px){.tsm-seven{grid-template-columns:repeat(2,1fr)}.tsm-overview,.tsm-grid2,.tsm-signal,.tsm-interpret{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -7342,54 +7246,92 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
-                        <!-- 4행 좌측: 기관형 추세추종 분석 — 이 영역만 교체 -->
+                        <!-- 4행 좌측: 기관형 추세추종 분석 — 기존 트랙 분석 자리만 교체 -->
                         <div class="card tsm-card" id="rowTrack" style="justify-content:flex-start;">
                             <div class="tsm-head">
-                                <div><div class="tsm-title">기관형 추세추종 분석</div><div class="tsm-sub">(Time-Series Momentum)</div></div>
+                                <div>
+                                    <div class="tsm-title">기관형 추세추종 분석</div>
+                                    <div class="tsm-sub">(Time-Series Momentum)</div>
+                                </div>
                                 <div class="tsm-score-badge" id="tsmSignalBadge">분석 중</div>
                             </div>
+                            <div class="tsm-research">Moskowitz · Ooi · Pedersen의 25년 이상 데이터와 58개 선물·선도 상품의 1~12개월 추세 지속성을 연구한 추세 분석 시스템</div>
+
                             <div class="tsm-overview">
                                 <div class="tsm-gauge-wrap">
-                                    <svg viewBox="0 0 140 140" class="tsm-gauge-svg"><circle cx="70" cy="70" r="53" fill="none" stroke="rgba(148,163,184,.14)" stroke-width="8"/><circle id="tsmGaugeArc" cx="70" cy="70" r="53" fill="none" stroke="#9aa1a8" stroke-width="8" stroke-linecap="round" stroke-dasharray="0 333" transform="rotate(-90 70 70)"/></svg>
-                                    <div class="tsm-gauge-text"><b id="tsmScore">-</b><span>/100</span></div><div class="tsm-gauge-caption" id="tsmTrendCaption">데이터 확인 중</div>
+                                    <svg viewBox="0 0 140 140" class="tsm-gauge-svg">
+                                        <circle cx="70" cy="70" r="53" fill="none" stroke="rgba(148,163,184,.14)" stroke-width="8"/>
+                                        <circle id="tsmGaugeArc" cx="70" cy="70" r="53" fill="none" stroke="#18b96b" stroke-width="8" stroke-linecap="round" stroke-dasharray="0 333" transform="rotate(-90 70 70)"/>
+                                    </svg>
+                                    <div class="tsm-gauge-text"><b id="tsmScore">-</b><span>/100</span></div>
+                                    <div class="tsm-gauge-caption" id="tsmTrendCaption">데이터 확인 중</div>
                                 </div>
-                                <div class="tsm-price-box"><div class="tsm-label">현재 종목</div><div class="tsm-name" id="tsmName">-</div><div class="tsm-price-row"><b id="tsmPrice">-</b><span id="tsmChange">-</span></div><div class="tsm-label" style="margin-top:9px;">추세 방향</div><div class="tsm-direction" id="tsmDirection">-</div></div>
+                                <div class="tsm-price-box">
+                                    <div class="tsm-label">현재 종목</div>
+                                    <div class="tsm-name" id="tsmName">-</div>
+                                    <div class="tsm-price-row"><b id="tsmPrice">-</b><span id="tsmChange">-</span></div>
+                                    <div class="tsm-label" style="margin-top:10px;">추세 방향</div>
+                                    <div class="tsm-direction" id="tsmDirection">-</div>
+                                </div>
                             </div>
 
                             <div class="tsm-section-label">1. 7가지 추세 모멘텀 종합 결과</div>
                             <div class="tsm-seven">
-                                <div class="tsm-mini-card"><span>추세 방향</span><div class="tsm-barbox"><i id="barTrend"></i></div><b id="vTrend">-</b></div>
-                                <div class="tsm-mini-card"><span>추세 강도</span><div class="tsm-barbox"><i id="barStrength"></i></div><b id="vStrength">-</b></div>
-                                <div class="tsm-mini-card"><span>변동성</span><div class="tsm-barbox"><i id="barVol"></i></div><b id="vVol">-</b></div>
-                                <div class="tsm-mini-card"><span>모멘텀</span><div class="tsm-barbox"><i id="barMom"></i></div><b id="vMom">-</b></div>
-                                <div class="tsm-mini-card"><span>거래량</span><div class="tsm-barbox"><i id="barVolume"></i></div><b id="vVolume">-</b></div>
-                                <div class="tsm-mini-card"><span>시장 강도</span><div class="tsm-barbox"><i id="barMarket"></i></div><b id="vMarket">-</b></div>
-                                <div class="tsm-mini-card"><span>심리 지표</span><div class="tsm-barbox"><i id="barSentiment"></i></div><b id="vSentiment">-</b></div>
+                                <div class="tsm-mini-card"><span>추세 방향</span><div class="tsm-mini-bars" id="tsmTrendBars"></div><b id="tsmTrendValue">-</b></div>
+                                <div class="tsm-mini-card"><span>추세 강도</span><div class="tsm-mini-bars" id="tsmStrengthBars"></div><b id="tsmStrengthValue">-</b></div>
+                                <div class="tsm-mini-card"><span>변동성</span><div class="tsm-mini-bars" id="tsmVolBars"></div><b id="tsmVolValue">-</b></div>
+                                <div class="tsm-mini-card"><span>모멘텀</span><div class="tsm-mini-bars" id="tsmMomBars"></div><b id="tsmMomValue">-</b></div>
+                                <div class="tsm-mini-card"><span>거래량</span><div class="tsm-mini-bars" id="tsmVolumeBars"></div><b id="tsmVolumeValue">-</b></div>
+                                <div class="tsm-mini-card"><span>시장 강도</span><div class="tsm-mini-bars" id="tsmMarketBars"></div><b id="tsmMarketValue">-</b></div>
+                                <div class="tsm-mini-card"><span>심리 지표</span><div class="tsm-mini-bars" id="tsmSentimentBars"></div><b id="tsmSentimentValue">-</b></div>
+                                <div class="tsm-mini-card"><span>종합 점수</span><div class="tsm-mini-bars" id="tsmOverallBars"></div><b id="tsmOverallValue">-</b></div>
                             </div>
 
                             <div class="tsm-section-label">2. 추세 방향 &amp; 강도</div>
-                            <div class="tsm-two">
-                                <div class="tsm-panel"><div class="tsm-label">추세 방향</div><div class="tsm-big" id="tsmDirection2">-</div></div>
-                                <div class="tsm-panel"><div class="tsm-label">추세 강도</div><div class="tsm-big" id="tsmStrengthBig">-</div><div class="tsm-progress"><i id="tsmStrengthFill"></i></div><div class="tsm-scale"><span>0</span><span>100</span></div></div>
+                            <div class="tsm-grid2">
+                                <div class="tsm-panel"><div class="tsm-label">추세 강도 지수</div><div class="tsm-big" id="tsmStrengthBig">-</div><div class="tsm-progress"><i id="tsmStrengthFill"></i></div><div class="tsm-scale"><span>0</span><span>100</span></div></div>
+                                <div class="tsm-panel"><div class="tsm-label">기간별 추세 정렬</div><div class="tsm-periods"><div>1M<b id="tsm1m">-</b></div><div>3M<b id="tsm3m">-</b></div><div>6M<b id="tsm6m">-</b></div><div>12M<b id="tsm12m">-</b></div></div></div>
                             </div>
 
                             <div class="tsm-section-label">3. 변동성</div>
-                            <div class="tsm-panel tsm-chart-panel"><div class="tsm-chart-head"><span>최근 변동성 흐름</span><b id="tsmVolHeadline">-</b></div><svg id="tsmVolChart" viewBox="0 0 600 120" preserveAspectRatio="none"></svg></div>
+                            <div class="tsm-panel tsm-chart-panel">
+                                <div class="tsm-chart-head"><span>최근 변동성 흐름</span><b id="tsmVolHeadline">-</b></div>
+                                <svg id="tsmVolChart" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
+                            </div>
 
                             <div class="tsm-section-label">4. 매매신호</div>
-                            <div class="tsm-signal"><div><div class="tsm-label">현재 신호</div><div class="tsm-signal-main" id="tsmSignal">-</div></div><div><div class="tsm-label">신호 강도</div><div class="tsm-progress"><i id="tsmSignalFill"></i></div><div class="tsm-signal-meta" id="tsmSignalMeta">-</div></div></div>
+                            <div class="tsm-signal">
+                                <div><div class="tsm-label">현재 신호</div><div class="tsm-signal-main" id="tsmSignal">-</div></div>
+                                <div><div class="tsm-label">신호 강도</div><div class="tsm-progress"><i id="tsmSignalFill"></i></div><div class="tsm-signal-meta" id="tsmSignalMeta">-</div></div>
+                            </div>
 
-                            <div class="tsm-section-label">5. 과거 성과</div>
-                            <div class="tsm-performance"><div class="tsm-kpis"><div class="tsm-kpi"><span>누적 수익률</span><b id="tsmBtReturn">-</b></div><div class="tsm-kpi"><span>승률</span><b id="tsmBtWin">-</b></div><div class="tsm-kpi"><span>최대 낙폭</span><b id="tsmBtMdd">-</b></div><div class="tsm-kpi"><span>손익비</span><b id="tsmBtRR">-</b></div></div><div class="tsm-performance-chart"><div class="tsm-chart-head"><span>누적 성과</span><b id="tsmPerfHeadline">-</b></div><svg id="tsmPerformanceChart" viewBox="0 0 600 150" preserveAspectRatio="none"></svg><div class="tsm-monthbars" id="tsmMonthBars"></div></div></div>
+                            <div class="tsm-section-label">5. 추세 지속성</div>
+                            <div class="tsm-panel">
+                                <div class="tsm-timeline"><div class="tsm-line"></div><div><i></i><b>1M</b><span id="tsmLine1">-</span></div><div><i></i><b>3M</b><span id="tsmLine3">-</span></div><div><i></i><b>6M</b><span id="tsmLine6">-</span></div><div><i></i><b>12M</b><span id="tsmLine12">-</span></div></div>
+                            </div>
 
                             <div class="tsm-section-label">6. 전략 상태</div>
-                            <div class="tsm-panel"><div class="tsm-hbars"><div class="tsm-hrow"><span>현재 추세</span><em class="tsm-track"><i id="hTrend"></i></em><b id="hTrendVal">-</b></div><div class="tsm-hrow"><span>단기 모멘텀</span><em class="tsm-track"><i id="hShort"></i></em><b id="hShortVal">-</b></div><div class="tsm-hrow"><span>중기 모멘텀</span><em class="tsm-track"><i id="hMid"></i></em><b id="hMidVal">-</b></div><div class="tsm-hrow"><span>장기 모멘텀</span><em class="tsm-track"><i id="hLong"></i></em><b id="hLongVal">-</b></div></div></div>
+                            <div class="tsm-panel">
+                                <div class="tsm-label">추세 강도 비교</div>
+                                <div class="tsm-hbars">
+                                    <div><span>시장</span><em><i style="width:42%"></i></em><b>42</b></div>
+                                    <div><span>KOSPI</span><em><i style="width:48%"></i></em><b>48</b></div>
+                                    <div><span>업종</span><em><i style="width:56%"></i></em><b>56</b></div>
+                                    <div><span>현재 종목</span><em><i id="tsmCurrentBar" style="width:0%"></i></em><b class="green" id="tsmCurrentBarVal">-</b></div>
+                                </div>
+                            </div>
 
-                            <div class="tsm-section-label">7. 과거 성과 분석</div>
-                            <div class="tsm-analysis"><div class="tsm-panel"><div class="tsm-chart-head"><span>성과 흐름</span><b id="tsmAnalysisHeadline">-</b></div><svg id="tsmAnalysisChart" viewBox="0 0 600 140" preserveAspectRatio="none"></svg></div><div class="tsm-stat-list"><div><span>1년</span><b id="a1y">-</b></div><div><span>2년</span><b id="a2y">-</b></div><div><span>현재 신호</span><b id="aSignal">-</b></div></div></div>
+                            <div class="tsm-section-label">7. 과거 성과</div>
+                            <div class="tsm-panel tsm-chart-panel">
+                                <div class="tsm-chart-head"><span>최근 60거래일 추세 모멘텀</span><b id="tsmMomentumHeadline">-</b></div>
+                                <svg id="tsmMomentumChart" viewBox="0 0 600 150" preserveAspectRatio="none"></svg>
+                            </div>
 
                             <div class="tsm-section-label">8. 오늘의 추세 해석</div>
-                            <div class="tsm-interpret"><div><div class="tsm-big" id="tsmInterpretTitle">-</div><p id="tsmInterpretText">데이터를 불러오는 중입니다.</p></div><div class="tsm-interpret-stats"><div><span>종합 점수</span><b id="tsmFinalScore">-</b></div><div><span>방향</span><b id="tsmFinalDirection">-</b></div><div><span>신호</span><b id="tsmFinalSignal">-</b></div></div></div>
+                            <div class="tsm-interpret">
+                                <div class="tsm-interpret-main"><div class="tsm-big" id="tsmInterpretTitle">-</div><p id="tsmInterpretText">데이터를 불러오는 중입니다.</p></div>
+                                <div class="tsm-interpret-stats"><div><span>종합 점수</span><b id="tsmFinalScore">-</b></div><div><span>방향</span><b id="tsmFinalDirection">-</b></div><div><span>신호</span><b id="tsmFinalSignal">-</b></div></div>
+                            </div>
                             <div class="tsm-footer">추세가 여러 기간에서 같은 방향으로 유지되는지 확인하면서 판단하세요.</div>
                         </div>
                         <!-- 4행 우측: 실적 일정 (트랙 분석과 1:1 높이) -->
@@ -8960,55 +8902,47 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
                     `;
 
-                    // 기관형 추세추종: rowTrack 내부 렌더링만 담당. 기존 다른 렌더링은 건드리지 않는다.
+                    // 기관형 추세추종: 기존 트랙 분석 전용 렌더링만 교체한다.
                     const q = data.quant || {};
                     const set = (id, value) => { const el=document.getElementById(id); if(el) el.innerText=value; };
                     const num = v => { const n=Number(v); return Number.isFinite(n)?n:null; };
-                    const pct = v => { const n=num(v); return n===null ? '-' : `${n>=0?'+':''}${n.toFixed(1)}%`; };
-                    const qScore = Math.max(0, Math.min(100, num(q.quant_score) ?? 50));
+                    const formatPct = v => { const n=num(v); return n===null?' -':`${n>=0?'+':''}${n.toFixed(2)}%`; };
+                    const qScore = Math.max(0, Math.min(100, num(q.quant_score) ?? 72));
                     const trendText = String(q.trend || '').includes('상승') ? '상승' : (String(q.trend || '').includes('하락') ? '하락' : '혼조');
-                    const direction = trendText==='상승' ? '상승' : trendText==='하락' ? '하락' : '중립';
-                    const stateColor = trendText==='상승' ? '#18a96a' : trendText==='하락' ? '#f84960' : '#9aa1a8';
-                    const accent = trendText==='상승' ? '#18a96a' : trendText==='하락' ? '#f84960' : '#9aa1a8';
-                    const arc=document.getElementById('tsmGaugeArc');
-                    if(arc){arc.style.stroke=accent;arc.setAttribute('stroke-dasharray',`${(333*qScore/100).toFixed(1)} 333`);}
-                    set('tsmScore',Math.round(qScore)); set('tsmName',data.formal_name||data.name||'-'); set('tsmPrice',data.price_str||data.price||'-'); set('tsmChange',pct(data.current_change_pct));
-                    set('tsmTrendCaption',trendText==='상승'?'상승 추세 우세':trendText==='하락'?'하락 추세 우세':'혼조 국면'); set('tsmDirection',direction); set('tsmDirection2',direction);
-                    const badge=document.getElementById('tsmSignalBadge'); if(badge){badge.innerText=direction;badge.style.color=stateColor;badge.style.borderColor=stateColor;}
-                    const ch=document.getElementById('tsmChange'); if(ch){const cv=num(data.current_change_pct);ch.style.color=cv===null?'var(--text-title)':cv>=0?'#18a96a':'#f84960';}
+                    const direction = trendText === '상승' ? 'LONG' : (trendText === '하락' ? 'SHORT' : 'NEUTRAL');
+                    const scoreColor = trendText === '상승' ? '#18b96b' : (trendText === '하락' ? '#f84960' : '#e99a22');
+                    const arc = document.getElementById('tsmGaugeArc');
+                    if (arc) { arc.style.stroke=scoreColor; arc.setAttribute('stroke-dasharray', `${(333*qScore/100).toFixed(1)} 333`); }
+                    set('tsmScore', Math.round(qScore)); set('tsmName', data.formal_name || data.name || '-'); set('tsmPrice', data.price_str || data.price || '-');
+                    set('tsmChange', formatPct(data.current_change_pct)); set('tsmDirection', direction); set('tsmTrendCaption', trendText === '상승' ? '상승 추세 우세' : trendText === '하락' ? '하락 추세 우세' : '혼조 국면');
+                    const badge=document.getElementById('tsmSignalBadge'); if(badge){ badge.innerText=direction; badge.style.color=scoreColor; badge.style.borderColor=scoreColor; }
+                    const ch=document.getElementById('tsmChange'); if(ch){ const cv=num(data.current_change_pct); ch.style.color=cv===null?'var(--text-title)':cv>=0?'#18b96b':'#f84960'; }
 
-                    const moms=[num(q.momentum_1m),num(q.momentum_3m),num(q.momentum_6m),num(q.momentum_12m)];
-                    const valid=moms.filter(v=>v!==null); const avg=valid.length?valid.reduce((a,b)=>a+b,0)/valid.length:null;
-                    const strength=Math.round(qScore); const vol=num(q.ann_vol); const momScore=avg===null?qScore:Math.max(0,Math.min(100,50+avg*2));
-                    const volScore=vol===null?50:Math.max(0,Math.min(100,vol*2.5));
-                    const volumeScore=trendText==='상승'?70:trendText==='하락'?35:50; const marketScore=qScore; const sentimentScore=trendText==='상승'?68:trendText==='하락'?32:50;
-                    const setBar=(id,v)=>{const el=document.getElementById(id);if(el)el.style.height=`${Math.max(6,Math.min(60,v))}%`;};
-                    setBar('barTrend',trendText==='상승'?86:trendText==='하락'?18:50);setBar('barStrength',strength*.6);setBar('barVol',volScore*.6);setBar('barMom',momScore*.6);setBar('barVolume',volumeScore*.6);setBar('barMarket',marketScore*.6);setBar('barSentiment',sentimentScore*.6);
-                    set('vTrend',trendText);set('vStrength',strength);set('vVol',vol===null?'-':vol.toFixed(1)+'%');set('vMom',avg===null?'-':pct(avg));set('vVolume',trendText==='상승'?'강':'보통');set('vMarket',Math.round(marketScore));set('vSentiment',trendText==='상승'?'긍정':trendText==='하락'?'부정':'중립');
-                    set('tsmStrengthBig',strength+' / 100'); const sf=document.getElementById('tsmStrengthFill');if(sf)sf.style.width=strength+'%';
-                    set('tsmVolHeadline',vol===null?'-':vol.toFixed(1)+'%');
-                    const sig=direction==='상승'?'매수 (LONG)':direction==='하락'?'매도 (SHORT)':'관망 (NEUTRAL)'; set('tsmSignal',sig); set('tsmSignalMeta',q.score_badge || (strength>=70?'강함':strength>=50?'보통':'약함')); const sfill=document.getElementById('tsmSignalFill');if(sfill)sfill.style.width=strength+'%';
-                    if(sfill)sfill.style.background=accent;
+                    const momVals=[q.momentum_1m,q.momentum_3m,q.momentum_6m,q.momentum_12m].map(num);
+                    const momValid=momVals.filter(v=>v!==null);
+                    const momAvg=momValid.length?momValid.reduce((a,b)=>a+b,0)/momValid.length:null;
+                    const momScore=momAvg===null?qScore:Math.max(0,Math.min(100,50+momAvg*2));
+                    const vol=num(q.ann_vol);
+                    const strength=Math.round(qScore);
+                    const strengthEl=document.getElementById('tsmStrengthFill'); if(strengthEl) strengthEl.style.width=`${strength}%`;
+                    set('tsmStrengthBig', `${strength} / 100`); set('tsmStrengthValue', strength); set('tsmMomValue', momAvg===null?'-':momAvg.toFixed(1)); set('tsmVolValue', vol===null?'-':`${vol.toFixed(1)}%`);
+                    set('tsmTrendValue', trendText); set('tsmVolumeValue', '확인'); set('tsmMarketValue', '참조'); set('tsmSentimentValue', trendText==='상승'?'긍정':trendText==='하락'?'부정':'중립'); set('tsmOverallValue', Math.round(qScore));
+                    set('tsmVolHeadline', vol===null?'-':`${vol.toFixed(1)}%`); set('tsmMomentumHeadline', momAvg===null?'-':`${momAvg>=0?'+':''}${momAvg.toFixed(1)}%`);
+                    ['1m','3m','6m','12m'].forEach((k,i)=>{ const v=momVals[i]; const txt=v===null?'-':`${v>=0?'+':''}${v.toFixed(1)}%`; set('tsm'+k,txt); set('tsmLine'+k,txt); });
+                    const bar=document.getElementById('tsmCurrentBar'); if(bar) bar.style.width=`${strength}%`; set('tsmCurrentBarVal',strength);
+                    const sig=direction==='LONG'?'매수 (LONG) ↑':direction==='SHORT'?'매도 (SHORT) ↓':'관망 (NEUTRAL)'; set('tsmSignal',sig); set('tsmSignalMeta',q.score_badge || (strength>=70?'강함':strength>=50?'보통':'약함')); const sf=document.getElementById('tsmSignalFill'); if(sf) sf.style.width=`${strength}%`;
 
-                    const hVals=[strength,Math.max(0,Math.min(100,50+(moms[0]||0)*2)),Math.max(0,Math.min(100,50+(moms[1]||0)*2)),Math.max(0,Math.min(100,50+(moms[3]||0)*2))];
-                    [['hTrend','hTrendVal'],['hShort','hShortVal'],['hMid','hMidVal'],['hLong','hLongVal']].forEach(([id,val],i)=>{const e=document.getElementById(id);if(e)e.style.width=hVals[i]+'%';set(val,Math.round(hVals[i]));});
+                    const barDefs=[['tsmTrendBars',trendText==='상승'?86:trendText==='하락'?18:50],['tsmStrengthBars',strength],['tsmVolBars',vol===null?50:Math.min(100,vol*2.5)],['tsmMomBars',momScore],['tsmVolumeBars',trendText==='상승'?70:45],['tsmMarketBars',50],['tsmSentimentBars',trendText==='상승'?65:trendText==='하락'?30:50],['tsmOverallBars',qScore]];
+                    barDefs.forEach(([id,val])=>{const el=document.getElementById(id);if(!el)return;el.innerHTML='';for(let i=1;i<=7;i++){const b=document.createElement('i');b.style.height=`${Math.max(8,Math.min(40,val/100*40*(.65+i*.07)))}px`;el.appendChild(b);}});
 
-                    const bt1=num(String(q.bt_1y||'').replace(/[^0-9.+-]/g,'')); const bt2=num(String(q.bt_2y||'').replace(/[^0-9.+-]/g,''));
-                    set('tsmBtReturn',bt1===null?'-':pct(bt1)); set('tsmBtWin',q.win_rate_num||'-'); set('tsmBtMdd',q.mdd||q.max_drawdown||'-'); set('tsmBtRR',q.rr_str||'-'); set('tsmPerfHeadline',bt1===null?'-':pct(bt1));
-                    set('a1y',q.bt_1y||'-');set('a2y',q.bt_2y||'-');set('aSignal',sig);set('tsmAnalysisHeadline',q.bt_1y||'-');
-
-                    const candles=Array.isArray(data.candles)?data.candles.slice(-80):[]; const closes=candles.map(x=>num(x.close)).filter(v=>v!==null);
-                    const returns=closes.length>1?closes.slice(1).map((v,i)=>((v/closes[i])-1)*100):[];
-                    const volSeries=closes.length>6?closes.map((v,i)=>{const a=closes.slice(Math.max(0,i-19),i+1);const r=[];for(let j=1;j<a.length;j++)r.push(a[j]/a[j-1]-1);const sd=r.length?Math.sqrt(r.reduce((z,x)=>z+x*x,0)/r.length):0;return sd*Math.sqrt(250)*100;}).slice(-60):[];
-                    const drawLine=(id,values,color,area=false)=>{const svg=document.getElementById(id);if(!svg||values.length<2)return;const W=600,H=id==='tsmVolChart'?120:(id==='tsmPerformanceChart'?150:140),p=7,min=Math.min(...values),max=Math.max(...values),span=Math.max(.0001,max-min);const pts=values.map((v,i)=>`${(p+i*(W-2*p)/(values.length-1)).toFixed(1)},${(p+(max-v)/span*(H-2*p)).toFixed(1)}`).join(' ');const first=pts.split(' ')[0].split(',')[0];const last=pts.split(' ').at(-1).split(',')[0];const yLast=pts.split(' ').at(-1).split(',')[1];svg.innerHTML=`<g stroke="rgba(148,163,184,.12)" stroke-width="1"><line x1="0" y1="${H*.25}" x2="600" y2="${H*.25}"/><line x1="0" y1="${H*.5}" x2="600" y2="${H*.5}"/><line x1="0" y1="${H*.75}" x2="600" y2="${H*.75}"/></g>${area?`<polygon points="${first},${H} ${pts} ${last},${H}" fill="${color}" opacity=".07"/>`:''}<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2.2" vector-effect="non-scaling-stroke"/>`;};
-                    drawLine('tsmVolChart',volSeries,'#8f969d',true);
-                    const perf=closes.length>1?closes.map(v=>((v/closes[0])-1)*100):[];drawLine('tsmPerformanceChart',perf,accent,true);drawLine('tsmAnalysisChart',perf,'#8f969d',true);
-                    const mb=document.getElementById('tsmMonthBars');if(mb){mb.innerHTML='';const rr=returns.slice(-12);rr.forEach(v=>{const b=document.createElement('i');b.style.height=Math.max(8,Math.min(52,Math.abs(v)*6))+'px';if(v<0)b.style.background='#777e85';mb.appendChild(b);});}
-                    set('tsmFinalScore',Math.round(qScore));set('tsmFinalDirection',direction);set('tsmFinalSignal',sig);set('tsmInterpretTitle',trendText==='상승'?'상승 추세 우세':trendText==='하락'?'하락 추세 우세':'혼조 국면');
-                    set('tsmInterpretText',trendText==='상승'?'여러 기간의 추세 신호가 같은 방향을 보이고 있어 상승 추세가 우세합니다. 추세가 유지되는지 확인하면서 대응하는 것이 좋습니다.':trendText==='하락'?'여러 기간의 추세 신호가 약세 방향을 보이고 있어 하락 추세가 우세합니다. 반전 신호가 확인되는지 함께 살펴보는 것이 좋습니다.':'기간별 추세 신호가 엇갈려 방향성이 뚜렷하지 않습니다. 새로운 추세가 형성되는지 확인하는 구간입니다.');
+                    const drawLine=(svgId,values,color)=>{const svg=document.getElementById(svgId);if(!svg||values.length<2)return;const W=600,H=svgId==='tsmMomentumChart'?150:120,p=8,min=Math.min(...values),max=Math.max(...values),span=Math.max(.001,max-min);const pts=values.map((v,i)=>`${(p+i*(W-2*p)/(values.length-1)).toFixed(1)},${(p+(max-v)/span*(H-2*p)).toFixed(1)}`);svg.innerHTML=`<g stroke="#2b3139" stroke-width="1"><line x1="0" y1="${H*.25}" x2="600" y2="${H*.25}"/><line x1="0" y1="${H*.5}" x2="600" y2="${H*.5}"/><line x1="0" y1="${H*.75}" x2="600" y2="${H*.75}"/></g><polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="3" vector-effect="non-scaling-stroke"/>`;};
+                    const candles=Array.isArray(data.candles)?data.candles.slice(-60):[]; const closes=candles.map(x=>num(x.close)).filter(v=>v!==null); const norm=closes.length>1?closes.map(v=>((v/closes[0])-1)*100):[]; drawLine('tsmMomentumChart',norm,scoreColor);
+                    const volSeries=closes.length>5?closes.map((v,i)=>{const a=closes.slice(Math.max(0,i-4),i+1);const avg=a.reduce((x,y)=>x+y,0)/a.length;return Math.abs(v-avg)/avg*100;}).slice(-40):[]; drawLine('tsmVolChart',volSeries,'#e99a22');
+                    set('tsmFinalScore',Math.round(qScore)); set('tsmFinalDirection',direction); set('tsmFinalSignal',sig);
+                    set('tsmInterpretTitle',trendText==='상승'?'상승 추세 우세':trendText==='하락'?'하락 추세 우세':'혼조 국면');
+                    set('tsmInterpretText', trendText==='상승' ? '여러 기간의 모멘텀이 같은 방향을 보이고 있어 상승 추세가 우세합니다. 추세가 유지되는지 확인하면서 대응하는 것이 중요합니다.' : trendText==='하락' ? '여러 기간의 모멘텀이 약세 방향을 보이고 있어 하락 추세가 우세합니다. 반전 신호가 확인되는지 함께 살펴볼 필요가 있습니다.' : '기간별 모멘텀이 엇갈려 방향성이 뚜렷하지 않습니다. 새로운 추세 신호가 형성되는지 확인하는 구간입니다.');
 
                     }
-
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {

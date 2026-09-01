@@ -6062,7 +6062,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
             justify-content: center;
             align-items: stretch;
             position: relative;
-        
+        }
+
         /* 1행: 왜 움직였을까? — 코멘트 전용 */
         #rowCause { grid-column: 1; grid-row: 1; }
 
@@ -7754,6 +7755,66 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
         }
 
+
+        /* 모바일 최종 폭/흐름 보정 */
+        @media (max-width: 1200px) {
+            #result-scroll-view {
+                width: 100% !important;
+                box-sizing: border-box !important;
+                overflow-x: hidden !important;
+            }
+
+            .result-inner {
+                width: 100% !important;
+                max-width: 832px !important;
+                box-sizing: border-box !important;
+                margin: 0 auto !important;
+            }
+
+            .dashboard-master-grid {
+                display: flex !important;
+                flex-direction: column !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                margin: 0 auto !important;
+                box-sizing: border-box !important;
+                gap: 14px !important;
+                overflow: visible !important;
+            }
+
+            .dashboard-master-grid > .card,
+            .dashboard-master-grid > .signal-premium-card,
+            .dashboard-master-grid > .signal-premium-btn,
+            #usLeadingRightStack {
+                position: static !important;
+                float: none !important;
+                left: auto !important;
+                right: auto !important;
+                top: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                box-sizing: border-box !important;
+                transform: none !important;
+            }
+
+            #usLeadingRightStack {
+                order: 15 !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 14px !important;
+            }
+
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                box-sizing: border-box !important;
+            }
+        }
 </style>
 </head>
 <body>

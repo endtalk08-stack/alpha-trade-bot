@@ -1173,6 +1173,164 @@ def fetch_us_leading_sectors(force=False):
     return CACHED_US_LEADING_SECTORS
 
 
+# ===== 미국 주도종목 위젯 (2단계: 실제 데이터) =====
+# 업종별 후보군은 명시적으로 관리하고, 실제 순위는 Yahoo Finance 가격 데이터로 매번 계산한다.
+# 즉, 후보군 자체를 고정 TOP5로 박아두지 않고 현재/1주/1개월 모멘텀을 합산해 TOP5를 자동 선정한다.
+US_SECTOR_STOCK_UNIVERSE = {
+    "SOXX": [
+        ("NVDA", "엔비디아"), ("AVGO", "브로드컴"), ("AMD", "AMD"),
+        ("MU", "마이크론"), ("MRVL", "마벨"), ("QCOM", "퀄컴"),
+        ("TSM", "TSMC"), ("LRCX", "램리서치"), ("AMAT", "어플라이드"), ("KLAC", "KLA"),
+    ],
+    "AIQ": [
+        ("NVDA", "엔비디아"), ("AVGO", "브로드컴"), ("ANET", "아리스타"),
+        ("VRT", "버티브"), ("DELL", "델"), ("PLTR", "팔란티어"),
+        ("SMCI", "슈퍼마이크로"), ("ARM", "ARM"), ("MRVL", "마벨"), ("CDNS", "케이던스"),
+    ],
+    "IGV": [
+        ("MSFT", "마이크로소프트"), ("ORCL", "오라클"), ("CRM", "세일즈포스"),
+        ("ADBE", "어도비"), ("NOW", "서비스나우"), ("INTU", "인튜이트"),
+        ("PANW", "팔로알토"), ("PLTR", "팔란티어"), ("SNPS", "시놉시스"), ("CDNS", "케이던스"),
+    ],
+    "FDN": [
+        ("META", "메타"), ("GOOGL", "알파벳"), ("AMZN", "아마존"),
+        ("NFLX", "넷플릭스"), ("UBER", "우버"), ("ABNB", "에어비앤비"),
+        ("DASH", "도어대시"), ("PINS", "핀터레스트"), ("RDDT", "레딧"), ("SNAP", "스냅"),
+    ],
+    "XLF": [
+        ("JPM", "JP모건"), ("BAC", "뱅크오브아메리카"), ("GS", "골드만삭스"),
+        ("MS", "모건스탠리"), ("C", "씨티그룹"), ("WFC", "웰스파고"),
+        ("BLK", "블랙록"), ("SCHW", "찰스슈왑"), ("AXP", "아메리칸익스프레스"), ("V", "비자"),
+    ],
+    "XBI": [
+        ("REGN", "리제네론"), ("VRTX", "버텍스"), ("AMGN", "암젠"),
+        ("GILD", "길리어드"), ("BIIB", "바이오젠"), ("MRNA", "모더나"),
+        ("ILMN", "일루미나"), ("INCY", "인사이트"), ("BMRN", "바이오마린"), ("ALNY", "앨나일람"),
+    ],
+    "XLV": [
+        ("LLY", "일라이릴리"), ("UNH", "유나이티드헬스"), ("JNJ", "존슨앤드존슨"),
+        ("ABBV", "애브비"), ("MRK", "머크"), ("TMO", "써모피셔"),
+        ("ABT", "애보트"), ("ISRG", "인튜이티브서지컬"), ("DHR", "다나허"), ("PFE", "화이자"),
+    ],
+    "DRIV": [
+        ("TSLA", "테슬라"), ("GM", "GM"), ("F", "포드"), ("RIVN", "리비안"),
+        ("LCID", "루시드"), ("LI", "리오토"), ("NIO", "니오"), ("XPEV", "샤오펑"),
+        ("UBER", "우버"), ("APTV", "앱티브"),
+    ],
+    "ITA": [
+        ("RTX", "RTX"), ("LMT", "록히드마틴"), ("NOC", "노스럽그루먼"),
+        ("GD", "제너럴다이내믹스"), ("HII", "헌팅턴잉걸스"), ("LHX", "L3해리스"),
+        ("GE", "GE에어로스페이스"), ("BA", "보잉"), ("TDG", "트랜스다임"), ("HEI", "하이코"),
+    ],
+    "XLE": [
+        ("XOM", "엑슨모빌"), ("CVX", "셰브론"), ("COP", "코노코필립스"), ("EOG", "EOG리소스"),
+        ("SLB", "SLB"), ("OXY", "옥시덴탈"), ("MPC", "마라톤페트롤리엄"),
+        ("PSX", "필립스66"), ("VLO", "발레로"), ("HAL", "할리버튼"),
+    ],
+    "NLR": [
+        ("CEG", "컨스텔레이션"), ("VST", "비스트라"), ("GEV", "GE버노바"),
+        ("NEE", "넥스트에라"), ("DUK", "듀크에너지"), ("SO", "서던컴퍼니"),
+        ("AEP", "아메리칸일렉트릭"), ("ETN", "이튼"), ("CARR", "캐리어"), ("BWXT", "BWX테크놀로지"),
+    ],
+    "XLB": [
+        ("LIN", "린데"), ("SHW", "셔윈윌리엄스"), ("APD", "에어프로덕츠"),
+        ("ECL", "에코랩"), ("FCX", "프리포트맥모란"), ("NEM", "뉴몬트"),
+        ("NUE", "뉴코"), ("DD", "듀폰"), ("ALB", "앨버말"), ("DOW", "다우"),
+    ],
+    "XLI": [
+        ("GE", "GE에어로스페이스"), ("CAT", "캐터필러"), ("DE", "디어"), ("HON", "허니웰"),
+        ("UNP", "유니언퍼시픽"), ("UPS", "UPS"), ("WM", "웨이스트매니지먼트"),
+        ("RTX", "RTX"), ("ETN", "이튼"), ("MMM", "3M"),
+    ],
+    "XLY": [
+        ("AMZN", "아마존"), ("TSLA", "테슬라"), ("HD", "홈디포"), ("MCD", "맥도날드"),
+        ("TJX", "TJX"), ("LOW", "로우스"), ("NKE", "나이키"), ("BKNG", "부킹홀딩스"),
+        ("SBUX", "스타벅스"), ("TGT", "타깃"),
+    ],
+    "XLRE": [
+        ("PLD", "프로로지스"), ("AMT", "아메리칸타워"), ("EQIX", "에퀴닉스"),
+        ("CCI", "크라운캐슬"), ("WELL", "웰타워"), ("SPG", "사이먼프로퍼티"),
+        ("O", "리얼티인컴"), ("VICI", "VICI프로퍼티"), ("DLR", "디지털리얼티"), ("PSA", "퍼블릭스토리지"),
+    ],
+}
+
+CACHED_US_LEADING_STOCKS = {}
+LAST_US_LEADING_STOCKS_FETCH = {}
+US_LEADING_STOCKS_TTL = 300
+
+def _fetch_us_stock_snapshot(item):
+    symbol, name = item
+    try:
+        encoded = urllib.parse.quote(symbol)
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=3mo&interval=1d"
+        res = HTTP_SESSION.get(url, timeout=5.0)
+        res.raise_for_status()
+        payload = res.json()
+        result = (payload.get("chart", {}).get("result") or [None])[0]
+        if not result:
+            return None
+        closes = (result.get("indicators", {}).get("quote", [{}])[0].get("close") or [])
+        closes = [float(x) for x in closes if x is not None and np.isfinite(float(x))]
+        if len(closes) < 22:
+            return None
+
+        latest = closes[-1]
+        prev = closes[-2]
+        week_base = closes[-6] if len(closes) >= 6 else closes[0]
+        month_base = closes[-22] if len(closes) >= 22 else closes[0]
+        current = (latest / prev - 1.0) * 100.0 if prev else 0.0
+        week1 = (latest / week_base - 1.0) * 100.0 if week_base else 0.0
+        month1 = (latest / month_base - 1.0) * 100.0 if month_base else 0.0
+
+        # 최근 20거래일을 카드 폭에 맞게 0~34로 정규화한 실제 가격 흐름
+        spark_src = closes[-20:]
+        lo, hi = min(spark_src), max(spark_src)
+        if hi - lo < 1e-12:
+            spark = [17.0] * len(spark_src)
+        else:
+            spark = [round(31.0 - ((v - lo) / (hi - lo)) * 28.0, 1) for v in spark_src]
+
+        return {
+            "symbol": symbol,
+            "name": name,
+            "price": latest,
+            "current": current,
+            "week1": week1,
+            "month1": month1,
+            "sparkline": spark,
+        }
+    except Exception as exc:
+        print(f"[US STOCK] {symbol} failed: {type(exc).__name__}: {exc}")
+        return None
+
+def fetch_us_leading_stocks(sector_symbol, force=False):
+    sector_symbol = str(sector_symbol or "").strip().upper()
+    candidates = US_SECTOR_STOCK_UNIVERSE.get(sector_symbol)
+    if not candidates:
+        return []
+
+    now = time.time()
+    if (not force and sector_symbol in CACHED_US_LEADING_STOCKS
+            and now - LAST_US_LEADING_STOCKS_FETCH.get(sector_symbol, 0.0) < US_LEADING_STOCKS_TTL):
+        return CACHED_US_LEADING_STOCKS[sector_symbol]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        snapshots = list(executor.map(_fetch_us_stock_snapshot, candidates))
+    snapshots = [x for x in snapshots if x]
+    if not snapshots:
+        return []
+
+    # 현재/1주/1개월을 같은 비중으로 표준화하여 업종 내부 상대강도를 계산한다.
+    for row in snapshots:
+        row["_score"] = 0.45 * row["current"] + 0.35 * row["week1"] + 0.20 * row["month1"]
+    snapshots.sort(key=lambda x: x["_score"], reverse=True)
+
+    top = [{k: v for k, v in row.items() if k != "_score"} for row in snapshots[:5]]
+    CACHED_US_LEADING_STOCKS[sector_symbol] = top
+    LAST_US_LEADING_STOCKS_FETCH[sector_symbol] = now
+    return top
+
+
 def fetch_single_world_item(item):
     name = item["name"]
     sym = item["sym"]
@@ -7641,80 +7799,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         <!-- 미국 주도종목: 1단계 디자인 전용 / 추후 미국 주도업종 클릭과 연결 -->
                         <div class="card us-leading-stock-card" id="rowUsLeadingStocks">
                             <div class="us-leading-stock-head">
-                                <span class="us-leading-stock-title">미국 반도체 주도종목</span>
+                                <span class="us-leading-stock-title" id="usLeadingStockTitle">미국 반도체 주도종목</span>
                                 <span class="us-leading-stock-sub">TOP 5</span>
                             </div>
-
-                            <div class="us-leading-stock-list">
-                                <div class="us-leading-stock-item">
-                                    <div class="us-leading-stock-name">
-                                        <div class="us-leading-stock-ticker">NVDA</div>
-                                        <div class="us-leading-stock-company">NVIDIA</div>
-                                    </div>
-                                    <div class="us-leading-stock-price">
-                                        <div class="us-leading-stock-value">$188.42</div>
-                                        <div class="us-leading-stock-change up">+5.20%</div>
-                                    </div>
-                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
-                                        <polyline points="2,26 12,21 22,23 32,15 42,18 52,10 62,14 72,8 82,12 92,5 104,9 118,3"></polyline>
-                                    </svg>
-                                </div>
-
-                                <div class="us-leading-stock-item">
-                                    <div class="us-leading-stock-name">
-                                        <div class="us-leading-stock-ticker">AVGO</div>
-                                        <div class="us-leading-stock-company">Broadcom</div>
-                                    </div>
-                                    <div class="us-leading-stock-price">
-                                        <div class="us-leading-stock-value">$312.16</div>
-                                        <div class="us-leading-stock-change up">+4.10%</div>
-                                    </div>
-                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
-                                        <polyline points="2,23 12,25 22,18 32,20 42,14 52,16 62,10 72,12 82,7 92,10 104,5 118,8"></polyline>
-                                    </svg>
-                                </div>
-
-                                <div class="us-leading-stock-item">
-                                    <div class="us-leading-stock-name">
-                                        <div class="us-leading-stock-ticker">AMD</div>
-                                        <div class="us-leading-stock-company">Advanced Micro Devices</div>
-                                    </div>
-                                    <div class="us-leading-stock-price">
-                                        <div class="us-leading-stock-value">$171.08</div>
-                                        <div class="us-leading-stock-change up">+3.70%</div>
-                                    </div>
-                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
-                                        <polyline points="2,27 12,19 22,21 32,17 42,19 52,12 62,15 72,9 82,13 92,7 104,11 118,5"></polyline>
-                                    </svg>
-                                </div>
-
-                                <div class="us-leading-stock-item">
-                                    <div class="us-leading-stock-name">
-                                        <div class="us-leading-stock-ticker">MU</div>
-                                        <div class="us-leading-stock-company">Micron Technology</div>
-                                    </div>
-                                    <div class="us-leading-stock-price">
-                                        <div class="us-leading-stock-value">$118.63</div>
-                                        <div class="us-leading-stock-change up">+3.30%</div>
-                                    </div>
-                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
-                                        <polyline points="2,25 12,23 22,25 32,17 42,20 52,14 62,16 72,9 82,12 92,6 104,8 118,4"></polyline>
-                                    </svg>
-                                </div>
-
-                                <div class="us-leading-stock-item">
-                                    <div class="us-leading-stock-name">
-                                        <div class="us-leading-stock-ticker">MRVL</div>
-                                        <div class="us-leading-stock-company">Marvell Technology</div>
-                                    </div>
-                                    <div class="us-leading-stock-price">
-                                        <div class="us-leading-stock-value">$82.47</div>
-                                        <div class="us-leading-stock-change up">+2.90%</div>
-                                    </div>
-                                    <svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true">
-                                        <polyline points="2,24 12,20 22,23 32,16 42,18 52,13 62,15 72,10 82,12 92,8 104,11 118,6"></polyline>
-                                    </svg>
-                                </div>
+                            <div id="usLeadingStockList" class="us-leading-stock-list">
+                                <div class="us-leading-sector-loading">업종을 선택하면 주도종목을 불러옵니다.</div>
                             </div>
                         </div>
 
@@ -9845,6 +9934,62 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
         }
 
+        function formatUsStockPrice(value) {
+            const n = Number(value);
+            if (!Number.isFinite(n)) return '-';
+            if (n >= 1000) return '$' + n.toLocaleString('en-US', {maximumFractionDigits: 0});
+            if (n >= 100) return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+
+        function buildUsStockSparkline(values) {
+            if (!Array.isArray(values) || values.length < 2) return '';
+            const step = 120 / Math.max(1, values.length - 1);
+            const points = values.map((y, i) => `${(i * step).toFixed(1)},${Number(y).toFixed(1)}`).join(' ');
+            return `<svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-hidden="true"><polyline points="${points}"></polyline></svg>`;
+        }
+
+        async function loadUsLeadingStocks(sectorSymbol, sectorName) {
+            const list = document.getElementById('usLeadingStockList');
+            const title = document.getElementById('usLeadingStockTitle');
+            if (!list || !sectorSymbol) return;
+
+            const cleanName = String(sectorName || '').trim();
+            if (title) title.textContent = `미국 ${cleanName} 주도종목`;
+            list.innerHTML = '<div class="us-leading-sector-loading">실제 주도종목 데이터를 불러오는 중…</div>';
+
+            try {
+                const response = await fetch('/api/us-leading-stocks?sector=' + encodeURIComponent(sectorSymbol));
+                const data = await response.json();
+                if (!response.ok || data.error) throw new Error(data.error || '데이터 오류');
+
+                const rows = Array.isArray(data.data) ? data.data : [];
+                if (!rows.length) {
+                    list.innerHTML = '<div class="us-leading-sector-loading">현재 주도종목 데이터를 불러오지 못했습니다.</div>';
+                    return;
+                }
+
+                const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
+                const cls = value => Number(value) >= 0 ? 'up' : 'down';
+                list.innerHTML = rows.map(row => `
+                    <div class="us-leading-stock-item">
+                        <div class="us-leading-stock-name">
+                            <div class="us-leading-stock-ticker">${String(row.symbol || '')}</div>
+                            <div class="us-leading-stock-company">${String(row.name || '')}</div>
+                        </div>
+                        <div class="us-leading-stock-price">
+                            <div class="us-leading-stock-value">${formatUsStockPrice(row.price)}</div>
+                            <div class="us-leading-stock-change ${cls(row.current)}">${pct(row.current)}</div>
+                        </div>
+                        ${buildUsStockSparkline(row.sparkline)}
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('US leading stocks:', error);
+                list.innerHTML = '<div class="us-leading-sector-loading">주도종목 데이터를 잠시 후 다시 불러옵니다.</div>';
+            }
+        }
+
         async function loadUsLeadingSectors() {
             const box = document.getElementById('usLeadingSectorList');
             if (!box) return;
@@ -9886,6 +10031,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         const sectorSymbol = rowEl.dataset.sectorSymbol || '';
                         const sectorName = rowEl.dataset.sectorName || '';
                         loadSectorChart(sectorSymbol, sectorName);
+                        loadUsLeadingStocks(sectorSymbol, sectorName);
                     });
                 });
             } catch (error) {
@@ -9989,6 +10135,19 @@ class WebHandler(BaseHTTPRequestHandler):
             )
             return
 
+
+        if parsed.path == "/api/us-leading-stocks":
+            try:
+                sector_symbol = str(params.get("sector", [""])[0]).strip().upper()
+                if not sector_symbol:
+                    self._json(400, {"ok": False, "error": "sector가 필요합니다."})
+                    return
+                rows = fetch_us_leading_stocks(sector_symbol)
+                self._json(200, {"ok": True, "sector": sector_symbol, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/us-leading-stocks: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "미국 주도종목 데이터를 가져오지 못했습니다."})
+            return
 
         if parsed.path == "/api/us-leading-sectors":
             try:

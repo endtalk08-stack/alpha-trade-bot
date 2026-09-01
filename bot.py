@@ -8756,7 +8756,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const materialReason = evidenceReasons.find(r => r.key === 'material') || null;
 
                     const priceText = data.price || data.price_str || '-';
-                    const pct = Number(data.current_change_pct);
+                    const trackPct = Number(data.current_change_pct);
                     const topicParticle = (() => {
                         const text = String(displayName || '').trim();
                         const last = text.charCodeAt(text.length - 1);
@@ -8767,8 +8767,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     })();
 
                     const directionText =
-                        Number.isFinite(pct)
-                            ? (pct > 0 ? '상승' : pct < 0 ? '하락' : '보합')
+                        Number.isFinite(trackPct)
+                            ? (trackPct > 0 ? '상승' : trackPct < 0 ? '하락' : '보합')
                             : (mr.direction === '하락' ? '하락' : mr.direction === '상승' ? '상승' : '보합');
 
                     const boardItems = Array.isArray(data.world_board) ? data.world_board : [];
@@ -8905,7 +8905,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const q = data.quant || {};
                     const set = (id, value) => { const el=document.getElementById(id); if(el) el.innerText=value; };
                     const num = v => { const n=Number(v); return Number.isFinite(n)?n:null; };
-                    const pct = v => { const n=num(v); return n===null?' -':`${n>=0?'+':''}${n.toFixed(2)}%`; };
+                    const formatPct = v => { const n=num(v); return n===null?' -':`${n>=0?'+':''}${n.toFixed(2)}%`; };
                     const qScore = Math.max(0, Math.min(100, num(q.quant_score) ?? 72));
                     const trendText = String(q.trend || '').includes('상승') ? '상승' : (String(q.trend || '').includes('하락') ? '하락' : '혼조');
                     const direction = trendText === '상승' ? 'LONG' : (trendText === '하락' ? 'SHORT' : 'NEUTRAL');
@@ -8913,7 +8913,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const arc = document.getElementById('tsmGaugeArc');
                     if (arc) { arc.style.stroke=scoreColor; arc.setAttribute('stroke-dasharray', `${(333*qScore/100).toFixed(1)} 333`); }
                     set('tsmScore', Math.round(qScore)); set('tsmName', data.formal_name || data.name || '-'); set('tsmPrice', data.price_str || data.price || '-');
-                    set('tsmChange', pct(data.current_change_pct)); set('tsmDirection', direction); set('tsmTrendCaption', trendText === '상승' ? '상승 추세 우세' : trendText === '하락' ? '하락 추세 우세' : '혼조 국면');
+                    set('tsmChange', formatPct(data.current_change_pct)); set('tsmDirection', direction); set('tsmTrendCaption', trendText === '상승' ? '상승 추세 우세' : trendText === '하락' ? '하락 추세 우세' : '혼조 국면');
                     const badge=document.getElementById('tsmSignalBadge'); if(badge){ badge.innerText=direction; badge.style.color=scoreColor; badge.style.borderColor=scoreColor; }
                     const ch=document.getElementById('tsmChange'); if(ch){ const cv=num(data.current_change_pct); ch.style.color=cv===null?'var(--text-title)':cv>=0?'#18b96b':'#f84960'; }
 

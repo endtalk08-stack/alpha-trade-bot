@@ -564,6 +564,55 @@ HTTP_SESSION.headers.update({
 })
 
 # ----------------------------------------------------
+# SPEED OPTIMIZATION 5: 실제 병목 측정
+# 각 요청에서 외부 API별 소요시간을 기록한다.
+# 화면 동작에는 영향을 주지 않고, /api/analyze와 /api/chart 응답에 _perf로 포함한다.
+# ----------------------------------------------------
+_PERF_LOCAL = threading.local()
+
+_original_http_get = HTTP_SESSION.get
+
+def _timed_http_get(url, *args, **kwargs):
+    started = time.perf_counter()
+    try:
+        return _original_http_get(url, *args, **kwargs)
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        perf = getattr(_PERF_LOCAL, "http_calls", None)
+        if perf is not None:
+            try:
+                parsed_url = urllib.parse.urlparse(str(url))
+                host = parsed_url.netloc or parsed_url.path
+                path = parsed_url.path or "/"
+                perf.append({
+                    "host": host,
+                    "path": path[:160],
+                    "ms": round(elapsed_ms, 1)
+                })
+            except Exception:
+                pass
+
+HTTP_SESSION.get = _timed_http_get
+
+def _perf_begin(kind, query):
+    _PERF_LOCAL.kind = kind
+    _PERF_LOCAL.query = query
+    _PERF_LOCAL.started = time.perf_counter()
+    _PERF_LOCAL.http_calls = []
+
+def _perf_snapshot():
+    started = getattr(_PERF_LOCAL, "started", None)
+    calls = list(getattr(_PERF_LOCAL, "http_calls", []) or [])
+    total_ms = ((time.perf_counter() - started) * 1000.0) if started else None
+    calls.sort(key=lambda x: x.get("ms", 0), reverse=True)
+    return {
+        "total_ms": round(total_ms, 1) if total_ms is not None else None,
+        "http_call_count": len(calls),
+        "slowest_http": calls[:10]
+    }
+
+
+# ----------------------------------------------------
 # 1. 기본 설정 및 종목/지수 매핑
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -9458,6 +9507,10 @@ const voteKey = 'vote_' + symbol;
                     throw new Error("분석 데이터를 받지 못했습니다.");
                 }
 
+                if (data._perf) {
+                    console.info('[gaemiGTP 성능]', cleanQ, data._perf);
+                }
+
                 // 차트는 전체 분석 완료를 기다리지 않는다.
                 if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
                     setTimeout(() => {
@@ -9467,6 +9520,9 @@ const voteKey = 'vote_' + symbol;
                     }, 0);
                 } else {
                     fastChartPromise.then(chartData => {
+                        if (chartData?._perf) {
+                            console.info('[gaemiGTP 차트 성능]', cleanQ, chartData._perf);
+                        }
                         if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
                         initTvChart(chartData.candles, chartData.ma20_line, chartData.ma60_line, chartData.bb_up_line, chartData.bb_dn_line);
                     });
@@ -10719,15 +10775,21 @@ class WebHandler(BaseHTTPRequestHandler):
             if not q:
                 self._json(400, {"error": "종목명을 입력해주세요."})
                 return
+            _perf_begin("chart", q)
             try:
                 chart_data = run_fast_chart_pipeline(q)
                 if not chart_data:
-                    self._json(404, {"error": "차트 데이터를 가져오지 못했습니다."})
+                    perf = _perf_snapshot()
+                    print(f"[PERF][chart] {q}: {perf}")
+                    self._json(404, {"error": "차트 데이터를 가져오지 못했습니다.", "_perf": perf})
                     return
+                chart_data["_perf"] = _perf_snapshot()
+                print(f"[PERF][chart] {q}: {chart_data['_perf']}")
                 self._json(200, chart_data)
             except Exception as exc:
-                print(f"API ERROR /api/chart?q={q!r}: {type(exc).__name__}: {exc}")
-                self._json(500, {"error": "차트 데이터를 가져오지 못했습니다."})
+                perf = _perf_snapshot()
+                print(f"[PERF][chart] {q}: {perf}")
+                self._json(500, {"error": "차트 데이터를 가져오지 못했습니다.", "_perf": perf})
             return
 
         if parsed.path == "/api/analyze":
@@ -10735,17 +10797,24 @@ class WebHandler(BaseHTTPRequestHandler):
             if not q:
                 self._json(400, {"error": "종목명을 입력해주세요."})
                 return
+            _perf_begin("analyze", q)
             try:
                 data = run_full_pipeline(q)
+                perf = _perf_snapshot()
                 if not data:
-                    self._json(404, {"error": "실제 데이터를 가져오지 못했습니다. 종목명 또는 데이터 제공처를 확인해주세요."})
+                    print(f"[PERF][analyze] {q}: {perf}")
+                    self._json(404, {"error": "실제 데이터를 가져오지 못했습니다. 종목명 또는 데이터 제공처를 확인해주세요.", "_perf": perf})
                     return
+                data["_perf"] = perf
+                print(f"[PERF][analyze] {q}: {perf}")
                 self._json(200, data)
             except Exception as exc:
-                print(f"API ERROR /api/analyze?q={q!r}: {type(exc).__name__}: {exc}")
+                perf = _perf_snapshot()
+                print(f"[PERF][analyze] {q}: {perf}")
                 self._json(500, {
                     "error": "서버 처리 중 오류가 발생했습니다.",
-                    "detail": f"{type(exc).__name__}: {str(exc)[:400]}"
+                    "detail": f"{type(exc).__name__}: {str(exc)[:400]}",
+                    "_perf": perf
                 })
             return
 

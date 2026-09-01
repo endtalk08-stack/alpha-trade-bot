@@ -7149,6 +7149,103 @@ HTML_PAGE = r"""<!DOCTYPE html>
     .tsm-card-caption{font-size:.66rem;margin-top:16px}
 }
 .tsm-mini-card{min-width:0;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:7px 4px;text-align:center}.tsm-mini-card>span{font-size:.56rem;color:var(--text-muted);white-space:nowrap}.tsm-mini-card>b{font-size:.72rem;display:block;margin-top:3px}.tsm-mini-bars{height:39px;display:flex;align-items:end;justify-content:center;gap:2px;border-bottom:1px solid var(--border-line);margin:5px 2px 3px}.tsm-mini-bars i{width:4px;background:#18a96a;border-radius:1px 1px 0 0}.tsm-grid2{display:grid;grid-template-columns:1fr 1.4fr;gap:7px}.tsm-panel{background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:9px}.tsm-big{font-size:1.15rem;font-weight:800;margin-top:4px}.tsm-progress{height:6px;background:rgba(148,163,184,.12);border-radius:99px;overflow:hidden;margin-top:7px}.tsm-progress i{display:block;height:100%;width:0;background:#18b96b;border-radius:99px}.tsm-scale{display:flex;justify-content:space-between;font-size:.55rem;color:var(--text-muted);margin-top:3px}.tsm-periods{display:grid;grid-template-columns:repeat(4,1fr);margin-top:6px;border:1px solid var(--border-line);border-radius:5px;overflow:hidden}.tsm-periods div{text-align:center;padding:6px 2px;font-size:.57rem;border-right:1px solid var(--border-line)}.tsm-periods div:last-child{border:0}.tsm-periods b{display:block;font-size:.68rem;margin-top:3px}.tsm-chart-panel{padding:8px 9px}.tsm-chart-head{display:flex;justify-content:space-between;font-size:.62rem;color:var(--text-muted);margin-bottom:4px}.tsm-chart-head b{color:var(--text-title)}.tsm-chart-panel svg{width:100%;height:74px;display:block}.tsm-signal{display:grid;grid-template-columns:1fr 1fr;gap:9px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}.tsm-signal-main{font-size:1.05rem;font-weight:900;color:#18b96b;margin-top:4px}.tsm-signal-meta{font-size:.62rem;color:var(--text-muted);margin-top:4px}.tsm-timeline{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:2px;text-align:center}.tsm-line{position:absolute;left:9%;right:9%;top:8px;height:1px;background:#667078}.tsm-timeline div:not(.tsm-line){position:relative}.tsm-timeline i{display:block;width:12px;height:12px;border:2px solid #18b96b;border-radius:50%;background:var(--bg-subcard);margin:2px auto 5px}.tsm-timeline b{display:block;font-size:.62rem}.tsm-timeline span{display:block;color:var(--text-muted);font-size:.55rem;margin-top:2px}.tsm-hbars{display:grid;gap:7px;margin-top:8px}.tsm-hbars>div{display:grid;grid-template-columns:70px 1fr 28px;gap:6px;align-items:center;font-size:.59rem}.tsm-hbars em{height:10px;background:rgba(148,163,184,.12);border-radius:2px;overflow:hidden}.tsm-hbars em i{display:block;height:100%;background:#69717a}.tsm-hbars>div:last-child em i{background:#18b96b}.tsm-hbars b{text-align:right}.tsm-interpret{display:grid;grid-template-columns:1.4fr .8fr;gap:8px;background:var(--bg-subcard);border:1px solid var(--border-line);border-radius:7px;padding:10px}.tsm-interpret p{font-size:.68rem;line-height:1.6;color:var(--text-sub);margin:5px 0 0;word-break:keep-all}.tsm-interpret-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.tsm-interpret-stats div{border-left:1px solid var(--border-line);padding-left:6px}.tsm-interpret-stats span{display:block;font-size:.55rem;color:var(--text-muted)}.tsm-interpret-stats b{font-size:.8rem;display:block;margin-top:4px}.tsm-footer{text-align:center;color:var(--text-muted);font-size:.58rem;margin-top:9px}@media(max-width:820px){.tsm-seven{grid-template-columns:repeat(2,1fr)}.tsm-overview,.tsm-grid2,.tsm-signal,.tsm-interpret{grid-template-columns:1fr}}
+
+/* [1번 최종 PC + 모바일 기준 보정]
+   - 모바일에서도 게이지 + 종목정보를 좌우로 유지
+   - 7개 막대는 어두운 화이트/그레이
+   - 막대 하단 1~7 숫자 제거
+   - 1번 카드 내부 비율을 PC/모바일 모두 균일하게 유지
+*/
+.tsm-overview{grid-template-columns:145px minmax(0,1fr);align-items:center}
+.tsm-mini-card-final .tsm-bars-final i{
+    background:#b9bdc2 !important;
+    box-shadow:none !important;
+}
+.tsm-mini-card-final .tsm-bars-final i:last-child{
+    background:#d7dade !important;
+}
+.tsm-mini-card-final .tsm-bar-label{display:none !important}
+.tsm-bars-final{
+    align-items:flex-end;
+    justify-content:center;
+}
+@media(max-width:820px){
+    .tsm-overview{
+        grid-template-columns:112px minmax(0,1fr) !important;
+        gap:10px;
+        padding:8px 0;
+        align-items:center;
+    }
+    .tsm-gauge-wrap{
+        height:112px;
+    }
+    .tsm-gauge-svg{
+        width:94px;
+    }
+    .tsm-gauge-text{
+        top:33px;
+    }
+    .tsm-gauge-text b{
+        font-size:1.45rem;
+    }
+    .tsm-gauge-caption{
+        margin-top:-5px;
+        font-size:.64rem;
+    }
+    .tsm-price-box{
+        padding-top:0;
+        min-width:0;
+    }
+    .tsm-name{
+        font-size:.92rem;
+        white-space:nowrap;
+        overflow:hidden;
+        text-overflow:ellipsis;
+    }
+    .tsm-price-row{
+        gap:6px;
+        margin-top:6px;
+        white-space:nowrap;
+    }
+    .tsm-price-row b{
+        font-size:1.08rem;
+    }
+    .tsm-price-row span{
+        font-size:.62rem;
+    }
+    .tsm-direction{
+        font-size:.98rem;
+    }
+    .tsm-mini-card-final{
+        min-height:150px;
+        padding:11px 10px 9px;
+    }
+    .tsm-card-top{
+        min-height:22px;
+    }
+    .tsm-card-top span{
+        font-size:.66rem;
+    }
+    .tsm-card-top b{
+        font-size:.78rem;
+    }
+    .tsm-bars-final{
+        height:68px;
+        margin:8px 2px 0;
+        gap:7px;
+        padding:0 2px;
+    }
+    .tsm-bars-final i{
+        width:15px;
+        min-height:7px;
+    }
+    .tsm-card-caption{
+        font-size:.64rem;
+        margin-top:13px;
+        min-height:18px;
+    }
+}
+
 </style>
 </head>
 <body>
@@ -9068,10 +9165,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             const b=document.createElement('i');
                             const factor=.72+(i-1)*.055;
                             b.style.height=`${Math.max(8,Math.min(68,base*factor))}px`;
-                            const lab=document.createElement('span');
-                            lab.className='tsm-bar-label';
-                            lab.innerText=String(i);
-                            b.appendChild(lab);
                             el.appendChild(b);
                         }
                     });

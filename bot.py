@@ -6430,9 +6430,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
         .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
 
-        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; }
-        .legend-tag { display: flex; align-items: center; gap: 4px; }
-        .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
         .board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-line); }
@@ -8139,13 +8136,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="price-title" id="rTitle"></div>
                                 <div class="price-val" id="rPrice"></div>
                                 <div class="price-meta" id="rMeta"></div>
-                                <div class="chart-legend">
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span>  (슬림)</div>
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
-                                </div>
-                            </div>
+</div>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
@@ -8650,6 +8641,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 chart.applyOptions({ width: container.clientWidth });
             }
         }
+
+        window.addEventListener('resize', resizeChart);
 
         function toggleSidebar() {
             const side = document.getElementById('sidebar-wrapper');
@@ -10290,7 +10283,7 @@ if ((response && !response.ok) || data.error) {
             candleSeries.setData(candles || []);
 
             chart.timeScale().fitContent();
-            window.addEventListener('resize', resizeChart);
+            // resize 리스너는 전역에서 한 번만 등록한다.
         }
 
 

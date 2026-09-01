@@ -3908,6 +3908,64 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "items":items
             }
 
+        # 이더리움: 기관별 실제 가격 전망이 충분히 확인되는 경우에만 BTC와 같은 기관 전망 카드로 표시한다.
+        # SOL/XRP 및 기타 코인은 현재 이 분기에 포함하지 않아 기존 동작(컨센서스 미표시)을 유지한다.
+        if market_name == "암호화폐" and str(symbol or "").upper().startswith("ETH"):
+            current = _safe_float(raw_price)
+
+            eth_forecasts = [
+                {"firm":"Citi", "target":2240, "horizon":"12개월", "stance":"Bear/Base 범위 중 Base", "date":"2026-07", "include_avg":True},
+                {"firm":"Standard Chartered", "target":7500, "horizon":"2026년 말", "stance":"Bullish", "date":"2026-01", "include_avg":True},
+                {"firm":"Fundstrat · Tom Lee", "target":12000, "horizon":"2026년 전망", "stance":"Bullish", "date":"2026-08", "include_avg":True},
+            ]
+
+            valid = [x for x in eth_forecasts if x.get("include_avg") and x.get("target")]
+            avg_target = (sum(x["target"] for x in valid) / len(valid)) if valid else None
+            targets = [x["target"] for x in valid]
+            low_target = min(targets) if targets else None
+            high_target = max(targets) if targets else None
+
+            items = []
+            for item in eth_forecasts:
+                tp = item["target"]
+                upside = ((tp-current)/current*100) if current else None
+                items.append({
+                    "main": item["firm"],
+                    "sub": f"{item['horizon']} · {item['date']} · {item['stance']}",
+                    "val": f"${tp:,.0f}",
+                    "sub_val": f"{upside:+.1f}%" if upside is not None else ""
+                })
+
+            if avg_target and current:
+                primary_val = f"${avg_target:,.0f}"
+                avg_upside = (avg_target-current)/current*100
+                fill_pct = max(8, min(92, int(((current-low_target) / max(1, high_target-low_target))*100))) if high_target and low_target and high_target > low_target else 50
+                slider_mid = f"평균 ${avg_target:,.0f} ({avg_upside:+.1f}%)"
+            else:
+                primary_val = "기관 전망 확인 필요"
+                fill_pct = 50
+                slider_mid = "기관 전망 확인 필요"
+
+            return {
+                "title":"기관 ETH 전망",
+                "gauge_val":str(len(eth_forecasts)),
+                "gauge_label":"확인 전망",
+                "status_label":"검증 데이터",
+                "badge_text":"실제 기관 전망만 표시",
+                "dots":f"확인 전망 {len(eth_forecasts)}건",
+                "primary_label":"기관 평균 전망",
+                "primary_val":primary_val,
+                "secondary_label":"현재가",
+                "secondary_val":f"${current:,.2f}" if current else "-",
+                "slider_left":f"${low_target:,.0f}" if low_target else "-",
+                "slider_mid":slider_mid,
+                "slider_right":f"${high_target:,.0f}" if high_target else "-",
+                "fill_pct":fill_pct,
+                "list_title":"실제 기관 전망",
+                "source_tag":"출처: Citi · Standard Chartered · Fundstrat / Tom Lee · 2026 공개 전망",
+                "items":items
+            }
+
         # 미국/글로벌
         if market_name in ["미국주식", "글로벌증시", "원자재"]:
             key = str(symbol or "").upper(); current = _safe_float(raw_price)

@@ -10691,6 +10691,33 @@ def _fetch_fast_overseas_chart(symbol):
     return None
 
 
+def _db_chart_df(market, symbol, limit=120):
+    """
+    차트용 최근 OHLCV를 PostgreSQL에서 가져온다.
+    DB에 충분한 데이터가 없으면 None을 반환하여 기존 외부 API fallback을 사용한다.
+    """
+    try:
+        rows = get_db_recent_prices(market=market, symbol=symbol, timeframe="1d", limit=limit)
+        if not rows or len(rows) < 65:
+            return None
+
+        records = []
+        for row in reversed(rows):
+            records.append({
+                "Date": pd.to_datetime(row["timestamp"]),
+                "Open": float(row["open"]),
+                "High": float(row["high"]),
+                "Low": float(row["low"]),
+                "Close": float(row["close"]),
+                "Volume": float(row.get("volume") or 0.0),
+            })
+        df = pd.DataFrame(records).set_index("Date").sort_index()
+        return df if len(df) >= 65 else None
+    except Exception as exc:
+        print(f"[DB FAST CHART] {market}/{symbol}: {type(exc).__name__}: {exc}")
+        return None
+
+
 def run_fast_chart_pipeline(query):
     clean_q = str(query or "").strip().replace(" ", "").upper()
     if not clean_q:
@@ -10709,38 +10736,63 @@ def run_fast_chart_pipeline(query):
             }
         return payload
 
-    # 글로벌 지수
+    # 1) 국내 증시/지수
+    if clean_q in GLOBAL_INDEX_MAP and clean_q in {"코스피", "KOSPI", "코스닥", "KOSDAQ"}:
+        db_symbol = "KOSPI" if clean_q in {"코스피", "KOSPI"} else "KOSDAQ"
+        df = _db_chart_df("Korea", db_symbol, 120)
+        if df is not None:
+            return _finish(df)
+
+    # 2) 글로벌 지수: DB에 저장된 경우 DB 우선.
     if clean_q in GLOBAL_INDEX_MAP:
         symbol = GLOBAL_INDEX_MAP[clean_q]
+        df = _db_chart_df("Global", symbol, 120)
+        if df is not None:
+            return _finish(df)
         df = _fetch_fast_overseas_chart(symbol)
         return _finish(df)
 
-    # 암호화폐
+    # 3) 암호화폐: DB 우선.
     if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
         symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
+        df = _db_chart_df("Crypto", symbol, 120)
+        if df is not None:
+            return _finish(df)
         try:
             _, _, df = fetch_crypto_candles(symbol)
             return _finish(df)
         except Exception:
             return None
 
-    # 미국주식
+    # 4) 미국주식: DB 우선.
     if clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
+        df = _db_chart_df("US", symbol, 120)
+        if df is not None:
+            return _finish(df)
         df = _fetch_fast_overseas_chart(symbol)
         return _finish(df)
 
     if any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()
+        df = _db_chart_df("US", symbol, 120)
+        if df is not None:
+            return _finish(df)
         df = _fetch_fast_overseas_chart(symbol)
-        return _build_chart_payload(df) if df is not None else None
+        return _finish(df)
 
-    # 국내주식
+    # 5) 국내 종목: 종목코드 확인 후 DB 우선.
     code, _ = find_stock_code(query)
     if not code:
         return None
+
+    df = _db_chart_df("Korea", code, 120)
+    if df is not None:
+        return _finish(df)
+
+    # DB에 아직 데이터가 충분히 쌓이지 않은 경우에만 기존 외부 API fallback.
     df = _fetch_fast_domestic_chart(code)
-    return _build_chart_payload(df) if df is not None else None
+    return _finish(df)
 
 
 # ----------------------------------------------------
@@ -10756,7 +10808,7 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "private, max-age=30")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

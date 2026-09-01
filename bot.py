@@ -5695,13 +5695,8 @@ def run_full_pipeline(query):
     elif clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.strip()
-        # 차트와 실시간 시세는 서로 의존하지 않으므로 동시에 조회한다.
-        with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
-            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
-            chart_price, _, df = chart_future.result()
-            quote_snapshot = quote_future.result()
-
+        chart_price, _, df = fetch_overseas_candles(symbol)
+        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
         if quote_snapshot:
             raw_price = quote_snapshot["price"]
             price_str = f"{raw_price:,.2f} 달러"
@@ -5713,13 +5708,8 @@ def run_full_pipeline(query):
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()
         formal_name = symbol
-        # 차트와 실시간 시세를 병렬 조회한다.
-        with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
-            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
-            chart_price, _, df = chart_future.result()
-            quote_snapshot = quote_future.result()
-
+        chart_price, _, df = fetch_overseas_candles(symbol)
+        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
         if quote_snapshot:
             raw_price = quote_snapshot["price"]
             price_str = f"{raw_price:,.2f} 달러"
@@ -5785,38 +5775,23 @@ def run_full_pipeline(query):
         dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
         domestic_flow = _safe_future_result(f_domestic_flow, None, "domestic flow") if f_domestic_flow else None
 
-    # 세계시장 보드와 경제 캘린더도 서로 독립적이므로
-    # 둘 다 캐시가 없을 때만 병렬 조회한다.
-    world_board = CACHED_WORLD_BOARD
-    market_calendar = CACHED_MARKET_CALENDAR
+    if CACHED_WORLD_BOARD:
+        world_board = CACHED_WORLD_BOARD
+    else:
+        try:
+            world_board = fetch_all_world_board_parallel() or []
+        except Exception as exc:
+            print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
+            world_board = []
 
-    need_world = not world_board
-    need_calendar = not market_calendar
-
-    if need_world or need_calendar:
-        with ThreadPoolExecutor(max_workers=2) as board_executor:
-            world_future = (
-                board_executor.submit(fetch_all_world_board_parallel)
-                if need_world else None
-            )
-            calendar_future = (
-                board_executor.submit(fetch_real_market_calendar_live)
-                if need_calendar else None
-            )
-
-            if need_world:
-                try:
-                    world_board = world_future.result() or []
-                except Exception as exc:
-                    print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
-                    world_board = []
-
-            if need_calendar:
-                try:
-                    market_calendar = calendar_future.result() or []
-                except Exception as exc:
-                    print("[MARKET CALENDAR] 조회 실패:", repr(exc))
-                    market_calendar = []
+    if CACHED_MARKET_CALENDAR:
+        market_calendar = CACHED_MARKET_CALENDAR
+    else:
+        try:
+            market_calendar = fetch_real_market_calendar_live() or []
+        except Exception as exc:
+            print("[MARKET CALENDAR] 조회 실패:", repr(exc))
+            market_calendar = []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 

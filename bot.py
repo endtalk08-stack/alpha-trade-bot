@@ -6100,6 +6100,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
             justify-content: space-between;
         }
 
+        /* 미국 주도업종: 카드 내부 콘텐츠를 위에서부터 자연스럽게 배치 */
+        .us-leading-sector-card {
+            justify-content: flex-start;
+        }
+
         .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
         .price-title span { color: var(--text-muted); font-size: 0.85rem; font-weight: 400; margin-left: 4px; }
         .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }

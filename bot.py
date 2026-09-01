@@ -10516,34 +10516,29 @@ def _build_chart_payload(df):
 
 
 def _fetch_fast_domestic_chart(code):
-    # 차트에는 최근 120거래일이면 충분하다. 전체 분석용 1200일 조회와 분리한다.
     try:
-        url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
-        res = HTTP_SESSION.get(url, timeout=1.5)
-        data = res.json()
-        items = data if isinstance(data, list) else []
-        records = []
-        for it in items:
-            records.append({
-                "Date": pd.to_datetime(it['localTrdDd']),
-                "Open": float(str(it['openPrice']).replace(',', '')),
-                "High": float(str(it['highPrice']).replace(',', '')),
-                "Low": float(str(it['lowPrice']).replace(',', '')),
-                "Close": float(str(it['closePrice']).replace(',', '')),
-                "Volume": float(str(it.get('accumulatedTradingVolume', it.get('volume', 0))).replace(',', ''))
-            })
-        if len(records) >= 65:
-            return pd.DataFrame(records).set_index("Date").sort_index()
+        # 기존 사이트에서 검증된 Naver 차트 함수 사용.
+        # anchor_price 없이 호출하여 불필요한 추가 요청은 하지 않는다.
+        return fetch_domestic_candles(code)
     except Exception as exc:
         print(f"[FAST DOMESTIC CHART] {code} failed: {type(exc).__name__}: {exc}")
-    return None
+        return None
 
 
 def _fetch_fast_overseas_chart(symbol):
-    # 전체 분석은 5년 데이터가 필요하지만 화면 차트는 최근 1년(일봉)으로 충분하다.
     key = str(symbol or "").strip().upper()
     if not key:
         return None
+
+    # 2단계에서 만든 10분 캐시를 먼저 사용한다.
+    cached = OVERSEAS_CANDLE_CACHE.get(key)
+    if cached and (time.time() - cached["time"]) < OVERSEAS_CANDLE_CACHE_TTL:
+        try:
+            return cached["df"].copy()
+        except Exception:
+            OVERSEAS_CANDLE_CACHE.pop(key, None)
+
+    # 캐시가 없을 때만 차트 전용 1년 요청.
     try:
         encoded = urllib.parse.quote(key)
         url = (
@@ -10555,6 +10550,7 @@ def _fetch_fast_overseas_chart(symbol):
         result = ((res.json().get("chart") or {}).get("result") or [])
         if not result:
             return None
+
         item = result[0]
         ts = item.get("timestamp") or []
         quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]

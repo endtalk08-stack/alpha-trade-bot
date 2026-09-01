@@ -9452,7 +9452,7 @@ const voteKey = 'vote_' + symbol;
                     throw new Error("분석 데이터를 받지 못했습니다.");
                 }
 
-if (!response.ok || data.error) {
+if ((response && !response.ok) || data.error) {
                     alert(data.error || '종목을 찾을 수 없습니다.');
                     document.getElementById('loading').style.display = 'none';
                     return;

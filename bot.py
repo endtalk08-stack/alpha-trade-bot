@@ -7196,6 +7196,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
     min-height: 34px !important;
 }
 
+
+/* US Leading Sectors: give sector names more room while keeping 4 return columns compact */
+.us-leading-sectors table { table-layout: fixed; width: 100%; }
+.us-leading-sectors th:first-child,
+.us-leading-sectors td:first-child { width: 118px; text-align: left; }
+.us-leading-sectors th:not(:first-child),
+.us-leading-sectors td:not(:first-child) { width: auto; text-align: right; }
 </style>
 </head>
 <body>

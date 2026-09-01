@@ -566,8 +566,6 @@ HTTP_SESSION.headers.update({
 # ----------------------------------------------------
 # 1. 기본 설정 및 종목/지수 매핑
 # ----------------------------------------------------
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
-TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "gaemigtp_bot").strip()
 DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 FRED_API_KEY = os.environ.get("FRED_API_KEY", "").strip()
@@ -5855,79 +5853,6 @@ def run_full_pipeline(query):
 # ----------------------------------------------------
 # 7. 텔레그램 봇 실시간 인터랙션 엔진
 # ----------------------------------------------------
-def send_telegram_msg(chat_id, text):
-    if not TELEGRAM_TOKEN:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        HTTP_SESSION.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=2.5)
-    except Exception:
-        pass
-
-def telegram_bot_worker():
-    if not TELEGRAM_TOKEN:
-        return
-    offset = 0
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=20"
-            res = HTTP_SESSION.get(url, timeout=25).json()
-            if res.get("ok"):
-                for upd in res.get("result", []):
-                    offset = upd["update_id"] + 1
-                    msg = upd.get("message", {})
-                    chat_id = msg.get("chat", {}).get("id")
-                    text = msg.get("text", "").strip()
-
-                    if not chat_id or not text:
-                        continue
-
-                    if text.startswith("/start"):
-                        parts = text.split()
-                        if len(parts) > 1:
-                            target_q = parts[1].strip()
-                            data = run_full_pipeline(target_q)
-                            if data:
-                                reply = f"<b>{data['name']}({data['symbol']})</b> 알림 등록 완료\n\n" \
-                                        f"현재가: <b>{data['price']}</b>\n" \
-                                        f"gaemiGTP 시그널: <b>{data['quant']['win_rate_num']} 승률</b>\n" \
-                                        f"1차 진입가: {data['quant']['entry1']}\n" \
-                                        f"목표 수익가: {data['quant']['target2']}\n" \
-                                        f"손절 방어선: {data['quant']['stop_p']}\n\n" \
-                                        f"목표가 및 주요 시그널 발생 시 실시간으로 안내합니다."
-                                send_telegram_msg(chat_id, reply)
-                            else:
-                                send_telegram_msg(chat_id, f"gaemiGTP 알림봇입니다. 원하시는 종목명을 <code>/삼성전자</code> 또는 <code>/BTC</code> 형태로 입력하시면 실시간 시그널을 즉시 조회합니다.")
-                        else:
-                            send_telegram_msg(chat_id, f"gaemiGTP 텔레그램 시그널 알림봇입니다.\n\n종목명을 <code>/SK하이닉스</code>, <code>/NVDA</code>, <code>/BTC</code> 처럼 입력해 주세요.")
-                    else:
-                        query_clean = text.lstrip("/")
-                        data = run_full_pipeline(query_clean)
-                        if data:
-                            reply = f"<b>gaemiGTP 실시간 분석: {data['name']}</b> ({data['symbol']})\n" \
-                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"현재가: <b>{data['price']}</b>\n" \
-                                    f"추세 국면: {data['quant']['trend']}\n" \
-                                    f"백테스팅 승률: <b>{data['quant']['win_rate_num']}</b> ({data['quant']['rr_str']})\n" \
-                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"<b>gaemiGTP 시그널 밴드</b>\n" \
-                                    f"• 1차 진입가: {data['quant']['entry1']}\n" \
-                                    f"• 2차 분할가: {data['quant']['entry2']}\n" \
-                                    f"• 목표 수익가: {data['quant']['target2']} (+8.5%)\n" \
-                                    f"• 방어 손절선: {data['quant']['stop_p']} (-5.5%)\n" \
-                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"<i>{data['quant']['guide_text']}</i>\n\n" \
-                                    f"웹에서 상세 차트 보기: https://www.gaemigtp.com"
-                            send_telegram_msg(chat_id, reply)
-                        else:
-                            send_telegram_msg(chat_id, f"'{query_clean}' 종목을 찾을 수 없습니다. 정확한 종목명을 입력해 주세요.")
-        except Exception:
-            time.sleep(2)
-
-if TELEGRAM_TOKEN:
-    threading.Thread(target=telegram_bot_worker, daemon=True).start()
-
-# ----------------------------------------------------
 # 8. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -7815,6 +7740,157 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 box-sizing: border-box !important;
             }
         }
+
+        /* ============================================================
+           모바일 레이아웃 최종 격리
+           - PC의 grid-column/grid-row/height:100%를 모바일에서 전부 초기화
+           - 증시(rowWorld)가 오른쪽으로 붙는 현상 방지
+           - '왜 올라갔을까'와 높이를 공유하는 현상 방지
+           - 미국 주도업종/주도종목은 경제캘린더 아래 독립된 순서로 배치
+        ============================================================ */
+        @media (max-width: 1200px) {
+            #result-scroll-view {
+                width: 100vw !important;
+                max-width: 100vw !important;
+                padding-left: 12px !important;
+                padding-right: 12px !important;
+                box-sizing: border-box !important;
+                overflow-x: hidden !important;
+            }
+
+            .result-inner {
+                width: 100% !important;
+                max-width: 832px !important;
+                margin: 0 auto !important;
+                box-sizing: border-box !important;
+            }
+
+            .dashboard-master-grid {
+                display: flex !important;
+                flex-direction: column !important;
+                align-items: stretch !important;
+                justify-content: flex-start !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                margin: 0 auto !important;
+                gap: 14px !important;
+                box-sizing: border-box !important;
+                position: relative !important;
+            }
+
+            /* PC 2열 grid의 위치/높이 값을 모바일에서 완전 초기화 */
+            .dashboard-master-grid > * {
+                grid-column: auto !important;
+                grid-row: auto !important;
+                float: none !important;
+                position: static !important;
+                top: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                left: auto !important;
+                transform: none !important;
+                height: auto !important;
+                min-height: 0 !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                align-self: stretch !important;
+                box-sizing: border-box !important;
+            }
+
+            /* 기존 모바일 순서를 명확하게 재지정 */
+            #rowCause { order: 1 !important; }
+            #rowChart { order: 2 !important; }
+            #rowNews { order: 3 !important; }
+            #rowTrack { order: 4 !important; }
+            #rowQuant { order: 5 !important; }
+            #rowConsensus { order: 6 !important; }
+            #rowVote { order: 7 !important; }
+            #rowComment { order: 8 !important; }
+            #rowSignal { order: 9 !important; }
+            #rowTelegram { order: 10 !important; }
+            #rowWorld { order: 11 !important; }
+            #rowGlobalNews { order: 12 !important; }
+            #rowEarningsCalendar { order: 13 !important; }
+            #rowEconomicCalendar { order: 14 !important; }
+            #usLeadingRightStack { order: 15 !important; }
+            #rowDart { order: 16 !important; }
+
+            /* 주도업종 + 주도종목은 모바일에서만 하나의 세로 스택 */
+            #usLeadingRightStack {
+                display: flex !important;
+                flex-direction: column !important;
+                align-items: stretch !important;
+                gap: 14px !important;
+                position: static !important;
+                grid-column: auto !important;
+                grid-row: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                height: auto !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+                z-index: auto !important;
+            }
+
+            #usLeadingRightStack > .card {
+                position: static !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                height: auto !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+            }
+
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                grid-column: auto !important;
+                grid-row: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                height: auto !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+            }
+
+            /* 증시/왜 올라갔을까 등 카드가 서로 높이를 강제로 맞추지 않도록 */
+            #rowWorld,
+            #rowGlobalNews,
+            #rowChart,
+            #rowCause,
+            #rowNews,
+            #rowTrack,
+            #rowQuant,
+            #rowConsensus,
+            #rowVote {
+                height: auto !important;
+                min-height: 0 !important;
+                align-self: stretch !important;
+            }
+        }
+
+        /* 시그널: 항상 열림, 닫힘/접기 기능 제거 */
+        .signal-always-open,
+        .signal-always-open .signal-content,
+        .signal-always-open .signal-body,
+        .signal-always-open [data-signal-content] {
+            display: block !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+        .signal-always-open .signal-toggle,
+        .signal-always-open .signal-close,
+        .signal-always-open .signal-collapse,
+        .signal-always-open [aria-expanded] {
+            display: none !important;
+        }
 </style>
 </head>
 <body>
@@ -8251,8 +8327,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
 
                         <!-- 8행: gaemiGTP 시그널 박스 (832px) -->
-                        <div class="signal-premium-card" id="rowSignal">
-                            <div class="signal-card-header" onclick="toggleSignal()">
+                        <div class="signal-premium-card" id="rowSignal" class="signal-always-open">
+                            <div class="signal-card-header">
                                 <span class="signal-card-title">gaemiGTP 시그널</span>
                                 <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
                             </div>
@@ -8316,13 +8392,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     <div id="rGuideText" style="margin-top:4px; color:var(--text-sub); word-break:keep-all;"></div>
                                 </div>
                             </div>
-                        </div>
-
-                        <!-- 9행: 텔레그램 알림 받기 버튼 (832px) -->
-                        <div id="rowTelegram" style="width:100%;">
-                            <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
-                                <span id="tgAlertBtnText">gaemiGTP 시그널 텔레그램 알림</span>
-                            </a>
                         </div>
 
                     </div>
@@ -9135,16 +9204,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;
-            const targetName = displayName || symbol;
-            
-            const tgLink = document.getElementById('tgAlertLink');
-            const tgBtnText = document.getElementById('tgAlertBtnText');
-            if (tgLink && tgBtnText) {
-                tgLink.href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(symbol);
-                tgBtnText.innerText = '[' + targetName + '] gaemiGTP 시그널 텔레그램 알림';
-            }
-
-            const voteKey = 'vote_' + symbol;
+const voteKey = 'vote_' + symbol;
             const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
             let vData = JSON.parse(rawVote);
             updateVoteUI(vData);
@@ -10259,8 +10319,7 @@ class WebHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
 
-        if parsed.path == "/health":
-            self._json(200, {"ok": True, "telegram_configured": bool(TELEGRAM_TOKEN)})
+        if parsed.path == "/health": 
             return
 
         # PostgreSQL 연결 상태 확인

@@ -9392,7 +9392,10 @@ const voteKey = 'vote_' + symbol;
                 const displayPrice = data.price || data.price_str;
                 const displayTime = data.time || data.now_str;
 
-                setHtml('rTitle', `${displayName} <span>(${data.symbol})</span>`);
+                const usShortName = (isKrw || !data.symbol)
+                    ? displayName
+                    : getUsShortKrName(data.symbol, displayName);
+                setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
                 setTxt('rPrice', displayPrice);
                 setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
 
@@ -10216,9 +10219,37 @@ const voteKey = 'vote_' + symbol;
                     </svg>`;
         }
 
+
+        const US_SHORT_KR_NAMES = {
+            NVDA: '엔비디아',
+            AVGO: '브로드컴',
+            AMD: 'AMD',
+            MU: '마이크론',
+            MRVL: '마벨',
+            QCOM: '퀄컴',
+            TSM: 'TSMC',
+            LRCX: '램리서치',
+            AMAT: '어플라이드',
+            KLAC: 'KLA',
+            XOM: '엑손모빌',
+            CVX: '셰브론',
+            COP: '코노코필립스',
+            TSLA: '테슬라',
+            AAPL: '애플',
+            MSFT: '마이크로소프트',
+            AMZN: '아마존',
+            GOOGL: '구글',
+            META: '메타'
+        };
+
+        function getUsShortKrName(symbol, fallback) {
+            const key = String(symbol || '').trim().toUpperCase();
+            return US_SHORT_KR_NAMES[key] || String(fallback || key);
+        }
+
         function openUsLeadingStock(symbol, name) {
             const cleanSymbol = String(symbol || '').trim();
-            const cleanName = String(name || cleanSymbol).trim();
+            const cleanName = getUsShortKrName(cleanSymbol, name);
             if (!cleanSymbol) return;
 
             // 기존 종목 상세분석 진입점(doSearch)을 그대로 사용해

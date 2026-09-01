@@ -6083,10 +6083,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
         /* 좌측 832px 단독 배치 행들 */
         #rowConsensus { grid-column: 1; grid-row: 6; }
         #rowVote { grid-column: 1; grid-row: 7; }
-        #rowComment { grid-column: 1; grid-row: 8; }
+        #rowComment { grid-column: 1; grid-row: 9; }
         #rowDart { grid-column: 1; grid-row: 9; }
         #rowSignal { grid-column: 1; grid-row: 10; }
         #rowTelegram { grid-column: 1; grid-row: 11; }
+        /* 기존 좌측 카드가 오른쪽 캘린더의 행 높이에 강제로 늘어나지 않도록 함 */
+        #rowNews, #rowTrack, #rowQuant, #rowConsensus, #rowVote, #rowComment, #rowDart, #rowSignal, #rowTelegram { align-self: start; }
 
         .card {
             background: var(--bg-card);

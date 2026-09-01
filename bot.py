@@ -2463,10 +2463,81 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 # ----------------------------------------------------
 # 4. 크롤러 및 유틸리티 함수
 # ----------------------------------------------------
+def fetch_naver_news(query_keyword, limit=5):
+    """Google News RSS 실패/빈 결과 시 사용하는 Naver News API fallback."""
+    headlines = []
+    client_id = os.environ.get("NAVER_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
+
+    if not client_id or not client_secret:
+        print("[NAVER NEWS] API credentials not configured; fallback skipped")
+        return headlines
+
+    clean_k = re.sub(r'\(.*?\)', '', str(query_keyword or "")).replace("USDT", "").strip()
+    if not clean_k:
+        return headlines
+
+    try:
+        r = HTTP_SESSION.get(
+            "https://openapi.naver.com/v1/search/news.json",
+            params={
+                "query": clean_k,
+                "display": max(1, min(int(limit), 100)),
+                "start": 1,
+                "sort": "date",
+            },
+            headers={
+                "X-Naver-Client-Id": client_id,
+                "X-Naver-Client-Secret": client_secret,
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=3.0,
+        )
+        print(f"[NAVER NEWS] query={clean_k} HTTP {r.status_code}")
+        if r.status_code != 200:
+            return headlines
+
+        data = r.json()
+        for item in (data.get("items") or [])[:limit]:
+            title = html.unescape(
+                re.sub(r"<[^>]+>", "", str(item.get("title") or ""))
+            ).strip()
+            description = html.unescape(
+                re.sub(r"<[^>]+>", "", str(item.get("description") or ""))
+            ).strip()
+
+            if not title:
+                continue
+
+            parts = title.rsplit(" - ", 1)
+            if len(parts) > 1 and len(parts[1]) <= 80:
+                title_text = parts[0].strip()
+                media_name = parts[1].strip()
+            else:
+                title_text = title
+                media_name = "Naver 뉴스"
+
+            headlines.append({
+                "title": title_text,
+                "media": media_name,
+                "pubDate": str(item.get("pubDate") or "").strip(),
+                "link": str(item.get("originallink") or item.get("link") or "#").strip(),
+                "description": description,
+                "source": "Naver",
+            })
+    except Exception as exc:
+        print(f"[NAVER NEWS] fallback failed: {type(exc).__name__}: {exc}")
+
+    return headlines
+
+
 def fetch_rss_news(query_keyword, limit=5):
+    """Google News RSS 우선. 실패/빈 결과이면 Naver News API로 fallback."""
     headlines = []
     clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
     url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
+
     try:
         r = HTTP_SESSION.get(url, timeout=2.5)
         if r.status_code == 200:
@@ -2488,8 +2559,13 @@ def fetch_rss_news(query_keyword, limit=5):
                         "pubDate": pub_text,
                         "link": link_text
                     })
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[GOOGLE NEWS] RSS failed: {type(exc).__name__}: {exc}")
+
+    if not headlines:
+        print(f"[NEWS FALLBACK] Google News empty -> Naver News: {clean_k}")
+        headlines = fetch_naver_news(clean_k, limit)
+
     return headlines
 
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
@@ -7070,7 +7146,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         <div id="result-scroll-view">
             <div class="result-inner">
-                <div class="loading" id="loading">......</div>
+                <div class="loading" id="loading"></div>
                 <div id="result-card-wrap" style="display:none;">
                     
                     <!-- [마스터 그리드] PC: 832px + 348px 2열 / 모바일: 순차 1열 -->
@@ -7647,7 +7723,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
             document.getElementById('centerInput').value = '';
             document.getElementById('bottomInput').value = '';
             currentSymbol = '';
-            
+
+            // 홈으로 돌아가면 저장된 종목 URL도 제거
+            const homeUrl = new URL(window.location.href);
+            homeUrl.searchParams.delete('q');
+            window.history.replaceState({}, '', homeUrl.toString());
             const side = document.getElementById('sidebar-wrapper');
             if (side) side.classList.remove('open');
         }
@@ -8392,13 +8472,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
             const cleanQ = query.trim();
             if (!cleanQ) return;
 
+            // 현재 분석 종목을 URL에 저장하여 새로고침해도 같은 종목을 유지
+            const searchUrl = new URL(window.location.href);
+            searchUrl.searchParams.set('q', cleanQ);
+            window.history.replaceState({}, '', searchUrl.toString());
+
             document.getElementById('centerInput').value = cleanQ;
             document.getElementById('bottomInput').value = cleanQ;
 
             document.getElementById('main-view').style.display = 'none';
             document.getElementById('result-scroll-view').style.display = 'block';
             document.getElementById('bottom-bar').style.display = 'flex';
-            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading').style.display = 'none';
             document.getElementById('result-card-wrap').style.display = 'none';
 
             if (window.innerWidth <= 900) {
@@ -9134,7 +9219,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
             window.addEventListener('resize', resizeChart);
         }
 
-        window.addEventListener('DOMContentLoaded', initTheme);
+        window.addEventListener('DOMContentLoaded', () => {
+            initTheme();
+
+            // 새로고침 시 URL에 저장된 종목을 자동 복원
+            const params = new URLSearchParams(window.location.search);
+            const savedQuery = params.get('q');
+
+            if (savedQuery && savedQuery.trim()) {
+                doSearch(savedQuery.trim());
+            }
+        });
     </script>
 </body>
 </html>

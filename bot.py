@@ -9388,6 +9388,7 @@ const voteKey = 'vote_' + symbol;
 
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
+        let activeSearchToken = 0;
 
         async function doSearch(query) {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
@@ -9423,6 +9424,11 @@ const voteKey = 'vote_' + symbol;
                 if (side) side.classList.remove('open');
             }
 
+            const searchToken = ++activeSearchToken;
+            const fastChartPromise = fetch('/api/chart?q=' + encodeURIComponent(cleanQ))
+                .then(r => r.ok ? r.json() : null)
+                .catch(() => null);
+
             try {
                 const cacheKey = cleanQ.toUpperCase();
                 const cached = ANALYZE_CACHE.get(cacheKey);
@@ -9450,6 +9456,20 @@ const voteKey = 'vote_' + symbol;
 
                 if (!data) {
                     throw new Error("분석 데이터를 받지 못했습니다.");
+                }
+
+                // 차트는 전체 분석 완료를 기다리지 않는다.
+                if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
+                    setTimeout(() => {
+                        if (searchToken === activeSearchToken) {
+                            initTvChart(cached.data.candles, cached.data.ma20_line, cached.data.ma60_line, cached.data.bb_up_line, cached.data.bb_dn_line);
+                        }
+                    }, 0);
+                } else {
+                    fastChartPromise.then(chartData => {
+                        if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
+                        initTvChart(chartData.candles, chartData.ma20_line, chartData.ma60_line, chartData.bb_up_line, chartData.bb_dn_line);
+                    });
                 }
 
 if ((response && !response.ok) || data.error) {
@@ -10143,10 +10163,8 @@ if ((response && !response.ok) || data.error) {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
 
-                setTimeout(() => {
-                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
-                }, 50);
-
+                // 차트는 위의 fastChartPromise에서 먼저 그려진다.
+                // 서버 전체 분석의 candles는 기존 호환성을 위해 그대로 유지한다.
                 window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
@@ -10456,6 +10474,150 @@ if ((response && !response.ok) || data.error) {
 """
 
 # ----------------------------------------------------
+# 차트 전용 초고속 경로
+# 전체 분석(/api/analyze)이 끝날 때까지 차트를 기다리지 않게 한다.
+# ----------------------------------------------------
+def _build_chart_payload(df):
+    if df is None or df.empty:
+        return None
+
+    work = df.copy()
+    work['MA20'] = work['Close'].rolling(20).mean()
+    work['MA60'] = work['Close'].rolling(60).mean()
+    work['STD60'] = work['Close'].rolling(60).std()
+    work['BB_UP'] = work['MA60'] + (work['STD60'] * 2)
+    work['BB_DN'] = work['MA60'] - (work['STD60'] * 2)
+
+    work = work.sort_index()
+    work = work[~work.index.duplicated(keep='last')]
+
+    candles, ma20_line, ma60_line, bb_up_line, bb_dn_line = [], [], [], [], []
+    for date_idx, row in work.tail(65).iterrows():
+        t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d")
+        o, h, l, c = float(row['Open']), float(row['High']), float(row['Low']), float(row['Close'])
+        if not any(np.isnan(v) for v in (o, h, l, c)):
+            candles.append({"time": t_str, "open": o, "high": h, "low": l, "close": c})
+        if not np.isnan(row['MA20']):
+            ma20_line.append({"time": t_str, "value": float(row['MA20'])})
+        if not np.isnan(row['MA60']):
+            ma60_line.append({"time": t_str, "value": float(row['MA60'])})
+        if not np.isnan(row['BB_UP']):
+            bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
+        if not np.isnan(row['BB_DN']):
+            bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
+
+    return {
+        "candles": candles,
+        "ma20_line": ma20_line,
+        "ma60_line": ma60_line,
+        "bb_up_line": bb_up_line,
+        "bb_dn_line": bb_dn_line
+    }
+
+
+def _fetch_fast_domestic_chart(code):
+    # 차트에는 최근 120거래일이면 충분하다. 전체 분석용 1200일 조회와 분리한다.
+    try:
+        url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
+        res = HTTP_SESSION.get(url, timeout=1.5)
+        data = res.json()
+        items = data if isinstance(data, list) else []
+        records = []
+        for it in items:
+            records.append({
+                "Date": pd.to_datetime(it['localTrdDd']),
+                "Open": float(str(it['openPrice']).replace(',', '')),
+                "High": float(str(it['highPrice']).replace(',', '')),
+                "Low": float(str(it['lowPrice']).replace(',', '')),
+                "Close": float(str(it['closePrice']).replace(',', '')),
+                "Volume": float(str(it.get('accumulatedTradingVolume', it.get('volume', 0))).replace(',', ''))
+            })
+        if len(records) >= 65:
+            return pd.DataFrame(records).set_index("Date").sort_index()
+    except Exception as exc:
+        print(f"[FAST DOMESTIC CHART] {code} failed: {type(exc).__name__}: {exc}")
+    return None
+
+
+def _fetch_fast_overseas_chart(symbol):
+    # 전체 분석은 5년 데이터가 필요하지만 화면 차트는 최근 1년(일봉)으로 충분하다.
+    key = str(symbol or "").strip().upper()
+    if not key:
+        return None
+    try:
+        encoded = urllib.parse.quote(key)
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/"
+            f"{encoded}?range=1y&interval=1d&includePrePost=false"
+        )
+        res = HTTP_SESSION.get(url, timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+        res.raise_for_status()
+        result = ((res.json().get("chart") or {}).get("result") or [])
+        if not result:
+            return None
+        item = result[0]
+        ts = item.get("timestamp") or []
+        quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
+        opens, highs = quote.get("open") or [], quote.get("high") or []
+        lows, closes = quote.get("low") or [], quote.get("close") or []
+        n = min(len(ts), len(opens), len(highs), len(lows), len(closes))
+        records = []
+        for i in range(n):
+            vals = (opens[i], highs[i], lows[i], closes[i])
+            if any(v is None for v in vals):
+                continue
+            records.append({
+                "Date": pd.to_datetime(ts[i], unit="s"),
+                "Open": float(opens[i]), "High": float(highs[i]),
+                "Low": float(lows[i]), "Close": float(closes[i])
+            })
+        if len(records) >= 65:
+            return pd.DataFrame(records).set_index("Date").sort_index()
+    except Exception as exc:
+        print(f"[FAST OVERSEAS CHART] {key} failed: {type(exc).__name__}: {exc}")
+    return None
+
+
+def run_fast_chart_pipeline(query):
+    clean_q = str(query or "").strip().replace(" ", "").upper()
+    if not clean_q:
+        return None
+
+    # 글로벌 지수
+    if clean_q in GLOBAL_INDEX_MAP:
+        symbol = GLOBAL_INDEX_MAP[clean_q]
+        df = _fetch_fast_overseas_chart(symbol)
+        return _build_chart_payload(df) if df is not None else None
+
+    # 암호화폐
+    if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
+        symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
+        try:
+            _, _, df = fetch_crypto_candles(symbol)
+            return _build_chart_payload(df) if df is not None else None
+        except Exception:
+            return None
+
+    # 미국주식
+    if clean_q in US_STOCK_MAP:
+        symbol = US_STOCK_MAP[clean_q]
+        df = _fetch_fast_overseas_chart(symbol)
+        return _build_chart_payload(df) if df is not None else None
+
+    if any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
+        symbol = query.upper().strip()
+        df = _fetch_fast_overseas_chart(symbol)
+        return _build_chart_payload(df) if df is not None else None
+
+    # 국내주식
+    code, _ = find_stock_code(query)
+    if not code:
+        return None
+    df = _fetch_fast_domestic_chart(code)
+    return _build_chart_payload(df) if df is not None else None
+
+
+# ----------------------------------------------------
 # 9. 멀티스레드 웹 서버
 # ----------------------------------------------------
 class WebHandler(BaseHTTPRequestHandler):
@@ -10554,6 +10716,22 @@ class WebHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"API ERROR /api/us-leading-sectors: {type(exc).__name__}: {exc}")
                 self._json(500, {"ok": False, "error": "미국 업종 데이터를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/chart":
+            q = str(params.get("q", [""])[0]).strip()
+            if not q:
+                self._json(400, {"error": "종목명을 입력해주세요."})
+                return
+            try:
+                chart_data = run_fast_chart_pipeline(q)
+                if not chart_data:
+                    self._json(404, {"error": "차트 데이터를 가져오지 못했습니다."})
+                    return
+                self._json(200, chart_data)
+            except Exception as exc:
+                print(f"API ERROR /api/chart?q={q!r}: {type(exc).__name__}: {exc}")
+                self._json(500, {"error": "차트 데이터를 가져오지 못했습니다."})
             return
 
         if parsed.path == "/api/analyze":

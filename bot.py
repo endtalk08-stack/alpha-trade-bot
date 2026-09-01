@@ -6860,9 +6860,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
             #rowEarningsCalendar { order: 13; }
             #rowEconomicCalendar { order: 14; }
-            #rowUsLeadingSectors { order: 15; width: 100%; max-width: 832px; }
+            #usLeadingRightStack {
+                position: static;
+                grid-column: auto;
+                grid-row: auto;
+                order: 15;
+                width: 100%;
+                max-width: 832px;
+                z-index: auto;
+            }
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                width: 100%;
+                max-width: 832px;
+            }
 
-            #rowDart { order: 15; }
+            #rowDart { order: 16; }
 
             .bottom-bar-grid-wrapper {
                 display: flex;
@@ -7555,12 +7568,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
            왼쪽 개미투표와 그리드 행 높이를 공유하지 않도록 한다. */
         #usLeadingRightStack {
             grid-column: 2;
-            grid-row: 6 / span 2;
+            grid-row: 6;
+            position: absolute;
             align-self: start;
+            justify-self: stretch;
+            width: 100%;
             min-height: 0;
             display: flex;
             flex-direction: column;
             gap: 12px;
+            z-index: 2;
         }
 
         #usLeadingRightStack > .card {
@@ -7681,6 +7698,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
             height: 34px;
             display: block;
             overflow: visible;
+            justify-self: end;
+            filter: drop-shadow(0 2px 3px rgba(16, 185, 129, 0.20));
         }
 
         .us-leading-stock-spark polyline {
@@ -7819,7 +7838,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
 <div class="card us-leading-stock-card" id="rowUsLeadingStocks">
                             <div class="us-leading-stock-head">
-                                <span class="us-leading-stock-title" id="usLeadingStockTitle">미국 반도체 주도종목</span>
+                                <span class="us-leading-stock-title" id="usLeadingStockTitle">미국 주도종목 TOP 5</span>
                                 <span class="us-leading-stock-sub">TOP 5</span>
                             </div>
                             <div id="usLeadingStockList" class="us-leading-stock-list">
@@ -10075,6 +10094,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         loadUsLeadingStocks(sectorSymbol, sectorName);
                     });
                 });
+
+                // 업종을 클릭하지 않아도 현재 주도업종 1위의 TOP 5가
+                // 처음부터 자동으로 표시되도록 한다.
+                const strongestRow = box.querySelector('.us-leading-sector-row');
+                if (strongestRow) {
+                    const sectorSymbol = strongestRow.dataset.sectorSymbol || '';
+                    const sectorName = strongestRow.dataset.sectorName || '';
+                    loadUsLeadingStocks(sectorSymbol, sectorName);
+                }
             } catch (error) {
                 console.error('US leading sectors:', error);
                 box.innerHTML = '<div class="us-leading-sector-loading">업종 데이터를 잠시 후 다시 불러옵니다.</div>';

@@ -9442,7 +9442,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         let consensusExpanded = false;
 
                         const renderConsensusItems = (items, expanded = false) => {
-                            const visibleItems = expanded ? items : items.slice(0, 3);
+                            // 국내주식 리포트와 BTC 기관 전망은 기본 2개만 표시해
+                            // 미국주식 Buy/Hold/Sell 영역과 기본 높이를 맞춘다.
+                            const isTwoItemConsensus =
+                                c.list_title === '실제 증권사 리포트' ||
+                                c.list_title === '실제 기관 전망';
+                            const defaultVisibleCount = isTwoItemConsensus ? 2 : 3;
+                            const visibleItems = expanded ? items : items.slice(0, defaultVisibleCount);
                             let html = '';
 
                             visibleItems.forEach((it, idx) => {
@@ -9461,7 +9467,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 `;
                             });
 
-                            if ((c.list_title === '실제 증권사 리포트' || c.list_title === '실제 기관 전망') && items.length > 3) {
+                            if (isTwoItemConsensus && items.length > defaultVisibleCount) {
                                 if (expanded) {
                                     html += `
                                         <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
@@ -9471,7 +9477,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 } else {
                                     html += `
                                         <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
-                                            더보기 <span>(${items.length - 3}건)</span>
+                                            더보기 <span>(${items.length - defaultVisibleCount}건)</span>
                                         </button>
                                     `;
                                 }

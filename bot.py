@@ -9317,7 +9317,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                     const iList = document.getElementById('uItemList');
                     if (iList) {
-                        iList.innerHTML = '';
+                        let consensusExpanded = false;
 
                         const renderConsensusItems = (items, expanded = false) => {
                             const visibleItems = expanded ? items : items.slice(0, 3);
@@ -9339,41 +9339,37 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 `;
                             });
 
-                            // 국내주식 증권사 리포트만 처음 3개를 보여주고 더보기 제공.
-                            if (!expanded && c.list_title === '실제 증권사 리포트' && items.length > 3) {
-                                html += `
-                                    <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
-                                        더보기 <span>(${items.length - 3}건)</span>
-                                    </button>
-                                `;
-                            }
-
-                            if (expanded && c.list_title === '실제 증권사 리포트' && items.length > 3) {
-                                html += `
-                                    <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
-                                        접기
-                                    </button>
-                                `;
+                            if (c.list_title === '실제 증권사 리포트' && items.length > 3) {
+                                if (expanded) {
+                                    html += `
+                                        <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
+                                            접기
+                                        </button>
+                                    `;
+                                } else {
+                                    html += `
+                                        <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
+                                            더보기 <span>(${items.length - 3}건)</span>
+                                        </button>
+                                    `;
+                                }
                             }
 
                             return html;
                         };
 
+                        // 버튼을 다시 만들어도 클릭 이벤트가 유지되도록
+                        // 목록 자체에 이벤트 위임을 한 번만 연결한다.
+                        iList.onclick = (event) => {
+                            const btn = event.target.closest('.consensus-more-btn');
+                            if (!btn) return;
+
+                            consensusExpanded = !consensusExpanded;
+                            iList.innerHTML = renderConsensusItems(c.items || [], consensusExpanded);
+                        };
+
                         if (c.items && c.items.length > 0) {
                             iList.innerHTML = renderConsensusItems(c.items, false);
-
-                            const moreBtn = document.getElementById('consensusMoreBtn');
-                            if (moreBtn) {
-                                moreBtn.addEventListener('click', () => {
-                                    const expanded = moreBtn.textContent.includes('접기');
-                                    iList.innerHTML = renderConsensusItems(c.items, !expanded);
-
-                                    const nextBtn = document.getElementById('consensusMoreBtn');
-                                    if (nextBtn) {
-                                        nextBtn.scrollIntoView({ block: 'nearest' });
-                                    }
-                                });
-                            }
                         }
                     }
                     uCard.style.display = 'block';

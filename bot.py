@@ -9374,9 +9374,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 }
                 const pct = (v) => `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(1)}%`;
                 const cls = (v) => Number(v) >= 0 ? 'us-leading-up' : 'us-leading-down';
-                let html = '<table class="us-leading-sector-table"><thead><tr><th>순위</th><th>업종</th><th>현재</th><th>1주</th><th>1개월</th><th>3개월</th></tr></thead><tbody>';
+                let html = '<table class="us-leading-sector-table"><thead><tr><th>업종</th><th>현재</th><th>1주</th><th>1개월</th><th>3개월</th></tr></thead><tbody>';
                 rows.forEach((r, i) => {
-                    html += `<tr><td class="us-leading-rank">${i + 1}</td><td class="us-leading-name" title="${r.name}">${r.name}</td><td class="${cls(r.current)}">${pct(r.current)}</td><td class="${cls(r.week1)}">${pct(r.week1)}</td><td class="${cls(r.month1)}">${pct(r.month1)}</td><td class="${cls(r.month3)}">${pct(r.month3)}</td></tr>`;
+                    html += `<tr><td class="us-leading-name" title="${r.name}">${r.name}</td><td class="${cls(r.current)}">${pct(r.current)}</td><td class="${cls(r.week1)}">${pct(r.week1)}</td><td class="${cls(r.month1)}">${pct(r.month1)}</td><td class="${cls(r.month3)}">${pct(r.month3)}</td></tr>`;
                 });
                 html += '</tbody></table>';
                 box.innerHTML = html;

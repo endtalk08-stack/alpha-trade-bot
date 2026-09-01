@@ -7939,6 +7939,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
             visibility: visible !important;
             opacity: 1 !important;
         }
+
+        /* 미국 주도종목 클릭 가능 표시: 기존 레이아웃 크기는 유지 */
+        .us-leading-stock-item {
+            cursor: pointer;
+        }
+        .us-leading-stock-item:focus-visible {
+            outline: 2px solid var(--border-line);
+            outline-offset: -2px;
+        }
 </style>
 </head>
 <body>
@@ -10207,6 +10216,24 @@ const voteKey = 'vote_' + symbol;
                     </svg>`;
         }
 
+        function openUsLeadingStock(symbol, name) {
+            const cleanSymbol = String(symbol || '').trim();
+            const cleanName = String(name || cleanSymbol).trim();
+            if (!cleanSymbol) return;
+
+            // 기존 종목 상세분석 진입점(doSearch)을 그대로 사용해
+            // 새로운 상세 페이지를 만들지 않는다.
+            doSearch(cleanSymbol);
+
+            // 현재 상세분석이 티커를 받는 경우에도 한글/정식명이 필요한
+            // 기존 흐름을 보완한다.
+            setTimeout(() => {
+                if (typeof loadCommunityData === 'function') {
+                    loadCommunityData(cleanSymbol, cleanName);
+                }
+            }, 0);
+        }
+
         async function loadUsLeadingStocks(sectorSymbol, sectorName) {
             const list = document.getElementById('usLeadingStockList');
             const title = document.getElementById('usLeadingStockTitle');
@@ -10230,7 +10257,9 @@ const voteKey = 'vote_' + symbol;
                 const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
                 const cls = value => Number(value) >= 0 ? 'up' : 'down';
                 list.innerHTML = rows.map(row => `
-                    <div class="us-leading-stock-item">
+                    <div class="us-leading-stock-item" role="button" tabindex="0"
+                         onclick="openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')"
+                         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')}">
                         <div class="us-leading-stock-name">
                             <div class="us-leading-stock-ticker">${String(row.symbol || '')}</div>
                             <div class="us-leading-stock-company">${String(row.name || '')}</div>

@@ -7158,6 +7158,24 @@ HTML_PAGE = r"""<!DOCTYPE html>
 }
 
 
+        .consensus-more-btn {
+            display: block;
+            width: 100%;
+            margin-top: 7px;
+            padding: 6px 0;
+            border: 1px solid var(--border-line);
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.72rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .consensus-more-btn:hover {
+            color: var(--text-title);
+        }
+
         /* 미국 주도업종: PC 애널리스트 오른쪽 / 모바일 경제 캘린더 바로 아래 */
         #rowUsLeadingSectors {
             grid-column: 2;
@@ -9300,10 +9318,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     const iList = document.getElementById('uItemList');
                     if (iList) {
                         iList.innerHTML = '';
-                        if (c.items && c.items.length > 0) {
-                            c.items.forEach((it, idx) => {
-                                const isLast = idx === c.items.length - 1;
-                                iList.innerHTML += `
+
+                        const renderConsensusItems = (items, expanded = false) => {
+                            const visibleItems = expanded ? items : items.slice(0, 3);
+                            let html = '';
+
+                            visibleItems.forEach((it, idx) => {
+                                const isLast = idx === visibleItems.length - 1;
+                                html += `
                                     <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${isLast ? '' : 'border-bottom:1px solid var(--border-line);'} font-size:0.82rem;">
                                         <div>
                                             <div style="color:var(--text-title); font-weight:700;">${it.main}</div>
@@ -9316,6 +9338,42 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                     </div>
                                 `;
                             });
+
+                            // 국내주식 증권사 리포트만 처음 3개를 보여주고 더보기 제공.
+                            if (!expanded && c.list_title === '실제 증권사 리포트' && items.length > 3) {
+                                html += `
+                                    <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
+                                        더보기 <span>(${items.length - 3}건)</span>
+                                    </button>
+                                `;
+                            }
+
+                            if (expanded && c.list_title === '실제 증권사 리포트' && items.length > 3) {
+                                html += `
+                                    <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
+                                        접기
+                                    </button>
+                                `;
+                            }
+
+                            return html;
+                        };
+
+                        if (c.items && c.items.length > 0) {
+                            iList.innerHTML = renderConsensusItems(c.items, false);
+
+                            const moreBtn = document.getElementById('consensusMoreBtn');
+                            if (moreBtn) {
+                                moreBtn.addEventListener('click', () => {
+                                    const expanded = moreBtn.textContent.includes('접기');
+                                    iList.innerHTML = renderConsensusItems(c.items, !expanded);
+
+                                    const nextBtn = document.getElementById('consensusMoreBtn');
+                                    if (nextBtn) {
+                                        nextBtn.scrollIntoView({ block: 'nearest' });
+                                    }
+                                });
+                            }
                         }
                     }
                     uCard.style.display = 'block';

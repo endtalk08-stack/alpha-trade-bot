@@ -7713,6 +7713,47 @@ HTML_PAGE = r"""<!DOCTYPE html>
             vector-effect: non-scaling-stroke;
         }
 
+
+        /* 모바일 최종 배치 고정:
+           PC의 오른쪽 독립 배치는 유지하고 모바일에서는 1열 일반 흐름으로 복귀 */
+        @media (max-width: 1200px) {
+            .dashboard-master-grid {
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                max-width: 832px;
+                gap: 14px;
+            }
+
+            #usLeadingRightStack {
+                position: static !important;
+                grid-column: auto !important;
+                grid-row: auto !important;
+                order: 15 !important;
+                align-self: center !important;
+                justify-self: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 14px !important;
+                z-index: auto !important;
+            }
+
+            #usLeadingRightStack > .card,
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                box-sizing: border-box !important;
+            }
+        }
+
 </style>
 </head>
 <body>

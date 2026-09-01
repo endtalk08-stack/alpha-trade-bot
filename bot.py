@@ -3844,6 +3844,70 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
                 "items":reports
             }
 
+        # 비트코인: 주식의 Buy/Hold/Sell 컨센서스가 아니라 실제 기관별 BTC 가격 전망을 사용한다.
+        if market_name == "암호화폐" and str(symbol or "").upper().startswith("BTC"):
+            current = _safe_float(raw_price)
+
+            # 2026년 공개 리서치에서 확인된 기관 전망 스냅샷.
+            # 서로 다른 목표 시점/방법론을 가진 전망이므로 '공식 컨센서스'라고 부르지 않는다.
+            # 평균값은 명시된 Base/Target 전망만 계산하고, 시나리오 자료는 평균에서 제외한다.
+            btc_forecasts = [
+                {"firm":"Citi", "target":82000, "horizon":"12개월 · 2027년 중반", "stance":"Bear/Base 범위 중 Base", "date":"2026-07", "include_avg":True},
+                {"firm":"Standard Chartered", "target":100000, "horizon":"2026년 말", "stance":"Bullish", "date":"2026-07", "include_avg":True},
+                {"firm":"Bernstein", "target":150000, "horizon":"2026년 말", "stance":"Bullish", "date":"2026-07", "include_avg":True},
+                {"firm":"JPMorgan", "target":160000, "horizon":"2026년", "stance":"Bullish · $150K~$170K 범위 중간값", "date":"2026-07", "include_avg":True},
+                {"firm":"Tiger Research", "target":143000, "horizon":"12개월", "stance":"Bullish", "date":"2026-04", "include_avg":True},
+                {"firm":"NYDIG", "target":38500, "horizon":"2026년 10월경", "stance":"Bearish 시나리오", "date":"2026-07", "include_avg":False},
+            ]
+
+            valid = [x for x in btc_forecasts if x.get("include_avg") and x.get("target")]
+            avg_target = (sum(x["target"] for x in valid) / len(valid)) if valid else None
+            targets = [x["target"] for x in valid]
+            low_target = min(targets) if targets else None
+            high_target = max(targets) if targets else None
+
+            items = []
+            for item in btc_forecasts:
+                tp = item["target"]
+                upside = ((tp-current)/current*100) if current else None
+                items.append({
+                    "main": item["firm"],
+                    "sub": f"{item['horizon']} · {item['date']} · {item['stance']}",
+                    "val": f"${tp:,.0f}",
+                    "sub_val": f"{upside:+.1f}%" if upside is not None else ""
+                })
+
+            # 평균 목표가 대비 현재가의 상승/하락 여력.
+            avg_upside = ((avg_target-current)/current*100) if avg_target and current else None
+            if avg_target and current:
+                primary_val = f"${avg_target:,.0f}"
+                fill_pct = max(8, min(92, int(((current-low_target) / max(1, high_target-low_target))*100))) if high_target and low_target and high_target > low_target else 50
+                slider_mid = f"평균 ${avg_target:,.0f}"
+            else:
+                primary_val = "기관 전망 확인 필요"
+                fill_pct = 50
+                slider_mid = "기관 전망 확인 필요"
+
+            return {
+                "title":"기관 BTC 전망",
+                "gauge_val":str(len(btc_forecasts)),
+                "gauge_label":"확인 전망",
+                "status_label":"검증 데이터",
+                "badge_text":"실제 기관 전망만 표시",
+                "dots":f"확인 전망 {len(btc_forecasts)}건",
+                "primary_label":"기관 평균 전망",
+                "primary_val":primary_val,
+                "secondary_label":"현재가",
+                "secondary_val":f"${current:,.2f}" if current else "-",
+                "slider_left":f"${low_target:,.0f}" if low_target else "-",
+                "slider_mid":slider_mid,
+                "slider_right":f"${high_target:,.0f}" if high_target else "-",
+                "fill_pct":fill_pct,
+                "list_title":"실제 기관 전망",
+                "source_tag":"출처: Citi · Standard Chartered · Bernstein · JPMorgan · Tiger Research · NYDIG / 2026 공개 전망",
+                "items":items
+            }
+
         # 미국/글로벌
         if market_name in ["미국주식", "글로벌증시", "원자재"]:
             key = str(symbol or "").upper(); current = _safe_float(raw_price)
@@ -9339,7 +9403,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 `;
                             });
 
-                            if (c.list_title === '실제 증권사 리포트' && items.length > 3) {
+                            if ((c.list_title === '실제 증권사 리포트' || c.list_title === '실제 기관 전망') && items.length > 3) {
                                 if (expanded) {
                                     html += `
                                         <button type="button" class="consensus-more-btn" id="consensusMoreBtn">

@@ -3106,16 +3106,34 @@ def fetch_domestic_candles(code, anchor_price=None):
 
     return None
 
+# ===== SPEED OPTIMIZATION 2: overseas candle cache =====
+# 5년치 일봉을 매 검색마다 Yahoo에서 다시 받지 않는다.
+# 기본 TTL은 10분이며, 캐시가 없거나 만료된 경우에만 갱신한다.
+OVERSEAS_CANDLE_CACHE = {}
+OVERSEAS_CANDLE_CACHE_TTL = 10 * 60
+
 def fetch_overseas_candles(symbol):
     """
-    해외주식 차트 데이터 조회.
-    - 차트는 기존 Yahoo Chart API의 일봉 데이터를 사용한다.
-    - 현재가를 일봉 마지막 Close로 오인하지 않는다.
-    - 데이터 누락/HTTP 오류를 조용히 삼키지 않고 로그로 남긴다.
-    - 현재가/세션 가격은 별도 quote snapshot에서 가져올 수 있도록 분리한다.
+    해외주식 차트 데이터 조회 + 서버 메모리 TTL 캐시.
+    기존 함수 계약을 유지한다:
+      (chart_close, price_text, df)
     """
+    key = str(symbol or "").strip().upper()
+    if not key:
+        return None, None, None
+
+    now = time.time()
+    cached = OVERSEAS_CANDLE_CACHE.get(key)
+    if cached and (now - cached["time"]) < OVERSEAS_CANDLE_CACHE_TTL:
+        try:
+            df = cached["df"].copy()
+            chart_close = float(df["Close"].iloc[-1])
+            return chart_close, f"{chart_close:,.2f} 달러", df
+        except Exception:
+            OVERSEAS_CANDLE_CACHE.pop(key, None)
+
     try:
-        encoded_sym = urllib.parse.quote(symbol.upper())
+        encoded_sym = urllib.parse.quote(key)
         url = (
             f"https://query1.finance.yahoo.com/v8/finance/chart/"
             f"{encoded_sym}?range=5y&interval=1d&includePrePost=false"
@@ -3126,8 +3144,8 @@ def fetch_overseas_candles(symbol):
             headers={"User-Agent": "Mozilla/5.0"}
         )
         response.raise_for_status()
-        res = response.json()
 
+        res = response.json()
         chart = res.get("chart") or {}
         if chart.get("error"):
             raise RuntimeError(f"Yahoo chart error: {chart.get('error')}")
@@ -3144,7 +3162,6 @@ def fetch_overseas_candles(symbol):
         if not ts or not quote:
             raise RuntimeError("Yahoo chart에 timestamp/quote 데이터가 없습니다.")
 
-        records = []
         opens = quote.get("open") or []
         highs = quote.get("high") or []
         lows = quote.get("low") or []
@@ -3152,6 +3169,7 @@ def fetch_overseas_candles(symbol):
         volumes = quote.get("volume") or []
 
         n = min(len(ts), len(opens), len(highs), len(lows), len(closes), len(volumes))
+        records = []
         for i in range(n):
             if any(v is None for v in (opens[i], highs[i], lows[i], closes[i])):
                 continue
@@ -3168,14 +3186,17 @@ def fetch_overseas_candles(symbol):
             raise RuntimeError(f"유효한 일봉 데이터가 부족합니다: {len(records)}개")
 
         df = pd.DataFrame(records).set_index("Date").sort_index()
-
-        # 중요: 여기서 반환하는 가격은 '실시간 현재가'가 아니라
-        # 차트의 마지막 정규장 일봉 종가임을 명확히 한다.
         chart_close = float(df["Close"].iloc[-1])
+
+        OVERSEAS_CANDLE_CACHE[key] = {
+            "time": now,
+            "df": df.copy(),
+        }
+
         return chart_close, f"{chart_close:,.2f} 달러", df
 
     except Exception as exc:
-        print(f"[YAHOO CHART ERROR] {symbol}: {type(exc).__name__}: {exc}")
+        print(f"[YAHOO CHART ERROR] {key}: {type(exc).__name__}: {exc}")
         return None, None, None
 
 
@@ -5671,8 +5692,13 @@ def run_full_pipeline(query):
     elif clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.strip()
-        chart_price, _, df = fetch_overseas_candles(symbol)
-        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
+        # 차트와 실시간 시세는 서로 의존하지 않으므로 동시에 조회한다.
+        with ThreadPoolExecutor(max_workers=2) as price_executor:
+            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
+            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
+            chart_price, _, df = chart_future.result()
+            quote_snapshot = quote_future.result()
+
         if quote_snapshot:
             raw_price = quote_snapshot["price"]
             price_str = f"{raw_price:,.2f} 달러"
@@ -5684,8 +5710,13 @@ def run_full_pipeline(query):
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()
         formal_name = symbol
-        chart_price, _, df = fetch_overseas_candles(symbol)
-        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
+        # 차트와 실시간 시세를 병렬 조회한다.
+        with ThreadPoolExecutor(max_workers=2) as price_executor:
+            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
+            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
+            chart_price, _, df = chart_future.result()
+            quote_snapshot = quote_future.result()
+
         if quote_snapshot:
             raw_price = quote_snapshot["price"]
             price_str = f"{raw_price:,.2f} 달러"
@@ -5751,23 +5782,38 @@ def run_full_pipeline(query):
         dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
         domestic_flow = _safe_future_result(f_domestic_flow, None, "domestic flow") if f_domestic_flow else None
 
-    if CACHED_WORLD_BOARD:
-        world_board = CACHED_WORLD_BOARD
-    else:
-        try:
-            world_board = fetch_all_world_board_parallel() or []
-        except Exception as exc:
-            print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
-            world_board = []
+    # 세계시장 보드와 경제 캘린더도 서로 독립적이므로
+    # 둘 다 캐시가 없을 때만 병렬 조회한다.
+    world_board = CACHED_WORLD_BOARD
+    market_calendar = CACHED_MARKET_CALENDAR
 
-    if CACHED_MARKET_CALENDAR:
-        market_calendar = CACHED_MARKET_CALENDAR
-    else:
-        try:
-            market_calendar = fetch_real_market_calendar_live() or []
-        except Exception as exc:
-            print("[MARKET CALENDAR] 조회 실패:", repr(exc))
-            market_calendar = []
+    need_world = not world_board
+    need_calendar = not market_calendar
+
+    if need_world or need_calendar:
+        with ThreadPoolExecutor(max_workers=2) as board_executor:
+            world_future = (
+                board_executor.submit(fetch_all_world_board_parallel)
+                if need_world else None
+            )
+            calendar_future = (
+                board_executor.submit(fetch_real_market_calendar_live)
+                if need_calendar else None
+            )
+
+            if need_world:
+                try:
+                    world_board = world_future.result() or []
+                except Exception as exc:
+                    print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
+                    world_board = []
+
+            if need_calendar:
+                try:
+                    market_calendar = calendar_future.result() or []
+                except Exception as exc:
+                    print("[MARKET CALENDAR] 조회 실패:", repr(exc))
+                    market_calendar = []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 
@@ -9342,6 +9388,7 @@ const voteKey = 'vote_' + symbol;
 
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
+        let activeSearchToken = 0;
 
         async function doSearch(query) {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
@@ -9377,6 +9424,11 @@ const voteKey = 'vote_' + symbol;
                 if (side) side.classList.remove('open');
             }
 
+            const searchToken = ++activeSearchToken;
+            const fastChartPromise = fetch('/api/chart?q=' + encodeURIComponent(cleanQ))
+                .then(r => r.ok ? r.json() : null)
+                .catch(() => null);
+
             try {
                 const cacheKey = cleanQ.toUpperCase();
                 const cached = ANALYZE_CACHE.get(cacheKey);
@@ -9406,7 +9458,21 @@ const voteKey = 'vote_' + symbol;
                     throw new Error("분석 데이터를 받지 못했습니다.");
                 }
 
-if (!response.ok || data.error) {
+                // 차트는 전체 분석 완료를 기다리지 않는다.
+                if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
+                    setTimeout(() => {
+                        if (searchToken === activeSearchToken) {
+                            initTvChart(cached.data.candles, cached.data.ma20_line, cached.data.ma60_line, cached.data.bb_up_line, cached.data.bb_dn_line);
+                        }
+                    }, 0);
+                } else {
+                    fastChartPromise.then(chartData => {
+                        if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
+                        initTvChart(chartData.candles, chartData.ma20_line, chartData.ma60_line, chartData.bb_up_line, chartData.bb_dn_line);
+                    });
+                }
+
+if ((response && !response.ok) || data.error) {
                     alert(data.error || '종목을 찾을 수 없습니다.');
                     document.getElementById('loading').style.display = 'none';
                     return;
@@ -10097,10 +10163,8 @@ if (!response.ok || data.error) {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
 
-                setTimeout(() => {
-                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
-                }, 50);
-
+                // 차트는 위의 fastChartPromise에서 먼저 그려진다.
+                // 서버 전체 분석의 candles는 기존 호환성을 위해 그대로 유지한다.
                 window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
@@ -10410,6 +10474,146 @@ if (!response.ok || data.error) {
 """
 
 # ----------------------------------------------------
+# 차트 전용 초고속 경로
+# 전체 분석(/api/analyze)이 끝날 때까지 차트를 기다리지 않게 한다.
+# ----------------------------------------------------
+def _build_chart_payload(df):
+    if df is None or df.empty:
+        return None
+
+    work = df.copy()
+    work['MA20'] = work['Close'].rolling(20).mean()
+    work['MA60'] = work['Close'].rolling(60).mean()
+    work['STD60'] = work['Close'].rolling(60).std()
+    work['BB_UP'] = work['MA60'] + (work['STD60'] * 2)
+    work['BB_DN'] = work['MA60'] - (work['STD60'] * 2)
+
+    work = work.sort_index()
+    work = work[~work.index.duplicated(keep='last')]
+
+    candles, ma20_line, ma60_line, bb_up_line, bb_dn_line = [], [], [], [], []
+    for date_idx, row in work.tail(65).iterrows():
+        t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d")
+        o, h, l, c = float(row['Open']), float(row['High']), float(row['Low']), float(row['Close'])
+        if not any(np.isnan(v) for v in (o, h, l, c)):
+            candles.append({"time": t_str, "open": o, "high": h, "low": l, "close": c})
+        if not np.isnan(row['MA20']):
+            ma20_line.append({"time": t_str, "value": float(row['MA20'])})
+        if not np.isnan(row['MA60']):
+            ma60_line.append({"time": t_str, "value": float(row['MA60'])})
+        if not np.isnan(row['BB_UP']):
+            bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
+        if not np.isnan(row['BB_DN']):
+            bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
+
+    return {
+        "candles": candles,
+        "ma20_line": ma20_line,
+        "ma60_line": ma60_line,
+        "bb_up_line": bb_up_line,
+        "bb_dn_line": bb_dn_line
+    }
+
+
+def _fetch_fast_domestic_chart(code):
+    try:
+        # 기존 사이트에서 검증된 Naver 차트 함수 사용.
+        # anchor_price 없이 호출하여 불필요한 추가 요청은 하지 않는다.
+        return fetch_domestic_candles(code)
+    except Exception as exc:
+        print(f"[FAST DOMESTIC CHART] {code} failed: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _fetch_fast_overseas_chart(symbol):
+    key = str(symbol or "").strip().upper()
+    if not key:
+        return None
+
+    # 2단계에서 만든 10분 캐시를 먼저 사용한다.
+    cached = OVERSEAS_CANDLE_CACHE.get(key)
+    if cached and (time.time() - cached["time"]) < OVERSEAS_CANDLE_CACHE_TTL:
+        try:
+            return cached["df"].copy()
+        except Exception:
+            OVERSEAS_CANDLE_CACHE.pop(key, None)
+
+    # 캐시가 없을 때만 차트 전용 1년 요청.
+    try:
+        encoded = urllib.parse.quote(key)
+        url = (
+            f"https://query1.finance.yahoo.com/v8/finance/chart/"
+            f"{encoded}?range=1y&interval=1d&includePrePost=false"
+        )
+        res = HTTP_SESSION.get(url, timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
+        res.raise_for_status()
+        result = ((res.json().get("chart") or {}).get("result") or [])
+        if not result:
+            return None
+
+        item = result[0]
+        ts = item.get("timestamp") or []
+        quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
+        opens, highs = quote.get("open") or [], quote.get("high") or []
+        lows, closes = quote.get("low") or [], quote.get("close") or []
+        n = min(len(ts), len(opens), len(highs), len(lows), len(closes))
+        records = []
+        for i in range(n):
+            vals = (opens[i], highs[i], lows[i], closes[i])
+            if any(v is None for v in vals):
+                continue
+            records.append({
+                "Date": pd.to_datetime(ts[i], unit="s"),
+                "Open": float(opens[i]), "High": float(highs[i]),
+                "Low": float(lows[i]), "Close": float(closes[i])
+            })
+        if len(records) >= 65:
+            return pd.DataFrame(records).set_index("Date").sort_index()
+    except Exception as exc:
+        print(f"[FAST OVERSEAS CHART] {key} failed: {type(exc).__name__}: {exc}")
+    return None
+
+
+def run_fast_chart_pipeline(query):
+    clean_q = str(query or "").strip().replace(" ", "").upper()
+    if not clean_q:
+        return None
+
+    # 글로벌 지수
+    if clean_q in GLOBAL_INDEX_MAP:
+        symbol = GLOBAL_INDEX_MAP[clean_q]
+        df = _fetch_fast_overseas_chart(symbol)
+        return _build_chart_payload(df) if df is not None else None
+
+    # 암호화폐
+    if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
+        symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
+        try:
+            _, _, df = fetch_crypto_candles(symbol)
+            return _build_chart_payload(df) if df is not None else None
+        except Exception:
+            return None
+
+    # 미국주식
+    if clean_q in US_STOCK_MAP:
+        symbol = US_STOCK_MAP[clean_q]
+        df = _fetch_fast_overseas_chart(symbol)
+        return _build_chart_payload(df) if df is not None else None
+
+    if any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
+        symbol = query.upper().strip()
+        df = _fetch_fast_overseas_chart(symbol)
+        return _build_chart_payload(df) if df is not None else None
+
+    # 국내주식
+    code, _ = find_stock_code(query)
+    if not code:
+        return None
+    df = _fetch_fast_domestic_chart(code)
+    return _build_chart_payload(df) if df is not None else None
+
+
+# ----------------------------------------------------
 # 9. 멀티스레드 웹 서버
 # ----------------------------------------------------
 class WebHandler(BaseHTTPRequestHandler):
@@ -10508,6 +10712,22 @@ class WebHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"API ERROR /api/us-leading-sectors: {type(exc).__name__}: {exc}")
                 self._json(500, {"ok": False, "error": "미국 업종 데이터를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/chart":
+            q = str(params.get("q", [""])[0]).strip()
+            if not q:
+                self._json(400, {"error": "종목명을 입력해주세요."})
+                return
+            try:
+                chart_data = run_fast_chart_pipeline(q)
+                if not chart_data:
+                    self._json(404, {"error": "차트 데이터를 가져오지 못했습니다."})
+                    return
+                self._json(200, chart_data)
+            except Exception as exc:
+                print(f"API ERROR /api/chart?q={q!r}: {type(exc).__name__}: {exc}")
+                self._json(500, {"error": "차트 데이터를 가져오지 못했습니다."})
             return
 
         if parsed.path == "/api/analyze":

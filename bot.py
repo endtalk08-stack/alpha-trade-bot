@@ -7142,66 +7142,124 @@ RIGHT_MARKET_BOARD_SYMBOLS = [
 
 
 def _right_sidebar_kr_rows(limit=15):
-    """국내 실시간 목록. 기존 Naver 모바일 주식 랭킹 API를 재사용한다.
-    거래대금 필드가 있으면 거래대금 기준으로 정렬하고, 공급자가 순위만 제공하면
-    그 순서를 그대로 사용한다. 화면에서는 실제 수신값만 표시한다.
+    """국내 실시간 거래대금 상위.
+
+    기존 m.stock.naver.com/api/stocks/tradingVolume 엔드포인트는 현재 응답이
+    비어 있거나 구조가 달라질 수 있어, Naver의 공개 거래상위 HTML 페이지를
+    KOSPI/KOSDAQ 각각 읽어 실제 거래대금 컬럼으로 합산·재정렬한다.
     """
-    url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
-    res = HTTP_SESSION.get(
-        url,
-        timeout=2.5,
-        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"},
-    )
-    res.raise_for_status()
-    payload = res.json()
-    stocks = payload.get("stocks", []) if isinstance(payload, dict) else []
-    rows = []
-    for idx, item in enumerate(stocks):
-        if not isinstance(item, dict):
-            continue
-        code = str(item.get("itemCode") or item.get("code") or "").strip()
-        name = str(item.get("stockName") or item.get("itemName") or item.get("name") or "").strip()
-        if not code or not name:
-            continue
-        price = item.get("closePrice") or item.get("currentPrice") or item.get("price")
-        change = item.get("fluctuationRate") or item.get("changeRate") or item.get("changePercent")
-        change_amount = item.get("fluctuationValue") or item.get("change")
-        tv = item.get("accumulatedTradingValue") or item.get("tradingValue") or item.get("accumulatedTradingAmount")
+    def _num(value):
+        if value is None:
+            return None
+        text = str(value).replace(",", "").replace("%", "").strip()
+        if text in {"", "-", "nan", "None"}:
+            return None
         try:
-            price_num = float(str(price).replace(",", "")) if price is not None else None
+            return float(text)
         except Exception:
-            price_num = None
+            return None
+
+    def _fetch_exchange(sosok):
+        url = f"https://finance.naver.com/sise/sise_quant.naver?sosok={sosok}"
+        res = HTTP_SESSION.get(
+            url,
+            timeout=3.5,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": "https://finance.naver.com/",
+            },
+        )
+        res.raise_for_status()
+        tables = pd.read_html(io.StringIO(res.text))
+        candidates = []
+        for table in tables:
+            if not isinstance(table, pd.DataFrame) or table.empty:
+                continue
+            cols = [str(c).strip() for c in table.columns]
+            # 멀티인덱스/불필요 테이블을 제외하고 거래상위 표만 선택한다.
+            flat_cols = [str(c[-1] if isinstance(c, tuple) else c).strip() for c in table.columns]
+            if "종목명" in flat_cols and "거래대금" in flat_cols:
+                candidates.append(table)
+        if not candidates:
+            return []
+
+        table = candidates[0].copy()
+        table.columns = [str(c[-1] if isinstance(c, tuple) else c).strip() for c in table.columns]
+        rows = []
+        for _, item in table.iterrows():
+            name = str(item.get("종목명", "")).strip()
+            if not name or name in {"종목명", "NaN"} or name.lower() == "nan":
+                continue
+            # 종목명 셀에는 코드 링크가 따로 있으므로 HTML에서 코드가 필요한 경우
+            # 페이지 내 href를 직접 다시 요청하지 않고, 기존 Naver 모바일 API가
+            # 주는 코드가 없다는 점을 고려해 name을 임시 식별자로 둔다.
+            # 이후 국내 분석 연결을 위해 같은 표의 링크를 추출하는 보조 파싱을 사용한다.
+            price = _num(item.get("현재가"))
+            change = _num(item.get("전일비"))
+            pct = _num(item.get("등락률"))
+            tv = _num(item.get("거래대금"))
+            rows.append({
+                "rank": 0,
+                "code": "",
+                "symbol": "",
+                "name": name,
+                "price": price,
+                "change_pct": pct,
+                "change": change,
+                "trading_value": tv,
+                "currency": "KRW",
+                "market": "국내",
+                "source": "Naver Finance",
+                "exchange": "KOSPI" if str(sosok) == "0" else "KOSDAQ",
+            })
+        return rows
+
+    # HTML 표만으로도 현재가/등락률/거래대금은 안정적으로 확보한다.
+    # 종목 클릭 시 기존 검색 기능을 유지하기 위해 같은 페이지 HTML에서 코드 href를
+    # 별도로 추출해 순서대로 보강한다.
+    def _attach_codes(sosok, rows):
+        if not rows:
+            return rows
         try:
-            change_num = float(str(change).replace("%", "").replace(",", "")) if change is not None else None
-        except Exception:
-            change_num = None
-        try:
-            change_amount_num = float(str(change_amount).replace(",", "")) if change_amount is not None else None
-        except Exception:
-            change_amount_num = None
-        try:
-            tv_num = float(str(tv).replace(",", "")) if tv is not None else None
-        except Exception:
-            tv_num = None
-        rows.append({
-            "rank": idx + 1,
-            "code": code,
-            "symbol": code,
-            "name": name,
-            "price": price_num,
-            "change_pct": change_num,
-            "change": change_amount_num,
-            "trading_value": tv_num,
-            "currency": "KRW",
-            "market": "국내",
-            "source": "Naver",
-        })
-    # 실제 거래대금 필드가 존재하는 경우에만 거래대금으로 재정렬한다.
-    if any(r.get("trading_value") is not None for r in rows):
-        rows = sorted(rows, key=lambda r: (r.get("trading_value") is not None, r.get("trading_value") or 0), reverse=True)
-        for i, row in enumerate(rows, 1):
-            row["rank"] = i
-    return rows[:limit]
+            url = f"https://finance.naver.com/sise/sise_quant.naver?sosok={sosok}"
+            res = HTTP_SESSION.get(
+                url,
+                timeout=3.5,
+                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"},
+            )
+            text = res.text
+            # 종목 링크의 code=XXXXXX와 링크 직전 텍스트를 가볍게 매칭한다.
+            import re as _re
+            pairs = []
+            for m in _re.finditer(r'<a[^>]+href=["\'][^"\']*code=(\d{6})[^"\']*["\'][^>]*>(.*?)</a>', text, flags=_re.I | _re.S):
+                code = m.group(1)
+                label = _re.sub(r"<[^>]+>", "", m.group(2))
+                label = html.unescape(label).strip()
+                if label:
+                    pairs.append((label, code))
+            by_name = {}
+            for label, code in pairs:
+                by_name.setdefault(label, code)
+            for row in rows:
+                code = by_name.get(row.get("name"), "")
+                row["code"] = code
+                row["symbol"] = code or row.get("name", "")
+        except Exception as exc:
+            print(f"[RIGHT MARKET BOARD] Naver code attach failed ({sosok}): {type(exc).__name__}: {exc}")
+        return rows
+
+    all_rows = []
+    for sosok in (0, 1):
+        rows = _fetch_exchange(sosok)
+        rows = _attach_codes(sosok, rows)
+        all_rows.extend(rows)
+
+    all_rows = [r for r in all_rows if r.get("name") and r.get("trading_value") is not None]
+    all_rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
+    for i, row in enumerate(all_rows[:limit], 1):
+        row["rank"] = i
+    return all_rows[:limit]
 
 
 def _right_sidebar_us_rows(limit=15):

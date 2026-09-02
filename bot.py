@@ -11355,8 +11355,24 @@ const voteKey = 'vote_' + symbol;
             // STEP 21: 최근검색종목 메뉴에서 사용할 최소 검색 이력을 로컬에 저장한다.
             try {
                 const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
-                const recentItem = { name: cleanQ, symbol: cleanQ.toUpperCase(), price: null, change_pct: null, currency: '' };
-                const next = [recentItem, ...recent.filter(x => String(x?.name || '').toUpperCase() !== cleanQ.toUpperCase())].slice(0, 15);
+                // STEP 40: 최근검색종목은 검색에 사용한 코드가 아니라
+                // 화면에서 사용한 실제 표시명을 우선 저장한다.
+                // 우측 국내/해외/코인 목록에서 종목을 클릭한 경우에는
+                // displayNameOverride에 전달된 종목명을 그대로 보존한다.
+                const recentDisplayName = displayNameHint || cleanQ;
+                const recentSymbol = cleanQ.toUpperCase();
+                const recentItem = {
+                    name: recentDisplayName,
+                    symbol: recentSymbol,
+                    price: null,
+                    change_pct: null,
+                    currency: ''
+                };
+                const next = [recentItem, ...recent.filter(x => {
+                    const oldSymbol = String(x?.symbol || '').toUpperCase();
+                    const oldName = String(x?.name || '').toUpperCase();
+                    return oldSymbol !== recentSymbol && oldName !== recentSymbol;
+                })].slice(0, 15);
                 localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
             } catch (e) {}
 
@@ -12622,7 +12638,24 @@ if ((response && !response.ok) || data.error) {
             }
             if (menu === 'recent') {
                 const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
-                renderRightMarketRows(recent.slice(0, 15).map((x,i) => ({...x, rank:i+1})));
+                // STEP 40: 과거 버전에서 코드만 저장된 이력은 현재 국내 실시간
+                // 목록에 같은 종목이 있으면 그 한글명을 복원한다.
+                const krRows = Array.isArray(rightMarketCache.kr) ? rightMarketCache.kr : [];
+                const krNameMap = {};
+                krRows.forEach(row => {
+                    const sym = String(row?.symbol || '').toUpperCase();
+                    const nm = String(row?.name || '').trim();
+                    if (sym && nm && sym !== nm) krNameMap[sym] = nm;
+                });
+                const normalizedRecent = recent.slice(0, 15).map((x,i) => {
+                    const symbol = String(x?.symbol || '').toUpperCase();
+                    const name = String(x?.name || '').trim();
+                    const resolvedName = (name && name.toUpperCase() !== symbol)
+                        ? name
+                        : (krNameMap[symbol] || name || symbol);
+                    return {...x, name: resolvedName, symbol, rank:i+1};
+                });
+                renderRightMarketRows(normalizedRecent);
                 if (!recent.length && list) list.innerHTML = '<div class="right-market-empty">최근 검색 종목이 없습니다.</div>';
                 return;
             }

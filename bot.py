@@ -1,4 +1,5 @@
 import os
+import ast
 
 # 실적 캘린더 첫 화면에 보여줄 주요 예정 실적 수
 EARNINGS_PREVIEW_COUNT = 4
@@ -3710,7 +3711,76 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
     except Exception as exc:
         print(f"[DOMESTIC NAVER NEW CHART] {code} failed: {type(exc).__name__}: {exc}")
 
-    # 3) Naver trend 120일 fallback
+    # 3) Naver 공식/공개 JSON형 과거시세 fallback
+    # 일부 국내 종목(특히 외국계/Reg.S 종목)은 fchart와 신형 chart endpoint 중
+    # 하나가 404를 반환할 수 있다. 이 경우 api.finance.naver.com의 siseJson
+    # 엔드포인트에서 동일한 일봉 OHLCV를 받아 차트를 구성한다.
+    try:
+        end_dt = datetime.now().strftime("%Y%m%d")
+        start_dt = (datetime.now() - timedelta(days=365 * 6 + 30)).strftime("%Y%m%d")
+        url = (
+            "https://api.finance.naver.com/siseJson.naver"
+            f"?symbol={code}&requestType=1&startTime={start_dt}&endTime={end_dt}&timeframe=day"
+        )
+        res = HTTP_SESSION.get(url, timeout=2.2, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": f"https://finance.naver.com/item/main.naver?code={code}",
+        })
+        if res.status_code == 200 and res.text.strip():
+            raw = res.text.strip()
+            try:
+                rows = json.loads(raw)
+            except Exception:
+                # siseJson은 JSON처럼 보이지만 환경에 따라 JavaScript-like
+                # 배열 텍스트를 반환할 수 있어 literal_eval을 보조 사용한다.
+                normalized = raw
+                normalized = re.sub(r'\bnull\b', 'None', normalized)
+                normalized = re.sub(r'\btrue\b', 'True', normalized, flags=re.I)
+                normalized = re.sub(r'\bfalse\b', 'False', normalized, flags=re.I)
+                rows = ast.literal_eval(normalized)
+
+            if isinstance(rows, list) and len(rows) >= 15:
+                records = []
+                for item in rows:
+                    if not isinstance(item, (list, tuple)) or len(item) < 6:
+                        continue
+                    try:
+                        # [날짜, 시가, 고가, 저가, 종가, 거래량, ...]
+                        d = pd.to_datetime(str(item[0]))
+                        op = float(str(item[1]).replace(",", ""))
+                        hi = float(str(item[2]).replace(",", ""))
+                        lo = float(str(item[3]).replace(",", ""))
+                        cl = float(str(item[4]).replace(",", ""))
+                        vol = float(str(item[5] or 0).replace(",", ""))
+                        if not any(np.isnan(v) for v in (op, hi, lo, cl)):
+                            records.append({
+                                "Date": d,
+                                "Open": op,
+                                "High": hi,
+                                "Low": lo,
+                                "Close": cl,
+                                "Volume": vol,
+                            })
+                    except Exception:
+                        continue
+
+                if len(records) >= 15:
+                    df = pd.DataFrame(records).drop_duplicates(subset=["Date"]).set_index("Date").sort_index()
+                    df.attrs["_gaemi_raw_df"] = df.copy()
+                    if anchor_price and anchor_price > 0 and not df.empty:
+                        last_close = float(df["Close"].iloc[-1])
+                        if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                            ratio = anchor_price / last_close
+                            df["Open"] *= ratio
+                            df["High"] *= ratio
+                            df["Low"] *= ratio
+                            df["Close"] *= ratio
+                    return df
+    except Exception as exc:
+        print(f"[DOMESTIC NAVER SISEJSON] {code} failed: {type(exc).__name__}: {exc}")
+
+    # 4) Naver trend 120일 fallback
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
         res = HTTP_SESSION.get(url, timeout=2.0).json()
@@ -3732,7 +3802,7 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
     except Exception as exc:
         print(f"[DOMESTIC NAVER TREND] {code} failed: {type(exc).__name__}: {exc}")
 
-    # 3) Yahoo 최종 fallback (.KS/.KQ 순차 확인)
+    # 5) Yahoo 최종 fallback (.KS/.KQ 순차 확인)
     for suffix in [".KS", ".KQ"]:
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"

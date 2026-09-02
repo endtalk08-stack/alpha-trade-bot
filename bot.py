@@ -1259,77 +1259,137 @@ LAST_US_LEADING_STOCKS_FETCH = {}
 US_LEADING_STOCKS_TTL = 300
 
 def _fetch_us_stock_snapshot(item):
+    """업종별 핵심 후보의 실제 현재가/당일 등락률/시가총액을 조회한다."""
     symbol, name = item
     try:
         encoded = urllib.parse.quote(symbol)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=3mo&interval=1d"
-        res = HTTP_SESSION.get(url, timeout=5.0)
+        res = HTTP_SESSION.get(
+            url,
+            timeout=5.0,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
+        )
         res.raise_for_status()
-        payload = res.json()
-        result = (payload.get("chart", {}).get("result") or [None])[0]
+        result = (res.json().get("chart", {}).get("result") or [None])[0]
         if not result:
             return None
-        closes = (result.get("indicators", {}).get("quote", [{}])[0].get("close") or [])
-        closes = [float(x) for x in closes if x is not None and np.isfinite(float(x))]
-        if len(closes) < 22:
+
+        quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+        closes = quote.get("close") or []
+        clean = []
+        for value in closes:
+            try:
+                v = float(value)
+                if np.isfinite(v):
+                    clean.append(v)
+            except Exception:
+                continue
+        if len(clean) < 2:
             return None
 
-        latest = closes[-1]
-        prev = closes[-2]
-        week_base = closes[-6] if len(closes) >= 6 else closes[0]
-        month_base = closes[-22] if len(closes) >= 22 else closes[0]
-        current = (latest / prev - 1.0) * 100.0 if prev else 0.0
-        week1 = (latest / week_base - 1.0) * 100.0 if week_base else 0.0
-        month1 = (latest / month_base - 1.0) * 100.0 if month_base else 0.0
+        latest = clean[-1]
+        prev = clean[-2]
+        current = ((latest / prev) - 1.0) * 100.0 if prev else 0.0
 
-        # 최근 20거래일을 카드 폭에 맞게 0~34로 정규화한 실제 가격 흐름
-        spark_src = closes[-20:]
+        # 기존 카드의 최근 20거래일 미니차트 유지
+        spark_src = clean[-20:]
         lo, hi = min(spark_src), max(spark_src)
         if hi - lo < 1e-12:
             spark = [17.0] * len(spark_src)
         else:
-            spark = [round(31.0 - ((v - lo) / (hi - lo)) * 28.0, 1) for v in spark_src]
+            spark = [
+                round(31.0 - ((v - lo) / (hi - lo)) * 28.0, 1)
+                for v in spark_src
+            ]
+
+        # 시가총액은 후보군의 "핵심 10개" 검증/구성용 실제 데이터
+        market_cap = None
+        try:
+            qurl = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={encoded}"
+            qres = HTTP_SESSION.get(
+                qurl,
+                timeout=5.0,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
+            )
+            if qres.ok:
+                rows = qres.json().get("quoteResponse", {}).get("result") or []
+                if rows and rows[0].get("marketCap") is not None:
+                    market_cap = float(rows[0]["marketCap"])
+        except Exception:
+            pass
 
         return {
             "symbol": symbol,
             "name": name,
             "price": latest,
             "current": current,
-            "week1": week1,
-            "month1": month1,
+            "market_cap": market_cap,
             "sparkline": spark,
         }
     except Exception as exc:
         print(f"[US STOCK] {symbol} failed: {type(exc).__name__}: {exc}")
         return None
 
+
 def fetch_us_leading_stocks(sector_symbol, force=False):
+    """
+    업종별 핵심 종목군 10개 중 당일 상승률이 높은 TOP 5를 선정한다.
+
+    - 후보군: 업종별 핵심 종목 10개
+    - 선정: 당일 상승률 내림차순
+    - 거래대금/1W/1M/20일 평균 거래대금은 선정에 사용하지 않음
+    - 시가총액은 후보군 자체를 핵심 종목으로 구성하는 기준이며,
+      TOP 5의 당일 순위에는 직접 가중하지 않음
+    """
     sector_symbol = str(sector_symbol or "").strip().upper()
     candidates = US_SECTOR_STOCK_UNIVERSE.get(sector_symbol)
     if not candidates:
         return []
 
     now = time.time()
-    if (not force and sector_symbol in CACHED_US_LEADING_STOCKS
-            and now - LAST_US_LEADING_STOCKS_FETCH.get(sector_symbol, 0.0) < US_LEADING_STOCKS_TTL):
+    if (
+        not force
+        and sector_symbol in CACHED_US_LEADING_STOCKS
+        and now - LAST_US_LEADING_STOCKS_FETCH.get(sector_symbol, 0.0) < US_LEADING_STOCKS_TTL
+    ):
         return CACHED_US_LEADING_STOCKS[sector_symbol]
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        snapshots = list(executor.map(_fetch_us_stock_snapshot, candidates))
-    snapshots = [x for x in snapshots if x]
-    if not snapshots:
+    with ThreadPoolExecutor(max_workers=min(10, max(1, len(candidates)))) as executor:
+        rows = list(executor.map(_fetch_us_stock_snapshot, candidates))
+
+    rows = [r for r in rows if r and r.get("price") is not None]
+    if not rows:
         return []
 
-    # 현재/1주/1개월을 같은 비중으로 표준화하여 업종 내부 상대강도를 계산한다.
-    for row in snapshots:
-        row["_score"] = 0.45 * row["current"] + 0.35 * row["week1"] + 0.20 * row["month1"]
-    snapshots.sort(key=lambda x: x["_score"], reverse=True)
+    # 핵심 10개 안에서 "오늘 가장 많이 오른 종목" 순.
+    # 동률일 때만 시가총액을 보조 기준으로 사용한다.
+    rows.sort(
+        key=lambda r: (
+            r.get("current", float("-inf")),
+            r.get("market_cap") or 0.0,
+        ),
+        reverse=True,
+    )
 
-    top = [{k: v for k, v in row.items() if k != "_score"} for row in snapshots[:5]]
+    top = [
+        {
+            "symbol": r["symbol"],
+            "name": r["name"],
+            "price": r["price"],
+            "current": r["current"],
+            "sparkline": r["sparkline"],
+        }
+        for r in rows[:5]
+    ]
+
     CACHED_US_LEADING_STOCKS[sector_symbol] = top
     LAST_US_LEADING_STOCKS_FETCH[sector_symbol] = now
-    return top
 
+    print(
+        f"[US LEADING STOCKS] {sector_symbol} TOP5: "
+        + ", ".join(f"{r['symbol']}({r['current']:+.2f}%)" for r in top)
+    )
+    return top
 
 def fetch_single_world_item(item):
     name = item["name"]
@@ -5853,81 +5913,6 @@ def run_full_pipeline(query):
     return result_data
 
 # ----------------------------------------------------
-# 7. 텔레그램 봇 실시간 인터랙션 엔진
-# ----------------------------------------------------
-def send_telegram_msg(chat_id, text):
-    if not TELEGRAM_TOKEN:
-        return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        HTTP_SESSION.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=2.5)
-    except Exception:
-        pass
-
-def telegram_bot_worker():
-    if not TELEGRAM_TOKEN:
-        return
-    offset = 0
-    while True:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=20"
-            res = HTTP_SESSION.get(url, timeout=25).json()
-            if res.get("ok"):
-                for upd in res.get("result", []):
-                    offset = upd["update_id"] + 1
-                    msg = upd.get("message", {})
-                    chat_id = msg.get("chat", {}).get("id")
-                    text = msg.get("text", "").strip()
-
-                    if not chat_id or not text:
-                        continue
-
-                    if text.startswith("/start"):
-                        parts = text.split()
-                        if len(parts) > 1:
-                            target_q = parts[1].strip()
-                            data = run_full_pipeline(target_q)
-                            if data:
-                                reply = f"<b>{data['name']}({data['symbol']})</b> 알림 등록 완료\n\n" \
-                                        f"현재가: <b>{data['price']}</b>\n" \
-                                        f"gaemiGTP 시그널: <b>{data['quant']['win_rate_num']} 승률</b>\n" \
-                                        f"1차 진입가: {data['quant']['entry1']}\n" \
-                                        f"목표 수익가: {data['quant']['target2']}\n" \
-                                        f"손절 방어선: {data['quant']['stop_p']}\n\n" \
-                                        f"목표가 및 주요 시그널 발생 시 실시간으로 안내합니다."
-                                send_telegram_msg(chat_id, reply)
-                            else:
-                                send_telegram_msg(chat_id, f"gaemiGTP 알림봇입니다. 원하시는 종목명을 <code>/삼성전자</code> 또는 <code>/BTC</code> 형태로 입력하시면 실시간 시그널을 즉시 조회합니다.")
-                        else:
-                            send_telegram_msg(chat_id, f"gaemiGTP 텔레그램 시그널 알림봇입니다.\n\n종목명을 <code>/SK하이닉스</code>, <code>/NVDA</code>, <code>/BTC</code> 처럼 입력해 주세요.")
-                    else:
-                        query_clean = text.lstrip("/")
-                        data = run_full_pipeline(query_clean)
-                        if data:
-                            reply = f"<b>gaemiGTP 실시간 분석: {data['name']}</b> ({data['symbol']})\n" \
-                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"현재가: <b>{data['price']}</b>\n" \
-                                    f"추세 국면: {data['quant']['trend']}\n" \
-                                    f"백테스팅 승률: <b>{data['quant']['win_rate_num']}</b> ({data['quant']['rr_str']})\n" \
-                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"<b>gaemiGTP 시그널 밴드</b>\n" \
-                                    f"• 1차 진입가: {data['quant']['entry1']}\n" \
-                                    f"• 2차 분할가: {data['quant']['entry2']}\n" \
-                                    f"• 목표 수익가: {data['quant']['target2']} (+8.5%)\n" \
-                                    f"• 방어 손절선: {data['quant']['stop_p']} (-5.5%)\n" \
-                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                    f"<i>{data['quant']['guide_text']}</i>\n\n" \
-                                    f"웹에서 상세 차트 보기: https://www.gaemigtp.com"
-                            send_telegram_msg(chat_id, reply)
-                        else:
-                            send_telegram_msg(chat_id, f"'{query_clean}' 종목을 찾을 수 없습니다. 정확한 종목명을 입력해 주세요.")
-        except Exception:
-            time.sleep(2)
-
-if TELEGRAM_TOKEN:
-    threading.Thread(target=telegram_bot_worker, daemon=True).start()
-
-# ----------------------------------------------------
 # 8. 웹 프론트엔드 UI
 # ----------------------------------------------------
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -6332,7 +6317,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #rowComment { grid-column: 1; grid-row: 8; }
         #rowDart { grid-column: 1; grid-row: 9; }
         #rowSignal { grid-column: 1; grid-row: 10; }
-        #rowTelegram { grid-column: 1; grid-row: 11; }
 
         .card {
             background: var(--bg-card);
@@ -6856,7 +6840,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowVote { order: 7; }
             #rowComment { order: 8; }
             #rowSignal { order: 9; }
-            #rowTelegram { order: 10; }
             #rowWorld { order: 11; width: 100%; max-width: 832px; }
             #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
             #rowEarningsCalendar { order: 13; }
@@ -7815,6 +7798,156 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 box-sizing: border-box !important;
             }
         }
+
+        /* ============================================================
+           모바일 레이아웃 최종 격리
+           - PC의 grid-column/grid-row/height:100%를 모바일에서 전부 초기화
+           - 증시(rowWorld)가 오른쪽으로 붙는 현상 방지
+           - '왜 올라갔을까'와 높이를 공유하는 현상 방지
+           - 미국 주도업종/주도종목은 경제캘린더 아래 독립된 순서로 배치
+        ============================================================ */
+        @media (max-width: 1200px) {
+            #result-scroll-view {
+                width: 100vw !important;
+                max-width: 100vw !important;
+                padding-left: 12px !important;
+                padding-right: 12px !important;
+                box-sizing: border-box !important;
+                overflow-x: hidden !important;
+            }
+
+            .result-inner {
+                width: 100% !important;
+                max-width: 832px !important;
+                margin: 0 auto !important;
+                box-sizing: border-box !important;
+            }
+
+            .dashboard-master-grid {
+                display: flex !important;
+                flex-direction: column !important;
+                align-items: stretch !important;
+                justify-content: flex-start !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                margin: 0 auto !important;
+                gap: 14px !important;
+                box-sizing: border-box !important;
+                position: relative !important;
+            }
+
+            /* PC 2열 grid의 위치/높이 값을 모바일에서 완전 초기화 */
+            .dashboard-master-grid > * {
+                grid-column: auto !important;
+                grid-row: auto !important;
+                float: none !important;
+                position: static !important;
+                top: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                left: auto !important;
+                transform: none !important;
+                height: auto !important;
+                min-height: 0 !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                align-self: stretch !important;
+                box-sizing: border-box !important;
+            }
+
+            /* 기존 모바일 순서를 명확하게 재지정 */
+            #rowCause { order: 1 !important; }
+            #rowChart { order: 2 !important; }
+            #rowNews { order: 3 !important; }
+            #rowTrack { order: 4 !important; }
+            #rowQuant { order: 5 !important; }
+            #rowConsensus { order: 6 !important; }
+            #rowVote { order: 7 !important; }
+            #rowComment { order: 8 !important; }
+            #rowSignal { order: 9 !important; }
+            #rowWorld { order: 11 !important; }
+            #rowGlobalNews { order: 12 !important; }
+            #rowEarningsCalendar { order: 13 !important; }
+            #rowEconomicCalendar { order: 14 !important; }
+            #usLeadingRightStack { order: 15 !important; }
+            #rowDart { order: 16 !important; }
+
+            /* 주도업종 + 주도종목은 모바일에서만 하나의 세로 스택 */
+            #usLeadingRightStack {
+                display: flex !important;
+                flex-direction: column !important;
+                align-items: stretch !important;
+                gap: 14px !important;
+                position: static !important;
+                grid-column: auto !important;
+                grid-row: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                height: auto !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+                z-index: auto !important;
+            }
+
+            #usLeadingRightStack > .card {
+                position: static !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                height: auto !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+            }
+
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                grid-column: auto !important;
+                grid-row: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                height: auto !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+            }
+
+            /* 증시/왜 올라갔을까 등 카드가 서로 높이를 강제로 맞추지 않도록 */
+            #rowWorld,
+            #rowGlobalNews,
+            #rowChart,
+            #rowCause,
+            #rowNews,
+            #rowTrack,
+            #rowQuant,
+            #rowConsensus,
+            #rowVote {
+                height: auto !important;
+                min-height: 0 !important;
+                align-self: stretch !important;
+            }
+        }
+
+        /* gaemiGTP 시그널: 항상 열림 */
+        #rowSignal #signalBody {
+            display: block !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+
+        /* 미국 주도종목 클릭 가능 표시: 기존 레이아웃 크기는 유지 */
+        .us-leading-stock-item {
+            cursor: pointer;
+        }
+        .us-leading-stock-item:focus-visible {
+            outline: 2px solid var(--border-line);
+            outline-offset: -2px;
+        }
 </style>
 </head>
 <body>
@@ -8252,12 +8385,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         <!-- 8행: gaemiGTP 시그널 박스 (832px) -->
                         <div class="signal-premium-card" id="rowSignal">
-                            <div class="signal-card-header" onclick="toggleSignal()">
+                            <div class="signal-card-header">
                                 <span class="signal-card-title">gaemiGTP 시그널</span>
-                                <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
                             </div>
                             
-                            <div id="signalBody" style="display:none; margin-top:16px;">
+                            <div id="signalBody" style="display:block; margin-top:16px;">
                                 <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid rgba(16,185,129,0.2);">
                                     <div class="gauge-inner-box">
                                         <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="rWinRateGauge"></span>
@@ -8317,15 +8449,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                             </div>
                         </div>
-
-                        <!-- 9행: 텔레그램 알림 받기 버튼 (832px) -->
-                        <div id="rowTelegram" style="width:100%;">
-                            <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
-                                <span id="tgAlertBtnText">gaemiGTP 시그널 텔레그램 알림</span>
-                            </a>
-                        </div>
-
-                    </div>
+</div>
 
                 </div>
             </div>
@@ -8506,20 +8630,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (side) side.classList.remove('open');
         }
 
-        function toggleSignal() {
-            const body = document.getElementById('signalBody');
-            const arrow = document.getElementById('signalArrow');
-            if (!body || !arrow) return;
-            if (body.style.display === 'block') {
-                body.style.display = 'none';
-                arrow.style.transform = 'rotate(0deg)';
-            } else {
-                body.style.display = 'block';
-                arrow.style.transform = 'rotate(180deg)';
-            }
-        }
-
-        function renderSparklineSVG(points, isUp) {
+function renderSparklineSVG(points, isUp) {
             if (!points || points.length < 2) return '';
             const min = Math.min(...points);
             const max = Math.max(...points);
@@ -9136,15 +9247,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;
             const targetName = displayName || symbol;
-            
-            const tgLink = document.getElementById('tgAlertLink');
-            const tgBtnText = document.getElementById('tgAlertBtnText');
-            if (tgLink && tgBtnText) {
-                tgLink.href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(symbol);
-                tgBtnText.innerText = '[' + targetName + '] gaemiGTP 시그널 텔레그램 알림';
-            }
-
-            const voteKey = 'vote_' + symbol;
+const voteKey = 'vote_' + symbol;
             const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
             let vData = JSON.parse(rawVote);
             updateVoteUI(vData);
@@ -9289,7 +9392,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 const displayPrice = data.price || data.price_str;
                 const displayTime = data.time || data.now_str;
 
-                setHtml('rTitle', `${displayName} <span>(${data.symbol})</span>`);
+                const usShortName = (isKrw || !data.symbol)
+                    ? displayName
+                    : getUsShortKrName(data.symbol, displayName);
+                setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
                 setTxt('rPrice', displayPrice);
                 setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
 
@@ -10113,6 +10219,52 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     </svg>`;
         }
 
+
+        const US_SHORT_KR_NAMES = {
+            NVDA: '엔비디아',
+            AVGO: '브로드컴',
+            AMD: 'AMD',
+            MU: '마이크론',
+            MRVL: '마벨',
+            QCOM: '퀄컴',
+            TSM: 'TSMC',
+            LRCX: '램리서치',
+            AMAT: '어플라이드',
+            KLAC: 'KLA',
+            XOM: '엑손모빌',
+            CVX: '셰브론',
+            COP: '코노코필립스',
+            TSLA: '테슬라',
+            AAPL: '애플',
+            MSFT: '마이크로소프트',
+            AMZN: '아마존',
+            GOOGL: '구글',
+            META: '메타'
+        };
+
+        function getUsShortKrName(symbol, fallback) {
+            const key = String(symbol || '').trim().toUpperCase();
+            return US_SHORT_KR_NAMES[key] || String(fallback || key);
+        }
+
+        function openUsLeadingStock(symbol, name) {
+            const cleanSymbol = String(symbol || '').trim();
+            const cleanName = getUsShortKrName(cleanSymbol, name);
+            if (!cleanSymbol) return;
+
+            // 기존 종목 상세분석 진입점(doSearch)을 그대로 사용해
+            // 새로운 상세 페이지를 만들지 않는다.
+            doSearch(cleanSymbol);
+
+            // 현재 상세분석이 티커를 받는 경우에도 한글/정식명이 필요한
+            // 기존 흐름을 보완한다.
+            setTimeout(() => {
+                if (typeof loadCommunityData === 'function') {
+                    loadCommunityData(cleanSymbol, cleanName);
+                }
+            }, 0);
+        }
+
         async function loadUsLeadingStocks(sectorSymbol, sectorName) {
             const list = document.getElementById('usLeadingStockList');
             const title = document.getElementById('usLeadingStockTitle');
@@ -10136,7 +10288,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
                 const cls = value => Number(value) >= 0 ? 'up' : 'down';
                 list.innerHTML = rows.map(row => `
-                    <div class="us-leading-stock-item">
+                    <div class="us-leading-stock-item" role="button" tabindex="0"
+                         onclick="openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')"
+                         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')}">
                         <div class="us-leading-stock-name">
                             <div class="us-leading-stock-ticker">${String(row.symbol || '')}</div>
                             <div class="us-leading-stock-company">${String(row.name || '')}</div>

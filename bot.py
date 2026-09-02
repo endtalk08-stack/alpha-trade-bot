@@ -7144,122 +7144,345 @@ RIGHT_MARKET_BOARD_SYMBOLS = [
 def _right_sidebar_kr_rows(limit=15):
     """국내 실시간 거래대금 상위.
 
-    기존 m.stock.naver.com/api/stocks/tradingVolume 엔드포인트는 현재 응답이
-    비어 있거나 구조가 달라질 수 있어, Naver의 공개 거래상위 HTML 페이지를
-    KOSPI/KOSDAQ 각각 읽어 실제 거래대금 컬럼으로 합산·재정렬한다.
+    STEP 31:
+    - 기존 PC HTML(read_html) 방식은 제거한다.
+    - 우선 Naver의 공개 JSON 시장목록 endpoint를 사용한다.
+    - KOSPI/KOSDAQ을 각각 조회한 뒤 실제 거래대금 기준으로 합산 정렬한다.
+    - 해외(Yahoo) / 코인(Binance) 수집 로직은 변경하지 않는다.
+    - API 응답 필드명이 조금 달라져도 처리할 수 있도록 필드 탐색을 유연하게 한다.
     """
-    def _num(value):
+    def _clean_key(value):
+        return re.sub(r"[^a-z0-9가-힣]", "", str(value or "").lower())
+
+    def _to_number(value):
         if value is None:
             return None
-        text = str(value).replace(",", "").replace("%", "").strip()
-        if text in {"", "-", "nan", "None"}:
+        if isinstance(value, bool):
             return None
-        try:
-            return float(text)
-        except Exception:
+        if isinstance(value, (int, float)):
+            try:
+                return float(value)
+            except Exception:
+                return None
+
+        text = str(value).strip()
+        if text in {"", "-", "--", "nan", "NaN", "None", "null"}:
             return None
 
-    def _fetch_exchange(sosok):
-        url = f"https://finance.naver.com/sise/sise_quant.naver?sosok={sosok}"
+        text = (
+            text.replace(",", "")
+            .replace("%", "")
+            .replace("원", "")
+            .replace("주", "")
+            .strip()
+        )
+        try:
+            # 일반 숫자
+            return float(text)
+        except Exception:
+            pass
+
+        # 네이버가 금액을 '조/억/백만/천만' 단위 문자열로 줄 경우 처리한다.
+        m = re.match(
+            r"^([0-9.]+)조(?:\s*([0-9.]+)억)?(?:\s*([0-9.]+)만)?$",
+            text,
+        )
+        if m:
+            trillion = float(m.group(1) or 0) * 1_000_000_000_000
+            hundred_million = float(m.group(2) or 0) * 100_000_000
+            ten_thousand = float(m.group(3) or 0) * 10_000
+            return trillion + hundred_million + ten_thousand
+
+        m = re.match(r"^([0-9.]+)억(?:\s*([0-9.]+)만)?$", text)
+        if m:
+            return float(m.group(1) or 0) * 100_000_000 + float(m.group(2) or 0) * 10_000
+
+        m = re.match(r"^([0-9.]+)백만$", text)
+        if m:
+            return float(m.group(1)) * 1_000_000
+
+        m = re.match(r"^([0-9.]+)천만$", text)
+        if m:
+            return float(m.group(1)) * 10_000_000
+
+        m = re.match(r"^([0-9.]+)천$", text)
+        if m:
+            return float(m.group(1)) * 1_000
+
+        return None
+
+    def _walk_dicts(obj):
+        """JSON 응답 안의 종목 dict를 재귀적으로 찾아낸다."""
+        if isinstance(obj, dict):
+            yield obj
+            for value in obj.values():
+                yield from _walk_dicts(value)
+        elif isinstance(obj, list):
+            for value in obj:
+                yield from _walk_dicts(value)
+
+    def _find_value(item, aliases):
+        alias_set = {_clean_key(x) for x in aliases}
+        if not isinstance(item, dict):
+            return None
+
+        # 1차: 현재 dict의 직접 키
+        for key, value in item.items():
+            if _clean_key(key) in alias_set:
+                return value
+
+        # 2차: 한 단계 중첩까지 탐색
+        for value in item.values():
+            if isinstance(value, dict):
+                for key, nested in value.items():
+                    if _clean_key(key) in alias_set:
+                        return nested
+        return None
+
+    def _normalize_item(item, exchange):
+        if not isinstance(item, dict):
+            return None
+
+        name = _find_value(
+            item,
+            ["itemname", "stockName", "stockname", "name", "itemName", "종목명"],
+        )
+        code = _find_value(
+            item,
+            ["itemcode", "stockCode", "stockcode", "code", "itemCode", "종목코드"],
+        )
+        price = _find_value(
+            item,
+            ["nowPrice", "currentPrice", "closePrice", "price", "현재가"],
+        )
+        pct = _find_value(
+            item,
+            ["prevChangeRate", "changeRate", "fluctuationsRatio", "changePercent", "등락률"],
+        )
+        change = _find_value(
+            item,
+            ["changePrice", "compareToPreviousClosePrice", "change", "전일비"],
+        )
+        trading_value = _find_value(
+            item,
+            [
+                "tradingValue",
+                "accumulatedTradingValue",
+                "accumulatedTradingAmount",
+                "tradeValue",
+                "tradingAmount",
+                "dealAmount",
+                "거래대금",
+                "누적거래대금",
+            ],
+        )
+        volume = _find_value(
+            item,
+            ["accumulatedTradingVolume", "tradingVolume", "volume", "거래량"],
+        )
+
+        name = str(name or "").strip()
+        code = str(code or "").strip()
+        code = re.sub(r"[^0-9]", "", code)
+        if len(code) != 6:
+            code = ""
+        if not name or name.lower() in {"nan", "none", "null"}:
+            return None
+
+        price_num = _to_number(price)
+        pct_num = _to_number(pct)
+        change_num = _to_number(change)
+        tv_num = _to_number(trading_value)
+        volume_num = _to_number(volume)
+
+        # 거래대금 필드가 없을 경우에만 현재가×누적거래량을 보조값으로 사용한다.
+        # 실제 거래대금 필드가 있으면 반드시 그 값을 우선한다.
+        if tv_num is None and price_num is not None and volume_num is not None:
+            tv_num = price_num * volume_num
+
+        if tv_num is None:
+            return None
+
+        return {
+            "rank": 0,
+            "code": code,
+            "symbol": code or name,
+            "name": name,
+            "price": price_num,
+            "change_pct": pct_num,
+            "change": change_num,
+            "trading_value": tv_num,
+            "currency": "KRW",
+            "market": "국내",
+            "source": "Naver Stock JSON",
+            "exchange": exchange,
+        }
+
+    def _extract_items(payload):
+        """응답 구조가 result/items/data/list 중 무엇이든 종목 배열을 찾는다."""
+        preferred_keys = {
+            "items", "stocks", "stocklist", "stockitems", "result", "data", "list"
+        }
+        candidates = []
+
+        def visit(obj, depth=0):
+            if depth > 5:
+                return
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if _clean_key(key) in preferred_keys and isinstance(value, (list, dict)):
+                        candidates.append(value)
+                    visit(value, depth + 1)
+            elif isinstance(obj, list):
+                if obj and any(isinstance(x, dict) for x in obj):
+                    candidates.append(obj)
+                for value in obj[:30]:
+                    visit(value, depth + 1)
+
+        visit(payload)
+
+        # 종목명/코드가 있는 배열을 우선한다.
+        for candidate in candidates:
+            items = candidate if isinstance(candidate, list) else [candidate]
+            dict_items = [x for x in items if isinstance(x, dict)]
+            if not dict_items:
+                continue
+            score = 0
+            for x in dict_items[:10]:
+                keys = {_clean_key(k) for k in x.keys()}
+                if keys & {"itemname", "stockname", "name", "종목명"}:
+                    score += 2
+                if keys & {"itemcode", "stockcode", "code", "종목코드"}:
+                    score += 2
+                if keys & {"nowprice", "currentprice", "price", "현재가"}:
+                    score += 1
+            if score >= 2:
+                return dict_items
+        return []
+
+    def _fetch_json(url, exchange):
         res = HTTP_SESSION.get(
             url,
             timeout=3.5,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Referer": "https://finance.naver.com/",
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": "https://stock.naver.com/",
             },
         )
         res.raise_for_status()
-        tables = pd.read_html(io.StringIO(res.text))
-        candidates = []
-        for table in tables:
-            if not isinstance(table, pd.DataFrame) or table.empty:
-                continue
-            cols = [str(c).strip() for c in table.columns]
-            # 멀티인덱스/불필요 테이블을 제외하고 거래상위 표만 선택한다.
-            flat_cols = [str(c[-1] if isinstance(c, tuple) else c).strip() for c in table.columns]
-            if "종목명" in flat_cols and "거래대금" in flat_cols:
-                candidates.append(table)
-        if not candidates:
-            return []
-
-        table = candidates[0].copy()
-        table.columns = [str(c[-1] if isinstance(c, tuple) else c).strip() for c in table.columns]
+        payload = res.json()
+        items = _extract_items(payload)
         rows = []
-        for _, item in table.iterrows():
-            name = str(item.get("종목명", "")).strip()
-            if not name or name in {"종목명", "NaN"} or name.lower() == "nan":
+        seen = set()
+        for item in items:
+            row = _normalize_item(item, exchange)
+            if not row:
                 continue
-            # 종목명 셀에는 코드 링크가 따로 있으므로 HTML에서 코드가 필요한 경우
-            # 페이지 내 href를 직접 다시 요청하지 않고, 기존 Naver 모바일 API가
-            # 주는 코드가 없다는 점을 고려해 name을 임시 식별자로 둔다.
-            # 이후 국내 분석 연결을 위해 같은 표의 링크를 추출하는 보조 파싱을 사용한다.
-            price = _num(item.get("현재가"))
-            change = _num(item.get("전일비"))
-            pct = _num(item.get("등락률"))
-            tv = _num(item.get("거래대금"))
-            rows.append({
-                "rank": 0,
-                "code": "",
-                "symbol": "",
-                "name": name,
-                "price": price,
-                "change_pct": pct,
-                "change": change,
-                "trading_value": tv,
-                "currency": "KRW",
-                "market": "국내",
-                "source": "Naver Finance",
-                "exchange": "KOSPI" if str(sosok) == "0" else "KOSDAQ",
-            })
-        return rows
-
-    # HTML 표만으로도 현재가/등락률/거래대금은 안정적으로 확보한다.
-    # 종목 클릭 시 기존 검색 기능을 유지하기 위해 같은 페이지 HTML에서 코드 href를
-    # 별도로 추출해 순서대로 보강한다.
-    def _attach_codes(sosok, rows):
-        if not rows:
-            return rows
-        try:
-            url = f"https://finance.naver.com/sise/sise_quant.naver?sosok={sosok}"
-            res = HTTP_SESSION.get(
-                url,
-                timeout=3.5,
-                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"},
-            )
-            text = res.text
-            # 종목 링크의 code=XXXXXX와 링크 직전 텍스트를 가볍게 매칭한다.
-            import re as _re
-            pairs = []
-            for m in _re.finditer(r'<a[^>]+href=["\'][^"\']*code=(\d{6})[^"\']*["\'][^>]*>(.*?)</a>', text, flags=_re.I | _re.S):
-                code = m.group(1)
-                label = _re.sub(r"<[^>]+>", "", m.group(2))
-                label = html.unescape(label).strip()
-                if label:
-                    pairs.append((label, code))
-            by_name = {}
-            for label, code in pairs:
-                by_name.setdefault(label, code)
-            for row in rows:
-                code = by_name.get(row.get("name"), "")
-                row["code"] = code
-                row["symbol"] = code or row.get("name", "")
-        except Exception as exc:
-            print(f"[RIGHT MARKET BOARD] Naver code attach failed ({sosok}): {type(exc).__name__}: {exc}")
+            key = row.get("code") or row.get("name")
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(row)
         return rows
 
     all_rows = []
-    for sosok in (0, 1):
-        rows = _fetch_exchange(sosok)
-        rows = _attach_codes(sosok, rows)
-        all_rows.extend(rows)
 
-    all_rows = [r for r in all_rows if r.get("name") and r.get("trading_value") is not None]
-    all_rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
-    for i, row in enumerate(all_rows[:limit], 1):
+    # 1차: 현재 stock.naver.com 시장목록 JSON의 거래대금 정렬.
+    # 2차: m.stock.naver.com front-api의 거래 정렬.
+    # 둘 다 실패할 때만 기존 PC HTML을 최후의 fallback으로 사용한다.
+    for exchange_code, exchange_name in (("KOSPI", "KOSPI"), ("KOSDAQ", "KOSDAQ")):
+        fetched = False
+        primary_urls = [
+            (
+                "https://stock.naver.com/api/domestic/market/stock/default"
+                f"?tradeType=KRX&marketType={exchange_code}&orderType=trading&startIdx=0&pageSize=50"
+            ),
+            (
+                "https://m.stock.naver.com/front-api/stock/domestic/stockList"
+                f"?sortType=trading&category={exchange_code}&page=1&pageSize=50"
+            ),
+        ]
+        for url in primary_urls:
+            try:
+                rows = _fetch_json(url, exchange_name)
+                if rows:
+                    all_rows.extend(rows)
+                    fetched = True
+                    break
+            except Exception as exc:
+                print(
+                    f"[RIGHT MARKET BOARD] KR {exchange_name} JSON failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        if fetched:
+            continue
+
+        # 최후 fallback: 기존 PC 거래상위 표. JSON이 일시적으로 막힌 경우에도
+        # 국내 기능만 계속 동작하도록 유지한다.
+        try:
+            url = f"https://finance.naver.com/sise/sise_quant.naver?sosok={0 if exchange_name == 'KOSPI' else 1}"
+            res = HTTP_SESSION.get(
+                url,
+                timeout=3.5,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": "https://finance.naver.com/",
+                },
+            )
+            res.raise_for_status()
+            tables = pd.read_html(io.StringIO(res.text))
+            for table in tables:
+                if not isinstance(table, pd.DataFrame) or table.empty:
+                    continue
+                flat_cols = [
+                    str(c[-1] if isinstance(c, tuple) else c).strip()
+                    for c in table.columns
+                ]
+                if "종목명" not in flat_cols or "거래대금" not in flat_cols:
+                    continue
+                table = table.copy()
+                table.columns = flat_cols
+                for _, item in table.iterrows():
+                    row = _normalize_item(
+                        {
+                            "종목명": item.get("종목명"),
+                            "현재가": item.get("현재가"),
+                            "전일비": item.get("전일비"),
+                            "등락률": item.get("등락률"),
+                            "거래대금": item.get("거래대금"),
+                        },
+                        exchange_name,
+                    )
+                    if row:
+                        all_rows.append(row)
+                break
+        except Exception as exc:
+            print(
+                f"[RIGHT MARKET BOARD] KR {exchange_name} HTML fallback failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    # KOSPI/KOSDAQ 중복 종목 제거 후 실제 거래대금 내림차순.
+    unique = {}
+    for row in all_rows:
+        key = row.get("code") or row.get("name")
+        if not key:
+            continue
+        old = unique.get(key)
+        if old is None or (row.get("trading_value") or 0) > (old.get("trading_value") or 0):
+            unique[key] = row
+
+    rows = sorted(
+        unique.values(),
+        key=lambda r: r.get("trading_value") or 0,
+        reverse=True,
+    )[:limit]
+    for i, row in enumerate(rows, 1):
         row["rank"] = i
-    return all_rows[:limit]
+    return rows
 
 
 def _right_sidebar_us_rows(limit=15):

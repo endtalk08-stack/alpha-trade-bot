@@ -5840,7 +5840,12 @@ def analyze_global_impact(formal_name, market_name, world_board, stock_news,
     earnings_score=0
     earnings_detail="실적 실제값과 예상값을 함께 확인할 수 없음"
     earnings_event=_find_earnings_event(formal_name,symbol,market_calendar)
-    alpha_earnings=fetch_alpha_vantage_earnings(symbol) if market_name=="미국주식" else {}
+    # STEP 13: 이미 optional 단계에서 수집한 실적 데이터를 재사용한다.
+    # 함수 내부에서 Alpha Vantage EARNINGS를 다시 호출하지 않는다.
+    if market_name == "미국주식":
+        alpha_earnings = alpha_earnings if isinstance(alpha_earnings, dict) else {}
+    else:
+        alpha_earnings = {}
     if earnings_event:
         a=_safe_float(earnings_event.get("actual_eps")); e=_safe_float(earnings_event.get("expected_eps"))
         if (a is None or e is None) and alpha_earnings.get("quarterly"):
@@ -5963,8 +5968,12 @@ def build_market_information(global_news):
         text=base+'.'
     return {"topic":g['topic'],"text":text,"repeat_count":n,"source_count":sc,"evidence":g['items'][:6]}
 
-def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol=""):
-    """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다."""
+def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol="", alpha_earnings=None):
+    """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다.
+
+    STEP 13: 호출자가 이미 확보한 Alpha Vantage 실적 데이터를 재사용한다.
+    분석 함수 내부에서 동일 심볼의 EARNINGS API를 다시 호출하지 않는다.
+    """
     reasons = []
 
     # 1. 시장
@@ -6300,6 +6309,9 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
 # ----------------------------------------------------
 # 6. 전체 통합 파이프라인
 # ----------------------------------------------------
+# STEP 13: 분석 함수 간 데이터 재사용
+# optional 단계에서 수집한 Alpha Vantage 실적 데이터를 movement 분석에
+# 그대로 전달해 동일 종목의 EARNINGS 재호출을 제거한다.
 def _safe_future_result(future, default, label, timeout=None):
     """외부 API 하나가 실패해도 전체 /api/analyze가 500으로 끝나지 않게 한다."""
     if future is None:
@@ -6374,6 +6386,7 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
                 "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
                 "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+                "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
                 "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
                 "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
                 "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
@@ -6394,6 +6407,7 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             global_news = merge_news_sources(optional_results.get("global_news_rss") or [], optional_results.get("api_news") or [])
             macro_snapshot = optional_results.get("macro_snapshot") or {}
             consensus = optional_results.get("consensus")
+            alpha_earnings = optional_results.get("alpha_earnings") or {}
             dart_disclosures = optional_results.get("dart_disclosures") or []
             domestic_flow = optional_results.get("domestic_flow")
             world_board = CACHED_WORLD_BOARD or []
@@ -6404,7 +6418,8 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                     raw_price=raw_price, df=df, formal_name=formal_name, market_name=market_name,
                     world_board=world_board, stock_news=stock_news, dart_disclosures=dart_disclosures,
                     market_index_name=market_index_name, domestic_flow=domestic_flow, global_news=global_news,
-                    consensus=consensus, macro_snapshot=macro_snapshot, market_calendar=market_calendar, symbol=symbol
+                    consensus=consensus, macro_snapshot=macro_snapshot, market_calendar=market_calendar, symbol=symbol,
+                    alpha_earnings=alpha_earnings
                 )
             except Exception as exc:
                 print("[ANALYSIS ENRICH][MOVEMENT] 오류:", repr(exc))
@@ -6650,6 +6665,7 @@ def run_full_pipeline(query, lightweight=False):
             "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
             "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
             "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+            "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
             "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
             "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
             "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
@@ -6661,6 +6677,7 @@ def run_full_pipeline(query, lightweight=False):
         macro_snapshot = optional_results.get("macro_snapshot") or {}
         ticker_news = optional_results.get("ticker_news") or []
         consensus = optional_results.get("consensus")
+        alpha_earnings = optional_results.get("alpha_earnings") or {}
         dart_disclosures = optional_results.get("dart_disclosures") or []
         domestic_flow = optional_results.get("domestic_flow")
 
@@ -6675,6 +6692,7 @@ def run_full_pipeline(query, lightweight=False):
     stock_news = merge_news_sources(stock_news_rss, ticker_news)
     global_news = merge_news_sources(global_news_rss, api_news)
     consensus = optional_results.get("consensus")
+    alpha_earnings = optional_results.get("alpha_earnings") or {}
     dart_disclosures = optional_results.get("dart_disclosures") or []
     domestic_flow = optional_results.get("domestic_flow")
 
@@ -6723,7 +6741,8 @@ def run_full_pipeline(query, lightweight=False):
         consensus=consensus,
         macro_snapshot=macro_snapshot,
         market_calendar=market_calendar,
-        symbol=symbol
+        symbol=symbol,
+        alpha_earnings=alpha_earnings
         )
     except Exception as exc:
         print("[MOVEMENT] 분석 엔진 오류:", repr(exc))

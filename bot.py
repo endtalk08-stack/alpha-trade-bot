@@ -9385,6 +9385,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .right-market-change.down { color:#38a8ff; }
         .right-market-empty { padding:28px 15px; color:var(--text-muted); text-align:center; font-size:.78rem; line-height:1.6; }
         #right-market-icons { width:44px; min-width:44px; border-left:1px solid var(--border-line); display:flex; flex-direction:column; align-items:center; padding-top:8px; gap:7px; background:var(--bg-body); }
+        /* 테마 버튼은 우측 시장 레일과 겹치지 않도록 우측 여백을 확보한다. */
+        #themeToggleBtn { position: relative; z-index: 13000; }
+        header { padding-right: 60px; }
         .right-market-icon-btn { width:36px; height:42px; border:0; border-radius:9px; background:transparent; color:var(--text-sub); cursor:pointer; font-size:1.05rem; font-family:Arial, sans-serif; font-weight:600; display:flex; align-items:center; justify-content:center; transition:.15s; }
         .right-market-icon-btn:hover, .right-market-icon-btn.active { background:var(--bg-card); color:var(--text-title); }
         .right-market-close { font-size:1.25rem; margin-bottom:4px; }
@@ -9410,6 +9413,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
            화면 위에 오버레이되도록 한다. */
         @media (max-width: 560px) {
             body { overflow-x: hidden; }
+            /* 고정 우측 레일과 겹치지 않도록 기존 다크/화이트 전환 버튼의 가시 영역을 확보한다. */
+            header { padding-right: 60px !important; }
             #content-wrapper {
                 width: 100% !important;
                 margin-left: 0 !important;
@@ -9462,8 +9467,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
 
-        /* STEP 27: 모바일에서도 오른쪽 사이드바 열기 버튼은 항상 보이게 한다.
-           패널 내용은 닫힌 상태에서 숨기고, 가운데 콘텐츠의 레이아웃에는 영향을 주지 않는다. */
+        /* STEP 28: 오른쪽 열기/닫기 버튼을 사이드바 최상단에 고정한다.
+           다크/화이트 테마 버튼과 겹치지 않도록 헤더의 테마 버튼은 항상 위에 보존한다.
+           가운데 콘텐츠의 위치/폭에는 영향을 주지 않는다. */
+        .right-market-close {
+            order: -1;
+        }
+        #themeToggleBtn {
+            position: relative;
+            z-index: 13000;
+        }
         @media (max-width: 560px) {
             #right-market-rail {
                 display: flex !important;
@@ -9513,6 +9526,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 border-radius: 9px !important;
                 font-size: 1.15rem !important;
                 line-height: 1 !important;
+                order: -1 !important;
             }
             #right-market-rail:not(.collapsed) {
                 width: min(320px, 92vw) !important;
@@ -12194,7 +12208,7 @@ if ((response && !response.ok) || data.error) {
             document.body.classList.remove('right-market-collapsed');
             const btn = rail.querySelector('.right-market-close');
             if (btn) {
-                btn.textContent = isOpen ? '»' : '«';
+                btn.textContent = isOpen ? '«' : '»';
                 btn.title = isOpen ? '닫기' : '열기';
             }
         }
@@ -12253,7 +12267,7 @@ if ((response && !response.ok) || data.error) {
             <div class="right-market-list" id="rightMarketList"><div class="right-market-empty">실시간 시장 데이터를 불러오는 중입니다.</div></div>
         </section>
         <nav id="right-market-icons" aria-label="시장 메뉴">
-            <button class="right-market-icon-btn right-market-close" onclick="toggleRightMarket()" title="닫기/열기">»</button>
+            <button class="right-market-icon-btn right-market-close" onclick="toggleRightMarket()" title="오른쪽 사이드바 열기/닫기">»</button>
             <button class="right-market-icon-btn active" data-right-menu="live" onclick="selectRightMenu('live')" title="실시간">◉</button>
             <button class="right-market-icon-btn" data-right-menu="favorite" onclick="selectRightMenu('favorite')" title="관심">♡</button>
             <button class="right-market-icon-btn" data-right-menu="recent" onclick="selectRightMenu('recent')" title="최근검색종목">◷</button>

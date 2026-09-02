@@ -3501,25 +3501,49 @@ def _refresh_domestic_candles_from_naver(code):
 
 
 def _fetch_domestic_candles_uncached(code, anchor_price=None):
-    # STEP 12: 국내주식 첫 검색에서는 느린 Naver 1200일봉을 기다리지 않는다.
-    # Yahoo .KS/.KQ 5년봉을 병렬 조회해 먼저 유효한 데이터를 반환하고,
-    # Naver 1200일봉은 백그라운드에서 캐시를 정확한 원본으로 보강한다.
-    fast_df = _parse_yahoo_domestic_candles(code)
-    if fast_df is not None and len(fast_df) >= 250:
-        fast_df.attrs["_gaemi_raw_df"] = fast_df.copy()
-        try:
-            # 현재 요청을 막지 않고 Naver 원본으로 캐시를 갱신한다.
-            _perf_submit(OPTIONAL_API_EXECUTOR, _refresh_domestic_candles_from_naver, code)
-        except Exception:
-            pass
-        return fast_df
+    """국내주식 일봉 원본 조회.
 
-    # Yahoo가 실패하면 기존 Naver 1200일봉을 동기 fallback으로 사용한다.
-    df = _fetch_domestic_candles_naver_uncached(code)
-    if df is not None and len(df) >= 15:
-        return df
+    STEP 12의 Yahoo 우선 경로에서 국내 종목이 "실제 데이터를 가져오지
+    못했습니다"로 끝나는 문제가 확인되어, 검증된 Naver 경로를 우선한다.
+    Yahoo는 Naver가 실패했을 때의 최종 fallback으로만 사용한다.
+    이렇게 하면 기존 국내 퀀트/차트의 데이터 안정성을 우선하면서
+    공용 캐시와 single-flight 효과는 그대로 유지할 수 있다.
+    """
+    # 1) 검증된 Naver 1200일봉
+    try:
+        url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=1200&requestType=0"
+        res = HTTP_SESSION.get(url, timeout=2.2)
+        if res.status_code == 200 and '<item data=' in res.text:
+            root = ET.fromstring(res.content)
+            records = []
+            for it in root.findall(".//item"):
+                d_str = it.get("data", "")
+                p = d_str.split("|")
+                if len(p) >= 6:
+                    records.append({
+                        "Date": pd.to_datetime(p[0]),
+                        "Open": float(p[1]),
+                        "High": float(p[2]),
+                        "Low": float(p[3]),
+                        "Close": float(p[4]),
+                        "Volume": float(p[5]),
+                    })
+            if len(records) >= 15:
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                df.attrs["_gaemi_raw_df"] = df.copy()
+                if anchor_price and anchor_price > 0 and not df.empty:
+                    last_close = float(df["Close"].iloc[-1])
+                    if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                        ratio = anchor_price / last_close
+                        df["Open"] *= ratio
+                        df["High"] *= ratio
+                        df["Low"] *= ratio
+                        df["Close"] *= ratio
+                return df
+    except Exception as exc:
+        print(f"[DOMESTIC NAVER CANDLE] {code} failed: {type(exc).__name__}: {exc}")
 
-    # 마지막 fallback: Naver trend 120일
+    # 2) Naver trend 120일 fallback
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
         res = HTTP_SESSION.get(url, timeout=2.0).json()
@@ -3527,19 +3551,54 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
             records = []
             for it in res:
                 records.append({
-                    "Date": pd.to_datetime(it['localTrdDd']),
-                    "Open": float(str(it['openPrice']).replace(',', '')),
-                    "High": float(str(it['highPrice']).replace(',', '')),
-                    "Low": float(str(it['lowPrice']).replace(',', '')),
-                    "Close": float(str(it['closePrice']).replace(',', '')),
-                    "Volume": float(str(it['accumulatedTradingVolume']).replace(',', '')),
+                    "Date": pd.to_datetime(it["localTrdDd"]),
+                    "Open": float(str(it["openPrice"]).replace(",", "")),
+                    "High": float(str(it["highPrice"]).replace(",", "")),
+                    "Low": float(str(it["lowPrice"]).replace(",", "")),
+                    "Close": float(str(it["closePrice"]).replace(",", "")),
+                    "Volume": float(str(it["accumulatedTradingVolume"]).replace(",", "")),
                 })
             if len(records) >= 15:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 df.attrs["_gaemi_raw_df"] = df.copy()
                 return df
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[DOMESTIC NAVER TREND] {code} failed: {type(exc).__name__}: {exc}")
+
+    # 3) Yahoo 최종 fallback (.KS/.KQ 순차 확인)
+    for suffix in [".KS", ".KQ"]:
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
+            res = HTTP_SESSION.get(url, timeout=2.0).json()
+            result = res.get("chart", {}).get("result", [])
+            if result:
+                ts = result[0].get("timestamp", []) or []
+                quote = result[0].get("indicators", {}).get("quote", [{}])[0] or {}
+                opens = quote.get("open") or []
+                highs = quote.get("high") or []
+                lows = quote.get("low") or []
+                closes = quote.get("close") or []
+                volumes = quote.get("volume") or []
+                records = []
+                for i in range(len(ts)):
+                    if i >= len(opens) or i >= len(highs) or i >= len(lows) or i >= len(closes):
+                        continue
+                    if opens[i] is None or highs[i] is None or lows[i] is None or closes[i] is None:
+                        continue
+                    records.append({
+                        "Date": pd.to_datetime(ts[i], unit="s"),
+                        "Open": float(opens[i]),
+                        "High": float(highs[i]),
+                        "Low": float(lows[i]),
+                        "Close": float(closes[i]),
+                        "Volume": float(volumes[i] or 0.0) if i < len(volumes) else 0.0,
+                    })
+                if len(records) >= 15:
+                    df = pd.DataFrame(records).set_index("Date").sort_index()
+                    df.attrs["_gaemi_raw_df"] = df.copy()
+                    return df
+        except Exception as exc:
+            print(f"[DOMESTIC YAHOO FALLBACK] {code}{suffix} failed: {type(exc).__name__}: {exc}")
 
     return None
 

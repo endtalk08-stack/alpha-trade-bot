@@ -3265,6 +3265,12 @@ OVERSEAS_QUOTE_CACHE_TTL = 30
 CRYPTO_CANDLE_CACHE = {}
 CRYPTO_CANDLE_CACHE_TTL = 10 * 60
 
+# ===== SPEED OPTIMIZATION 4: 국내주식 가격/차트 병렬 조회 =====
+# 국내 종목 분석에서 실시간 가격, 거래소 구분, 일봉 차트를 순차 호출하지 않고
+# 하나의 분석 요청 안에서 동시에 조회한다. 캐시는 각 함수가 독립적으로 사용한다.
+# 기존 ThreadPoolExecutor를 매 요청마다 생성하는 비용도 줄이기 위해 공용 executor를 사용한다.
+PRICE_DATA_EXECUTOR = ThreadPoolExecutor(max_workers=8)
+
 def _get_naver_realtime_price_uncached(code):
     try:
         url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
@@ -6303,12 +6309,34 @@ def run_full_pipeline(query, lightweight=False):
         if not code:
             return None
         symbol, formal_name = code, name
-        market_index_name = get_naver_stock_market_type(symbol)
-        raw_price, price_str = get_naver_realtime_price(symbol)
-        df = fetch_domestic_candles(symbol, anchor_price=raw_price)
+
+        # STEP 9: 국내주식 가격/차트 관련 외부 호출을 병렬화한다.
+        # 기존에는 거래소 구분 → 실시간 가격 → 1200일 차트가 순차 실행되어
+        # 각 HTTP 지연시간이 합산됐다. 이제 세 작업을 동시에 시작하고 가장
+        # 늦게 끝나는 작업만 기다린다. 기존 데이터/기능은 그대로 유지한다.
+        market_type_future = _perf_submit(PRICE_DATA_EXECUTOR, get_naver_stock_market_type, symbol)
+        realtime_future = _perf_submit(PRICE_DATA_EXECUTOR, get_naver_realtime_price, symbol)
+        candle_future = _perf_submit(PRICE_DATA_EXECUTOR, fetch_domestic_candles, symbol, None)
+
+        market_index_name = market_type_future.result()
+        raw_price, price_str = realtime_future.result()
+        df = candle_future.result()
+
+        # 실시간 가격이 없을 때만 차트 종가를 현재가 대체값으로 사용한다.
+        # anchor_price는 기존 함수 계약상 반환 후 보정이 필요할 수 있으므로
+        # 실시간 가격을 확보한 경우에만 기존과 동일하게 차트 데이터를 맞춘다.
         if raw_price is None and df is not None and not df.empty:
             raw_price = float(df['Close'].iloc[-1])
             price_str = f"{int(raw_price):,} 원"
+        elif raw_price is not None and df is not None and not df.empty:
+            last_close = float(df['Close'].iloc[-1])
+            if last_close > 0 and abs(last_close - raw_price) / raw_price > 0.3:
+                ratio = raw_price / last_close
+                df = df.copy(deep=True)
+                df['Open'] *= ratio
+                df['High'] *= ratio
+                df['Low'] *= ratio
+                df['Close'] *= ratio
 
     _perf_stage("price_chart")
 

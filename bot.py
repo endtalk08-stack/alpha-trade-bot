@@ -9391,9 +9391,54 @@ HTML_PAGE = r"""<!DOCTYPE html>
         @media (max-width: 1100px) {
             /* 모바일/좁은 화면에서도 사이드바는 콘텐츠를 밀지 않고 위에 겹친다. */
             #content-wrapper { width:100%; margin-left:0; margin-right:0; }
-            #right-market-rail { width: 320px; }
+            #right-market-rail {
+                width: min(320px, 100vw);
+                max-width: 100vw;
+                right: 0;
+            }
             #right-market-rail.collapsed { width: 44px; }
-            #right-market-panel { width: 276px; min-width: 276px; }
+            #right-market-panel {
+                width: calc(100% - 44px);
+                min-width: 0;
+                max-width: calc(100vw - 44px);
+            }
+            #right-market-icons { flex: 0 0 44px; }
+        }
+
+        /* STEP 24: 모바일에서는 오른쪽 패널도 왼쪽 사이드바처럼
+           처음에는 아이콘만 보이고, 버튼을 눌렀을 때만 화면 위에 열린다. */
+        @media (max-width: 560px) {
+            body { overflow-x: hidden; }
+            #right-market-rail {
+                width: 100vw;
+                max-width: 100vw;
+                background: transparent;
+                border-left: 0;
+                pointer-events: none;
+            }
+            #right-market-rail.collapsed {
+                width: 44px;
+                pointer-events: auto;
+            }
+            #right-market-rail:not(.collapsed) {
+                pointer-events: auto;
+            }
+            #right-market-panel {
+                width: calc(100vw - 44px);
+                min-width: 0;
+                max-width: calc(100vw - 44px);
+                box-shadow: -10px 0 28px rgba(0,0,0,.22);
+                border-left: 1px solid var(--border-line);
+            }
+            #right-market-icons {
+                width: 44px;
+                min-width: 44px;
+                flex: 0 0 44px;
+                background: var(--bg-body);
+                border-left: 1px solid var(--border-line);
+            }
+            /* 닫힌 상태에서는 데이터 패널을 확실히 화면에서 제거한다. */
+            #right-market-rail.collapsed #right-market-panel { display: none !important; }
         }
 
 </style>
@@ -12061,6 +12106,8 @@ if ((response && !response.ok) || data.error) {
         function setRightMarketOpen(isOpen) {
             const rail = document.getElementById('right-market-rail');
             if (!rail) return;
+            // STEP 24: 모바일에서도 닫힌 상태는 아이콘 레일만 남기고,
+            // 열린 상태에서만 데이터 패널을 화면 위에 겹쳐 표시한다.
             rail.classList.toggle('collapsed', !isOpen);
             // STEP 23: 오른쪽 사이드바 상태가 가운데 콘텐츠 레이아웃에 영향을 주지 않도록 한다.
             document.body.classList.remove('right-market-collapsed');

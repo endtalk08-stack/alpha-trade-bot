@@ -4721,13 +4721,13 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     ma5_state = "5일선 상회" if raw_price >= ma5_val else "5일선 하회"
     ma5_color = "positive" if raw_price >= ma5_val else "negative"
 
-    ma20_state = "20일선 지지" if raw_price >= ma20_val else "20일선 이탈"
+    ma20_state = " 지지" if raw_price >= ma20_val else " 이탈"
     ma20_color = "positive" if raw_price >= ma20_val else "negative"
 
     ma60_state = "60일선 지지" if ma60_val and raw_price >= ma60_val else "60일선 하회"
     ma60_color = "positive" if ma60_val and raw_price >= ma60_val else "warning"
 
-    ma120_state = "120일선 상회" if ma120_val and raw_price >= ma120_val else "120일선 저항"
+    ma120_state = "1 상회" if ma120_val and raw_price >= ma120_val else "1 저항"
     ma120_color = "positive" if ma120_val and raw_price >= ma120_val else "negative"
 
     std20_val = float(closes.tail(20).std()) if n_bars >= 20 else 1.0
@@ -4906,10 +4906,10 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
 
     if ma60_val and raw_price > ma20_val > ma60_val:
         trend = "정배열 상승 추세"
-        guide_text = f"20일선 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
+        guide_text = f" 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
     elif ma60_val and raw_price < ma20_val < ma60_val:
         trend = "역배열 하락 추세"
-        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며, 20일선 저항 매물대 돌파 실패 시 리스크 관리 필수"
+        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며,  저항 매물대 돌파 실패 시 리스크 관리 필수"
     else:
         trend = "박스권 혼조세"
         guide_text = f"박스권 상하단 밴드 내 매물 공방 국면이므로 볼린저 밴드 하단 지지 확인 시 진입하고, 1차 목표가 도달 시 비중 축소 권장"
@@ -6430,9 +6430,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
         .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
 
-        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; }
-        .legend-tag { display: flex; align-items: center; gap: 4px; }
-        .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
         .board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-line); }
@@ -8139,13 +8136,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="price-title" id="rTitle"></div>
                                 <div class="price-val" id="rPrice"></div>
                                 <div class="price-meta" id="rMeta"></div>
-                                <div class="chart-legend">
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
-                                </div>
-                            </div>
+</div>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
@@ -8650,6 +8641,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 chart.applyOptions({ width: container.clientWidth });
             }
         }
+
+        window.addEventListener('resize', resizeChart);
 
         function toggleSidebar() {
             const side = document.getElementById('sidebar-wrapper');
@@ -9532,7 +9525,7 @@ const voteKey = 'vote_' + symbol;
                 if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
                     setTimeout(() => {
                         if (searchToken === activeSearchToken) {
-                            initTvChart(cached.data.candles, cached.data.ma20_line, cached.data.ma60_line, cached.data.bb_up_line, cached.data.bb_dn_line);
+                            initTvChart(cached.data.candles);
                         }
                     }, 0);
                 } else {
@@ -9544,7 +9537,7 @@ const voteKey = 'vote_' + symbol;
                             console.table(chartData._perf.slowest_http || []);
                         }
                         if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                        initTvChart(chartData.candles, chartData.ma20_line, chartData.ma60_line, chartData.bb_up_line, chartData.bb_dn_line);
+                        initTvChart(chartData.candles);
                     });
                 }
 
@@ -10251,7 +10244,7 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
-        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
+        function initTvChart(candles) {
             const container = document.getElementById('tvChart');
             if (!container) return;
             container.innerHTML = '';
@@ -10261,9 +10254,9 @@ if ((response && !response.ok) || data.error) {
             chart = LightweightCharts.createChart(container, {
                 width: container.clientWidth || 700,
                 height: 300,
-                layout: { 
-                    background: { color: isLight ? '#ffffff' : '#1e1f20' }, 
-                    textColor: isLight ? '#5f6368' : '#8e918f' 
+                layout: {
+                    background: { color: isLight ? '#ffffff' : '#1e1f20' },
+                    textColor: isLight ? '#5f6368' : '#8e918f'
                 },
                 grid: {
                     vertLines: { color: 'rgba(0,0,0,0)' },
@@ -10289,65 +10282,11 @@ if ((response && !response.ok) || data.error) {
             });
             candleSeries.setData(candles || []);
 
-            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-            lineMa20.setData(ma20 || []);
-
-            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
-            lineMa60.setData(ma60 || []);
-
-            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
-            lineBbUp.setData(bbUp || []);
-
-            const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
-            lineBbDn.setData(bbDn || []);
-
             chart.timeScale().fitContent();
-
-            window.addEventListener('resize', resizeChart);
+            // resize 리스너는 전역에서 한 번만 등록한다.
         }
 
 
-        async function loadSectorChart(symbol, sectorName) {
-            const cleanSymbol = String(symbol || '').trim().toUpperCase();
-            const cleanName = String(sectorName || '').trim();
-            if (!cleanSymbol) return;
-
-            const chartContainer = document.getElementById('tvChart');
-            if (!chartContainer) return;
-
-            const previousHtml = chartContainer.innerHTML;
-            chartContainer.innerHTML = '<div style="height:300px; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-size:0.78rem;">업종 차트 불러오는 중…</div>';
-
-            try {
-                // 기존 /api/analyze 파이프라인을 그대로 사용하되,
-                // 현재 종목 전체 분석 화면은 건드리지 않고 차트 데이터만 사용한다.
-                const response = await fetch('/api/analyze?q=' + encodeURIComponent(cleanSymbol));
-                const data = await response.json();
-
-                if (!response.ok || data.error || !Array.isArray(data.candles) || !data.candles.length) {
-                    throw new Error(data.error || '업종 차트 데이터를 가져오지 못했습니다.');
-                }
-
-                initTvChart(
-                    data.candles,
-                    data.ma20_line,
-                    data.ma60_line,
-                    data.bb_up_line,
-                    data.bb_dn_line
-                );
-
-                // 차트 영역의 현재 모드를 가볍게 표시. 기존 레이아웃/카드 높이는 변경하지 않는다.
-                const meta = document.getElementById('rMeta');
-                if (meta) {
-                    meta.dataset.previousText = meta.dataset.previousText || meta.textContent;
-                    meta.innerText = `차트: ${cleanName} 업종 · ${cleanSymbol} · Yahoo Finance`;
-                }
-            } catch (error) {
-                console.error('Sector chart:', error);
-                chartContainer.innerHTML = previousHtml;
-                alert(`${cleanName || cleanSymbol} 업종 차트를 불러오지 못했습니다.`);
-            }
-        }
 
         function formatUsStockPrice(value) {
             const n = Number(value);
@@ -10557,40 +10496,35 @@ FAST_CHART_PAYLOAD_TTL = 30
 # 전체 분석(/api/analyze)이 끝날 때까지 차트를 기다리지 않게 한다.
 # ----------------------------------------------------
 def _build_chart_payload(df):
+    """차트는 캔들만 표시한다. 이평선/볼린저밴드는 계산·전송하지 않는다."""
     if df is None or df.empty:
         return None
 
-    work = df.copy()
-    work['MA20'] = work['Close'].rolling(20).mean()
-    work['MA60'] = work['Close'].rolling(60).mean()
-    work['STD60'] = work['Close'].rolling(60).std()
-    work['BB_UP'] = work['MA60'] + (work['STD60'] * 2)
-    work['BB_DN'] = work['MA60'] - (work['STD60'] * 2)
+    work = df.copy().sort_index()
+    work = work[~work.index.duplicated(keep="last")]
 
-    work = work.sort_index()
-    work = work[~work.index.duplicated(keep='last')]
-
-    candles, ma20_line, ma60_line, bb_up_line, bb_dn_line = [], [], [], [], []
+    candles = []
     for date_idx, row in work.tail(65).iterrows():
         t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d")
-        o, h, l, c = float(row['Open']), float(row['High']), float(row['Low']), float(row['Close'])
+        o = float(row["Open"])
+        h = float(row["High"])
+        l = float(row["Low"])
+        c = float(row["Close"])
         if not any(np.isnan(v) for v in (o, h, l, c)):
-            candles.append({"time": t_str, "open": o, "high": h, "low": l, "close": c})
-        if not np.isnan(row['MA20']):
-            ma20_line.append({"time": t_str, "value": float(row['MA20'])})
-        if not np.isnan(row['MA60']):
-            ma60_line.append({"time": t_str, "value": float(row['MA60'])})
-        if not np.isnan(row['BB_UP']):
-            bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
-        if not np.isnan(row['BB_DN']):
-            bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
+            candles.append({
+                "time": t_str,
+                "open": o,
+                "high": h,
+                "low": l,
+                "close": c
+            })
 
     return {
         "candles": candles,
-        "ma20_line": ma20_line,
-        "ma60_line": ma60_line,
-        "bb_up_line": bb_up_line,
-        "bb_dn_line": bb_dn_line
+        "ma20_line": [],
+        "ma60_line": [],
+        "bb_up_line": [],
+        "bb_dn_line": []
     }
 
 

@@ -9408,37 +9408,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
         /* STEP 24: 모바일에서는 오른쪽 패널도 왼쪽 사이드바처럼
            처음에는 아이콘만 보이고, 버튼을 눌렀을 때만 화면 위에 열린다. */
         @media (max-width: 560px) {
+            /* STEP 25: 모바일에서는 오른쪽 시장 사이드바를 완전히 제거한다.
+               가운데 콘텐츠가 휴대폰 화면 전체 폭을 사용하도록 하며,
+               오른쪽 아이콘/버튼/패널도 화면에 남기지 않는다. */
             body { overflow-x: hidden; }
-            #right-market-rail {
-                width: 100vw;
-                max-width: 100vw;
-                background: transparent;
-                border-left: 0;
-                pointer-events: none;
+            #content-wrapper {
+                width: 100% !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
             }
-            #right-market-rail.collapsed {
-                width: 44px;
-                pointer-events: auto;
-            }
+            #right-market-rail,
+            #right-market-rail.collapsed,
             #right-market-rail:not(.collapsed) {
-                pointer-events: auto;
+                display: none !important;
             }
-            #right-market-panel {
-                width: calc(100vw - 44px);
-                min-width: 0;
-                max-width: calc(100vw - 44px);
-                box-shadow: -10px 0 28px rgba(0,0,0,.22);
-                border-left: 1px solid var(--border-line);
-            }
-            #right-market-icons {
-                width: 44px;
-                min-width: 44px;
-                flex: 0 0 44px;
-                background: var(--bg-body);
-                border-left: 1px solid var(--border-line);
-            }
-            /* 닫힌 상태에서는 데이터 패널을 확실히 화면에서 제거한다. */
-            #right-market-rail.collapsed #right-market-panel { display: none !important; }
         }
 
 </style>
@@ -12125,7 +12108,12 @@ if ((response && !response.ok) || data.error) {
         }
 
         window.addEventListener('DOMContentLoaded', () => {
-            // 오른쪽 사이드바는 처음에는 닫힌 상태로 시작한다.
+            // 모바일에서는 오른쪽 시장 사이드바를 완전히 숨기므로
+            // 불필요한 시장 데이터 요청도 실행하지 않는다.
+            const isMobileRightMarketHidden = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
+            if (isMobileRightMarketHidden) return;
+
+            // 데스크톱에서는 오른쪽 사이드바가 처음에는 닫힌 상태로 시작한다.
             // 왼쪽 사이드바와 완전히 독립적으로 열리고 닫힌다.
             setRightMarketOpen(false);
             loadRightMarketBoard(false);

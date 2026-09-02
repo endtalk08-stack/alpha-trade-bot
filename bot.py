@@ -6923,6 +6923,9 @@ def run_full_pipeline(query, lightweight=False):
         domestic_flow = optional_results.get("domestic_flow")
 
 
+    # STEP 20: core 모드에서 만든 즉시 표시용 기본값을 공통 처리부가
+    # 다시 None/빈 값으로 덮어쓰지 않도록 한다.
+    # full 모드에서는 기존처럼 optional_results의 실제 데이터를 사용한다.
     stock_news_rss = optional_results.get("stock_news_rss") or []
     global_news_rss = optional_results.get("global_news_rss") or []
     api_news = optional_results.get("api_news") or []
@@ -6932,10 +6935,12 @@ def run_full_pipeline(query, lightweight=False):
     # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
     stock_news = merge_news_sources(stock_news_rss, ticker_news)
     global_news = merge_news_sources(global_news_rss, api_news)
-    consensus = optional_results.get("consensus")
-    alpha_earnings = optional_results.get("alpha_earnings") or {}
-    dart_disclosures = optional_results.get("dart_disclosures") or []
-    domestic_flow = optional_results.get("domestic_flow")
+
+    if not lightweight:
+        consensus = optional_results.get("consensus")
+        alpha_earnings = optional_results.get("alpha_earnings") or {}
+        dart_disclosures = optional_results.get("dart_disclosures") or []
+        domestic_flow = optional_results.get("domestic_flow")
 
     # ====================================================
     # STEP 4: 세계시장 보드 / 시장 캘린더를 분석 API에서 분리

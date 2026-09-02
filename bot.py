@@ -9348,14 +9348,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
         }
 
 
-        /* ===== STEP 21: 우측 실시간 시장 사이드바 ===== */
+        /* ===== STEP 23: 좌우 사이드바 완전 독립 오버레이 ===== */
+        /* 어느 사이드바를 열고 닫아도 가운데 콘텐츠의 위치/폭은 절대 변하지 않는다. */
         body { padding-right: 0; }
-        #content-wrapper { width: calc(100% - 336px); margin-right: 336px; transition: width .2s ease, margin-right .2s ease; }
-        body.right-market-collapsed #content-wrapper { width: 100%; margin-right: 44px; }
+        #content-wrapper { width: 100%; margin-left: 0; margin-right: 0; }
         #right-market-rail {
             position: fixed; top: 0; right: 0; width: 336px; height: 100vh;
             display: flex; flex-direction: row; z-index: 120;
             background: var(--bg-body); border-left: 1px solid var(--border-line);
+            box-sizing: border-box;
         }
         #right-market-rail.collapsed { width: 44px; }
         #right-market-rail.collapsed #right-market-panel { display: none; }
@@ -9388,10 +9389,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .right-market-icon-btn:hover, .right-market-icon-btn.active { background:var(--bg-card); color:var(--text-title); }
         .right-market-close { font-size:1.25rem; margin-bottom:4px; }
         @media (max-width: 1100px) {
-            body { padding-right: 0; }
-            #content-wrapper { width:100%; margin-right:0; }
-            #right-market-rail { transform:translateX(292px); transition:transform .2s ease; }
-            #right-market-rail.open { transform:translateX(0); }
+            /* 모바일/좁은 화면에서도 사이드바는 콘텐츠를 밀지 않고 위에 겹친다. */
+            #content-wrapper { width:100%; margin-left:0; margin-right:0; }
+            #right-market-rail { width: 320px; }
+            #right-market-rail.collapsed { width: 44px; }
+            #right-market-panel { width: 276px; min-width: 276px; }
         }
 
 </style>
@@ -12060,7 +12062,8 @@ if ((response && !response.ok) || data.error) {
             const rail = document.getElementById('right-market-rail');
             if (!rail) return;
             rail.classList.toggle('collapsed', !isOpen);
-            document.body.classList.toggle('right-market-collapsed', !isOpen);
+            // STEP 23: 오른쪽 사이드바 상태가 가운데 콘텐츠 레이아웃에 영향을 주지 않도록 한다.
+            document.body.classList.remove('right-market-collapsed');
             const btn = rail.querySelector('.right-market-close');
             if (btn) {
                 btn.textContent = isOpen ? '»' : '«';
@@ -12102,7 +12105,7 @@ if ((response && !response.ok) || data.error) {
     </script>
 
 
-    <!-- STEP 21: 우측 실시간 시장 사이드바 -->
+    <!-- STEP 23: 우측 실시간 시장 사이드바 -->
     <aside id="right-market-rail" class="collapsed" aria-label="실시간 시장 사이드바">
         <section id="right-market-panel">
             <div class="right-market-head">

@@ -3633,7 +3633,84 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
     except Exception as exc:
         print(f"[DOMESTIC NAVER CANDLE] {code} failed: {type(exc).__name__}: {exc}")
 
-    # 2) Naver trend 120일 fallback
+    # 2) Naver 신형 Chart API fallback
+    # 일부 국내 종목(예: Reg.S 종목)은 legacy fchart에서 차트가 404/빈 응답이
+    # 발생할 수 있다. 이 경우 api.stock.naver.com의 신형 chart endpoint를 사용한다.
+    # 기존 fchart가 정상인 종목은 기존 경로를 그대로 사용한다.
+    try:
+        end_dt = datetime.now().strftime("%Y%m%d")
+        start_dt = (datetime.now() - timedelta(days=365 * 5 + 20)).strftime("%Y%m%d")
+        url = (
+            f"https://api.stock.naver.com/chart/domestic/item/{code}"
+            f"?periodType=dayCandle&startDateTime={start_dt}&endDateTime={end_dt}"
+        )
+        res = HTTP_SESSION.get(url, timeout=2.2, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": "https://stock.naver.com/",
+        })
+        res.raise_for_status()
+        payload = res.json()
+
+        # 응답 버전에 따라 priceInfos/priceInfo/data/result 아래에 배열이 들어올 수 있으므로
+        # 날짜 필드(localDate)를 가진 레코드 배열을 재귀적으로 찾는다.
+        candidates = []
+        def _walk_chart_payload(obj, depth=0):
+            if depth > 7:
+                return
+            if isinstance(obj, list):
+                if obj and all(isinstance(x, dict) for x in obj[:min(len(obj), 8)]):
+                    if any((x.get("localDate") or x.get("date")) for x in obj[:min(len(obj), 8)]):
+                        candidates.append(obj)
+                for child in obj[:20]:
+                    _walk_chart_payload(child, depth + 1)
+            elif isinstance(obj, dict):
+                for child in obj.values():
+                    _walk_chart_payload(child, depth + 1)
+        _walk_chart_payload(payload)
+
+        best = max(candidates, key=len) if candidates else []
+        records = []
+        for it in best:
+            if not isinstance(it, dict):
+                continue
+            date_value = it.get("localDate") or it.get("date")
+            try:
+                date_value = pd.to_datetime(str(date_value))
+                op = it.get("openPrice", it.get("open"))
+                hi = it.get("highPrice", it.get("high"))
+                lo = it.get("lowPrice", it.get("low"))
+                cl = it.get("closePrice", it.get("close"))
+                vol = it.get("accumulatedTradingVolume", it.get("volume", 0))
+                if any(v is None for v in (op, hi, lo, cl)):
+                    continue
+                records.append({
+                    "Date": date_value,
+                    "Open": float(str(op).replace(",", "")),
+                    "High": float(str(hi).replace(",", "")),
+                    "Low": float(str(lo).replace(",", "")),
+                    "Close": float(str(cl).replace(",", "")),
+                    "Volume": float(str(vol or 0).replace(",", "")),
+                })
+            except Exception:
+                continue
+
+        if len(records) >= 15:
+            df = pd.DataFrame(records).drop_duplicates(subset=["Date"]).set_index("Date").sort_index()
+            df.attrs["_gaemi_raw_df"] = df.copy()
+            if anchor_price and anchor_price > 0 and not df.empty:
+                last_close = float(df["Close"].iloc[-1])
+                if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                    ratio = anchor_price / last_close
+                    df["Open"] *= ratio
+                    df["High"] *= ratio
+                    df["Low"] *= ratio
+                    df["Close"] *= ratio
+            return df
+    except Exception as exc:
+        print(f"[DOMESTIC NAVER NEW CHART] {code} failed: {type(exc).__name__}: {exc}")
+
+    # 3) Naver trend 120일 fallback
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
         res = HTTP_SESSION.get(url, timeout=2.0).json()
@@ -11193,7 +11270,7 @@ const voteKey = 'vote_' + symbol;
         const FAST_CHART_CACHE = new Map();
         const FAST_CHART_CACHE_TTL = 30 * 1000;
 
-        async function doSearch(query, forceServer = false) {
+        async function doSearch(query, forceServer = false, displayNameOverride = '') {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
             let materialText = '';
 
@@ -11201,6 +11278,9 @@ const voteKey = 'vote_' + symbol;
 
             const cleanQ = query.trim();
             if (!cleanQ) return;
+            // STEP 37: 우측 실시간 시장에서 종목코드로 진입하더라도
+            // 목록에서 이미 확보한 한글 종목명을 상세 화면 제목에 유지한다.
+            const displayNameHint = String(displayNameOverride || '').trim();
 
             // STEP 21: 최근검색종목 메뉴에서 사용할 최소 검색 이력을 로컬에 저장한다.
             try {
@@ -11226,7 +11306,7 @@ const voteKey = 'vote_' + symbol;
             const fastTitle = document.getElementById('rTitle');
             const fastPrice = document.getElementById('rPrice');
             const fastMeta = document.getElementById('rMeta');
-            if (fastTitle) fastTitle.textContent = cleanQ.toUpperCase();
+            if (fastTitle) fastTitle.textContent = displayNameHint || cleanQ.toUpperCase();
             if (fastPrice) fastPrice.textContent = '불러오는 중…';
             if (fastMeta) fastMeta.textContent = '실시간 데이터를 불러오고 있어요';
 
@@ -11320,7 +11400,7 @@ if ((response && !response.ok) || data.error) {
                 }
 
                 const isKrw = data.market === '국내주식' || data.market === '국내증시';
-                const displayName = data.name || data.formal_name;
+                const displayName = displayNameHint || data.name || data.formal_name;
                 const displayPrice = data.price || data.price_str;
                 const displayTime = data.time || data.now_str;
 
@@ -12421,7 +12501,9 @@ if ((response && !response.ok) || data.error) {
                 const badge = escapeRightMarketText((krName || row.symbol || '?').slice(0, 2));
                 const name = escapeRightMarketText(krName || row.symbol || '-');
                 const symbol = escapeRightMarketText(row.symbol || '');
-                return `<div class="right-market-row" onclick="doSearch('${escapeRightMarketText(row.symbol || row.name || '')}')">
+                const clickSymbol = escapeRightMarketText(row.symbol || row.name || '');
+                const clickName = escapeRightMarketText(krName || row.name || row.symbol || '');
+                return `<div class="right-market-row" onclick="doSearch('${clickSymbol}', false, '${clickName}')">
                     <div class="right-market-rank">${row.rank || idx + 1}</div>
                     <div class="right-market-logo">${badge}</div>
                     <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>

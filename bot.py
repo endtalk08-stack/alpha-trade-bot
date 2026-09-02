@@ -7144,9 +7144,9 @@ RIGHT_MARKET_BOARD_SYMBOLS = [
 def _right_sidebar_kr_rows(limit=15):
     """국내 실시간 거래대금 상위.
 
-    STEP 31:
-    - 기존 PC HTML(read_html) 방식은 제거한다.
-    - 우선 Naver의 공개 JSON 시장목록 endpoint를 사용한다.
+    STEP 32:
+    - 현재 확인된 Naver 공개 JSON 시장목록 정렬값(quantTop)을 사용한다.
+    - 실제 거래대금 필드를 기준으로 다시 정렬한다.
     - KOSPI/KOSDAQ을 각각 조회한 뒤 실제 거래대금 기준으로 합산 정렬한다.
     - 해외(Yahoo) / 코인(Binance) 수집 로직은 변경하지 않는다.
     - API 응답 필드명이 조금 달라져도 처리할 수 있도록 필드 탐색을 유연하게 한다.
@@ -7253,7 +7253,7 @@ def _right_sidebar_kr_rows(limit=15):
         )
         price = _find_value(
             item,
-            ["nowPrice", "currentPrice", "closePrice", "price", "현재가"],
+            ["nowPrice", "tradePrice", "currentPrice", "closePrice", "price", "현재가", "거래가격"],
         )
         pct = _find_value(
             item,
@@ -7261,7 +7261,7 @@ def _right_sidebar_kr_rows(limit=15):
         )
         change = _find_value(
             item,
-            ["changePrice", "compareToPreviousClosePrice", "change", "전일비"],
+            ["changePrice", "compareToPreviousClosePrice", "changeValue", "change", "전일비"],
         )
         trading_value = _find_value(
             item,
@@ -7278,7 +7278,7 @@ def _right_sidebar_kr_rows(limit=15):
         )
         volume = _find_value(
             item,
-            ["accumulatedTradingVolume", "tradingVolume", "volume", "거래량"],
+            ["accumulatedTradingVolume", "tradingVolume", "volume", "accumulatedVolume", "거래량", "누적거래량"],
         )
 
         name = str(name or "").strip()
@@ -7388,19 +7388,21 @@ def _right_sidebar_kr_rows(limit=15):
 
     all_rows = []
 
-    # 1차: 현재 stock.naver.com 시장목록 JSON의 거래대금 정렬.
-    # 2차: m.stock.naver.com front-api의 거래 정렬.
-    # 둘 다 실패할 때만 기존 PC HTML을 최후의 fallback으로 사용한다.
+    # STEP 32: 네이버 현재 공개 stockList에서 확인된 정렬값은 quantTop이다.
+    # 기존 STEP 31의 sortType=trading은 현재 endpoint에서 확인된 정렬값이 아니므로
+    # 결과가 비어 국내 탭이 실패할 수 있었다.
+    # 거래량 상위 후보를 충분히 받은 뒤 실제 accumulatedTradingValue/tradingValue를
+    # 다시 비교해 최종적으로 거래대금 상위 15개를 만든다.
     for exchange_code, exchange_name in (("KOSPI", "KOSPI"), ("KOSDAQ", "KOSDAQ")):
         fetched = False
         primary_urls = [
             (
-                "https://stock.naver.com/api/domestic/market/stock/default"
-                f"?tradeType=KRX&marketType={exchange_code}&orderType=trading&startIdx=0&pageSize=50"
+                "https://m.stock.naver.com/front-api/stock/domestic/stockList"
+                f"?sortType=quantTop&category={exchange_code}&page=1&pageSize=100"
             ),
             (
-                "https://m.stock.naver.com/front-api/stock/domestic/stockList"
-                f"?sortType=trading&category={exchange_code}&page=1&pageSize=50"
+                "https://stock.naver.com/api/domestic/market/stock/default"
+                f"?tradeType=KRX&marketType={exchange_code}&orderType=quantTop&startIdx=0&pageSize=100"
             ),
         ]
         for url in primary_urls:

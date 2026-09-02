@@ -1508,6 +1508,10 @@ for _sector_candidates in US_SECTOR_STOCK_UNIVERSE.values():
     for _ticker, _ko_name in _sector_candidates:
         US_STOCK_MAP.setdefault(_ticker, _ticker)
 
+# STEP 11: 일반적인 영문 티커는 별도 목록에 없어도 미국주식 후보로 처리한다.
+# 실제 존재 여부는 Yahoo 시세 조회 결과로 최종 판단하며, 국내주식 자동완성은 호출하지 않는다.
+US_TICKER_PATTERN = re.compile(r"^[A-Z]{1,6}$")
+
 CACHED_US_LEADING_STOCKS = {}
 LAST_US_LEADING_STOCKS_FETCH = {}
 US_LEADING_STOCKS_TTL = 300
@@ -6364,6 +6368,31 @@ def run_full_pipeline(query, lightweight=False):
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.strip()
         # 차트와 실시간 시세는 서로 의존하지 않으므로 동시에 조회한다.
+        with ThreadPoolExecutor(max_workers=2) as price_executor:
+            chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
+            quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
+            chart_price, _, df = chart_future.result()
+            quote_snapshot = quote_future.result()
+
+        if isinstance(quote_snapshot, dict) and quote_snapshot.get("price") is not None:
+            try:
+                raw_price = float(quote_snapshot.get("price"))
+            except (TypeError, ValueError):
+                raw_price = chart_price
+            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
+        else:
+            raw_price = chart_price
+            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
+        market_name = "미국주식"
+        is_krw = False
+    # STEP 11: 영문 티커는 대소문자와 관계없이 미국주식 경로로 처리한다.
+    # 기존에는 소문자 티커(예: xom, nvda)가 US_STOCK_MAP에 없으면
+    # 국내주식 분기로 떨어져 Naver autoComplete를 호출했다.
+    # 그 결과 XOM 분석에서도 약 480ms가 불필요하게 발생했다.
+    # 1~6자리 영문 입력은 Naver 검색을 거치지 않고 Yahoo 경로로 바로 보낸다.
+    elif US_TICKER_PATTERN.fullmatch(clean_q or ""):
+        symbol = clean_q
+        formal_name = query.strip() or symbol
         with ThreadPoolExecutor(max_workers=2) as price_executor:
             chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
             quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
@@ -11407,8 +11436,9 @@ def run_fast_chart_pipeline(query):
         df = _fetch_fast_overseas_chart(symbol)
         return _finish(df)
 
-    if any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
-        symbol = query.upper().strip()
+    # STEP 11: 영문 티커는 소문자로 입력해도 Naver 자동완성으로 가지 않는다.
+    if US_TICKER_PATTERN.fullmatch(clean_q or ""):
+        symbol = clean_q
         df = _fetch_fast_overseas_chart(symbol)
         return _build_chart_payload(df) if df is not None else None
 

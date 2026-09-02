@@ -1356,6 +1356,13 @@ US_SECTOR_STOCK_UNIVERSE = {
     ],
 }
 
+# 주도종목 카드에서 선택된 티커는 일반 검색과 동일한 미국주식 경로로 처리한다.
+# 기존 US_STOCK_MAP에 없는 티커(XOM, CVX, COP, MPC 등)가 일반 분기로 빠져
+# 불필요한 해석 차이가 생기는 것을 방지한다.
+for _sector_candidates in US_SECTOR_STOCK_UNIVERSE.values():
+    for _ticker, _ko_name in _sector_candidates:
+        US_STOCK_MAP.setdefault(_ticker, _ticker)
+
 CACHED_US_LEADING_STOCKS = {}
 LAST_US_LEADING_STOCKS_FETCH = {}
 US_LEADING_STOCKS_TTL = 300
@@ -3071,7 +3078,20 @@ def get_naver_stock_market_type(code):
         pass
     return None
 
-def get_naver_realtime_price(code):
+# ===== SPEED OPTIMIZATION 3: 공용 시세/차트 캐시 =====
+# 같은 종목을 /api/analyze 와 /api/chart 에서 연속 조회할 때
+# Naver/Yahoo/Binance를 다시 호출하지 않도록 공용 TTL 캐시를 사용한다.
+MARKET_DATA_CACHE_LOCK = threading.Lock()
+NAVER_REALTIME_CACHE = {}
+NAVER_REALTIME_CACHE_TTL = 15
+DOMESTIC_CANDLE_CACHE = {}
+DOMESTIC_CANDLE_CACHE_TTL = 10 * 60
+OVERSEAS_QUOTE_CACHE = {}
+OVERSEAS_QUOTE_CACHE_TTL = 30
+CRYPTO_CANDLE_CACHE = {}
+CRYPTO_CANDLE_CACHE_TTL = 10 * 60
+
+def _get_naver_realtime_price_uncached(code):
     try:
         url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
         res = HTTP_SESSION.get(url, timeout=1.8).json()
@@ -3083,6 +3103,18 @@ def get_naver_realtime_price(code):
     except Exception:
         pass
     return None, None
+
+def get_naver_realtime_price(code):
+    key = str(code or "").strip().upper()
+    if not key:
+        return None, None
+    now = time.time()
+    cached = NAVER_REALTIME_CACHE.get(key)
+    if cached and now - cached["time"] < NAVER_REALTIME_CACHE_TTL:
+        return cached["value"]
+    value = _get_naver_realtime_price_uncached(key)
+    NAVER_REALTIME_CACHE[key] = {"time": now, "value": value}
+    return value
 
 def fetch_naver_domestic_flow_metrics(code):
     """국내주식 실데이터: 당일 거래대금 + 최근 5거래일 외국인/기관 순매수."""
@@ -3130,7 +3162,7 @@ def fetch_naver_domestic_flow_metrics(code):
     except Exception as exc: print(f"[NAVER FLOW] {code} fetch failed: {exc}")
     return result
 
-def fetch_domestic_candles(code, anchor_price=None):
+def _fetch_domestic_candles_uncached(code, anchor_price=None):
     try:
         url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=1200&requestType=0"
         res = HTTP_SESSION.get(url, timeout=2.2)
@@ -3207,6 +3239,46 @@ def fetch_domestic_candles(code, anchor_price=None):
             pass
 
     return None
+
+def fetch_domestic_candles(code, anchor_price=None):
+    key = str(code or "").strip().upper()
+    if not key:
+        return None
+
+    now = time.time()
+    cached = DOMESTIC_CANDLE_CACHE.get(key)
+    if cached and now - cached["time"] < DOMESTIC_CANDLE_CACHE_TTL:
+        try:
+            df = cached["df"].copy(deep=True)
+            # 기존 함수의 anchor_price 보정 계약을 그대로 유지한다.
+            if anchor_price and anchor_price > 0 and not df.empty:
+                last_close = float(df["Close"].iloc[-1])
+                if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                    ratio = anchor_price / last_close
+                    df["Open"] *= ratio
+                    df["High"] *= ratio
+                    df["Low"] *= ratio
+                    df["Close"] *= ratio
+            return df
+        except Exception:
+            DOMESTIC_CANDLE_CACHE.pop(key, None)
+
+    # 원본 수집기는 anchor 보정 없이 저장해 두고, 요청별 보정만 반환 시 적용한다.
+    raw_df = _fetch_domestic_candles_uncached(key, anchor_price=None)
+    if raw_df is None or raw_df.empty:
+        return None
+    DOMESTIC_CANDLE_CACHE[key] = {"time": now, "df": raw_df.copy(deep=True)}
+
+    df = raw_df.copy(deep=True)
+    if anchor_price and anchor_price > 0:
+        last_close = float(df["Close"].iloc[-1])
+        if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+            ratio = anchor_price / last_close
+            df["Open"] *= ratio
+            df["High"] *= ratio
+            df["Low"] *= ratio
+            df["Close"] *= ratio
+    return df
 
 # ===== SPEED OPTIMIZATION 2: overseas candle cache =====
 # 5년치 일봉을 매 검색마다 Yahoo에서 다시 받지 않는다.
@@ -3302,7 +3374,7 @@ def fetch_overseas_candles(symbol):
         return None, None, None
 
 
-def fetch_overseas_quote_snapshot(symbol):
+def _fetch_overseas_quote_snapshot_uncached(symbol):
     """
     해외주식 현재가/세션 데이터 조회.
     Yahoo quote의 세션 정보를 기준으로 현재 표시 가격을 결정한다.
@@ -3376,7 +3448,36 @@ def fetch_overseas_quote_snapshot(symbol):
         print(f"[YAHOO QUOTE ERROR] {symbol}: {type(exc).__name__}: {exc}")
         return None
 
-def fetch_crypto_candles(symbol):
+
+def fetch_overseas_quote_snapshot(symbol):
+    """해외주식 현재가 공용 TTL 캐시 래퍼.
+
+    /api/analyze, /api/chart, 미국 주도종목 상세분석에서 동일 종목의
+    Yahoo quote를 반복 호출하지 않도록 STEP 3 공용 캐시를 사용한다.
+    기존 호출부의 함수명/반환 형식은 그대로 유지한다.
+    """
+    key = str(symbol or "").strip().upper()
+    if not key:
+        return None
+
+    now = time.time()
+    with MARKET_DATA_CACHE_LOCK:
+        cached = OVERSEAS_QUOTE_CACHE.get(key)
+        if cached and (now - cached.get("time", 0.0)) < OVERSEAS_QUOTE_CACHE_TTL:
+            value = cached.get("value")
+            return dict(value) if isinstance(value, dict) else value
+
+    value = _fetch_overseas_quote_snapshot_uncached(key)
+
+    with MARKET_DATA_CACHE_LOCK:
+        OVERSEAS_QUOTE_CACHE[key] = {
+            "time": time.time(),
+            "value": dict(value) if isinstance(value, dict) else value,
+        }
+
+    return dict(value) if isinstance(value, dict) else value
+
+def _fetch_crypto_candles_uncached(symbol):
     clean_sym = symbol.upper().replace("-", "")
     if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
         clean_sym += "USDT"
@@ -3394,6 +3495,24 @@ def fetch_crypto_candles(symbol):
     except Exception:
         pass
     return None, None, None
+
+def fetch_crypto_candles(symbol):
+    clean_sym = str(symbol or "").upper().replace("-", "")
+    if not clean_sym.endswith("USDT") and not clean_sym.endswith("USD"):
+        clean_sym += "USDT"
+    now = time.time()
+    cached = CRYPTO_CANDLE_CACHE.get(clean_sym)
+    if cached and now - cached["time"] < CRYPTO_CANDLE_CACHE_TTL:
+        try:
+            df = cached["df"].copy(deep=True)
+            curr_p = float(df["Close"].iloc[-1])
+            return curr_p, f"{curr_p:,.2f} 달러 (USDT)", df
+        except Exception:
+            CRYPTO_CANDLE_CACHE.pop(clean_sym, None)
+    value = _fetch_crypto_candles_uncached(clean_sym)
+    if value and value[2] is not None:
+        CRYPTO_CANDLE_CACHE[clean_sym] = {"time": now, "df": value[2].copy(deep=True)}
+    return value
 
 def _fetch_market_consensus_unified_uncached(symbol, market_name, raw_price, formal_name=""):
     """실제 확인 가능한 국내/미국 애널리스트 컨센서스를 수집한다.
@@ -5837,9 +5956,12 @@ def run_full_pipeline(query):
             chart_price, _, df = chart_future.result()
             quote_snapshot = quote_future.result()
 
-        if quote_snapshot:
-            raw_price = quote_snapshot["price"]
-            price_str = f"{raw_price:,.2f} 달러"
+        if isinstance(quote_snapshot, dict) and quote_snapshot.get("price") is not None:
+            try:
+                raw_price = float(quote_snapshot.get("price"))
+            except (TypeError, ValueError):
+                raw_price = chart_price
+            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
         else:
             raw_price = chart_price
             price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
@@ -9616,6 +9738,11 @@ const voteKey = 'vote_' + symbol;
                     throw new Error("분석 데이터를 받지 못했습니다.");
                 }
 
+                if (data.error) {
+                    const detail = data.detail ? ` · ${data.detail}` : '';
+                    throw new Error(`${data.error}${detail}`);
+                }
+
                 if (data._perf) {
                     console.log(
                         `[gaemiGTP 성능] ${cleanQ} | 전체 ${data._perf.total_ms}ms | HTTP ${data._perf.http_call_count}회`
@@ -10471,6 +10598,42 @@ if ((response && !response.ok) || data.error) {
             }, 0);
         }
 
+        async function loadSectorChart(sectorSymbol, sectorName) {
+            const symbol = String(sectorSymbol || '').trim().toUpperCase();
+            const name = String(sectorName || '').trim();
+            if (!symbol) return;
+
+            const title = document.getElementById('rTitle');
+            const price = document.getElementById('rPrice');
+            const meta = document.getElementById('rMeta');
+
+            if (title) title.textContent = name || symbol;
+            if (price) price.textContent = '업종 차트 불러오는 중…';
+            if (meta) meta.textContent = '미국 주도업종 · 실제 Yahoo 일봉 데이터';
+
+            try {
+                const response = await fetch('/api/chart?q=' + encodeURIComponent(symbol), {
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => null);
+                if (!response.ok || !data || data.error) {
+                    throw new Error((data && data.error) || ('차트 데이터 오류 (' + response.status + ')'));
+                }
+
+                if (!Array.isArray(data.candles) || !data.candles.length) {
+                    throw new Error('업종 차트 데이터가 없습니다.');
+                }
+
+                initTvChart(data.candles);
+                if (price) price.textContent = '업종 흐름';
+                if (meta) meta.textContent = `${name || symbol} · 최근 65거래일`;
+            } catch (error) {
+                console.error('US sector chart:', error);
+                if (price) price.textContent = '업종 차트를 불러오지 못했습니다.';
+                if (meta) meta.textContent = error && error.message ? error.message : '잠시 후 다시 시도해주세요.';
+            }
+        }
+
         async function loadUsLeadingStocks(sectorSymbol, sectorName) {
             const list = document.getElementById('usLeadingStockList');
             const title = document.getElementById('usLeadingStockTitle');
@@ -10631,100 +10794,28 @@ def _build_chart_payload(df):
 
 
 def _fetch_fast_domestic_chart(code):
-    # 차트 화면은 최근 데이터만 필요하므로 120일만 요청한다.
-    # 기존 fetch_domestic_candles()의 1200일 요청을 여기서는 사용하지 않는다.
+    # STEP 3: 전체 분석에서 사용하는 국내 일봉 공용 캐시를 그대로 사용한다.
+    # 기존의 별도 120일 Naver 호출을 제거한다.
     try:
-        url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=120&requestType=0"
-        res = HTTP_SESSION.get(url, timeout=1.5)
-        if res.status_code == 200 and '<item data=' in res.text:
-            root = ET.fromstring(res.content)
-            records = []
-            for it in root.findall(".//item"):
-                p = it.get("data", "").split("|")
-                if len(p) >= 6:
-                    records.append({
-                        "Date": pd.to_datetime(p[0]),
-                        "Open": float(p[1]),
-                        "High": float(p[2]),
-                        "Low": float(p[3]),
-                        "Close": float(p[4]),
-                        "Volume": float(p[5])
-                    })
-            if len(records) >= 65:
-                return pd.DataFrame(records).set_index("Date").sort_index()
+        df = fetch_domestic_candles(code)
+        return df.tail(120).copy() if df is not None else None
     except Exception as exc:
         print(f"[FAST DOMESTIC CHART] {code} failed: {type(exc).__name__}: {exc}")
-
-    # fchart가 실패하면 최근 120일 Naver 모바일 API를 한 번 시도한다.
-    try:
-        url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
-        res = HTTP_SESSION.get(url, timeout=1.5)
-        data = res.json()
-        if isinstance(data, list) and len(data) >= 65:
-            records = []
-            for it in data:
-                records.append({
-                    "Date": pd.to_datetime(it["localTrdDd"]),
-                    "Open": float(str(it["openPrice"]).replace(",", "")),
-                    "High": float(str(it["highPrice"]).replace(",", "")),
-                    "Low": float(str(it["lowPrice"]).replace(",", "")),
-                    "Close": float(str(it["closePrice"]).replace(",", "")),
-                    "Volume": float(str(it.get("accumulatedTradingVolume", 0)).replace(",", "")),
-                })
-            return pd.DataFrame(records).set_index("Date").sort_index()
-    except Exception:
-        pass
-
-    return None
+        return None
 
 
 def _fetch_fast_overseas_chart(symbol):
+    # STEP 3: 전체 분석에서 사용하는 5년 Yahoo 일봉 공용 캐시를 그대로 사용한다.
+    # 별도의 1년 Yahoo 호출을 제거해 /api/chart ↔ /api/analyze 중복 요청을 없앤다.
     key = str(symbol or "").strip().upper()
     if not key:
         return None
-
-    # 2단계에서 만든 10분 캐시를 먼저 사용한다.
-    cached = OVERSEAS_CANDLE_CACHE.get(key)
-    if cached and (time.time() - cached["time"]) < OVERSEAS_CANDLE_CACHE_TTL:
-        try:
-            return cached["df"].copy()
-        except Exception:
-            OVERSEAS_CANDLE_CACHE.pop(key, None)
-
-    # 캐시가 없을 때만 차트 전용 1년 요청.
     try:
-        encoded = urllib.parse.quote(key)
-        url = (
-            f"https://query1.finance.yahoo.com/v8/finance/chart/"
-            f"{encoded}?range=1y&interval=1d&includePrePost=false"
-        )
-        res = HTTP_SESSION.get(url, timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
-        res.raise_for_status()
-        result = ((res.json().get("chart") or {}).get("result") or [])
-        if not result:
-            return None
-
-        item = result[0]
-        ts = item.get("timestamp") or []
-        quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
-        opens, highs = quote.get("open") or [], quote.get("high") or []
-        lows, closes = quote.get("low") or [], quote.get("close") or []
-        n = min(len(ts), len(opens), len(highs), len(lows), len(closes))
-        records = []
-        for i in range(n):
-            vals = (opens[i], highs[i], lows[i], closes[i])
-            if any(v is None for v in vals):
-                continue
-            records.append({
-                "Date": pd.to_datetime(ts[i], unit="s"),
-                "Open": float(opens[i]), "High": float(highs[i]),
-                "Low": float(lows[i]), "Close": float(closes[i])
-            })
-        if len(records) >= 65:
-            return pd.DataFrame(records).set_index("Date").sort_index()
+        _, _, df = fetch_overseas_candles(key)
+        return df
     except Exception as exc:
         print(f"[FAST OVERSEAS CHART] {key} failed: {type(exc).__name__}: {exc}")
-    return None
+        return None
 
 
 def run_fast_chart_pipeline(query):

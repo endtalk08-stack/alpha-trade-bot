@@ -3325,6 +3325,9 @@ CRYPTO_CANDLE_CACHE_TTL = 10 * 60
 # 하나의 분석 요청 안에서 동시에 조회한다. 캐시는 각 함수가 독립적으로 사용한다.
 # 기존 ThreadPoolExecutor를 매 요청마다 생성하는 비용도 줄이기 위해 공용 executor를 사용한다.
 PRICE_DATA_EXECUTOR = ThreadPoolExecutor(max_workers=8)
+# STEP 12: 국내주식 Yahoo .KS/.KQ 동시 조회 전용 풀.
+# 기존 가격 executor 안에서 다시 작업을 제출할 때의 worker 고갈을 방지한다.
+DOMESTIC_FAST_CANDLE_EXECUTOR = ThreadPoolExecutor(max_workers=6)
 
 def _get_naver_realtime_price_uncached(code):
     try:
@@ -3397,7 +3400,64 @@ def fetch_naver_domestic_flow_metrics(code):
     except Exception as exc: print(f"[NAVER FLOW] {code} fetch failed: {exc}")
     return result
 
-def _fetch_domestic_candles_uncached(code, anchor_price=None):
+def _parse_yahoo_domestic_candles(code):
+    """국내 종목의 5년 일봉을 Yahoo에서 빠르게 확보한다.
+    .KS/.KQ를 동시에 조회해 시장 구분을 별도로 확인하지 않고도
+    먼저 도착한 유효 데이터를 사용할 수 있게 한다.
+    """
+    def _one(suffix):
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
+            res = HTTP_SESSION.get(url, timeout=1.5).json()
+            result = res.get("chart", {}).get("result", [])
+            if not result:
+                return None
+            item = result[0]
+            ts = item.get("timestamp", []) or []
+            quote = item.get("indicators", {}).get("quote", [{}])[0] or {}
+            opens = quote.get("open") or []
+            highs = quote.get("high") or []
+            lows = quote.get("low") or []
+            closes = quote.get("close") or []
+            volumes = quote.get("volume") or []
+            records = []
+            for i in range(len(ts)):
+                if i >= len(opens) or opens[i] is None or highs[i] is None or lows[i] is None or closes[i] is None:
+                    continue
+                records.append({
+                    "Date": pd.to_datetime(ts[i], unit="s"),
+                    "Open": float(opens[i]),
+                    "High": float(highs[i]),
+                    "Low": float(lows[i]),
+                    "Close": float(closes[i]),
+                    "Volume": float(volumes[i] or 0.0) if i < len(volumes) else 0.0,
+                })
+            if len(records) >= 250:
+                return pd.DataFrame(records).set_index("Date").sort_index()
+        except Exception:
+            return None
+        return None
+
+    # 두 시장 suffix를 동시에 요청한다. 유효 응답 하나만 있으면 즉시 사용한다.
+    futures = [
+        _perf_submit(DOMESTIC_FAST_CANDLE_EXECUTOR, _one, ".KS"),
+        _perf_submit(DOMESTIC_FAST_CANDLE_EXECUTOR, _one, ".KQ"),
+    ]
+    pending = set(futures)
+    while pending:
+        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+        for fut in done:
+            try:
+                df = fut.result()
+            except Exception:
+                df = None
+            if df is not None and not df.empty:
+                return df
+    return None
+
+
+def _fetch_domestic_candles_naver_uncached(code):
+    """Naver 1200일봉 원본. 정확도 보강/백그라운드 캐시 갱신용."""
     try:
         url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=1200&requestType=0"
         res = HTTP_SESSION.get(url, timeout=2.2)
@@ -3414,23 +3474,52 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
                         "High": float(p[2]),
                         "Low": float(p[3]),
                         "Close": float(p[4]),
-                        "Volume": float(p[5])
+                        "Volume": float(p[5]),
                     })
             if len(records) >= 15:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 df.attrs["_gaemi_raw_df"] = df.copy()
-                if anchor_price and anchor_price > 0:
-                    last_close = float(df['Close'].iloc[-1])
-                    if abs(last_close - anchor_price) / anchor_price > 0.3:
-                        ratio = anchor_price / last_close
-                        df['Open'] *= ratio
-                        df['High'] *= ratio
-                        df['Low'] *= ratio
-                        df['Close'] *= ratio
                 return df
     except Exception:
         pass
+    return None
 
+
+def _refresh_domestic_candles_from_naver(code):
+    """빠른 Yahoo 응답 이후 Naver 1200일봉으로 공용 캐시를 보강한다."""
+    key = str(code or "").strip().upper()
+    if not key:
+        return None
+    try:
+        df = _fetch_domestic_candles_naver_uncached(key)
+        if df is not None and not df.empty:
+            DOMESTIC_CANDLE_CACHE[key] = {"time": time.time(), "df": df.copy(deep=True)}
+            return df
+    except Exception as exc:
+        print(f"[DOMESTIC CANDLE NAVER REFRESH] {key} failed: {type(exc).__name__}: {exc}")
+    return None
+
+
+def _fetch_domestic_candles_uncached(code, anchor_price=None):
+    # STEP 12: 국내주식 첫 검색에서는 느린 Naver 1200일봉을 기다리지 않는다.
+    # Yahoo .KS/.KQ 5년봉을 병렬 조회해 먼저 유효한 데이터를 반환하고,
+    # Naver 1200일봉은 백그라운드에서 캐시를 정확한 원본으로 보강한다.
+    fast_df = _parse_yahoo_domestic_candles(code)
+    if fast_df is not None and len(fast_df) >= 250:
+        fast_df.attrs["_gaemi_raw_df"] = fast_df.copy()
+        try:
+            # 현재 요청을 막지 않고 Naver 원본으로 캐시를 갱신한다.
+            _perf_submit(OPTIONAL_API_EXECUTOR, _refresh_domestic_candles_from_naver, code)
+        except Exception:
+            pass
+        return fast_df
+
+    # Yahoo가 실패하면 기존 Naver 1200일봉을 동기 fallback으로 사용한다.
+    df = _fetch_domestic_candles_naver_uncached(code)
+    if df is not None and len(df) >= 15:
+        return df
+
+    # 마지막 fallback: Naver trend 120일
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
         res = HTTP_SESSION.get(url, timeout=2.0).json()
@@ -3443,7 +3532,7 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
                     "High": float(str(it['highPrice']).replace(',', '')),
                     "Low": float(str(it['lowPrice']).replace(',', '')),
                     "Close": float(str(it['closePrice']).replace(',', '')),
-                    "Volume": float(str(it['accumulatedTradingVolume']).replace(',', ''))
+                    "Volume": float(str(it['accumulatedTradingVolume']).replace(',', '')),
                 })
             if len(records) >= 15:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
@@ -3451,27 +3540,6 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
                 return df
     except Exception:
         pass
-
-    for suffix in [".KS", ".KQ"]:
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
-            res = HTTP_SESSION.get(url, timeout=2.0).json()
-            result = res.get("chart", {}).get("result", [])
-            if result:
-                ts = result[0].get("timestamp", [])
-                quote = result[0].get("indicators", {}).get("quote", [{}])[0]
-                records = [{
-                    "Date": pd.to_datetime(ts[i], unit='s'),
-                    "Open": float(quote['open'][i]),
-                    "High": float(quote['high'][i]),
-                    "Low": float(quote['low'][i]),
-                    "Close": float(quote['close'][i]),
-                    "Volume": float(quote['volume'][i] or 0.0)
-                } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
-                if len(records) >= 15:
-                    return pd.DataFrame(records).set_index("Date").sort_index()
-        except Exception:
-            pass
 
     return None
 

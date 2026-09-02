@@ -3319,7 +3319,12 @@ MARKET_DATA_CACHE_LOCK = threading.Lock()
 NAVER_REALTIME_CACHE = {}
 NAVER_REALTIME_CACHE_TTL = 15
 DOMESTIC_CANDLE_CACHE = {}
-DOMESTIC_CANDLE_CACHE_TTL = 10 * 60
+DOMESTIC_CANDLE_CACHE_TTL = 60 * 60
+# STEP 15 V2: 국내 일봉은 하루 단위 데이터이므로 10분마다 강제 재조회하지 않는다.
+# 신선 캐시는 1시간, 오래된 캐시는 최대 24시간까지 즉시 사용하고 백그라운드에서 갱신한다.
+DOMESTIC_CANDLE_STALE_TTL = 24 * 60 * 60
+DOMESTIC_CANDLE_REFRESHING = set()
+DOMESTIC_CANDLE_REFRESH_LOCK = threading.Lock()
 # STEP 10: /api/chart와 /api/analyze가 동시에 같은 종목을 요청할 때
 # 동일한 Naver 1200일봉 HTTP 요청이 중복 발생하지 않도록 single-flight를 사용한다.
 DOMESTIC_CANDLE_INFLIGHT = {}
@@ -3615,6 +3620,33 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
 
     return None
 
+def _schedule_domestic_candle_refresh(key):
+    """오래된 국내 일봉 캐시를 사용자 응답과 분리해 백그라운드에서 갱신한다."""
+    key = str(key or "").strip().upper()
+    if not key:
+        return False
+    with DOMESTIC_CANDLE_REFRESH_LOCK:
+        if key in DOMESTIC_CANDLE_REFRESHING:
+            return False
+        DOMESTIC_CANDLE_REFRESHING.add(key)
+    try:
+        def _worker():
+            try:
+                _refresh_domestic_candles_from_naver(key)
+            except Exception as exc:
+                print(f"[DOMESTIC CANDLE SWR] {key} refresh failed: {type(exc).__name__}: {exc}")
+            finally:
+                with DOMESTIC_CANDLE_REFRESH_LOCK:
+                    DOMESTIC_CANDLE_REFRESHING.discard(key)
+        PRICE_DATA_EXECUTOR.submit(_worker)
+        return True
+    except Exception as exc:
+        with DOMESTIC_CANDLE_REFRESH_LOCK:
+            DOMESTIC_CANDLE_REFRESHING.discard(key)
+        print(f"[DOMESTIC CANDLE SWR] {key} schedule failed: {type(exc).__name__}: {exc}")
+        return False
+
+
 def fetch_domestic_candles(code, anchor_price=None):
     key = str(code or "").strip().upper()
     if not key:
@@ -3622,19 +3654,41 @@ def fetch_domestic_candles(code, anchor_price=None):
 
     now = time.time()
     cached = DOMESTIC_CANDLE_CACHE.get(key)
-    if cached and now - cached["time"] < DOMESTIC_CANDLE_CACHE_TTL:
-        try:
-            df = cached["df"].copy(deep=True)
-            if anchor_price and anchor_price > 0 and not df.empty:
-                last_close = float(df["Close"].iloc[-1])
-                if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
-                    ratio = anchor_price / last_close
-                    df["Open"] *= ratio
-                    df["High"] *= ratio
-                    df["Low"] *= ratio
-                    df["Close"] *= ratio
-            return df
-        except Exception:
+    if cached:
+        age = now - cached.get("time", 0)
+        if age < DOMESTIC_CANDLE_CACHE_TTL:
+            try:
+                df = cached["df"].copy(deep=True)
+                if anchor_price and anchor_price > 0 and not df.empty:
+                    last_close = float(df["Close"].iloc[-1])
+                    if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                        ratio = anchor_price / last_close
+                        df["Open"] *= ratio
+                        df["High"] *= ratio
+                        df["Low"] *= ratio
+                        df["Close"] *= ratio
+                return df
+            except Exception:
+                DOMESTIC_CANDLE_CACHE.pop(key, None)
+        elif age < DOMESTIC_CANDLE_STALE_TTL:
+            # STEP 15 V2: stale-while-revalidate.
+            # 일봉 원천 데이터가 1시간 지났다는 이유만으로 사용자 요청을 Naver 응답까지
+            # 막지 않는다. 기존 1200일 데이터를 즉시 반환하고 백그라운드에서 최신화한다.
+            _schedule_domestic_candle_refresh(key)
+            try:
+                df = cached["df"].copy(deep=True)
+                if anchor_price and anchor_price > 0 and not df.empty:
+                    last_close = float(df["Close"].iloc[-1])
+                    if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                        ratio = anchor_price / last_close
+                        df["Open"] *= ratio
+                        df["High"] *= ratio
+                        df["Low"] *= ratio
+                        df["Close"] *= ratio
+                return df
+            except Exception:
+                DOMESTIC_CANDLE_CACHE.pop(key, None)
+        else:
             DOMESTIC_CANDLE_CACHE.pop(key, None)
 
     # STEP 10: single-flight

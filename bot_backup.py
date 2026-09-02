@@ -42,6 +42,51 @@ except ImportError:
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_MODEL_VERSION = "gaemiGTP-db-v1"
 
+# ----------------------------------------------------
+# DB 비동기 저장 큐
+# - 사용자 응답 경로에서 PostgreSQL INSERT/UPSERT를 기다리지 않는다.
+# - DB 저장은 별도 worker가 처리하며, 저장 실패가 분석 응답을 막지 않는다.
+# - 동일 요청의 중복 DB 작업이 쌓이는 것을 막기 위해 pending key를 관리한다.
+# ----------------------------------------------------
+DB_WRITE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="gaemi-db",
+)
+DB_WRITE_PENDING = set()
+DB_WRITE_PENDING_LOCK = threading.Lock()
+
+
+def _submit_db_write(task_key, func, *args, **kwargs):
+    """DB 저장을 백그라운드 worker로 넘기고 호출자는 즉시 계속 진행한다."""
+    if not _db_available():
+        return False
+
+    with DB_WRITE_PENDING_LOCK:
+        if task_key in DB_WRITE_PENDING:
+            print(f"[DB ASYNC] 중복 작업 건너뜀: {task_key}")
+            return False
+        DB_WRITE_PENDING.add(task_key)
+
+    try:
+        future = DB_WRITE_EXECUTOR.submit(func, *args, **kwargs)
+    except Exception as exc:
+        with DB_WRITE_PENDING_LOCK:
+            DB_WRITE_PENDING.discard(task_key)
+        print(f"[DB ASYNC] 작업 등록 실패: {task_key} {type(exc).__name__}: {exc}")
+        return False
+
+    def _done_callback(done_future):
+        try:
+            done_future.result()
+        except Exception as exc:
+            print(f"[DB ASYNC] 작업 실패: {task_key} {type(exc).__name__}: {exc}")
+        finally:
+            with DB_WRITE_PENDING_LOCK:
+                DB_WRITE_PENDING.discard(task_key)
+
+    future.add_done_callback(_done_callback)
+    return True
+
 
 def _db_available():
     return bool(DATABASE_URL and psycopg is not None)
@@ -704,6 +749,14 @@ ALPHA_EARNINGS_CACHE = {}
 ALPHA_EARNINGS_CACHE_TTL = 1800  # 30분
 FINNHUB_CONSENSUS_CACHE = {}
 FINNHUB_CONSENSUS_CACHE_TTL = 1800  # 30분
+
+# 통합 컨센서스 결과 캐시. 컨센서스는 초단위 데이터가 아니므로
+# 매 종목 검색마다 Naver/Finnhub/Yahoo fallback 체인을 다시 타지 않는다.
+# Step 1에서는 기존 데이터 수집 로직은 그대로 유지하고, 중복 호출만 차단한다.
+CONSENSUS_RESULT_CACHE = {}
+CONSENSUS_RESULT_CACHE_TTL = 900  # 15분
+CONSENSUS_CACHE_LOCK = threading.Lock()
+
 FRED_LAST_REQUEST_TS = 0.0
 FRED_MIN_INTERVAL = 0.55  # FRED 2 req/s 제한에 안전하게 대응
 API_LOCK = threading.Lock()
@@ -3342,9 +3395,11 @@ def fetch_crypto_candles(symbol):
         pass
     return None, None, None
 
-def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
-    """실제 확인 가능한 국내/미국 애널리스트 컨센서스만 표시한다.
-    국내 리포트는 Naver mobile/front-api/v2/legacy HTML을 순차적으로 확인한다.
+def _fetch_market_consensus_unified_uncached(symbol, market_name, raw_price, formal_name=""):
+    """실제 확인 가능한 국내/미국 애널리스트 컨센서스를 수집한다.
+
+    이 함수는 외부 API를 실제 호출하는 원본 수집기다.
+    반복 검색 방지는 바깥의 fetch_market_consensus_unified()가 담당한다.
     """
     try:
         def _walk_objects(obj, depth=0):
@@ -4351,6 +4406,40 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
         print(f"[CONSENSUS] {symbol} failed: {type(exc).__name__}: {exc}")
         return None
 
+def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
+    """컨센서스 통합 조회의 캐시 래퍼.
+
+    Step 1 속도 개선에서는 기존 Naver/Finnhub/Yahoo fallback 로직을
+    제거하지 않고, 동일 종목의 반복 검색에 대한 외부 API 재호출을 막는다.
+
+    - TTL: 15분
+    - 캐시 키: 시장 + 종목코드
+    - None도 캐시하여 일시적인 외부 API 장애가 반복 호출로 증폭되는 것을 방지
+    """
+    key = f"{str(market_name or '').strip()}:{str(symbol or '').strip().upper()}"
+    now = time.time()
+
+    with CONSENSUS_CACHE_LOCK:
+        cached = CONSENSUS_RESULT_CACHE.get(key)
+        if cached is not None:
+            cached_time, cached_result = cached
+            if now - cached_time < CONSENSUS_RESULT_CACHE_TTL:
+                return dict(cached_result) if isinstance(cached_result, dict) else cached_result
+            CONSENSUS_RESULT_CACHE.pop(key, None)
+
+    result = _fetch_market_consensus_unified_uncached(
+        symbol=symbol,
+        market_name=market_name,
+        raw_price=raw_price,
+        formal_name=formal_name,
+    )
+
+    with CONSENSUS_CACHE_LOCK:
+        CONSENSUS_RESULT_CACHE[key] = (now, result)
+
+    return dict(result) if isinstance(result, dict) else result
+
+
 def _fred_series(series_id, limit=8):
     """FRED 실제 관측값. 캐시와 요청 간격을 적용해 429를 예방한다."""
     if not FRED_API_KEY:
@@ -4721,13 +4810,13 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     ma5_state = "5일선 상회" if raw_price >= ma5_val else "5일선 하회"
     ma5_color = "positive" if raw_price >= ma5_val else "negative"
 
-    ma20_state = "20일선 지지" if raw_price >= ma20_val else "20일선 이탈"
+    ma20_state = " 지지" if raw_price >= ma20_val else " 이탈"
     ma20_color = "positive" if raw_price >= ma20_val else "negative"
 
     ma60_state = "60일선 지지" if ma60_val and raw_price >= ma60_val else "60일선 하회"
     ma60_color = "positive" if ma60_val and raw_price >= ma60_val else "warning"
 
-    ma120_state = "120일선 상회" if ma120_val and raw_price >= ma120_val else "120일선 저항"
+    ma120_state = "1 상회" if ma120_val and raw_price >= ma120_val else "1 저항"
     ma120_color = "positive" if ma120_val and raw_price >= ma120_val else "negative"
 
     std20_val = float(closes.tail(20).std()) if n_bars >= 20 else 1.0
@@ -4906,10 +4995,10 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
 
     if ma60_val and raw_price > ma20_val > ma60_val:
         trend = "정배열 상승 추세"
-        guide_text = f"20일선 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
+        guide_text = f" 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
     elif ma60_val and raw_price < ma20_val < ma60_val:
         trend = "역배열 하락 추세"
-        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며, 20일선 저항 매물대 돌파 실패 시 리스크 관리 필수"
+        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며,  저항 매물대 돌파 실패 시 리스크 관리 필수"
     else:
         trend = "박스권 혼조세"
         guide_text = f"박스권 상하단 밴드 내 매물 공방 국면이므로 볼린저 밴드 하단 지지 확인 시 진입하고, 1차 목표가 도달 시 비중 축소 권장"
@@ -5792,19 +5881,26 @@ def run_full_pipeline(query):
 
     # ====================================================
     # PostgreSQL 원천 OHLCV 저장
-    # 기존 사이트 분석 로직과 분리되어 있으며,
-    # DB 오류가 나도 기존 분석은 계속 진행한다.
+    # STEP 2: 사용자 응답 경로에서 DB 저장을 기다리지 않는다.
+    # 분석에 사용할 df가 이후 계산 과정에서 변경될 수 있으므로
+    # 백그라운드 작업에 넘길 복사본을 만든다.
     # ====================================================
     try:
-        save_market_prices(
-            df=df,
+        db_price_df = df.copy(deep=True)
+        if isinstance(df.attrs.get("_gaemi_raw_df"), pd.DataFrame):
+            db_price_df.attrs["_gaemi_raw_df"] = df.attrs["_gaemi_raw_df"].copy(deep=True)
+
+        _submit_db_write(
+            ("market_prices", market_name, str(symbol), "1d"),
+            save_market_prices,
+            df=db_price_df,
             market_name=market_name,
             symbol=symbol,
             timeframe="1d",
             source="alpha-trade-bot",
         )
     except Exception as exc:
-        print(f"[DB] 원천 OHLCV 저장 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
+        print(f"[DB ASYNC] 원천 OHLCV 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
     with ThreadPoolExecutor(max_workers=9) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 10)
@@ -5867,16 +5963,22 @@ def run_full_pipeline(query):
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 
     try:
-        save_quant_result(
+        # 퀀트 결과도 응답을 막지 않도록 백그라운드 저장한다.
+        db_quant_df = df.copy(deep=True)
+        db_quant_payload = dict(quant) if isinstance(quant, dict) else quant
+
+        _submit_db_write(
+            ("quant_results", market_name, str(symbol), "1d"),
+            save_quant_result,
             market_name=market_name,
             symbol=symbol,
             raw_price=raw_price,
-            df=df,
-            quant=quant,
+            df=db_quant_df,
+            quant=db_quant_payload,
             timeframe="1d",
         )
     except Exception as exc:
-        print(f"[DB] 퀀트 결과 저장 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
+        print(f"[DB ASYNC] 퀀트 결과 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
     try:
         movement_reason = analyze_movement_reason(
@@ -6430,9 +6532,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
         .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
 
-        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; }
-        .legend-tag { display: flex; align-items: center; gap: 4px; }
-        .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
         .board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-line); }
@@ -8139,13 +8238,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="price-title" id="rTitle"></div>
                                 <div class="price-val" id="rPrice"></div>
                                 <div class="price-meta" id="rMeta"></div>
-                                <div class="chart-legend">
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
-                                    <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
-                                </div>
-                            </div>
+</div>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
@@ -8650,6 +8743,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 chart.applyOptions({ width: container.clientWidth });
             }
         }
+
+        window.addEventListener('resize', resizeChart);
 
         function toggleSidebar() {
             const side = document.getElementById('sidebar-wrapper');
@@ -9532,7 +9627,7 @@ const voteKey = 'vote_' + symbol;
                 if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
                     setTimeout(() => {
                         if (searchToken === activeSearchToken) {
-                            initTvChart(cached.data.candles, cached.data.ma20_line, cached.data.ma60_line, cached.data.bb_up_line, cached.data.bb_dn_line);
+                            initTvChart(cached.data.candles);
                         }
                     }, 0);
                 } else {
@@ -9544,7 +9639,7 @@ const voteKey = 'vote_' + symbol;
                             console.table(chartData._perf.slowest_http || []);
                         }
                         if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                        initTvChart(chartData.candles, chartData.ma20_line, chartData.ma60_line, chartData.bb_up_line, chartData.bb_dn_line);
+                        initTvChart(chartData.candles);
                     });
                 }
 
@@ -10251,7 +10346,7 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
-        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
+        function initTvChart(candles) {
             const container = document.getElementById('tvChart');
             if (!container) return;
             container.innerHTML = '';
@@ -10261,9 +10356,9 @@ if ((response && !response.ok) || data.error) {
             chart = LightweightCharts.createChart(container, {
                 width: container.clientWidth || 700,
                 height: 300,
-                layout: { 
-                    background: { color: isLight ? '#ffffff' : '#1e1f20' }, 
-                    textColor: isLight ? '#5f6368' : '#8e918f' 
+                layout: {
+                    background: { color: isLight ? '#ffffff' : '#1e1f20' },
+                    textColor: isLight ? '#5f6368' : '#8e918f'
                 },
                 grid: {
                     vertLines: { color: 'rgba(0,0,0,0)' },
@@ -10289,65 +10384,11 @@ if ((response && !response.ok) || data.error) {
             });
             candleSeries.setData(candles || []);
 
-            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-            lineMa20.setData(ma20 || []);
-
-            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
-            lineMa60.setData(ma60 || []);
-
-            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
-            lineBbUp.setData(bbUp || []);
-
-            const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
-            lineBbDn.setData(bbDn || []);
-
             chart.timeScale().fitContent();
-
-            window.addEventListener('resize', resizeChart);
+            // resize 리스너는 전역에서 한 번만 등록한다.
         }
 
 
-        async function loadSectorChart(symbol, sectorName) {
-            const cleanSymbol = String(symbol || '').trim().toUpperCase();
-            const cleanName = String(sectorName || '').trim();
-            if (!cleanSymbol) return;
-
-            const chartContainer = document.getElementById('tvChart');
-            if (!chartContainer) return;
-
-            const previousHtml = chartContainer.innerHTML;
-            chartContainer.innerHTML = '<div style="height:300px; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-size:0.78rem;">업종 차트 불러오는 중…</div>';
-
-            try {
-                // 기존 /api/analyze 파이프라인을 그대로 사용하되,
-                // 현재 종목 전체 분석 화면은 건드리지 않고 차트 데이터만 사용한다.
-                const response = await fetch('/api/analyze?q=' + encodeURIComponent(cleanSymbol));
-                const data = await response.json();
-
-                if (!response.ok || data.error || !Array.isArray(data.candles) || !data.candles.length) {
-                    throw new Error(data.error || '업종 차트 데이터를 가져오지 못했습니다.');
-                }
-
-                initTvChart(
-                    data.candles,
-                    data.ma20_line,
-                    data.ma60_line,
-                    data.bb_up_line,
-                    data.bb_dn_line
-                );
-
-                // 차트 영역의 현재 모드를 가볍게 표시. 기존 레이아웃/카드 높이는 변경하지 않는다.
-                const meta = document.getElementById('rMeta');
-                if (meta) {
-                    meta.dataset.previousText = meta.dataset.previousText || meta.textContent;
-                    meta.innerText = `차트: ${cleanName} 업종 · ${cleanSymbol} · Yahoo Finance`;
-                }
-            } catch (error) {
-                console.error('Sector chart:', error);
-                chartContainer.innerHTML = previousHtml;
-                alert(`${cleanName || cleanSymbol} 업종 차트를 불러오지 못했습니다.`);
-            }
-        }
 
         function formatUsStockPrice(value) {
             const n = Number(value);
@@ -10557,40 +10598,35 @@ FAST_CHART_PAYLOAD_TTL = 30
 # 전체 분석(/api/analyze)이 끝날 때까지 차트를 기다리지 않게 한다.
 # ----------------------------------------------------
 def _build_chart_payload(df):
+    """차트는 캔들만 표시한다. 이평선/볼린저밴드는 계산·전송하지 않는다."""
     if df is None or df.empty:
         return None
 
-    work = df.copy()
-    work['MA20'] = work['Close'].rolling(20).mean()
-    work['MA60'] = work['Close'].rolling(60).mean()
-    work['STD60'] = work['Close'].rolling(60).std()
-    work['BB_UP'] = work['MA60'] + (work['STD60'] * 2)
-    work['BB_DN'] = work['MA60'] - (work['STD60'] * 2)
+    work = df.copy().sort_index()
+    work = work[~work.index.duplicated(keep="last")]
 
-    work = work.sort_index()
-    work = work[~work.index.duplicated(keep='last')]
-
-    candles, ma20_line, ma60_line, bb_up_line, bb_dn_line = [], [], [], [], []
+    candles = []
     for date_idx, row in work.tail(65).iterrows():
         t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d")
-        o, h, l, c = float(row['Open']), float(row['High']), float(row['Low']), float(row['Close'])
+        o = float(row["Open"])
+        h = float(row["High"])
+        l = float(row["Low"])
+        c = float(row["Close"])
         if not any(np.isnan(v) for v in (o, h, l, c)):
-            candles.append({"time": t_str, "open": o, "high": h, "low": l, "close": c})
-        if not np.isnan(row['MA20']):
-            ma20_line.append({"time": t_str, "value": float(row['MA20'])})
-        if not np.isnan(row['MA60']):
-            ma60_line.append({"time": t_str, "value": float(row['MA60'])})
-        if not np.isnan(row['BB_UP']):
-            bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
-        if not np.isnan(row['BB_DN']):
-            bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
+            candles.append({
+                "time": t_str,
+                "open": o,
+                "high": h,
+                "low": l,
+                "close": c
+            })
 
     return {
         "candles": candles,
-        "ma20_line": ma20_line,
-        "ma60_line": ma60_line,
-        "bb_up_line": bb_up_line,
-        "bb_dn_line": bb_dn_line
+        "ma20_line": [],
+        "ma60_line": [],
+        "bb_up_line": [],
+        "bb_dn_line": []
     }
 
 

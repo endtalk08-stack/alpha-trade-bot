@@ -4,6 +4,7 @@ import os
 EARNINGS_PREVIEW_COUNT = 4
 import re
 import io
+import gzip
 import gc
 import json
 import time
@@ -9902,27 +9903,30 @@ if ((response && !response.ok) || data.error) {
                 // 1. 글로벌 보드 렌더링
                 const wBoardGrid = document.getElementById('worldBoardGrid');
                 if (wBoardGrid) {
-                    wBoardGrid.innerHTML = '';
-                    if (data.world_board) {
-                        data.world_board.forEach(w => {
+                    if (Array.isArray(data.world_board) && data.world_board.length) {
+                        // STEP 6: innerHTML += 반복을 제거해 DOM 파싱/리플로우를 한 번으로 줄인다.
+                        wBoardGrid.innerHTML = data.world_board.map(w => {
                             const cls = w.up ? 'val-up' : 'val-down';
                             const sparkSvg = renderSparklineSVG(w.sparkline, w.up);
-                            wBoardGrid.innerHTML += `
-                                <div class="mini-index-card" onclick="doSearch('${w.name === 'USD/KRW' ? '환율' : w.name}')">
+                            const clickName = String(w.name || '').replace(/'/g, "\\'");
+                            return `
+                                <div class="mini-index-card" onclick="doSearch('${clickName === 'USD/KRW' ? '환율' : clickName}')">
                                     <div class="mini-top">
-                                        <span class="mini-name">${w.name}</span>
-                                        <span class="mini-tag">${w.tag}</span>
+                                        <span class="mini-name">${String(w.name || '')}</span>
+                                        <span class="mini-tag">${String(w.tag || '')}</span>
                                     </div>
                                     <div class="mini-mid-row">
                                         <div>
-                                            <div class="mini-price">${w.price}</div>
-                                            <div class="mini-rate ${cls}">${w.rate}</div>
+                                            <div class="mini-price">${String(w.price || '')}</div>
+                                            <div class="mini-rate ${cls}">${String(w.rate || '')}</div>
                                         </div>
                                         ${sparkSvg}
                                     </div>
                                 </div>
                             `;
-                        });
+                        }).join('');
+                    } else {
+                        wBoardGrid.innerHTML = '';
                     }
                 }
 
@@ -10419,16 +10423,13 @@ if ((response && !response.ok) || data.error) {
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {
-                    sNews.innerHTML = '';
-                    if (data.stock_news && data.stock_news.length > 0) {
-                        data.stock_news.slice(0, 6).forEach(n => {
-                            sNews.innerHTML += `
-                                <a href="${n.link}" target="_blank" class="news-item">
-                                    <div class="news-title">${n.title}</div>
-                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                                </a>
-                            `;
-                        });
+                    if (Array.isArray(data.stock_news) && data.stock_news.length > 0) {
+                        sNews.innerHTML = data.stock_news.slice(0, 6).map(n => `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `).join('');
                     } else {
                         sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
                     }
@@ -10436,16 +10437,13 @@ if ((response && !response.ok) || data.error) {
 
                 const gNews = document.getElementById('globalNewsList');
                 if (gNews) {
-                    gNews.innerHTML = '';
-                    if (data.global_news && data.global_news.length > 0) {
-                        data.global_news.slice(0, 6).forEach(n => {
-                            gNews.innerHTML += `
-                                <a href="${n.link}" target="_blank" class="news-item">
-                                    <div class="news-title">${n.title}</div>
-                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                                </a>
-                            `;
-                        });
+                    if (Array.isArray(data.global_news) && data.global_news.length > 0) {
+                        gNews.innerHTML = data.global_news.slice(0, 6).map(n => `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `).join('');
                     } else {
                         gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
                     }
@@ -10550,17 +10548,14 @@ if ((response && !response.ok) || data.error) {
                 const dCard = document.getElementById('rowDart');
                 const dList = document.getElementById('dartList');
                 if (dCard && dList) {
-                    if (data.dart_disclosures && data.dart_disclosures.length > 0) {
-                        dList.innerHTML = '';
-                        data.dart_disclosures.forEach(d => {
-                            dList.innerHTML += `
-                                <a href="${d.link}" target="_blank" class="dart-item">
-                                    <span class="dart-tag tag-${d.tag_type}">${d.tag_name}</span>
-                                    <span class="dart-title">${d.title}</span>
-                                    <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${d.date}</span>
-                                </a>
-                            `;
-                        });
+                    if (Array.isArray(data.dart_disclosures) && data.dart_disclosures.length > 0) {
+                        dList.innerHTML = data.dart_disclosures.map(d => `
+                            <a href="${d.link}" target="_blank" class="dart-item">
+                                <span class="dart-tag tag-${d.tag_type}">${d.tag_name}</span>
+                                <span class="dart-title">${d.title}</span>
+                                <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${d.date}</span>
+                            </a>
+                        `).join('');
                         dCard.style.display = 'block';
                     } else {
                         dCard.style.display = 'none';
@@ -11051,16 +11046,38 @@ class WebHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("WEB", fmt % args)
 
+    def _client_accepts_gzip(self):
+        return "gzip" in str(self.headers.get("Accept-Encoding", "")).lower()
+
+    def _write_bytes_response(self, status, body, content_type, compress=True, cache_control="no-store"):
+        send_gzip = bool(compress and len(body) >= 1024 and self._client_accepts_gzip())
+        wire_body = gzip.compress(body, compresslevel=6, mtime=0) if send_gzip else body
+
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", cache_control)
+        if send_gzip:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(wire_body)))
+        self.end_headers()
+        self.wfile.write(wire_body)
+
     def _json(self, status, payload):
         clean_payload = clean_for_json(payload)
-        body = json.dumps(clean_payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        # STEP 6: JSON 구분자 공백을 제거하고 gzip을 적용해 네트워크 전송량을 줄인다.
+        body = json.dumps(
+            clean_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self._write_bytes_response(
+            status,
+            body,
+            "application/json; charset=utf-8",
+            compress=True,
+            cache_control="no-store",
+        )
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -11216,13 +11233,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 })
             return
 
+        # STEP 6: 초기 HTML도 gzip으로 전송해 첫 화면 로딩 비용을 줄인다.
         html_bytes = HTML_PAGE.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(html_bytes)))
-        self.end_headers()
-        self.wfile.write(html_bytes)
+        self._write_bytes_response(
+            200,
+            html_bytes,
+            "text/html; charset=utf-8",
+            compress=True,
+            cache_control="no-store",
+        )
 
 def run_web_server():
     # DB가 실패해도 기존 서버를 막지 않는다.

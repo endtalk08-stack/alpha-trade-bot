@@ -564,55 +564,6 @@ HTTP_SESSION.headers.update({
 })
 
 # ----------------------------------------------------
-# SPEED OPTIMIZATION 5: 실제 병목 측정
-# 각 요청에서 외부 API별 소요시간을 기록한다.
-# 화면 동작에는 영향을 주지 않고, /api/analyze와 /api/chart 응답에 _perf로 포함한다.
-# ----------------------------------------------------
-_PERF_LOCAL = threading.local()
-
-_original_http_get = HTTP_SESSION.get
-
-def _timed_http_get(url, *args, **kwargs):
-    started = time.perf_counter()
-    try:
-        return _original_http_get(url, *args, **kwargs)
-    finally:
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        perf = getattr(_PERF_LOCAL, "http_calls", None)
-        if perf is not None:
-            try:
-                parsed_url = urllib.parse.urlparse(str(url))
-                host = parsed_url.netloc or parsed_url.path
-                path = parsed_url.path or "/"
-                perf.append({
-                    "host": host,
-                    "path": path[:160],
-                    "ms": round(elapsed_ms, 1)
-                })
-            except Exception:
-                pass
-
-HTTP_SESSION.get = _timed_http_get
-
-def _perf_begin(kind, query):
-    _PERF_LOCAL.kind = kind
-    _PERF_LOCAL.query = query
-    _PERF_LOCAL.started = time.perf_counter()
-    _PERF_LOCAL.http_calls = []
-
-def _perf_snapshot():
-    started = getattr(_PERF_LOCAL, "started", None)
-    calls = list(getattr(_PERF_LOCAL, "http_calls", []) or [])
-    total_ms = ((time.perf_counter() - started) * 1000.0) if started else None
-    calls.sort(key=lambda x: x.get("ms", 0), reverse=True)
-    return {
-        "total_ms": round(total_ms, 1) if total_ms is not None else None,
-        "http_call_count": len(calls),
-        "slowest_http": calls[:10]
-    }
-
-
-# ----------------------------------------------------
 # 1. 기본 설정 및 종목/지수 매핑
 # ----------------------------------------------------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -1308,137 +1259,77 @@ LAST_US_LEADING_STOCKS_FETCH = {}
 US_LEADING_STOCKS_TTL = 300
 
 def _fetch_us_stock_snapshot(item):
-    """업종별 핵심 후보의 실제 현재가/당일 등락률/시가총액을 조회한다."""
     symbol, name = item
     try:
         encoded = urllib.parse.quote(symbol)
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{encoded}?range=3mo&interval=1d"
-        res = HTTP_SESSION.get(
-            url,
-            timeout=5.0,
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
-        )
+        res = HTTP_SESSION.get(url, timeout=5.0)
         res.raise_for_status()
-        result = (res.json().get("chart", {}).get("result") or [None])[0]
+        payload = res.json()
+        result = (payload.get("chart", {}).get("result") or [None])[0]
         if not result:
             return None
-
-        quote = (result.get("indicators", {}).get("quote") or [{}])[0]
-        closes = quote.get("close") or []
-        clean = []
-        for value in closes:
-            try:
-                v = float(value)
-                if np.isfinite(v):
-                    clean.append(v)
-            except Exception:
-                continue
-        if len(clean) < 2:
+        closes = (result.get("indicators", {}).get("quote", [{}])[0].get("close") or [])
+        closes = [float(x) for x in closes if x is not None and np.isfinite(float(x))]
+        if len(closes) < 22:
             return None
 
-        latest = clean[-1]
-        prev = clean[-2]
-        current = ((latest / prev) - 1.0) * 100.0 if prev else 0.0
+        latest = closes[-1]
+        prev = closes[-2]
+        week_base = closes[-6] if len(closes) >= 6 else closes[0]
+        month_base = closes[-22] if len(closes) >= 22 else closes[0]
+        current = (latest / prev - 1.0) * 100.0 if prev else 0.0
+        week1 = (latest / week_base - 1.0) * 100.0 if week_base else 0.0
+        month1 = (latest / month_base - 1.0) * 100.0 if month_base else 0.0
 
-        # 기존 카드의 최근 20거래일 미니차트 유지
-        spark_src = clean[-20:]
+        # 최근 20거래일을 카드 폭에 맞게 0~34로 정규화한 실제 가격 흐름
+        spark_src = closes[-20:]
         lo, hi = min(spark_src), max(spark_src)
         if hi - lo < 1e-12:
             spark = [17.0] * len(spark_src)
         else:
-            spark = [
-                round(31.0 - ((v - lo) / (hi - lo)) * 28.0, 1)
-                for v in spark_src
-            ]
-
-        # 시가총액은 후보군의 "핵심 10개" 검증/구성용 실제 데이터
-        market_cap = None
-        try:
-            qurl = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={encoded}"
-            qres = HTTP_SESSION.get(
-                qurl,
-                timeout=5.0,
-                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"}
-            )
-            if qres.ok:
-                rows = qres.json().get("quoteResponse", {}).get("result") or []
-                if rows and rows[0].get("marketCap") is not None:
-                    market_cap = float(rows[0]["marketCap"])
-        except Exception:
-            pass
+            spark = [round(31.0 - ((v - lo) / (hi - lo)) * 28.0, 1) for v in spark_src]
 
         return {
             "symbol": symbol,
             "name": name,
             "price": latest,
             "current": current,
-            "market_cap": market_cap,
+            "week1": week1,
+            "month1": month1,
             "sparkline": spark,
         }
     except Exception as exc:
         print(f"[US STOCK] {symbol} failed: {type(exc).__name__}: {exc}")
         return None
 
-
 def fetch_us_leading_stocks(sector_symbol, force=False):
-    """
-    업종별 핵심 종목군 10개 중 당일 상승률이 높은 TOP 5를 선정한다.
-
-    - 후보군: 업종별 핵심 종목 10개
-    - 선정: 당일 상승률 내림차순
-    - 거래대금/1W/1M/20일 평균 거래대금은 선정에 사용하지 않음
-    - 시가총액은 후보군 자체를 핵심 종목으로 구성하는 기준이며,
-      TOP 5의 당일 순위에는 직접 가중하지 않음
-    """
     sector_symbol = str(sector_symbol or "").strip().upper()
     candidates = US_SECTOR_STOCK_UNIVERSE.get(sector_symbol)
     if not candidates:
         return []
 
     now = time.time()
-    if (
-        not force
-        and sector_symbol in CACHED_US_LEADING_STOCKS
-        and now - LAST_US_LEADING_STOCKS_FETCH.get(sector_symbol, 0.0) < US_LEADING_STOCKS_TTL
-    ):
+    if (not force and sector_symbol in CACHED_US_LEADING_STOCKS
+            and now - LAST_US_LEADING_STOCKS_FETCH.get(sector_symbol, 0.0) < US_LEADING_STOCKS_TTL):
         return CACHED_US_LEADING_STOCKS[sector_symbol]
 
-    with ThreadPoolExecutor(max_workers=min(10, max(1, len(candidates)))) as executor:
-        rows = list(executor.map(_fetch_us_stock_snapshot, candidates))
-
-    rows = [r for r in rows if r and r.get("price") is not None]
-    if not rows:
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        snapshots = list(executor.map(_fetch_us_stock_snapshot, candidates))
+    snapshots = [x for x in snapshots if x]
+    if not snapshots:
         return []
 
-    # 핵심 10개 안에서 "오늘 가장 많이 오른 종목" 순.
-    # 동률일 때만 시가총액을 보조 기준으로 사용한다.
-    rows.sort(
-        key=lambda r: (
-            r.get("current", float("-inf")),
-            r.get("market_cap") or 0.0,
-        ),
-        reverse=True,
-    )
+    # 현재/1주/1개월을 같은 비중으로 표준화하여 업종 내부 상대강도를 계산한다.
+    for row in snapshots:
+        row["_score"] = 0.45 * row["current"] + 0.35 * row["week1"] + 0.20 * row["month1"]
+    snapshots.sort(key=lambda x: x["_score"], reverse=True)
 
-    top = [
-        {
-            "symbol": r["symbol"],
-            "name": r["name"],
-            "price": r["price"],
-            "current": r["current"],
-            "sparkline": r["sparkline"],
-        }
-        for r in rows[:5]
-    ]
-
+    top = [{k: v for k, v in row.items() if k != "_score"} for row in snapshots[:5]]
     CACHED_US_LEADING_STOCKS[sector_symbol] = top
     LAST_US_LEADING_STOCKS_FETCH[sector_symbol] = now
-
-    print(
-        f"[US LEADING STOCKS] {sector_symbol} TOP5: "
-        + ", ".join(f"{r['symbol']}({r['current']:+.2f}%)" for r in top)
-    )
     return top
+
 
 def fetch_single_world_item(item):
     name = item["name"]
@@ -3155,34 +3046,16 @@ def fetch_domestic_candles(code, anchor_price=None):
 
     return None
 
-# ===== SPEED OPTIMIZATION 2: overseas candle cache =====
-# 5년치 일봉을 매 검색마다 Yahoo에서 다시 받지 않는다.
-# 기본 TTL은 10분이며, 캐시가 없거나 만료된 경우에만 갱신한다.
-OVERSEAS_CANDLE_CACHE = {}
-OVERSEAS_CANDLE_CACHE_TTL = 10 * 60
-
 def fetch_overseas_candles(symbol):
     """
-    해외주식 차트 데이터 조회 + 서버 메모리 TTL 캐시.
-    기존 함수 계약을 유지한다:
-      (chart_close, price_text, df)
+    해외주식 차트 데이터 조회.
+    - 차트는 기존 Yahoo Chart API의 일봉 데이터를 사용한다.
+    - 현재가를 일봉 마지막 Close로 오인하지 않는다.
+    - 데이터 누락/HTTP 오류를 조용히 삼키지 않고 로그로 남긴다.
+    - 현재가/세션 가격은 별도 quote snapshot에서 가져올 수 있도록 분리한다.
     """
-    key = str(symbol or "").strip().upper()
-    if not key:
-        return None, None, None
-
-    now = time.time()
-    cached = OVERSEAS_CANDLE_CACHE.get(key)
-    if cached and (now - cached["time"]) < OVERSEAS_CANDLE_CACHE_TTL:
-        try:
-            df = cached["df"].copy()
-            chart_close = float(df["Close"].iloc[-1])
-            return chart_close, f"{chart_close:,.2f} 달러", df
-        except Exception:
-            OVERSEAS_CANDLE_CACHE.pop(key, None)
-
     try:
-        encoded_sym = urllib.parse.quote(key)
+        encoded_sym = urllib.parse.quote(symbol.upper())
         url = (
             f"https://query1.finance.yahoo.com/v8/finance/chart/"
             f"{encoded_sym}?range=5y&interval=1d&includePrePost=false"
@@ -3193,8 +3066,8 @@ def fetch_overseas_candles(symbol):
             headers={"User-Agent": "Mozilla/5.0"}
         )
         response.raise_for_status()
-
         res = response.json()
+
         chart = res.get("chart") or {}
         if chart.get("error"):
             raise RuntimeError(f"Yahoo chart error: {chart.get('error')}")
@@ -3211,6 +3084,7 @@ def fetch_overseas_candles(symbol):
         if not ts or not quote:
             raise RuntimeError("Yahoo chart에 timestamp/quote 데이터가 없습니다.")
 
+        records = []
         opens = quote.get("open") or []
         highs = quote.get("high") or []
         lows = quote.get("low") or []
@@ -3218,7 +3092,6 @@ def fetch_overseas_candles(symbol):
         volumes = quote.get("volume") or []
 
         n = min(len(ts), len(opens), len(highs), len(lows), len(closes), len(volumes))
-        records = []
         for i in range(n):
             if any(v is None for v in (opens[i], highs[i], lows[i], closes[i])):
                 continue
@@ -3235,17 +3108,14 @@ def fetch_overseas_candles(symbol):
             raise RuntimeError(f"유효한 일봉 데이터가 부족합니다: {len(records)}개")
 
         df = pd.DataFrame(records).set_index("Date").sort_index()
+
+        # 중요: 여기서 반환하는 가격은 '실시간 현재가'가 아니라
+        # 차트의 마지막 정규장 일봉 종가임을 명확히 한다.
         chart_close = float(df["Close"].iloc[-1])
-
-        OVERSEAS_CANDLE_CACHE[key] = {
-            "time": now,
-            "df": df.copy(),
-        }
-
         return chart_close, f"{chart_close:,.2f} 달러", df
 
     except Exception as exc:
-        print(f"[YAHOO CHART ERROR] {key}: {type(exc).__name__}: {exc}")
+        print(f"[YAHOO CHART ERROR] {symbol}: {type(exc).__name__}: {exc}")
         return None, None, None
 
 
@@ -4721,13 +4591,13 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     ma5_state = "5일선 상회" if raw_price >= ma5_val else "5일선 하회"
     ma5_color = "positive" if raw_price >= ma5_val else "negative"
 
-    ma20_state = " 지지" if raw_price >= ma20_val else " 이탈"
+    ma20_state = "20일선 지지" if raw_price >= ma20_val else "20일선 이탈"
     ma20_color = "positive" if raw_price >= ma20_val else "negative"
 
     ma60_state = "60일선 지지" if ma60_val and raw_price >= ma60_val else "60일선 하회"
     ma60_color = "positive" if ma60_val and raw_price >= ma60_val else "warning"
 
-    ma120_state = "1 상회" if ma120_val and raw_price >= ma120_val else "1 저항"
+    ma120_state = "120일선 상회" if ma120_val and raw_price >= ma120_val else "120일선 저항"
     ma120_color = "positive" if ma120_val and raw_price >= ma120_val else "negative"
 
     std20_val = float(closes.tail(20).std()) if n_bars >= 20 else 1.0
@@ -4906,10 +4776,10 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
 
     if ma60_val and raw_price > ma20_val > ma60_val:
         trend = "정배열 상승 추세"
-        guide_text = f" 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
+        guide_text = f"20일선 지지 안착 및 5일선 골든크로스 확인 시 분할 착수하며, 일일 변동폭({atr_val}) 수준의 단기 음봉 눌림목에서 분할 매수 후 전고점 돌파 시 1차 익절 집행"
     elif ma60_val and raw_price < ma20_val < ma60_val:
         trend = "역배열 하락 추세"
-        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며,  저항 매물대 돌파 실패 시 리스크 관리 필수"
+        guide_text = f"RSI({rsi_val}) 침체권 매물 소화 및 하단 지지선 형성 확인 후 보수적 분할 접근하며, 20일선 저항 매물대 돌파 실패 시 리스크 관리 필수"
     else:
         trend = "박스권 혼조세"
         guide_text = f"박스권 상하단 밴드 내 매물 공방 국면이므로 볼린저 밴드 하단 지지 확인 시 진입하고, 1차 목표가 도달 시 비중 축소 권장"
@@ -5741,13 +5611,8 @@ def run_full_pipeline(query):
     elif clean_q in US_STOCK_MAP:
         symbol = US_STOCK_MAP[clean_q]
         formal_name = query.strip()
-        # 차트와 실시간 시세는 서로 의존하지 않으므로 동시에 조회한다.
-        with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
-            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
-            chart_price, _, df = chart_future.result()
-            quote_snapshot = quote_future.result()
-
+        chart_price, _, df = fetch_overseas_candles(symbol)
+        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
         if quote_snapshot:
             raw_price = quote_snapshot["price"]
             price_str = f"{raw_price:,.2f} 달러"
@@ -5759,13 +5624,8 @@ def run_full_pipeline(query):
     elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
         symbol = query.upper().strip()
         formal_name = symbol
-        # 차트와 실시간 시세를 병렬 조회한다.
-        with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
-            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
-            chart_price, _, df = chart_future.result()
-            quote_snapshot = quote_future.result()
-
+        chart_price, _, df = fetch_overseas_candles(symbol)
+        quote_snapshot = fetch_overseas_quote_snapshot(symbol)
         if quote_snapshot:
             raw_price = quote_snapshot["price"]
             price_str = f"{raw_price:,.2f} 달러"
@@ -5831,38 +5691,23 @@ def run_full_pipeline(query):
         dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
         domestic_flow = _safe_future_result(f_domestic_flow, None, "domestic flow") if f_domestic_flow else None
 
-    # 세계시장 보드와 경제 캘린더도 서로 독립적이므로
-    # 둘 다 캐시가 없을 때만 병렬 조회한다.
-    world_board = CACHED_WORLD_BOARD
-    market_calendar = CACHED_MARKET_CALENDAR
+    if CACHED_WORLD_BOARD:
+        world_board = CACHED_WORLD_BOARD
+    else:
+        try:
+            world_board = fetch_all_world_board_parallel() or []
+        except Exception as exc:
+            print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
+            world_board = []
 
-    need_world = not world_board
-    need_calendar = not market_calendar
-
-    if need_world or need_calendar:
-        with ThreadPoolExecutor(max_workers=2) as board_executor:
-            world_future = (
-                board_executor.submit(fetch_all_world_board_parallel)
-                if need_world else None
-            )
-            calendar_future = (
-                board_executor.submit(fetch_real_market_calendar_live)
-                if need_calendar else None
-            )
-
-            if need_world:
-                try:
-                    world_board = world_future.result() or []
-                except Exception as exc:
-                    print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
-                    world_board = []
-
-            if need_calendar:
-                try:
-                    market_calendar = calendar_future.result() or []
-                except Exception as exc:
-                    print("[MARKET CALENDAR] 조회 실패:", repr(exc))
-                    market_calendar = []
+    if CACHED_MARKET_CALENDAR:
+        market_calendar = CACHED_MARKET_CALENDAR
+    else:
+        try:
+            market_calendar = fetch_real_market_calendar_live() or []
+        except Exception as exc:
+            print("[MARKET CALENDAR] 조회 실패:", repr(exc))
+            market_calendar = []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 
@@ -6006,6 +5851,81 @@ def run_full_pipeline(query):
 
     ANALYSIS_CACHE[clean_q] = (now_ts, result_data)
     return result_data
+
+# ----------------------------------------------------
+# 7. 텔레그램 봇 실시간 인터랙션 엔진
+# ----------------------------------------------------
+def send_telegram_msg(chat_id, text):
+    if not TELEGRAM_TOKEN:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        HTTP_SESSION.post(url, json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=2.5)
+    except Exception:
+        pass
+
+def telegram_bot_worker():
+    if not TELEGRAM_TOKEN:
+        return
+    offset = 0
+    while True:
+        try:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={offset}&timeout=20"
+            res = HTTP_SESSION.get(url, timeout=25).json()
+            if res.get("ok"):
+                for upd in res.get("result", []):
+                    offset = upd["update_id"] + 1
+                    msg = upd.get("message", {})
+                    chat_id = msg.get("chat", {}).get("id")
+                    text = msg.get("text", "").strip()
+
+                    if not chat_id or not text:
+                        continue
+
+                    if text.startswith("/start"):
+                        parts = text.split()
+                        if len(parts) > 1:
+                            target_q = parts[1].strip()
+                            data = run_full_pipeline(target_q)
+                            if data:
+                                reply = f"<b>{data['name']}({data['symbol']})</b> 알림 등록 완료\n\n" \
+                                        f"현재가: <b>{data['price']}</b>\n" \
+                                        f"gaemiGTP 시그널: <b>{data['quant']['win_rate_num']} 승률</b>\n" \
+                                        f"1차 진입가: {data['quant']['entry1']}\n" \
+                                        f"목표 수익가: {data['quant']['target2']}\n" \
+                                        f"손절 방어선: {data['quant']['stop_p']}\n\n" \
+                                        f"목표가 및 주요 시그널 발생 시 실시간으로 안내합니다."
+                                send_telegram_msg(chat_id, reply)
+                            else:
+                                send_telegram_msg(chat_id, f"gaemiGTP 알림봇입니다. 원하시는 종목명을 <code>/삼성전자</code> 또는 <code>/BTC</code> 형태로 입력하시면 실시간 시그널을 즉시 조회합니다.")
+                        else:
+                            send_telegram_msg(chat_id, f"gaemiGTP 텔레그램 시그널 알림봇입니다.\n\n종목명을 <code>/SK하이닉스</code>, <code>/NVDA</code>, <code>/BTC</code> 처럼 입력해 주세요.")
+                    else:
+                        query_clean = text.lstrip("/")
+                        data = run_full_pipeline(query_clean)
+                        if data:
+                            reply = f"<b>gaemiGTP 실시간 분석: {data['name']}</b> ({data['symbol']})\n" \
+                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
+                                    f"현재가: <b>{data['price']}</b>\n" \
+                                    f"추세 국면: {data['quant']['trend']}\n" \
+                                    f"백테스팅 승률: <b>{data['quant']['win_rate_num']}</b> ({data['quant']['rr_str']})\n" \
+                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
+                                    f"<b>gaemiGTP 시그널 밴드</b>\n" \
+                                    f"• 1차 진입가: {data['quant']['entry1']}\n" \
+                                    f"• 2차 분할가: {data['quant']['entry2']}\n" \
+                                    f"• 목표 수익가: {data['quant']['target2']} (+8.5%)\n" \
+                                    f"• 방어 손절선: {data['quant']['stop_p']} (-5.5%)\n" \
+                                    f"━━━━━━━━━━━━━━━━━━━━\n" \
+                                    f"<i>{data['quant']['guide_text']}</i>\n\n" \
+                                    f"웹에서 상세 차트 보기: https://www.gaemigtp.com"
+                            send_telegram_msg(chat_id, reply)
+                        else:
+                            send_telegram_msg(chat_id, f"'{query_clean}' 종목을 찾을 수 없습니다. 정확한 종목명을 입력해 주세요.")
+        except Exception:
+            time.sleep(2)
+
+if TELEGRAM_TOKEN:
+    threading.Thread(target=telegram_bot_worker, daemon=True).start()
 
 # ----------------------------------------------------
 # 8. 웹 프론트엔드 UI
@@ -6412,6 +6332,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #rowComment { grid-column: 1; grid-row: 8; }
         #rowDart { grid-column: 1; grid-row: 9; }
         #rowSignal { grid-column: 1; grid-row: 10; }
+        #rowTelegram { grid-column: 1; grid-row: 11; }
 
         .card {
             background: var(--bg-card);
@@ -6430,6 +6351,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
         .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
 
+        .chart-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 10px; }
+        .legend-tag { display: flex; align-items: center; gap: 4px; }
+        .legend-dot { width: 7px; height: 7px; border-radius: 50%; }
         .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
 
         .board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-line); }
@@ -6932,6 +6856,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowVote { order: 7; }
             #rowComment { order: 8; }
             #rowSignal { order: 9; }
+            #rowTelegram { order: 10; }
             #rowWorld { order: 11; width: 100%; max-width: 832px; }
             #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
             #rowEarningsCalendar { order: 13; }
@@ -7890,156 +7815,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 box-sizing: border-box !important;
             }
         }
-
-        /* ============================================================
-           모바일 레이아웃 최종 격리
-           - PC의 grid-column/grid-row/height:100%를 모바일에서 전부 초기화
-           - 증시(rowWorld)가 오른쪽으로 붙는 현상 방지
-           - '왜 올라갔을까'와 높이를 공유하는 현상 방지
-           - 미국 주도업종/주도종목은 경제캘린더 아래 독립된 순서로 배치
-        ============================================================ */
-        @media (max-width: 1200px) {
-            #result-scroll-view {
-                width: 100vw !important;
-                max-width: 100vw !important;
-                padding-left: 12px !important;
-                padding-right: 12px !important;
-                box-sizing: border-box !important;
-                overflow-x: hidden !important;
-            }
-
-            .result-inner {
-                width: 100% !important;
-                max-width: 832px !important;
-                margin: 0 auto !important;
-                box-sizing: border-box !important;
-            }
-
-            .dashboard-master-grid {
-                display: flex !important;
-                flex-direction: column !important;
-                align-items: stretch !important;
-                justify-content: flex-start !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                margin: 0 auto !important;
-                gap: 14px !important;
-                box-sizing: border-box !important;
-                position: relative !important;
-            }
-
-            /* PC 2열 grid의 위치/높이 값을 모바일에서 완전 초기화 */
-            .dashboard-master-grid > * {
-                grid-column: auto !important;
-                grid-row: auto !important;
-                float: none !important;
-                position: static !important;
-                top: auto !important;
-                right: auto !important;
-                bottom: auto !important;
-                left: auto !important;
-                transform: none !important;
-                height: auto !important;
-                min-height: 0 !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                margin-left: 0 !important;
-                margin-right: 0 !important;
-                align-self: stretch !important;
-                box-sizing: border-box !important;
-            }
-
-            /* 기존 모바일 순서를 명확하게 재지정 */
-            #rowCause { order: 1 !important; }
-            #rowChart { order: 2 !important; }
-            #rowNews { order: 3 !important; }
-            #rowTrack { order: 4 !important; }
-            #rowQuant { order: 5 !important; }
-            #rowConsensus { order: 6 !important; }
-            #rowVote { order: 7 !important; }
-            #rowComment { order: 8 !important; }
-            #rowSignal { order: 9 !important; }
-            #rowWorld { order: 11 !important; }
-            #rowGlobalNews { order: 12 !important; }
-            #rowEarningsCalendar { order: 13 !important; }
-            #rowEconomicCalendar { order: 14 !important; }
-            #usLeadingRightStack { order: 15 !important; }
-            #rowDart { order: 16 !important; }
-
-            /* 주도업종 + 주도종목은 모바일에서만 하나의 세로 스택 */
-            #usLeadingRightStack {
-                display: flex !important;
-                flex-direction: column !important;
-                align-items: stretch !important;
-                gap: 14px !important;
-                position: static !important;
-                grid-column: auto !important;
-                grid-row: auto !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                height: auto !important;
-                min-height: 0 !important;
-                box-sizing: border-box !important;
-                z-index: auto !important;
-            }
-
-            #usLeadingRightStack > .card {
-                position: static !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                height: auto !important;
-                min-height: 0 !important;
-                box-sizing: border-box !important;
-            }
-
-            #rowUsLeadingSectors,
-            #rowUsLeadingStocks {
-                grid-column: auto !important;
-                grid-row: auto !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                height: auto !important;
-                min-height: 0 !important;
-                box-sizing: border-box !important;
-            }
-
-            /* 증시/왜 올라갔을까 등 카드가 서로 높이를 강제로 맞추지 않도록 */
-            #rowWorld,
-            #rowGlobalNews,
-            #rowChart,
-            #rowCause,
-            #rowNews,
-            #rowTrack,
-            #rowQuant,
-            #rowConsensus,
-            #rowVote {
-                height: auto !important;
-                min-height: 0 !important;
-                align-self: stretch !important;
-            }
-        }
-
-        /* gaemiGTP 시그널: 항상 열림 */
-        #rowSignal #signalBody {
-            display: block !important;
-            height: auto !important;
-            max-height: none !important;
-            overflow: visible !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-        }
-
-        /* 미국 주도종목 클릭 가능 표시: 기존 레이아웃 크기는 유지 */
-        .us-leading-stock-item {
-            cursor: pointer;
-        }
-        .us-leading-stock-item:focus-visible {
-            outline: 2px solid var(--border-line);
-            outline-offset: -2px;
-        }
 </style>
 </head>
 <body>
@@ -8136,7 +7911,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div class="price-title" id="rTitle"></div>
                                 <div class="price-val" id="rPrice"></div>
                                 <div class="price-meta" id="rMeta"></div>
-</div>
+                                <div class="chart-legend">
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#00b4d8;"></span> 20일선 (슬림)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#f97316;"></span> 볼린저 60선 (중심)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#f87171;"></span> 볼린저 상단 (저항)</div>
+                                    <div class="legend-tag"><span class="legend-dot" style="background:#38bdf8;"></span> 볼린저 하단 (지지)</div>
+                                </div>
+                            </div>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
@@ -8471,11 +8252,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         <!-- 8행: gaemiGTP 시그널 박스 (832px) -->
                         <div class="signal-premium-card" id="rowSignal">
-                            <div class="signal-card-header">
+                            <div class="signal-card-header" onclick="toggleSignal()">
                                 <span class="signal-card-title">gaemiGTP 시그널</span>
+                                <svg class="signal-arrow-icon" id="signalArrow" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg>
                             </div>
                             
-                            <div id="signalBody" style="display:block; margin-top:16px;">
+                            <div id="signalBody" style="display:none; margin-top:16px;">
                                 <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid rgba(16,185,129,0.2);">
                                     <div class="gauge-inner-box">
                                         <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="rWinRateGauge"></span>
@@ -8535,7 +8317,15 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                             </div>
                         </div>
-</div>
+
+                        <!-- 9행: 텔레그램 알림 받기 버튼 (832px) -->
+                        <div id="rowTelegram" style="width:100%;">
+                            <a id="tgAlertLink" href="#" target="_blank" class="signal-premium-btn">
+                                <span id="tgAlertBtnText">gaemiGTP 시그널 텔레그램 알림</span>
+                            </a>
+                        </div>
+
+                    </div>
 
                 </div>
             </div>
@@ -8642,8 +8432,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
         }
 
-        window.addEventListener('resize', resizeChart);
-
         function toggleSidebar() {
             const side = document.getElementById('sidebar-wrapper');
             if (side) side.classList.toggle('open');
@@ -8718,7 +8506,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
             if (side) side.classList.remove('open');
         }
 
-function renderSparklineSVG(points, isUp) {
+        function toggleSignal() {
+            const body = document.getElementById('signalBody');
+            const arrow = document.getElementById('signalArrow');
+            if (!body || !arrow) return;
+            if (body.style.display === 'block') {
+                body.style.display = 'none';
+                arrow.style.transform = 'rotate(0deg)';
+            } else {
+                body.style.display = 'block';
+                arrow.style.transform = 'rotate(180deg)';
+            }
+        }
+
+        function renderSparklineSVG(points, isUp) {
             if (!points || points.length < 2) return '';
             const min = Math.min(...points);
             const max = Math.max(...points);
@@ -9335,7 +9136,15 @@ function renderSparklineSVG(points, isUp) {
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;
             const targetName = displayName || symbol;
-const voteKey = 'vote_' + symbol;
+            
+            const tgLink = document.getElementById('tgAlertLink');
+            const tgBtnText = document.getElementById('tgAlertBtnText');
+            if (tgLink && tgBtnText) {
+                tgLink.href = 'https://t.me/gaemigtp_bot?start=' + encodeURIComponent(symbol);
+                tgBtnText.innerText = '[' + targetName + '] gaemiGTP 시그널 텔레그램 알림';
+            }
+
+            const voteKey = 'vote_' + symbol;
             const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
             let vData = JSON.parse(rawVote);
             updateVoteUI(vData);
@@ -9428,12 +9237,6 @@ const voteKey = 'vote_' + symbol;
             input.value = '';
         }
 
-        const ANALYZE_CACHE = new Map();
-        const ANALYZE_CACHE_TTL = 30 * 1000;
-        let activeSearchToken = 0;
-        const FAST_CHART_CACHE = new Map();
-        const FAST_CHART_CACHE_TTL = 30 * 1000;
-
         async function doSearch(query) {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
             let materialText = '';
@@ -9454,87 +9257,28 @@ const voteKey = 'vote_' + symbol;
             document.getElementById('main-view').style.display = 'none';
             document.getElementById('result-scroll-view').style.display = 'block';
             document.getElementById('bottom-bar').style.display = 'flex';
-            document.getElementById('loading').style.display = 'flex';
-            document.getElementById('result-card-wrap').style.display = 'block';
-            const fastTitle = document.getElementById('rTitle');
-            const fastPrice = document.getElementById('rPrice');
-            const fastMeta = document.getElementById('rMeta');
-            if (fastTitle) fastTitle.textContent = cleanQ.toUpperCase();
-            if (fastPrice) fastPrice.textContent = '불러오는 중…';
-            if (fastMeta) fastMeta.textContent = '실시간 데이터를 불러오고 있어요';
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('result-card-wrap').style.display = 'none';
 
             if (window.innerWidth <= 900) {
                 const side = document.getElementById('sidebar-wrapper');
                 if (side) side.classList.remove('open');
             }
 
-            const searchToken = ++activeSearchToken;
-            const fastChartKey = cleanQ.toUpperCase();
-            const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
-            const fastChartPromise = (
-                fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
-            )
-                ? Promise.resolve(fastChartCached.data)
-                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ))
-                    .then(r => r.ok ? r.json() : null)
-                    .then(chartData => {
-                        if (chartData) {
-                            FAST_CHART_CACHE.set(fastChartKey, {time: Date.now(), data: chartData});
-                        }
-                        return chartData;
-                    })
-                    .catch(() => null);
-
             try {
-            // 차트 데이터는 분석 API와 완전히 병렬로 처리한다.
-            // /api/analyze가 끝날 때까지 차트 렌더링을 기다리지 않는다.
-            fastChartPromise.then(chartData => {
-                if (chartData?._perf) {
-                    console.log(
-                        `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
-                    );
-                    console.table(chartData._perf.slowest_http || []);
-                }
-                if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                initTvChart(chartData.candles);
-            });
-
-                const cacheKey = cleanQ.toUpperCase();
-                const cached = ANALYZE_CACHE.get(cacheKey);
+                const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
+                const response = await fetch(url);
+                
                 let data;
-                let response = null;
-
-                if (cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
-                    data = cached.data;
+                const contentType = response.headers.get("content-type") || "";
+                if (contentType.includes("application/json")) {
+                    data = await response.json();
                 } else {
-                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
-                    response = await fetch(url);
-
-                    const contentType = response.headers.get("content-type") || "";
-                    if (contentType.includes("application/json")) {
-                        data = await response.json();
-                    } else {
-                        await response.text();
-                        throw new Error("서버 응답 오류 (" + response.status + ")");
-                    }
-
-                    if (response.ok && data && !data.error) {
-                        ANALYZE_CACHE.set(cacheKey, { time: Date.now(), data });
-                    }
+                    const text = await response.text();
+                    throw new Error("서버 응답 오류 (" + response.status + ")");
                 }
-
-                if (!data) {
-                    throw new Error("분석 데이터를 받지 못했습니다.");
-                }
-
-                if (data._perf) {
-                    console.log(
-                        `[gaemiGTP 성능] ${cleanQ} | 전체 ${data._perf.total_ms}ms | HTTP ${data._perf.http_call_count}회`
-                    );
-                    console.table(data._perf.slowest_http || []);
-                }
-
-if ((response && !response.ok) || data.error) {
+                
+                if (!response.ok || data.error) {
                     alert(data.error || '종목을 찾을 수 없습니다.');
                     document.getElementById('loading').style.display = 'none';
                     return;
@@ -9545,10 +9289,7 @@ if ((response && !response.ok) || data.error) {
                 const displayPrice = data.price || data.price_str;
                 const displayTime = data.time || data.now_str;
 
-                const usShortName = (isKrw || !data.symbol)
-                    ? displayName
-                    : getUsShortKrName(data.symbol, displayName);
-                setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
+                setHtml('rTitle', `${displayName} <span>(${data.symbol})</span>`);
                 setTxt('rPrice', displayPrice);
                 setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
 
@@ -10225,8 +9966,10 @@ if ((response && !response.ok) || data.error) {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
 
-                // 차트는 위의 fastChartPromise에서 먼저 그려진다.
-                // 서버 전체 분석의 candles는 기존 호환성을 위해 그대로 유지한다.
+                setTimeout(() => {
+                    initTvChart(data.candles, data.ma20_line, data.ma60_line, data.bb_up_line, data.bb_dn_line);
+                }, 50);
+
                 window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
@@ -10237,7 +9980,7 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
-        function initTvChart(candles) {
+        function initTvChart(candles, ma20, ma60, bbUp, bbDn) {
             const container = document.getElementById('tvChart');
             if (!container) return;
             container.innerHTML = '';
@@ -10247,9 +9990,9 @@ if ((response && !response.ok) || data.error) {
             chart = LightweightCharts.createChart(container, {
                 width: container.clientWidth || 700,
                 height: 300,
-                layout: {
-                    background: { color: isLight ? '#ffffff' : '#1e1f20' },
-                    textColor: isLight ? '#5f6368' : '#8e918f'
+                layout: { 
+                    background: { color: isLight ? '#ffffff' : '#1e1f20' }, 
+                    textColor: isLight ? '#5f6368' : '#8e918f' 
                 },
                 grid: {
                     vertLines: { color: 'rgba(0,0,0,0)' },
@@ -10275,11 +10018,65 @@ if ((response && !response.ok) || data.error) {
             });
             candleSeries.setData(candles || []);
 
+            const lineMa20 = chart.addLineSeries({ color: '#00b4d8', lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+            lineMa20.setData(ma20 || []);
+
+            const lineMa60 = chart.addLineSeries({ color: '#f97316', lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false });
+            lineMa60.setData(ma60 || []);
+
+            const lineBbUp = chart.addLineSeries({ color: '#f87171', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
+            lineBbUp.setData(bbUp || []);
+
+            const lineBbDn = chart.addLineSeries({ color: '#38bdf8', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
+            lineBbDn.setData(bbDn || []);
+
             chart.timeScale().fitContent();
-            // resize 리스너는 전역에서 한 번만 등록한다.
+
+            window.addEventListener('resize', resizeChart);
         }
 
 
+        async function loadSectorChart(symbol, sectorName) {
+            const cleanSymbol = String(symbol || '').trim().toUpperCase();
+            const cleanName = String(sectorName || '').trim();
+            if (!cleanSymbol) return;
+
+            const chartContainer = document.getElementById('tvChart');
+            if (!chartContainer) return;
+
+            const previousHtml = chartContainer.innerHTML;
+            chartContainer.innerHTML = '<div style="height:300px; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-size:0.78rem;">업종 차트 불러오는 중…</div>';
+
+            try {
+                // 기존 /api/analyze 파이프라인을 그대로 사용하되,
+                // 현재 종목 전체 분석 화면은 건드리지 않고 차트 데이터만 사용한다.
+                const response = await fetch('/api/analyze?q=' + encodeURIComponent(cleanSymbol));
+                const data = await response.json();
+
+                if (!response.ok || data.error || !Array.isArray(data.candles) || !data.candles.length) {
+                    throw new Error(data.error || '업종 차트 데이터를 가져오지 못했습니다.');
+                }
+
+                initTvChart(
+                    data.candles,
+                    data.ma20_line,
+                    data.ma60_line,
+                    data.bb_up_line,
+                    data.bb_dn_line
+                );
+
+                // 차트 영역의 현재 모드를 가볍게 표시. 기존 레이아웃/카드 높이는 변경하지 않는다.
+                const meta = document.getElementById('rMeta');
+                if (meta) {
+                    meta.dataset.previousText = meta.dataset.previousText || meta.textContent;
+                    meta.innerText = `차트: ${cleanName} 업종 · ${cleanSymbol} · Yahoo Finance`;
+                }
+            } catch (error) {
+                console.error('Sector chart:', error);
+                chartContainer.innerHTML = previousHtml;
+                alert(`${cleanName || cleanSymbol} 업종 차트를 불러오지 못했습니다.`);
+            }
+        }
 
         function formatUsStockPrice(value) {
             const n = Number(value);
@@ -10316,52 +10113,6 @@ if ((response && !response.ok) || data.error) {
                     </svg>`;
         }
 
-
-        const US_SHORT_KR_NAMES = {
-            NVDA: '엔비디아',
-            AVGO: '브로드컴',
-            AMD: 'AMD',
-            MU: '마이크론',
-            MRVL: '마벨',
-            QCOM: '퀄컴',
-            TSM: 'TSMC',
-            LRCX: '램리서치',
-            AMAT: '어플라이드',
-            KLAC: 'KLA',
-            XOM: '엑손모빌',
-            CVX: '셰브론',
-            COP: '코노코필립스',
-            TSLA: '테슬라',
-            AAPL: '애플',
-            MSFT: '마이크로소프트',
-            AMZN: '아마존',
-            GOOGL: '구글',
-            META: '메타'
-        };
-
-        function getUsShortKrName(symbol, fallback) {
-            const key = String(symbol || '').trim().toUpperCase();
-            return US_SHORT_KR_NAMES[key] || String(fallback || key);
-        }
-
-        function openUsLeadingStock(symbol, name) {
-            const cleanSymbol = String(symbol || '').trim();
-            const cleanName = getUsShortKrName(cleanSymbol, name);
-            if (!cleanSymbol) return;
-
-            // 기존 종목 상세분석 진입점(doSearch)을 그대로 사용해
-            // 새로운 상세 페이지를 만들지 않는다.
-            doSearch(cleanSymbol);
-
-            // 현재 상세분석이 티커를 받는 경우에도 한글/정식명이 필요한
-            // 기존 흐름을 보완한다.
-            setTimeout(() => {
-                if (typeof loadCommunityData === 'function') {
-                    loadCommunityData(cleanSymbol, cleanName);
-                }
-            }, 0);
-        }
-
         async function loadUsLeadingStocks(sectorSymbol, sectorName) {
             const list = document.getElementById('usLeadingStockList');
             const title = document.getElementById('usLeadingStockTitle');
@@ -10385,9 +10136,7 @@ if ((response && !response.ok) || data.error) {
                 const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
                 const cls = value => Number(value) >= 0 ? 'up' : 'down';
                 list.innerHTML = rows.map(row => `
-                    <div class="us-leading-stock-item" role="button" tabindex="0"
-                         onclick="openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')"
-                         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')}">
+                    <div class="us-leading-stock-item">
                         <div class="us-leading-stock-name">
                             <div class="us-leading-stock-ticker">${String(row.symbol || '')}</div>
                             <div class="us-leading-stock-company">${String(row.name || '')}</div>
@@ -10480,195 +10229,6 @@ if ((response && !response.ok) || data.error) {
 </body>
 </html>
 """
-
-# ----------------------------------------------------
-FAST_CHART_PAYLOAD_CACHE = {}
-FAST_CHART_PAYLOAD_TTL = 30
-
-# 차트 전용 초고속 경로
-# 전체 분석(/api/analyze)이 끝날 때까지 차트를 기다리지 않게 한다.
-# ----------------------------------------------------
-def _build_chart_payload(df):
-    """차트는 캔들만 표시한다. 이평선/볼린저밴드는 계산·전송하지 않는다."""
-    if df is None or df.empty:
-        return None
-
-    work = df.copy().sort_index()
-    work = work[~work.index.duplicated(keep="last")]
-
-    candles = []
-    for date_idx, row in work.tail(65).iterrows():
-        t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d")
-        o = float(row["Open"])
-        h = float(row["High"])
-        l = float(row["Low"])
-        c = float(row["Close"])
-        if not any(np.isnan(v) for v in (o, h, l, c)):
-            candles.append({
-                "time": t_str,
-                "open": o,
-                "high": h,
-                "low": l,
-                "close": c
-            })
-
-    return {
-        "candles": candles,
-        "ma20_line": [],
-        "ma60_line": [],
-        "bb_up_line": [],
-        "bb_dn_line": []
-    }
-
-
-def _fetch_fast_domestic_chart(code):
-    # 차트 화면은 최근 데이터만 필요하므로 120일만 요청한다.
-    # 기존 fetch_domestic_candles()의 1200일 요청을 여기서는 사용하지 않는다.
-    try:
-        url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=120&requestType=0"
-        res = HTTP_SESSION.get(url, timeout=1.5)
-        if res.status_code == 200 and '<item data=' in res.text:
-            root = ET.fromstring(res.content)
-            records = []
-            for it in root.findall(".//item"):
-                p = it.get("data", "").split("|")
-                if len(p) >= 6:
-                    records.append({
-                        "Date": pd.to_datetime(p[0]),
-                        "Open": float(p[1]),
-                        "High": float(p[2]),
-                        "Low": float(p[3]),
-                        "Close": float(p[4]),
-                        "Volume": float(p[5])
-                    })
-            if len(records) >= 65:
-                return pd.DataFrame(records).set_index("Date").sort_index()
-    except Exception as exc:
-        print(f"[FAST DOMESTIC CHART] {code} failed: {type(exc).__name__}: {exc}")
-
-    # fchart가 실패하면 최근 120일 Naver 모바일 API를 한 번 시도한다.
-    try:
-        url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
-        res = HTTP_SESSION.get(url, timeout=1.5)
-        data = res.json()
-        if isinstance(data, list) and len(data) >= 65:
-            records = []
-            for it in data:
-                records.append({
-                    "Date": pd.to_datetime(it["localTrdDd"]),
-                    "Open": float(str(it["openPrice"]).replace(",", "")),
-                    "High": float(str(it["highPrice"]).replace(",", "")),
-                    "Low": float(str(it["lowPrice"]).replace(",", "")),
-                    "Close": float(str(it["closePrice"]).replace(",", "")),
-                    "Volume": float(str(it.get("accumulatedTradingVolume", 0)).replace(",", "")),
-                })
-            return pd.DataFrame(records).set_index("Date").sort_index()
-    except Exception:
-        pass
-
-    return None
-
-
-def _fetch_fast_overseas_chart(symbol):
-    key = str(symbol or "").strip().upper()
-    if not key:
-        return None
-
-    # 2단계에서 만든 10분 캐시를 먼저 사용한다.
-    cached = OVERSEAS_CANDLE_CACHE.get(key)
-    if cached and (time.time() - cached["time"]) < OVERSEAS_CANDLE_CACHE_TTL:
-        try:
-            return cached["df"].copy()
-        except Exception:
-            OVERSEAS_CANDLE_CACHE.pop(key, None)
-
-    # 캐시가 없을 때만 차트 전용 1년 요청.
-    try:
-        encoded = urllib.parse.quote(key)
-        url = (
-            f"https://query1.finance.yahoo.com/v8/finance/chart/"
-            f"{encoded}?range=1y&interval=1d&includePrePost=false"
-        )
-        res = HTTP_SESSION.get(url, timeout=2.5, headers={"User-Agent": "Mozilla/5.0"})
-        res.raise_for_status()
-        result = ((res.json().get("chart") or {}).get("result") or [])
-        if not result:
-            return None
-
-        item = result[0]
-        ts = item.get("timestamp") or []
-        quote = ((item.get("indicators") or {}).get("quote") or [{}])[0]
-        opens, highs = quote.get("open") or [], quote.get("high") or []
-        lows, closes = quote.get("low") or [], quote.get("close") or []
-        n = min(len(ts), len(opens), len(highs), len(lows), len(closes))
-        records = []
-        for i in range(n):
-            vals = (opens[i], highs[i], lows[i], closes[i])
-            if any(v is None for v in vals):
-                continue
-            records.append({
-                "Date": pd.to_datetime(ts[i], unit="s"),
-                "Open": float(opens[i]), "High": float(highs[i]),
-                "Low": float(lows[i]), "Close": float(closes[i])
-            })
-        if len(records) >= 65:
-            return pd.DataFrame(records).set_index("Date").sort_index()
-    except Exception as exc:
-        print(f"[FAST OVERSEAS CHART] {key} failed: {type(exc).__name__}: {exc}")
-    return None
-
-
-def run_fast_chart_pipeline(query):
-    clean_q = str(query or "").strip().replace(" ", "").upper()
-    if not clean_q:
-        return None
-
-    cached_payload = FAST_CHART_PAYLOAD_CACHE.get(clean_q)
-    if cached_payload and (time.time() - cached_payload["time"]) < FAST_CHART_PAYLOAD_TTL:
-        return dict(cached_payload["data"])
-
-    def _finish(df):
-        payload = _build_chart_payload(df) if df is not None else None
-        if payload:
-            FAST_CHART_PAYLOAD_CACHE[clean_q] = {
-                "time": time.time(),
-                "data": dict(payload),
-            }
-        return payload
-
-    # 글로벌 지수
-    if clean_q in GLOBAL_INDEX_MAP:
-        symbol = GLOBAL_INDEX_MAP[clean_q]
-        df = _fetch_fast_overseas_chart(symbol)
-        return _finish(df)
-
-    # 암호화폐
-    if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
-        symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
-        try:
-            _, _, df = fetch_crypto_candles(symbol)
-            return _finish(df)
-        except Exception:
-            return None
-
-    # 미국주식
-    if clean_q in US_STOCK_MAP:
-        symbol = US_STOCK_MAP[clean_q]
-        df = _fetch_fast_overseas_chart(symbol)
-        return _finish(df)
-
-    if any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
-        symbol = query.upper().strip()
-        df = _fetch_fast_overseas_chart(symbol)
-        return _build_chart_payload(df) if df is not None else None
-
-    # 국내주식
-    code, _ = find_stock_code(query)
-    if not code:
-        return None
-    df = _fetch_fast_domestic_chart(code)
-    return _build_chart_payload(df) if df is not None else None
-
 
 # ----------------------------------------------------
 # 9. 멀티스레드 웹 서버
@@ -10771,51 +10331,22 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(500, {"ok": False, "error": "미국 업종 데이터를 가져오지 못했습니다."})
             return
 
-        if parsed.path == "/api/chart":
-            q = str(params.get("q", [""])[0]).strip()
-            if not q:
-                self._json(400, {"error": "종목명을 입력해주세요."})
-                return
-            _perf_begin("chart", q)
-            try:
-                chart_data = run_fast_chart_pipeline(q)
-                if not chart_data:
-                    perf = _perf_snapshot()
-                    print(f"[PERF][chart] {q}: {perf}")
-                    self._json(404, {"error": "차트 데이터를 가져오지 못했습니다.", "_perf": perf})
-                    return
-                chart_data["_perf"] = _perf_snapshot()
-                print(f"[PERF][chart] {q}: {chart_data['_perf']}")
-                self._json(200, chart_data)
-            except Exception as exc:
-                perf = _perf_snapshot()
-                print(f"[PERF][chart] {q}: {perf}")
-                self._json(500, {"error": "차트 데이터를 가져오지 못했습니다.", "_perf": perf})
-            return
-
         if parsed.path == "/api/analyze":
             q = str(params.get("q", [""])[0]).strip()
             if not q:
                 self._json(400, {"error": "종목명을 입력해주세요."})
                 return
-            _perf_begin("analyze", q)
             try:
                 data = run_full_pipeline(q)
-                perf = _perf_snapshot()
                 if not data:
-                    print(f"[PERF][analyze] {q}: {perf}")
-                    self._json(404, {"error": "실제 데이터를 가져오지 못했습니다. 종목명 또는 데이터 제공처를 확인해주세요.", "_perf": perf})
+                    self._json(404, {"error": "실제 데이터를 가져오지 못했습니다. 종목명 또는 데이터 제공처를 확인해주세요."})
                     return
-                data["_perf"] = perf
-                print(f"[PERF][analyze] {q}: {perf}")
                 self._json(200, data)
             except Exception as exc:
-                perf = _perf_snapshot()
-                print(f"[PERF][analyze] {q}: {perf}")
+                print(f"API ERROR /api/analyze?q={q!r}: {type(exc).__name__}: {exc}")
                 self._json(500, {
                     "error": "서버 처리 중 오류가 발생했습니다.",
-                    "detail": f"{type(exc).__name__}: {str(exc)[:400]}",
-                    "_perf": perf
+                    "detail": f"{type(exc).__name__}: {str(exc)[:400]}"
                 })
             return
 

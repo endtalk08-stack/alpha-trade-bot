@@ -9350,7 +9350,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         /* ===== STEP 21: 우측 실시간 시장 사이드바 ===== */
         body { padding-right: 0; }
-        #content-wrapper { width: calc(100% - 336px); margin-right: 336px; }
+        #content-wrapper { width: calc(100% - 336px); margin-right: 336px; transition: width .2s ease, margin-right .2s ease; }
+        body.right-market-collapsed #content-wrapper { width: 100%; margin-right: 44px; }
         #right-market-rail {
             position: fixed; top: 0; right: 0; width: 336px; height: 100vh;
             display: flex; flex-direction: row; z-index: 120;
@@ -9383,9 +9384,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .right-market-change.down { color:#38a8ff; }
         .right-market-empty { padding:28px 15px; color:var(--text-muted); text-align:center; font-size:.78rem; line-height:1.6; }
         #right-market-icons { width:44px; min-width:44px; border-left:1px solid var(--border-line); display:flex; flex-direction:column; align-items:center; padding-top:8px; gap:7px; background:var(--bg-body); }
-        .right-market-icon-btn { width:36px; height:42px; border:0; border-radius:9px; background:transparent; color:var(--text-sub); cursor:pointer; font-size:1.05rem; display:flex; align-items:center; justify-content:center; transition:.15s; }
+        .right-market-icon-btn { width:36px; height:42px; border:0; border-radius:9px; background:transparent; color:var(--text-sub); cursor:pointer; font-size:1.05rem; font-family:Arial, sans-serif; font-weight:600; display:flex; align-items:center; justify-content:center; transition:.15s; }
         .right-market-icon-btn:hover, .right-market-icon-btn.active { background:var(--bg-card); color:var(--text-title); }
-        .right-market-close { font-size:1.35rem; margin-bottom:4px; }
+        .right-market-close { font-size:1.25rem; margin-bottom:4px; }
         @media (max-width: 1100px) {
             body { padding-right: 0; }
             #content-wrapper { width:100%; margin-right:0; }
@@ -12055,15 +12056,28 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
+        function setRightMarketOpen(isOpen) {
+            const rail = document.getElementById('right-market-rail');
+            if (!rail) return;
+            rail.classList.toggle('collapsed', !isOpen);
+            document.body.classList.toggle('right-market-collapsed', !isOpen);
+            const btn = rail.querySelector('.right-market-close');
+            if (btn) {
+                btn.textContent = isOpen ? '»' : '«';
+                btn.title = isOpen ? '닫기' : '열기';
+            }
+        }
+
         function toggleRightMarket() {
             const rail = document.getElementById('right-market-rail');
             if (!rail) return;
-            rail.classList.toggle('collapsed');
-            const btn = rail.querySelector('.right-market-close');
-            if (btn) btn.textContent = rail.classList.contains('collapsed') ? '«' : '»';
+            setRightMarketOpen(rail.classList.contains('collapsed'));
         }
 
         window.addEventListener('DOMContentLoaded', () => {
+            // 오른쪽 사이드바는 처음에는 닫힌 상태로 시작한다.
+            // 왼쪽 사이드바와 완전히 독립적으로 열리고 닫힌다.
+            setRightMarketOpen(false);
             loadRightMarketBoard(false);
             setInterval(() => loadRightMarketBoard(true), 60000);
         });
@@ -12089,7 +12103,7 @@ if ((response && !response.ok) || data.error) {
 
 
     <!-- STEP 21: 우측 실시간 시장 사이드바 -->
-    <aside id="right-market-rail" aria-label="실시간 시장 사이드바">
+    <aside id="right-market-rail" class="collapsed" aria-label="실시간 시장 사이드바">
         <section id="right-market-panel">
             <div class="right-market-head">
                 <div><span class="right-market-title">실시간</span><span class="right-market-time" id="rightMarketTime">오늘 --:-- 기준</span></div>
@@ -12104,10 +12118,10 @@ if ((response && !response.ok) || data.error) {
         </section>
         <nav id="right-market-icons" aria-label="시장 메뉴">
             <button class="right-market-icon-btn right-market-close" onclick="toggleRightMarket()" title="닫기/열기">»</button>
-            <button class="right-market-icon-btn active" data-right-menu="live" onclick="selectRightMenu('live')" title="실시간">🔥</button>
-            <button class="right-market-icon-btn" data-right-menu="favorite" onclick="selectRightMenu('favorite')" title="관심">❤️</button>
-            <button class="right-market-icon-btn" data-right-menu="recent" onclick="selectRightMenu('recent')" title="최근검색종목">🕒</button>
-            <button class="right-market-icon-btn" data-right-menu="leaders" onclick="selectRightMenu('leaders')" title="실시간 상단">📊</button>
+            <button class="right-market-icon-btn active" data-right-menu="live" onclick="selectRightMenu('live')" title="실시간">◉</button>
+            <button class="right-market-icon-btn" data-right-menu="favorite" onclick="selectRightMenu('favorite')" title="관심">♡</button>
+            <button class="right-market-icon-btn" data-right-menu="recent" onclick="selectRightMenu('recent')" title="최근검색종목">◷</button>
+            <button class="right-market-icon-btn" data-right-menu="leaders" onclick="selectRightMenu('leaders')" title="실시간 상단">▥</button>
         </nav>
     </aside>
 

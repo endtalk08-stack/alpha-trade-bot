@@ -7281,7 +7281,14 @@ def run_full_pipeline(query, lightweight=False):
 # ===== STEP 21: 우측 실시간 시장 사이드바 =====
 RIGHT_MARKET_BOARD_CACHE = {}
 RIGHT_MARKET_BOARD_CACHE_TTL = 30
+RIGHT_MARKET_BOARD_CACHE_VERSION = 42
 RIGHT_MARKET_BOARD_CACHE_LOCK = threading.Lock()
+# STEP 41: 국내 우측 실시간 목록에서 현재 gaemiGTP 차트/분석 API가 지원하지
+# 않는 외국기업 계열 종목코드(9xxxxx)를 제외한다.
+# 거래대금 데이터 자체는 정상이어도 차트/분석이 404가 되는 종목을
+# 사용자가 클릭하지 않도록 사이드바 단계에서 미리 걸러낸다.
+RIGHT_MARKET_KR_EXCLUDED_PREFIXES = ("9",)
+RIGHT_MARKET_KR_EXCLUDED_CODES = {"950260"}
 RIGHT_MARKET_BOARD_SYMBOLS = [
     "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "AMD",
     "AVGO", "PLTR", "MU", "TSM", "NFLX", "COIN", "MSTR"
@@ -7448,12 +7455,17 @@ def _right_sidebar_kr_rows(limit=15):
             except Exception as exc:
                 print(f"[RIGHT MARKET BOARD] KR HTML fallback failed: {type(exc).__name__}: {exc}")
 
-    # 코드가 있는 후보만 실시간 polling으로 한 번에 조회한다.
+    # STEP 41: 현재 차트/분석 API에서 지원하지 않는 9xxxxx 계열 종목은
+    # 우측 국내 거래대금 목록에서 제외한다.
+    # (예: 950260 인제니아테라퓨틱스)
     code_map = {}
     for item in candidate_items:
-        code = item.get("code")
-        if code and code not in code_map:
-            code_map[code] = item
+        code = str(item.get("code") or "").strip()
+        if not code or code in code_map:
+            continue
+        if code in RIGHT_MARKET_KR_EXCLUDED_CODES or any(code.startswith(prefix) for prefix in RIGHT_MARKET_KR_EXCLUDED_PREFIXES):
+            continue
+        code_map[code] = item
     codes = list(code_map.keys())[:100]
 
     if codes:
@@ -7526,6 +7538,21 @@ def _right_sidebar_kr_rows(limit=15):
                     "source": "Naver Realtime Polling", "exchange": "KRX",
                 })
             if rows:
+                # STEP 42: 최종 안전필터. 후보 단계에서 제외되지 않았거나
+                # API 응답에서 코드가 다시 들어오는 경우에도 분석 불가능한
+                # 9xxxxx 계열 종목은 화면에 절대 노출하지 않는다.
+                rows = [
+                    row for row in rows
+                    if not any(
+                        (
+                            str(row.get("code") or row.get("symbol") or "").strip() in RIGHT_MARKET_KR_EXCLUDED_CODES
+                            or str(row.get("code") or row.get("symbol") or "").strip().startswith(prefix)
+                        )
+                        for prefix in RIGHT_MARKET_KR_EXCLUDED_PREFIXES
+                    )
+                ]
+                if not rows:
+                    return []
                 rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
                 for i, row in enumerate(rows[:limit], 1):
                     row["rank"] = i
@@ -7691,7 +7718,7 @@ def fetch_right_market_board(market="kr", force=False):
     now = time.time()
     with RIGHT_MARKET_BOARD_CACHE_LOCK:
         cached = RIGHT_MARKET_BOARD_CACHE.get(key)
-        if cached and not force and now - cached.get("time", 0) < RIGHT_MARKET_BOARD_CACHE_TTL:
+        if cached and cached.get("version") == RIGHT_MARKET_BOARD_CACHE_VERSION and not force and now - cached.get("time", 0) < RIGHT_MARKET_BOARD_CACHE_TTL:
             return cached.get("data") or []
     try:
         if key == "kr":
@@ -7705,7 +7732,7 @@ def fetch_right_market_board(market="kr", force=False):
         rows = []
     if rows:
         with RIGHT_MARKET_BOARD_CACHE_LOCK:
-            RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows}
+            RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows, "version": RIGHT_MARKET_BOARD_CACHE_VERSION}
     return rows
 
 HTML_PAGE = r"""<!DOCTYPE html>

@@ -9405,25 +9405,129 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #right-market-icons { flex: 0 0 44px; }
         }
 
-        /* STEP 24: 모바일에서는 오른쪽 패널도 왼쪽 사이드바처럼
-           처음에는 아이콘만 보이고, 버튼을 눌렀을 때만 화면 위에 열린다. */
+        /* STEP 26: 모바일은 오른쪽 패널을 처음에는 닫아두되
+           열기/닫기 버튼만 남긴다. 패널이 열릴 때도 가운데 콘텐츠를 밀지 않고
+           화면 위에 오버레이되도록 한다. */
         @media (max-width: 560px) {
-            /* STEP 25: 모바일에서는 오른쪽 시장 사이드바를 완전히 제거한다.
-               가운데 콘텐츠가 휴대폰 화면 전체 폭을 사용하도록 하며,
-               오른쪽 아이콘/버튼/패널도 화면에 남기지 않는다. */
             body { overflow-x: hidden; }
             #content-wrapper {
                 width: 100% !important;
                 margin-left: 0 !important;
                 margin-right: 0 !important;
             }
-            #right-market-rail,
-            #right-market-rail.collapsed,
+            #right-market-rail {
+                width: 44px;
+                max-width: 44px;
+                right: 0;
+                background: transparent;
+                border-left: 0;
+                z-index: 120;
+            }
+            #right-market-rail.collapsed {
+                width: 44px;
+                max-width: 44px;
+            }
             #right-market-rail:not(.collapsed) {
-                display: none !important;
+                width: min(320px, 92vw);
+                max-width: 92vw;
+                background: var(--bg-body);
+                border-left: 1px solid var(--border-line);
+            }
+            #right-market-panel {
+                display: none;
+                width: calc(100% - 44px);
+                min-width: 0;
+                max-width: none;
+            }
+            #right-market-rail:not(.collapsed) #right-market-panel {
+                display: flex;
+            }
+            #right-market-icons {
+                width: 44px;
+                min-width: 44px;
+                border-left: 1px solid var(--border-line);
+                background: var(--bg-body);
+            }
+            #right-market-rail.collapsed #right-market-icons {
+                border-left: 1px solid var(--border-line);
+            }
+            #right-market-rail.collapsed .right-market-icon-btn:not(.right-market-close) {
+                display: none;
+            }
+            .right-market-close {
+                display: flex !important;
+                width: 36px;
+                height: 42px;
             }
         }
 
+
+        /* STEP 27: 모바일에서도 오른쪽 사이드바 열기 버튼은 항상 보이게 한다.
+           패널 내용은 닫힌 상태에서 숨기고, 가운데 콘텐츠의 레이아웃에는 영향을 주지 않는다. */
+        @media (max-width: 560px) {
+            #right-market-rail {
+                display: flex !important;
+                position: fixed !important;
+                top: 0 !important;
+                right: 0 !important;
+                width: 44px !important;
+                max-width: 44px !important;
+                height: 100vh !important;
+                z-index: 9999 !important;
+                pointer-events: none;
+                background: transparent !important;
+                border-left: 1px solid var(--border-line) !important;
+            }
+            #right-market-rail.collapsed {
+                width: 44px !important;
+                max-width: 44px !important;
+            }
+            #right-market-rail #right-market-icons {
+                pointer-events: auto;
+                width: 44px !important;
+                min-width: 44px !important;
+                flex: 0 0 44px !important;
+                display: flex !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                padding-top: 8px !important;
+                background: var(--bg-body) !important;
+                border-left: 1px solid var(--border-line) !important;
+            }
+            #right-market-rail.collapsed #right-market-panel {
+                display: none !important;
+            }
+            #right-market-rail.collapsed .right-market-icon-btn:not(.right-market-close) {
+                display: none !important;
+            }
+            #right-market-rail .right-market-close {
+                display: flex !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                width: 36px !important;
+                height: 42px !important;
+                margin: 0 !important;
+                color: var(--text-title) !important;
+                background: var(--bg-card) !important;
+                border: 1px solid var(--border-line) !important;
+                border-radius: 9px !important;
+                font-size: 1.15rem !important;
+                line-height: 1 !important;
+            }
+            #right-market-rail:not(.collapsed) {
+                width: min(320px, 92vw) !important;
+                max-width: 92vw !important;
+                pointer-events: auto;
+                background: var(--bg-body) !important;
+                border-left: 1px solid var(--border-line) !important;
+            }
+            #right-market-rail:not(.collapsed) #right-market-panel {
+                display: flex !important;
+            }
+            #right-market-rail:not(.collapsed) #right-market-icons {
+                flex: 0 0 44px !important;
+            }
+        }
 </style>
 </head>
 <body>
@@ -9441,13 +9545,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <span>새 종목</span>
         </button>
 
-        <div class="sidebar-scroll-area">
-            <div class="sidebar-section-title">최근 종목</div>
-            <div class="sidebar-item" onclick="doSearch('SK하이닉스');">SK하이닉스</div>
-            <div class="sidebar-item" onclick="doSearch('엔비디아');">엔비디아</div>
-            <div class="sidebar-item" onclick="doSearch('삼성전자');">삼성전자</div>
-            <div class="sidebar-item" onclick="doSearch('비트코인');">비트코인</div>
-        </div>
+        <div class="sidebar-scroll-area"></div>
     </div>
 
     <div id="content-wrapper">
@@ -12108,14 +12206,14 @@ if ((response && !response.ok) || data.error) {
         }
 
         window.addEventListener('DOMContentLoaded', () => {
-            // 모바일에서는 오른쪽 시장 사이드바를 완전히 숨기므로
-            // 불필요한 시장 데이터 요청도 실행하지 않는다.
-            const isMobileRightMarketHidden = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
-            if (isMobileRightMarketHidden) return;
+            // 모바일에서는 패널은 닫아두되 열기/닫기 버튼은 유지한다.
+            // 패널을 열기 전까지 시장 데이터 요청은 실행하지 않는다.
+            const isMobileRightMarket = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
 
-            // 데스크톱에서는 오른쪽 사이드바가 처음에는 닫힌 상태로 시작한다.
+            // 데스크톱/모바일 모두 오른쪽 사이드바가 처음에는 닫힌 상태로 시작한다.
             // 왼쪽 사이드바와 완전히 독립적으로 열리고 닫힌다.
             setRightMarketOpen(false);
+            if (isMobileRightMarket) return;
             loadRightMarketBoard(false);
             setInterval(() => loadRightMarketBoard(true), 60000);
         });
@@ -12140,7 +12238,7 @@ if ((response && !response.ok) || data.error) {
     </script>
 
 
-    <!-- STEP 23: 우측 실시간 시장 사이드바 -->
+    <!-- STEP 27: 우측 실시간 시장 사이드바 -->
     <aside id="right-market-rail" class="collapsed" aria-label="실시간 시장 사이드바">
         <section id="right-market-panel">
             <div class="right-market-head">

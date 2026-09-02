@@ -8132,11 +8132,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         
                         <!-- 1행 좌측: 메인 차트 (832px) -->
                         <div class="card" id="rowChart">
-                            <div>
-                                <div class="price-title" id="rTitle"></div>
-                                <div class="price-val" id="rPrice"></div>
-                                <div class="price-meta" id="rMeta"></div>
-</div>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
@@ -8634,7 +8629,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
         }
 
-        function toggleSidebar() {
+function toggleSidebar() {
             const side = document.getElementById('sidebar-wrapper');
             if (side) side.classList.toggle('open');
         }
@@ -9421,8 +9416,6 @@ const voteKey = 'vote_' + symbol;
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
         let activeSearchToken = 0;
-        const FAST_CHART_CACHE = new Map();
-        const FAST_CHART_CACHE_TTL = 30 * 1000;
 
         async function doSearch(query) {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
@@ -9459,22 +9452,6 @@ const voteKey = 'vote_' + symbol;
             }
 
             const searchToken = ++activeSearchToken;
-            const fastChartKey = cleanQ.toUpperCase();
-            const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
-            const fastChartPromise = (
-                fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
-            )
-                ? Promise.resolve(fastChartCached.data)
-                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ))
-                    .then(r => r.ok ? r.json() : null)
-                    .then(chartData => {
-                        if (chartData) {
-                            FAST_CHART_CACHE.set(fastChartKey, {time: Date.now(), data: chartData});
-                        }
-                        return chartData;
-                    })
-                    .catch(() => null);
-
             try {
                 const cacheKey = cleanQ.toUpperCase();
                 const cached = ANALYZE_CACHE.get(cacheKey);
@@ -9511,27 +9488,11 @@ const voteKey = 'vote_' + symbol;
                     console.table(data._perf.slowest_http || []);
                 }
 
-                // 차트 심볼은 분석 응답의 실제 symbol을 사용한다.
-                currentSymbol = data.symbol || '';
-
-                // 차트는 전체 분석 완료를 기다리지 않는다.
-                if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
-                    setTimeout(() => {
-                        if (searchToken === activeSearchToken) {
-                            initTvChart(cached.data.candles);
-                        }
-                    }, 0);
-                } else {
-                    fastChartPromise.then(chartData => {
-                        if (chartData?._perf) {
-                            console.log(
-                                `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
-                            );
-                            console.table(chartData._perf.slowest_http || []);
-                        }
-                        if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                        initTvChart(chartData.candles);
-                    });
+                // TradingView 차트는 서버의 /api/chart 및 캔들 데이터와 완전히 분리한다.
+                // 종목 분석 응답에서 symbol만 확보하면 TradingView가 차트 데이터를 직접 가져온다.
+                currentSymbol = data.symbol || cleanQ;
+                if (searchToken === activeSearchToken) {
+                    initTvChart(null, currentSymbol);
                 }
 
 if ((response && !response.ok) || data.error) {
@@ -9549,8 +9510,11 @@ if ((response && !response.ok) || data.error) {
                     ? displayName
                     : getUsShortKrName(data.symbol, displayName);
                 setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
-                setTxt('rPrice', displayPrice);
-                setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
+                // 가격/시장/출처/시각은 TradingView 차트가 직접 관리하므로 별도 표시하지 않는다.
+                const priceEl = document.getElementById('rPrice');
+                const metaEl = document.getElementById('rMeta');
+                if (priceEl) priceEl.style.display = 'none';
+                if (metaEl) metaEl.style.display = 'none';
 
                 loadCommunityData(data.symbol, displayName);
 
@@ -10225,8 +10189,7 @@ if ((response && !response.ok) || data.error) {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
 
-                // 차트는 위의 fastChartPromise에서 먼저 그려진다.
-                // 서버 전체 분석의 candles는 기존 호환성을 위해 그대로 유지한다.
+                // TradingView가 차트 데이터와 표시를 직접 관리한다.
                 window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
@@ -10237,62 +10200,65 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
-        function getTradingViewSymbol() {
-            const q = String(currentSymbol || '').trim().toUpperCase();
-            const crypto = {
-                BTCUSDT: 'BINANCE:BTCUSDT', ETHUSDT: 'BINANCE:ETHUSDT',
-                XRPUSDT: 'BINANCE:XRPUSDT', DOGEUSDT: 'BINANCE:DOGEUSDT',
-                SOLUSDT: 'BINANCE:SOLUSDT', ADAUSDT: 'BINANCE:ADAUSDT',
-                AVAXUSDT: 'BINANCE:AVAXUSDT', SKYUSDT: 'BINANCE:SKYUSDT'
-            };
-            if (crypto[q]) return crypto[q];
+        function getTradingViewSymbol(rawSymbol) {
+            const key = String(rawSymbol || '').trim().toUpperCase();
+            if (!key) return '';
 
-            const us = {
-                NVDA: 'NASDAQ:NVDA', TSLA: 'NASDAQ:TSLA', AAPL: 'NASDAQ:AAPL',
-                MSFT: 'NASDAQ:MSFT', AMZN: 'NASDAQ:AMZN', GOOGL: 'NASDAQ:GOOGL',
-                META: 'NASDAQ:META', AMD: 'NASDAQ:AMD', IONQ: 'NYSE:IONQ',
-                PLTR: 'NASDAQ:PLTR', TSM: 'NYSE:TSM', QQQ: 'NASDAQ:QQQ',
-                SPY: 'AMEX:SPY', SOXL: 'AMEX:SOXL', TQQQ: 'NASDAQ:TQQQ',
-                DIA: 'AMEX:DIA', SOXX: 'NASDAQ:SOXX'
-            };
-            if (us[q]) return us[q];
+            if (/^\d{6}$/.test(key)) return `KRX:${key}`;
 
-            const korea = String(currentSymbol || '').trim();
-            if (/^\d{6}$/.test(korea)) return 'KRX:' + korea;
-
-            const global = {
-                '^KS11': 'KRX:KOSPI', '^KQ11': 'KRX:KOSDAQ',
-                '^VIX': 'CBOE:VIX', 'CL=F': 'NYMEX:CL1!',
-                'GC=F': 'COMEX:GC1!', 'KRW=X': 'FX_IDC:USDKRW'
+            const indexMap = {
+                '^KS11': 'KRX:KOSPI',
+                '^KQ11': 'KRX:KOSDAQ',
+                '^VIX': 'CBOE:VIX',
+                'CL=F': 'NYMEX:CL1!',
+                'GC=F': 'COMEX:GC1!',
+                'KRW=X': 'FX_IDC:USDKRW'
             };
-            if (global[currentSymbol]) return global[currentSymbol];
-            return currentSymbol || '';
+            if (indexMap[key]) return indexMap[key];
+
+            const usMap = {
+                NVDA:'NASDAQ:NVDA', TSLA:'NASDAQ:TSLA', AAPL:'NASDAQ:AAPL',
+                MSFT:'NASDAQ:MSFT', AMZN:'NASDAQ:AMZN', GOOGL:'NASDAQ:GOOGL',
+                META:'NASDAQ:META', AMD:'NASDAQ:AMD', PLTR:'NASDAQ:PLTR',
+                IONQ:'NYSE:IONQ', TSM:'NYSE:TSM', DELL:'NYSE:DELL',
+                QQQ:'NASDAQ:QQQ', TQQQ:'NASDAQ:TQQQ', SPY:'AMEX:SPY',
+                SOXL:'AMEX:SOXL', DIA:'AMEX:DIA', SOXX:'NASDAQ:SOXX'
+            };
+            if (usMap[key]) return usMap[key];
+
+            if (/^[A-Z0-9]+USDT$/.test(key)) return `BINANCE:${key}`;
+            if (key.includes(':')) return key;
+            return '';
         }
 
-        function initTvChart(candles) {
+        function initTvChart(candles, symbolOverride) {
             const container = document.getElementById('tvChart');
             if (!container) return;
-            container.innerHTML = '';
 
-            const symbol = getTradingViewSymbol();
-            if (!symbol) return;
+            const rawSymbol = String(symbolOverride || currentSymbol || '').trim();
+            const symbol = getTradingViewSymbol(rawSymbol);
+            if (!symbol) {
+                container.innerHTML = '';
+                return;
+            }
 
             const isLight = document.body.classList.contains('light-theme');
+            container.innerHTML = '';
+
             const wrap = document.createElement('div');
             wrap.className = 'tradingview-widget-container';
-            wrap.style.width = '100%';
-            wrap.style.height = '100%';
+            wrap.style.cssText = 'width:100%;height:100%;';
 
             const widget = document.createElement('div');
             widget.className = 'tradingview-widget-container__widget';
-            widget.style.width = '100%';
-            widget.style.height = '100%';
+            widget.style.cssText = 'width:100%;height:100%;';
+            wrap.appendChild(widget);
 
             const script = document.createElement('script');
             script.type = 'text/javascript';
             script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
             script.async = true;
-            script.text = JSON.stringify({
+            script.innerHTML = JSON.stringify({
                 autosize: true,
                 symbol: symbol,
                 interval: 'D',
@@ -10300,16 +10266,15 @@ if ((response && !response.ok) || data.error) {
                 theme: isLight ? 'light' : 'dark',
                 style: '1',
                 locale: 'kr',
-                hide_top_toolbar: true,
+                hide_top_toolbar: false,
                 hide_legend: false,
-                allow_symbol_change: false,
+                allow_symbol_change: true,
                 save_image: false,
                 calendar: false,
                 hide_volume: false,
                 support_host: 'https://www.tradingview.com'
             });
 
-            wrap.appendChild(widget);
             wrap.appendChild(script);
             container.appendChild(wrap);
         }

@@ -42,6 +42,51 @@ except ImportError:
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 DB_MODEL_VERSION = "gaemiGTP-db-v1"
 
+# ----------------------------------------------------
+# DB 비동기 저장 큐
+# - 사용자 응답 경로에서 PostgreSQL INSERT/UPSERT를 기다리지 않는다.
+# - DB 저장은 별도 worker가 처리하며, 저장 실패가 분석 응답을 막지 않는다.
+# - 동일 요청의 중복 DB 작업이 쌓이는 것을 막기 위해 pending key를 관리한다.
+# ----------------------------------------------------
+DB_WRITE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="gaemi-db",
+)
+DB_WRITE_PENDING = set()
+DB_WRITE_PENDING_LOCK = threading.Lock()
+
+
+def _submit_db_write(task_key, func, *args, **kwargs):
+    """DB 저장을 백그라운드 worker로 넘기고 호출자는 즉시 계속 진행한다."""
+    if not _db_available():
+        return False
+
+    with DB_WRITE_PENDING_LOCK:
+        if task_key in DB_WRITE_PENDING:
+            print(f"[DB ASYNC] 중복 작업 건너뜀: {task_key}")
+            return False
+        DB_WRITE_PENDING.add(task_key)
+
+    try:
+        future = DB_WRITE_EXECUTOR.submit(func, *args, **kwargs)
+    except Exception as exc:
+        with DB_WRITE_PENDING_LOCK:
+            DB_WRITE_PENDING.discard(task_key)
+        print(f"[DB ASYNC] 작업 등록 실패: {task_key} {type(exc).__name__}: {exc}")
+        return False
+
+    def _done_callback(done_future):
+        try:
+            done_future.result()
+        except Exception as exc:
+            print(f"[DB ASYNC] 작업 실패: {task_key} {type(exc).__name__}: {exc}")
+        finally:
+            with DB_WRITE_PENDING_LOCK:
+                DB_WRITE_PENDING.discard(task_key)
+
+    future.add_done_callback(_done_callback)
+    return True
+
 
 def _db_available():
     return bool(DATABASE_URL and psycopg is not None)
@@ -704,6 +749,14 @@ ALPHA_EARNINGS_CACHE = {}
 ALPHA_EARNINGS_CACHE_TTL = 1800  # 30분
 FINNHUB_CONSENSUS_CACHE = {}
 FINNHUB_CONSENSUS_CACHE_TTL = 1800  # 30분
+
+# 통합 컨센서스 결과 캐시. 컨센서스는 초단위 데이터가 아니므로
+# 매 종목 검색마다 Naver/Finnhub/Yahoo fallback 체인을 다시 타지 않는다.
+# Step 1에서는 기존 데이터 수집 로직은 그대로 유지하고, 중복 호출만 차단한다.
+CONSENSUS_RESULT_CACHE = {}
+CONSENSUS_RESULT_CACHE_TTL = 900  # 15분
+CONSENSUS_CACHE_LOCK = threading.Lock()
+
 FRED_LAST_REQUEST_TS = 0.0
 FRED_MIN_INTERVAL = 0.55  # FRED 2 req/s 제한에 안전하게 대응
 API_LOCK = threading.Lock()
@@ -3342,9 +3395,11 @@ def fetch_crypto_candles(symbol):
         pass
     return None, None, None
 
-def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
-    """실제 확인 가능한 국내/미국 애널리스트 컨센서스만 표시한다.
-    국내 리포트는 Naver mobile/front-api/v2/legacy HTML을 순차적으로 확인한다.
+def _fetch_market_consensus_unified_uncached(symbol, market_name, raw_price, formal_name=""):
+    """실제 확인 가능한 국내/미국 애널리스트 컨센서스를 수집한다.
+
+    이 함수는 외부 API를 실제 호출하는 원본 수집기다.
+    반복 검색 방지는 바깥의 fetch_market_consensus_unified()가 담당한다.
     """
     try:
         def _walk_objects(obj, depth=0):
@@ -4350,6 +4405,40 @@ def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name="
     except Exception as exc:
         print(f"[CONSENSUS] {symbol} failed: {type(exc).__name__}: {exc}")
         return None
+
+def fetch_market_consensus_unified(symbol, market_name, raw_price, formal_name=""):
+    """컨센서스 통합 조회의 캐시 래퍼.
+
+    Step 1 속도 개선에서는 기존 Naver/Finnhub/Yahoo fallback 로직을
+    제거하지 않고, 동일 종목의 반복 검색에 대한 외부 API 재호출을 막는다.
+
+    - TTL: 15분
+    - 캐시 키: 시장 + 종목코드
+    - None도 캐시하여 일시적인 외부 API 장애가 반복 호출로 증폭되는 것을 방지
+    """
+    key = f"{str(market_name or '').strip()}:{str(symbol or '').strip().upper()}"
+    now = time.time()
+
+    with CONSENSUS_CACHE_LOCK:
+        cached = CONSENSUS_RESULT_CACHE.get(key)
+        if cached is not None:
+            cached_time, cached_result = cached
+            if now - cached_time < CONSENSUS_RESULT_CACHE_TTL:
+                return dict(cached_result) if isinstance(cached_result, dict) else cached_result
+            CONSENSUS_RESULT_CACHE.pop(key, None)
+
+    result = _fetch_market_consensus_unified_uncached(
+        symbol=symbol,
+        market_name=market_name,
+        raw_price=raw_price,
+        formal_name=formal_name,
+    )
+
+    with CONSENSUS_CACHE_LOCK:
+        CONSENSUS_RESULT_CACHE[key] = (now, result)
+
+    return dict(result) if isinstance(result, dict) else result
+
 
 def _fred_series(series_id, limit=8):
     """FRED 실제 관측값. 캐시와 요청 간격을 적용해 429를 예방한다."""
@@ -5792,19 +5881,26 @@ def run_full_pipeline(query):
 
     # ====================================================
     # PostgreSQL 원천 OHLCV 저장
-    # 기존 사이트 분석 로직과 분리되어 있으며,
-    # DB 오류가 나도 기존 분석은 계속 진행한다.
+    # STEP 2: 사용자 응답 경로에서 DB 저장을 기다리지 않는다.
+    # 분석에 사용할 df가 이후 계산 과정에서 변경될 수 있으므로
+    # 백그라운드 작업에 넘길 복사본을 만든다.
     # ====================================================
     try:
-        save_market_prices(
-            df=df,
+        db_price_df = df.copy(deep=True)
+        if isinstance(df.attrs.get("_gaemi_raw_df"), pd.DataFrame):
+            db_price_df.attrs["_gaemi_raw_df"] = df.attrs["_gaemi_raw_df"].copy(deep=True)
+
+        _submit_db_write(
+            ("market_prices", market_name, str(symbol), "1d"),
+            save_market_prices,
+            df=db_price_df,
             market_name=market_name,
             symbol=symbol,
             timeframe="1d",
             source="alpha-trade-bot",
         )
     except Exception as exc:
-        print(f"[DB] 원천 OHLCV 저장 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
+        print(f"[DB ASYNC] 원천 OHLCV 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
     with ThreadPoolExecutor(max_workers=9) as executor:
         f_news = executor.submit(fetch_rss_news, formal_name, 10)
@@ -5867,16 +5963,22 @@ def run_full_pipeline(query):
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 
     try:
-        save_quant_result(
+        # 퀀트 결과도 응답을 막지 않도록 백그라운드 저장한다.
+        db_quant_df = df.copy(deep=True)
+        db_quant_payload = dict(quant) if isinstance(quant, dict) else quant
+
+        _submit_db_write(
+            ("quant_results", market_name, str(symbol), "1d"),
+            save_quant_result,
             market_name=market_name,
             symbol=symbol,
             raw_price=raw_price,
-            df=df,
-            quant=quant,
+            df=db_quant_df,
+            quant=db_quant_payload,
             timeframe="1d",
         )
     except Exception as exc:
-        print(f"[DB] 퀀트 결과 저장 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
+        print(f"[DB ASYNC] 퀀트 결과 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
     try:
         movement_reason = analyze_movement_reason(

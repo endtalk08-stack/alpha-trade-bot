@@ -6854,6 +6854,7 @@ def run_full_pipeline(query, lightweight=False):
         macro_snapshot = {}
         ticker_news = []
         consensus = None
+        alpha_earnings = {}
         dart_disclosures = []
         domestic_flow = None
         _perf_stage("optional_external_skipped")

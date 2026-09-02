@@ -9405,40 +9405,60 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #right-market-icons { flex: 0 0 44px; }
         }
 
-        /* STEP 24: 모바일에서는 오른쪽 패널도 왼쪽 사이드바처럼
-           처음에는 아이콘만 보이고, 버튼을 눌렀을 때만 화면 위에 열린다. */
+        /* STEP 26: 모바일은 오른쪽 패널을 처음에는 닫아두되
+           열기/닫기 버튼만 남긴다. 패널이 열릴 때도 가운데 콘텐츠를 밀지 않고
+           화면 위에 오버레이되도록 한다. */
         @media (max-width: 560px) {
             body { overflow-x: hidden; }
+            #content-wrapper {
+                width: 100% !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+            }
             #right-market-rail {
-                width: 100vw;
-                max-width: 100vw;
+                width: 44px;
+                max-width: 44px;
+                right: 0;
                 background: transparent;
                 border-left: 0;
-                pointer-events: none;
+                z-index: 120;
             }
             #right-market-rail.collapsed {
                 width: 44px;
-                pointer-events: auto;
+                max-width: 44px;
             }
             #right-market-rail:not(.collapsed) {
-                pointer-events: auto;
+                width: min(320px, 92vw);
+                max-width: 92vw;
+                background: var(--bg-body);
+                border-left: 1px solid var(--border-line);
             }
             #right-market-panel {
-                width: calc(100vw - 44px);
+                display: none;
+                width: calc(100% - 44px);
                 min-width: 0;
-                max-width: calc(100vw - 44px);
-                box-shadow: -10px 0 28px rgba(0,0,0,.22);
-                border-left: 1px solid var(--border-line);
+                max-width: none;
+            }
+            #right-market-rail:not(.collapsed) #right-market-panel {
+                display: flex;
             }
             #right-market-icons {
                 width: 44px;
                 min-width: 44px;
-                flex: 0 0 44px;
+                border-left: 1px solid var(--border-line);
                 background: var(--bg-body);
+            }
+            #right-market-rail.collapsed #right-market-icons {
                 border-left: 1px solid var(--border-line);
             }
-            /* 닫힌 상태에서는 데이터 패널을 확실히 화면에서 제거한다. */
-            #right-market-rail.collapsed #right-market-panel { display: none !important; }
+            #right-market-rail.collapsed .right-market-icon-btn:not(.right-market-close) {
+                display: none;
+            }
+            .right-market-close {
+                display: flex !important;
+                width: 36px;
+                height: 42px;
+            }
         }
 
 </style>
@@ -9458,13 +9478,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <span>새 종목</span>
         </button>
 
-        <div class="sidebar-scroll-area">
-            <div class="sidebar-section-title">최근 종목</div>
-            <div class="sidebar-item" onclick="doSearch('SK하이닉스');">SK하이닉스</div>
-            <div class="sidebar-item" onclick="doSearch('엔비디아');">엔비디아</div>
-            <div class="sidebar-item" onclick="doSearch('삼성전자');">삼성전자</div>
-            <div class="sidebar-item" onclick="doSearch('비트코인');">비트코인</div>
-        </div>
+        <div class="sidebar-scroll-area"></div>
     </div>
 
     <div id="content-wrapper">
@@ -12125,9 +12139,14 @@ if ((response && !response.ok) || data.error) {
         }
 
         window.addEventListener('DOMContentLoaded', () => {
-            // 오른쪽 사이드바는 처음에는 닫힌 상태로 시작한다.
+            // 모바일에서는 패널은 닫아두되 열기/닫기 버튼은 유지한다.
+            // 패널을 열기 전까지 시장 데이터 요청은 실행하지 않는다.
+            const isMobileRightMarket = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
+
+            // 데스크톱/모바일 모두 오른쪽 사이드바가 처음에는 닫힌 상태로 시작한다.
             // 왼쪽 사이드바와 완전히 독립적으로 열리고 닫힌다.
             setRightMarketOpen(false);
+            if (isMobileRightMarket) return;
             loadRightMarketBoard(false);
             setInterval(() => loadRightMarketBoard(true), 60000);
         });
@@ -12152,7 +12171,7 @@ if ((response && !response.ok) || data.error) {
     </script>
 
 
-    <!-- STEP 23: 우측 실시간 시장 사이드바 -->
+    <!-- STEP 26: 우측 실시간 시장 사이드바 -->
     <aside id="right-market-rail" class="collapsed" aria-label="실시간 시장 사이드바">
         <section id="right-market-panel">
             <div class="right-market-head">

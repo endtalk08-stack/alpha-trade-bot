@@ -8132,6 +8132,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         
                         <!-- 1행 좌측: 메인 차트 (832px) -->
                         <div class="card" id="rowChart">
+                            <div>
+                                <div class="price-title" id="rTitle"></div>
+                                <div class="price-val" id="rPrice"></div>
+                                <div class="price-meta" id="rMeta"></div>
+</div>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 

@@ -7129,6 +7129,193 @@ def run_full_pipeline(query, lightweight=False):
 # ----------------------------------------------------
 # 8. 웹 프론트엔드 UI
 # ----------------------------------------------------
+
+
+# ===== STEP 21: 우측 실시간 시장 사이드바 =====
+RIGHT_MARKET_BOARD_CACHE = {}
+RIGHT_MARKET_BOARD_CACHE_TTL = 30
+RIGHT_MARKET_BOARD_CACHE_LOCK = threading.Lock()
+RIGHT_MARKET_BOARD_SYMBOLS = [
+    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "AMD",
+    "AVGO", "PLTR", "MU", "TSM", "NFLX", "COIN", "MSTR"
+]
+
+
+def _right_sidebar_kr_rows(limit=15):
+    """국내 실시간 목록. 기존 Naver 모바일 주식 랭킹 API를 재사용한다.
+    거래대금 필드가 있으면 거래대금 기준으로 정렬하고, 공급자가 순위만 제공하면
+    그 순서를 그대로 사용한다. 화면에서는 실제 수신값만 표시한다.
+    """
+    url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
+    res = HTTP_SESSION.get(
+        url,
+        timeout=2.5,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"},
+    )
+    res.raise_for_status()
+    payload = res.json()
+    stocks = payload.get("stocks", []) if isinstance(payload, dict) else []
+    rows = []
+    for idx, item in enumerate(stocks):
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("itemCode") or item.get("code") or "").strip()
+        name = str(item.get("stockName") or item.get("itemName") or item.get("name") or "").strip()
+        if not code or not name:
+            continue
+        price = item.get("closePrice") or item.get("currentPrice") or item.get("price")
+        change = item.get("fluctuationRate") or item.get("changeRate") or item.get("changePercent")
+        change_amount = item.get("fluctuationValue") or item.get("change")
+        tv = item.get("accumulatedTradingValue") or item.get("tradingValue") or item.get("accumulatedTradingAmount")
+        try:
+            price_num = float(str(price).replace(",", "")) if price is not None else None
+        except Exception:
+            price_num = None
+        try:
+            change_num = float(str(change).replace("%", "").replace(",", "")) if change is not None else None
+        except Exception:
+            change_num = None
+        try:
+            change_amount_num = float(str(change_amount).replace(",", "")) if change_amount is not None else None
+        except Exception:
+            change_amount_num = None
+        try:
+            tv_num = float(str(tv).replace(",", "")) if tv is not None else None
+        except Exception:
+            tv_num = None
+        rows.append({
+            "rank": idx + 1,
+            "code": code,
+            "symbol": code,
+            "name": name,
+            "price": price_num,
+            "change_pct": change_num,
+            "change": change_amount_num,
+            "trading_value": tv_num,
+            "currency": "KRW",
+            "market": "국내",
+            "source": "Naver",
+        })
+    # 실제 거래대금 필드가 존재하는 경우에만 거래대금으로 재정렬한다.
+    if any(r.get("trading_value") is not None for r in rows):
+        rows = sorted(rows, key=lambda r: (r.get("trading_value") is not None, r.get("trading_value") or 0), reverse=True)
+        for i, row in enumerate(rows, 1):
+            row["rank"] = i
+    return rows[:limit]
+
+
+def _right_sidebar_us_rows(limit=15):
+    """해외주식 실시간 목록. Yahoo most-active 후보를 받은 뒤 현재가×거래량으로 정렬한다."""
+    symbols = list(RIGHT_MARKET_BOARD_SYMBOLS)
+    try:
+        screener_url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=25"
+        sr = HTTP_SESSION.get(screener_url, timeout=3.0, headers={"User-Agent": "Mozilla/5.0"})
+        if sr.ok:
+            sp = sr.json()
+            quotes = (((sp.get("finance") or {}).get("result") or [{}])[0].get("quotes") or [])
+            candidate = [str(q.get("symbol") or "").upper() for q in quotes if q.get("symbol")]
+            if candidate:
+                symbols = candidate[:25]
+    except Exception:
+        pass
+    url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + urllib.parse.quote(",".join(symbols))
+    res = HTTP_SESSION.get(url, timeout=4.0, headers={"User-Agent": "Mozilla/5.0"})
+    res.raise_for_status()
+    payload = res.json()
+    quotes = ((payload.get("quoteResponse") or {}).get("result") or [])
+    rows = []
+    for q in quotes:
+        symbol = str(q.get("symbol") or "").upper()
+        price = q.get("regularMarketPrice")
+        prev = q.get("regularMarketPreviousClose")
+        pct = q.get("regularMarketChangePercent")
+        volume = q.get("regularMarketVolume")
+        if price is None:
+            continue
+        if pct is None and prev:
+            pct = (float(price) - float(prev)) / float(prev) * 100.0
+        notional = float(price) * float(volume or 0)
+        rows.append({
+            "rank": 0,
+            "code": symbol,
+            "symbol": symbol,
+            "name": q.get("shortName") or q.get("longName") or symbol,
+            "price": float(price),
+            "change_pct": float(pct) if pct is not None else None,
+            "change": float(q.get("regularMarketChange")) if q.get("regularMarketChange") is not None else None,
+            "trading_value": notional,
+            "currency": q.get("currency") or "USD",
+            "market": "해외",
+            "source": "Yahoo Finance",
+        })
+    rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
+    for i, row in enumerate(rows[:limit], 1):
+        row["rank"] = i
+    return rows[:limit]
+
+
+def _right_sidebar_crypto_rows(limit=15):
+    """Binance USDT 현물 전체 티커에서 quoteVolume 기준 상위 코인을 조회한다."""
+    url = "https://api.binance.com/api/v3/ticker/24hr"
+    res = HTTP_SESSION.get(url, timeout=4.0, headers={"User-Agent": "Mozilla/5.0"})
+    res.raise_for_status()
+    payload = res.json()
+    rows = []
+    for item in payload if isinstance(payload, list) else []:
+        symbol = str(item.get("symbol") or "").upper()
+        if not symbol.endswith("USDT") or symbol.endswith("USDCUSDT"):
+            continue
+        try:
+            price = float(item.get("lastPrice") or 0)
+            pct = float(item.get("priceChangePercent") or 0)
+            change = float(item.get("priceChange") or 0)
+            qv = float(item.get("quoteVolume") or 0)
+        except Exception:
+            continue
+        base = symbol[:-4]
+        rows.append({
+            "rank": 0,
+            "code": symbol,
+            "symbol": symbol,
+            "name": base,
+            "price": price,
+            "change_pct": pct,
+            "change": change,
+            "trading_value": qv,
+            "currency": "USDT",
+            "market": "코인",
+            "source": "Binance",
+        })
+    rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
+    for i, row in enumerate(rows[:limit], 1):
+        row["rank"] = i
+    return rows[:limit]
+
+
+def fetch_right_market_board(market="kr", force=False):
+    key = str(market or "kr").strip().lower()
+    if key not in {"kr", "us", "crypto"}:
+        key = "kr"
+    now = time.time()
+    with RIGHT_MARKET_BOARD_CACHE_LOCK:
+        cached = RIGHT_MARKET_BOARD_CACHE.get(key)
+        if cached and not force and now - cached.get("time", 0) < RIGHT_MARKET_BOARD_CACHE_TTL:
+            return cached.get("data") or []
+    try:
+        if key == "kr":
+            rows = _right_sidebar_kr_rows()
+        elif key == "us":
+            rows = _right_sidebar_us_rows()
+        else:
+            rows = _right_sidebar_crypto_rows()
+    except Exception as exc:
+        print(f"[RIGHT MARKET BOARD] {key} fetch failed: {type(exc).__name__}: {exc}")
+        rows = []
+    if rows:
+        with RIGHT_MARKET_BOARD_CACHE_LOCK:
+            RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows}
+    return rows
+
 HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -9159,6 +9346,53 @@ HTML_PAGE = r"""<!DOCTYPE html>
             outline: 2px solid var(--border-line);
             outline-offset: -2px;
         }
+
+
+        /* ===== STEP 21: 우측 실시간 시장 사이드바 ===== */
+        body { padding-right: 0; }
+        #content-wrapper { width: calc(100% - 336px); margin-right: 336px; }
+        #right-market-rail {
+            position: fixed; top: 0; right: 0; width: 336px; height: 100vh;
+            display: flex; flex-direction: row; z-index: 120;
+            background: var(--bg-body); border-left: 1px solid var(--border-line);
+        }
+        #right-market-rail.collapsed { width: 44px; }
+        #right-market-rail.collapsed #right-market-panel { display: none; }
+        #right-market-panel {
+            width: 292px; min-width: 292px; height: 100%; overflow: hidden;
+            display: flex; flex-direction: column; background: var(--bg-body);
+        }
+        .right-market-head { height: 58px; display:flex; align-items:center; justify-content:space-between; padding: 0 14px; border-bottom:1px solid var(--border-line); }
+        .right-market-title { font-size:.95rem; font-weight:700; color:var(--text-title); }
+        .right-market-time { font-size:.72rem; color:var(--text-muted); margin-left:5px; font-weight:500; }
+        .right-market-tabs { display:flex; gap:3px; padding:10px 10px 6px; }
+        .right-market-tab { flex:1; border:0; background:transparent; color:var(--text-muted); padding:8px 4px; border-radius:9px; font-weight:700; cursor:pointer; font-size:.78rem; }
+        .right-market-tab.active { background:var(--bg-card); color:var(--text-title); box-shadow: inset 0 0 0 1px var(--border-line); }
+        .right-market-sort { display:flex; justify-content:space-between; align-items:center; padding:6px 13px 8px; color:var(--text-sub); font-size:.75rem; border-bottom:1px solid var(--border-line); }
+        .right-market-list { flex:1; overflow-y:auto; padding:5px 8px 18px; scrollbar-width:thin; }
+        .right-market-row { display:grid; grid-template-columns:24px 34px minmax(0,1fr) auto; gap:7px; align-items:center; min-height:61px; padding:5px 5px; border-radius:9px; cursor:pointer; }
+        .right-market-row:hover { background:var(--btn-hover); }
+        .right-market-rank { color:var(--text-muted); font-size:.78rem; text-align:center; font-weight:700; }
+        .right-market-logo { width:31px; height:31px; border-radius:9px; display:flex; align-items:center; justify-content:center; background:var(--bg-card); border:1px solid var(--border-line); color:var(--text-title); font-size:.68rem; font-weight:800; overflow:hidden; }
+        .right-market-name { color:var(--text-title); font-size:.78rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .right-market-symbol { color:var(--text-muted); font-size:.62rem; margin-top:2px; }
+        .right-market-values { text-align:right; min-width:76px; }
+        .right-market-price { color:var(--text-title); font-size:.78rem; font-weight:700; white-space:nowrap; }
+        .right-market-change { font-size:.68rem; margin-top:3px; white-space:nowrap; }
+        .right-market-change.up { color:#ef4444; }
+        .right-market-change.down { color:#38a8ff; }
+        .right-market-empty { padding:28px 15px; color:var(--text-muted); text-align:center; font-size:.78rem; line-height:1.6; }
+        #right-market-icons { width:44px; min-width:44px; border-left:1px solid var(--border-line); display:flex; flex-direction:column; align-items:center; padding-top:8px; gap:7px; background:var(--bg-body); }
+        .right-market-icon-btn { width:36px; height:42px; border:0; border-radius:9px; background:transparent; color:var(--text-sub); cursor:pointer; font-size:1.05rem; display:flex; align-items:center; justify-content:center; transition:.15s; }
+        .right-market-icon-btn:hover, .right-market-icon-btn.active { background:var(--bg-card); color:var(--text-title); }
+        .right-market-close { font-size:1.35rem; margin-bottom:4px; }
+        @media (max-width: 1100px) {
+            body { padding-right: 0; }
+            #content-wrapper { width:100%; margin-right:0; }
+            #right-market-rail { transform:translateX(292px); transition:transform .2s ease; }
+            #right-market-rail.open { transform:translateX(0); }
+        }
+
 </style>
 </head>
 <body>
@@ -10562,6 +10796,14 @@ const voteKey = 'vote_' + symbol;
             const cleanQ = query.trim();
             if (!cleanQ) return;
 
+            // STEP 21: 최근검색종목 메뉴에서 사용할 최소 검색 이력을 로컬에 저장한다.
+            try {
+                const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                const recentItem = { name: cleanQ, symbol: cleanQ.toUpperCase(), price: null, change_pct: null, currency: '' };
+                const next = [recentItem, ...recent.filter(x => String(x?.name || '').toUpperCase() !== cleanQ.toUpperCase())].slice(0, 15);
+                localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
+            } catch (e) {}
+
             // 현재 분석 종목을 URL에 저장하여 새로고침해도 같은 종목을 유지
             const searchUrl = new URL(window.location.href);
             searchUrl.searchParams.set('q', cleanQ);
@@ -11707,6 +11949,125 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
+
+
+        // ===== STEP 21: 우측 실시간 시장 사이드바 =====
+        let rightMarketKey = 'kr';
+        let rightMarketMenu = 'live';
+        const rightMarketCache = {};
+
+        function escapeRightMarketText(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+        }
+
+        function formatRightMarketPrice(row) {
+            const p = Number(row.price);
+            if (!Number.isFinite(p)) return '-';
+            if (row.currency === 'KRW') return `${Math.round(p).toLocaleString('ko-KR')}원`;
+            return `$${p.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        }
+
+        function renderRightMarketRows(rows) {
+            const list = document.getElementById('rightMarketList');
+            if (!list) return;
+            if (!Array.isArray(rows) || !rows.length) {
+                list.innerHTML = '<div class="right-market-empty">현재 실시간 데이터를 가져오지 못했습니다.<br>잠시 후 다시 시도합니다.</div>';
+                return;
+            }
+            list.innerHTML = rows.map((row, idx) => {
+                const pct = Number(row.change_pct);
+                const change = Number(row.change);
+                const cls = Number.isFinite(pct) && pct >= 0 ? 'up' : 'down';
+                const pctText = Number.isFinite(pct) ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '-';
+                let changeText = '';
+                if (Number.isFinite(change)) {
+                    changeText = row.currency === 'KRW'
+                        ? `${change >= 0 ? '+' : ''}${Math.round(change).toLocaleString('ko-KR')}원`
+                        : `${change >= 0 ? '+' : ''}${change.toFixed(2)}`;
+                }
+                const badge = escapeRightMarketText((row.name || row.symbol || '?').slice(0, 2));
+                const name = escapeRightMarketText(row.name || row.symbol || '-');
+                const symbol = escapeRightMarketText(row.symbol || '');
+                return `<div class="right-market-row" onclick="doSearch('${escapeRightMarketText(row.symbol || row.name || '')}')">
+                    <div class="right-market-rank">${row.rank || idx + 1}</div>
+                    <div class="right-market-logo">${badge}</div>
+                    <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>
+                    <div class="right-market-values"><div class="right-market-price">${formatRightMarketPrice(row)}</div><div class="right-market-change ${cls}">${changeText} ${pctText}</div></div>
+                </div>`;
+            }).join('');
+        }
+
+        async function loadRightMarketBoard(force=false) {
+            const list = document.getElementById('rightMarketList');
+            if (!list) return;
+            const cacheKey = rightMarketKey;
+            if (!force && rightMarketCache[cacheKey]) {
+                renderRightMarketRows(rightMarketCache[cacheKey]);
+                return;
+            }
+            try {
+                const r = await fetch(`/api/right-market-board?market=${encodeURIComponent(cacheKey)}${force ? '&force=1' : ''}`, {cache:'no-store'});
+                const payload = await r.json();
+                if (payload && payload.ok && Array.isArray(payload.data)) {
+                    rightMarketCache[cacheKey] = payload.data;
+                    renderRightMarketRows(payload.data);
+                } else {
+                    renderRightMarketRows([]);
+                }
+            } catch (e) {
+                renderRightMarketRows([]);
+            }
+            const t = document.getElementById('rightMarketTime');
+            if (t) t.textContent = `오늘 ${new Date().toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'})} 기준`;
+        }
+
+        function switchRightMarket(key) {
+            rightMarketKey = key;
+            document.querySelectorAll('.right-market-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.market === key));
+            loadRightMarketBoard(false);
+        }
+
+        function selectRightMenu(menu) {
+            rightMarketMenu = menu;
+            document.querySelectorAll('[data-right-menu]').forEach(btn => btn.classList.toggle('active', btn.dataset.rightMenu === menu));
+            const list = document.getElementById('rightMarketList');
+            if (menu === 'live') {
+                loadRightMarketBoard(false);
+                return;
+            }
+            if (menu === 'recent') {
+                const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                renderRightMarketRows(recent.slice(0, 15).map((x,i) => ({...x, rank:i+1})));
+                if (!recent.length && list) list.innerHTML = '<div class="right-market-empty">최근 검색 종목이 없습니다.</div>';
+                return;
+            }
+            if (menu === 'favorite') {
+                const fav = JSON.parse(localStorage.getItem('gaemiGTP_favorites') || '[]');
+                renderRightMarketRows(fav.slice(0, 15).map((x,i) => ({...x, rank:i+1})));
+                if (!fav.length && list) list.innerHTML = '<div class="right-market-empty">관심 종목이 없습니다.</div>';
+                return;
+            }
+            if (menu === 'leaders') {
+                loadRightMarketBoard(false).then(() => {
+                    const rows = rightMarketCache[rightMarketKey] || [];
+                    renderRightMarketRows([...rows].sort((a,b) => (Number(b.change_pct)||0) - (Number(a.change_pct)||0)));
+                });
+            }
+        }
+
+        function toggleRightMarket() {
+            const rail = document.getElementById('right-market-rail');
+            if (!rail) return;
+            rail.classList.toggle('collapsed');
+            const btn = rail.querySelector('.right-market-close');
+            if (btn) btn.textContent = rail.classList.contains('collapsed') ? '«' : '»';
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            loadRightMarketBoard(false);
+            setInterval(() => loadRightMarketBoard(true), 60000);
+        });
+
         // STEP 4: 무거운 세계시장/캘린더 데이터는 분석 요청과 분리해서 병렬 로딩한다.
         window.addEventListener('DOMContentLoaded', () => {
             loadWorldBoard();
@@ -11725,6 +12086,31 @@ if ((response && !response.ok) || data.error) {
             }
         });
     </script>
+
+
+    <!-- STEP 21: 우측 실시간 시장 사이드바 -->
+    <aside id="right-market-rail" aria-label="실시간 시장 사이드바">
+        <section id="right-market-panel">
+            <div class="right-market-head">
+                <div><span class="right-market-title">실시간</span><span class="right-market-time" id="rightMarketTime">오늘 --:-- 기준</span></div>
+            </div>
+            <div class="right-market-tabs">
+                <button class="right-market-tab active" data-market="kr" onclick="switchRightMarket('kr')">국내</button>
+                <button class="right-market-tab" data-market="us" onclick="switchRightMarket('us')">해외</button>
+                <button class="right-market-tab" data-market="crypto" onclick="switchRightMarket('crypto')">코인</button>
+            </div>
+            <div class="right-market-sort"><span id="rightMarketSortLabel">거래대금 상위⌄</span><span>실시간⌄</span></div>
+            <div class="right-market-list" id="rightMarketList"><div class="right-market-empty">실시간 시장 데이터를 불러오는 중입니다.</div></div>
+        </section>
+        <nav id="right-market-icons" aria-label="시장 메뉴">
+            <button class="right-market-icon-btn right-market-close" onclick="toggleRightMarket()" title="닫기/열기">»</button>
+            <button class="right-market-icon-btn active" data-right-menu="live" onclick="selectRightMenu('live')" title="실시간">🔥</button>
+            <button class="right-market-icon-btn" data-right-menu="favorite" onclick="selectRightMenu('favorite')" title="관심">❤️</button>
+            <button class="right-market-icon-btn" data-right-menu="recent" onclick="selectRightMenu('recent')" title="최근검색종목">🕒</button>
+            <button class="right-market-icon-btn" data-right-menu="leaders" onclick="selectRightMenu('leaders')" title="실시간 상단">📊</button>
+        </nav>
+    </aside>
+
 </body>
 </html>
 """
@@ -11963,6 +12349,18 @@ class WebHandler(BaseHTTPRequestHandler):
             )
             return
 
+
+
+        if parsed.path == "/api/right-market-board":
+            try:
+                market = str(params.get("market", ["kr"])[0]).strip().lower()
+                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                rows = fetch_right_market_board(market=market, force=force)
+                self._json(200, {"ok": True, "market": market, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/right-market-board: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "실시간 시장 데이터를 가져오지 못했습니다."})
+            return
 
         if parsed.path == "/api/world-board":
             try:

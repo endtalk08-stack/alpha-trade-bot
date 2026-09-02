@@ -856,6 +856,9 @@ WORLD_BOARD_CACHE_LOCK = threading.Lock()
 CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
+ANALYSIS_ENRICHING = set()
+ANALYSIS_ENRICH_LOCK = threading.Lock()
+ANALYSIS_CORE_TTL = 30
 
 # ===== External API cache / rate-limit protection =====
 FRED_CACHE = {}
@@ -878,6 +881,10 @@ EXTERNAL_CACHE_LOCK = threading.Lock()
 OPTIONAL_API_EXECUTOR = ThreadPoolExecutor(
     max_workers=12,
     thread_name_prefix="gaemi-optional",
+)
+ANALYSIS_ENRICH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="gaemi-enrich",
 )
 OPTIONAL_API_SOFT_TIMEOUT = 1.20  # 사용자 응답에서 optional API에 허용하는 최대 대기시간
 
@@ -6111,7 +6118,84 @@ def _collect_optional_results(futures, timeout=OPTIONAL_API_SOFT_TIMEOUT):
     return results
 
 
-def run_full_pipeline(query):
+def _schedule_analysis_enrichment(clean_q, base_result, context):
+    """핵심 응답 이후 선택 외부 데이터를 백그라운드에서 채워 캐시를 완성한다."""
+    with ANALYSIS_ENRICH_LOCK:
+        if clean_q in ANALYSIS_ENRICHING:
+            return
+        ANALYSIS_ENRICHING.add(clean_q)
+
+    def worker():
+        try:
+            market_name = context["market_name"]
+            symbol = context["symbol"]
+            formal_name = context["formal_name"]
+            raw_price = context["raw_price"]
+            is_krw = context["is_krw"]
+            market_index_name = context.get("market_index_name")
+            df = context["df"]
+
+            optional_futures = {
+                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
+                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+                "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
+                "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
+                "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+                "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
+                "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
+                "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
+            }
+
+            optional_results = {}
+            for name, future in optional_futures.items():
+                if future is None:
+                    optional_results[name] = None
+                    continue
+                try:
+                    optional_results[name] = future.result()
+                except Exception as exc:
+                    print(f"[ANALYSIS ENRICH] {name} failed: {type(exc).__name__}: {exc}")
+                    optional_results[name] = None
+
+            stock_news = merge_news_sources(optional_results.get("stock_news_rss") or [], optional_results.get("ticker_news") or [])
+            global_news = merge_news_sources(optional_results.get("global_news_rss") or [], optional_results.get("api_news") or [])
+            macro_snapshot = optional_results.get("macro_snapshot") or {}
+            consensus = optional_results.get("consensus")
+            dart_disclosures = optional_results.get("dart_disclosures") or []
+            domestic_flow = optional_results.get("domestic_flow")
+            world_board = CACHED_WORLD_BOARD or []
+            market_calendar = CACHED_MARKET_CALENDAR or []
+
+            try:
+                movement_reason = analyze_movement_reason(
+                    raw_price=raw_price, df=df, formal_name=formal_name, market_name=market_name,
+                    world_board=world_board, stock_news=stock_news, dart_disclosures=dart_disclosures,
+                    market_index_name=market_index_name, domestic_flow=domestic_flow, global_news=global_news,
+                    consensus=consensus, macro_snapshot=macro_snapshot, market_calendar=market_calendar, symbol=symbol
+                )
+            except Exception as exc:
+                print("[ANALYSIS ENRICH][MOVEMENT] 오류:", repr(exc))
+                movement_reason = base_result.get("movement_reason")
+
+            enriched = dict(base_result)
+            enriched.update({
+                "stock_news": stock_news, "global_news": global_news, "macro_snapshot": macro_snapshot,
+                "consensus": consensus, "dart_disclosures": dart_disclosures, "domestic_flow": domestic_flow,
+                "movement_reason": movement_reason, "world_board": world_board, "market_calendar": market_calendar,
+                "_details_ready": True,
+            })
+            ANALYSIS_CACHE[clean_q] = (time.time(), enriched)
+            print(f"[ANALYSIS ENRICH] {clean_q} details ready")
+        except Exception as exc:
+            print(f"[ANALYSIS ENRICH] {clean_q} failed: {type(exc).__name__}: {exc}")
+        finally:
+            with ANALYSIS_ENRICH_LOCK:
+                ANALYSIS_ENRICHING.discard(clean_q)
+
+    ANALYSIS_ENRICH_EXECUTOR.submit(worker)
+
+
+def run_full_pipeline(query, lightweight=False):
     global ANALYSIS_CACHE, CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR
     clean_q = query.strip().replace(" ", "").upper()
     now_ts = time.time()
@@ -6120,7 +6204,7 @@ def run_full_pipeline(query):
 
     if clean_q in ANALYSIS_CACHE:
         cached_time, cached_data = ANALYSIS_CACHE[clean_q]
-        if now_ts - cached_time < 30:
+        if now_ts - cached_time < ANALYSIS_CORE_TTL:
             # STEP 4: 세계시장 보드/시장 캘린더는 별도 API가 담당한다.
             # 분석 캐시 응답에 현재 서버 캐시가 있으면 화면 호환성을 위해
             # 붙여주되, 캐시가 없다고 해서 외부 API를 호출하지 않는다.
@@ -6255,38 +6339,41 @@ def run_full_pipeline(query):
         print(f"[DB ASYNC] 원천 OHLCV 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
     # ====================================================
-    # STEP 5: 선택 데이터는 공용 worker + 짧은 soft timeout으로 처리한다.
-    # 첫 요청에서 외부 API가 느려도 가격/차트/퀀트 응답을 오래 붙잡지 않는다.
-    # 완료되지 않은 작업은 worker가 계속 수행하여 공용 캐시를 채운다.
+    # STEP 8: /api/analyze 경량화
+    # core 모드에서는 선택 외부 데이터를 기다리지 않는다. 완료 작업은 백그라운드에서
+    # 캐시를 채우고, /api/analyze-details가 준비 여부를 알려준다.
     # ====================================================
-    optional_futures = {
-        "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
-        "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
-        "api_news": _perf_submit(OPTIONAL_API_EXECUTOR,
-            fetch_alpha_vantage_news,
-            symbol if market_name == "미국주식" else "",
-            "economy_macro",
-        ),
-        "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
-        "consensus": _perf_submit(OPTIONAL_API_EXECUTOR,
-            fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name
-        ),
-        "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR,
-            fetch_dart_disclosures, symbol, is_krw, 5
-        ),
-        "domestic_flow": (
-            _perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol)
-            if is_krw and market_name == "국내주식"
-            else None
-        ),
-        "ticker_news": (
-            _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "")
-            if market_name == "미국주식" and symbol
-            else None
-        ),
-    }
-    optional_results = _collect_optional_results(optional_futures)
-    _perf_stage("optional_external")
+    if lightweight:
+        stock_news = []
+        global_news = []
+        api_news = []
+        macro_snapshot = {}
+        ticker_news = []
+        consensus = None
+        dart_disclosures = []
+        domestic_flow = None
+        _perf_stage("optional_external_skipped")
+    else:
+        optional_futures = {
+            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
+            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+            "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
+            "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
+            "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+            "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
+            "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
+            "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
+        }
+        optional_results = _collect_optional_results(optional_futures)
+        _perf_stage("optional_external")
+        stock_news = merge_news_sources(optional_results.get("stock_news_rss") or [], optional_results.get("ticker_news") or [])
+        global_news = merge_news_sources(optional_results.get("global_news_rss") or [], optional_results.get("api_news") or [])
+        macro_snapshot = optional_results.get("macro_snapshot") or {}
+        ticker_news = optional_results.get("ticker_news") or []
+        consensus = optional_results.get("consensus")
+        dart_disclosures = optional_results.get("dart_disclosures") or []
+        domestic_flow = optional_results.get("domestic_flow")
+
 
     stock_news_rss = optional_results.get("stock_news_rss") or []
     global_news_rss = optional_results.get("global_news_rss") or []
@@ -6459,7 +6546,24 @@ def run_full_pipeline(query):
         "bb_dn_line": bb_dn_line
     }
 
+    result_data["_details_ready"] = not lightweight
     ANALYSIS_CACHE[clean_q] = (now_ts, result_data)
+
+    if lightweight:
+        try:
+            enrich_df = df.copy(deep=True)
+            _schedule_analysis_enrichment(
+                clean_q,
+                result_data,
+                {
+                    "market_name": market_name, "symbol": symbol, "formal_name": formal_name,
+                    "raw_price": raw_price, "is_krw": is_krw, "market_index_name": market_index_name,
+                    "df": enrich_df,
+                },
+            )
+        except Exception as exc:
+            print(f"[ANALYSIS ENRICH] scheduling failed: {type(exc).__name__}: {exc}")
+
     return result_data
 
 # ----------------------------------------------------
@@ -9889,7 +9993,7 @@ const voteKey = 'vote_' + symbol;
         const FAST_CHART_CACHE = new Map();
         const FAST_CHART_CACHE_TTL = 30 * 1000;
 
-        async function doSearch(query) {
+        async function doSearch(query, forceServer = false) {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
             let materialText = '';
 
@@ -9946,10 +10050,10 @@ const voteKey = 'vote_' + symbol;
                 let data;
                 let response = null;
 
-                if (cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
+                if (!forceServer && cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
                     data = cached.data;
                 } else {
-                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
+                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + (forceServer ? '&mode=full' : '&mode=core');
                     response = await fetch(url);
 
                     const contentType = response.headers.get("content-type") || "";
@@ -10686,6 +10790,11 @@ if ((response && !response.ok) || data.error) {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
 
+                // STEP 8: 핵심 결과를 먼저 표시하고 선택 데이터는 백그라운드에서 보강한다.
+                if (data._details_ready === false) {
+                    pollAnalysisDetails(cleanQ, searchToken);
+                }
+
                 // 차트는 위의 fastChartPromise에서 먼저 그려진다.
                 // 서버 전체 분석의 candles는 기존 호환성을 위해 그대로 유지한다.
                 window.scrollTo({top: 0, behavior: 'smooth'});
@@ -10696,6 +10805,23 @@ if ((response && !response.ok) || data.error) {
                 alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
                 document.getElementById('loading').style.display = 'none';
             }
+        }
+
+        async function pollAnalysisDetails(query, searchToken, attempt = 0) {
+            if (searchToken !== activeSearchToken || attempt >= 10) return;
+            try {
+                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query), {cache: 'no-store'});
+                if (r.status === 200) {
+                    const payload = await r.json();
+                    if (payload && payload.ready && payload.data) {
+                        if (searchToken !== activeSearchToken) return;
+                        ANALYZE_CACHE.delete(query.trim().toUpperCase());
+                        await doSearch(query, true);
+                        return;
+                    }
+                }
+            } catch (e) {}
+            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 450);
         }
 
         function initTvChart(candles) {
@@ -11356,14 +11482,31 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(500, {"error": "차트 데이터를 가져오지 못했습니다.", "_perf": perf})
             return
 
+        if parsed.path == "/api/analyze-details":
+            q = str(params.get("q", [""])[0]).strip()
+            if not q:
+                self._json(400, {"ok": False, "error": "종목명을 입력해주세요."})
+                return
+            clean_q = q.replace(" ", "").upper()
+            cached = ANALYSIS_CACHE.get(clean_q)
+            if cached:
+                cached_time, cached_data = cached
+                if time.time() - cached_time < ANALYSIS_CORE_TTL and cached_data.get("_details_ready"):
+                    self._json(200, {"ok": True, "ready": True, "data": cached_data})
+                    return
+            self._json(202, {"ok": True, "ready": False})
+            return
+
         if parsed.path == "/api/analyze":
             q = str(params.get("q", [""])[0]).strip()
             if not q:
                 self._json(400, {"error": "종목명을 입력해주세요."})
                 return
+            mode = str(params.get("mode", ["full"])[0]).strip().lower()
+            lightweight = mode == "core"
             _perf_begin("analyze", q)
             try:
-                data = run_full_pipeline(q)
+                data = run_full_pipeline(q, lightweight=lightweight)
                 perf = _perf_snapshot()
                 if not data:
                     print(f"[PERF][analyze] {q}: {perf}")

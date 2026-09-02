@@ -860,6 +860,19 @@ ANALYSIS_ENRICHING = set()
 ANALYSIS_ENRICH_LOCK = threading.Lock()
 ANALYSIS_CORE_TTL = 30
 
+# STEP 14: 퀀트 내부의 반복 외부조회/계산 캐시.
+# 거래대금 순위는 전 종목 공통 목록이므로 60초 동안 한 번만 조회한다.
+TRADING_VALUE_RANK_CACHE = None
+TRADING_VALUE_RANK_CACHE_TS = 0.0
+TRADING_VALUE_RANK_CACHE_TTL = 60
+TRADING_VALUE_RANK_CACHE_LOCK = threading.Lock()
+
+# 동일 종목의 백테스트는 현재 일봉이 바뀌기 전까지 결과가 동일하므로
+# 15분 동안 재계산하지 않는다. 키에는 마지막 거래일을 포함한다.
+QUANT_BACKTEST_CACHE = {}
+QUANT_BACKTEST_CACHE_TTL = 900
+QUANT_BACKTEST_CACHE_LOCK = threading.Lock()
+
 # ===== External API cache / rate-limit protection =====
 FRED_CACHE = {}
 FRED_CACHE_TTL = 900  # 15분
@@ -5252,18 +5265,50 @@ def fetch_all_world_board_parallel(force=False):
     return CACHED_WORLD_BOARD or results
 
 def get_trading_val_rank(symbol, is_krw=True):
+    """국내 거래대금 순위. 전체 순위 목록을 60초 캐시해 종목별 중복 HTTP를 제거한다."""
     if not is_krw:
         return ""
-    try:
-        url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
-        res = HTTP_SESSION.get(url, timeout=1.8).json()
-        stocks = res.get("stocks", [])
-        for idx, item in enumerate(stocks):
-            if str(item.get("itemCode", "")).strip() == symbol.strip():
-                return f" ({idx + 1}위)"
-    except Exception:
-        pass
-    return ""
+
+    global TRADING_VALUE_RANK_CACHE, TRADING_VALUE_RANK_CACHE_TS
+    key = str(symbol or "").strip()
+    if not key:
+        return ""
+
+    now = time.time()
+    with TRADING_VALUE_RANK_CACHE_LOCK:
+        if (
+            TRADING_VALUE_RANK_CACHE is not None
+            and now - TRADING_VALUE_RANK_CACHE_TS < TRADING_VALUE_RANK_CACHE_TTL
+        ):
+            rank = TRADING_VALUE_RANK_CACHE.get(key)
+            return f" ({rank}위)" if rank else ""
+
+    # 동시 요청이 모두 Naver를 호출하지 않도록 lock 안에서 한 번만 갱신한다.
+    with TRADING_VALUE_RANK_CACHE_LOCK:
+        now = time.time()
+        if (
+            TRADING_VALUE_RANK_CACHE is not None
+            and now - TRADING_VALUE_RANK_CACHE_TS < TRADING_VALUE_RANK_CACHE_TTL
+        ):
+            rank = TRADING_VALUE_RANK_CACHE.get(key)
+            return f" ({rank}위)" if rank else ""
+
+        try:
+            url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
+            res = HTTP_SESSION.get(url, timeout=1.8).json()
+            stocks = res.get("stocks", []) if isinstance(res, dict) else []
+            rank_map = {}
+            for idx, item in enumerate(stocks):
+                code = str(item.get("itemCode", "")).strip()
+                if code and code not in rank_map:
+                    rank_map[code] = idx + 1
+            TRADING_VALUE_RANK_CACHE = rank_map
+            TRADING_VALUE_RANK_CACHE_TS = time.time()
+            rank = rank_map.get(key)
+            return f" ({rank}위)" if rank else ""
+        except Exception:
+            # 실패도 짧게 캐시하지 않고 다음 요청에서 재시도한다.
+            return ""
 
 def run_real_vectorized_backtest(df):
     if df is None or len(df) < 30:
@@ -5325,6 +5370,34 @@ def run_real_vectorized_backtest(df):
         return round(float(min(98.0, max(42.0, win_1y))), 1), round(float(min(98.0, max(42.0, win_2y))), 1), float(max(1.5, rr))
     except Exception:
         return 72.0, 78.0, 2.4
+
+def _cached_quant_backtest(df, symbol=""):
+    """현재 일봉 기준 백테스트 결과를 15분 캐시한다."""
+    if df is None or df.empty:
+        return run_real_vectorized_backtest(df)
+
+    try:
+        last_idx = df.index[-1]
+        last_key = pd.to_datetime(last_idx).strftime("%Y-%m-%d")
+    except Exception:
+        last_key = str(len(df))
+    key = f"{str(symbol or '').upper()}:{last_key}:{len(df)}"
+    now = time.time()
+
+    with QUANT_BACKTEST_CACHE_LOCK:
+        item = QUANT_BACKTEST_CACHE.get(key)
+        if item and now - item[0] < QUANT_BACKTEST_CACHE_TTL:
+            return item[1]
+        if len(QUANT_BACKTEST_CACHE) > 500:
+            cutoff = now - QUANT_BACKTEST_CACHE_TTL
+            for old_key, old_item in list(QUANT_BACKTEST_CACHE.items()):
+                if old_item[0] < cutoff:
+                    QUANT_BACKTEST_CACHE.pop(old_key, None)
+
+    result = run_real_vectorized_backtest(df)
+    with QUANT_BACKTEST_CACHE_LOCK:
+        QUANT_BACKTEST_CACHE[key] = (time.time(), result)
+    return result
 
 def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if df is None or len(df) < 10:
@@ -5558,7 +5631,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     stop_p = round_fn(stop_val)
 
     sig_fill_pct = min(92, max(8, int(((entry1_val - stop_val) / max(1, target2_val - stop_val)) * 100)))
-    win_1y, win_2y, rr_actual = run_real_vectorized_backtest(df)
+    win_1y, win_2y, rr_actual = _cached_quant_backtest(df, symbol=symbol)
 
     return {
         "quant_score": str(quant_score),
@@ -5840,7 +5913,12 @@ def analyze_global_impact(formal_name, market_name, world_board, stock_news,
     earnings_score=0
     earnings_detail="실적 실제값과 예상값을 함께 확인할 수 없음"
     earnings_event=_find_earnings_event(formal_name,symbol,market_calendar)
-    alpha_earnings=fetch_alpha_vantage_earnings(symbol) if market_name=="미국주식" else {}
+    # STEP 13: 이미 optional 단계에서 수집한 실적 데이터를 재사용한다.
+    # 함수 내부에서 Alpha Vantage EARNINGS를 다시 호출하지 않는다.
+    if market_name == "미국주식":
+        alpha_earnings = alpha_earnings if isinstance(alpha_earnings, dict) else {}
+    else:
+        alpha_earnings = {}
     if earnings_event:
         a=_safe_float(earnings_event.get("actual_eps")); e=_safe_float(earnings_event.get("expected_eps"))
         if (a is None or e is None) and alpha_earnings.get("quarterly"):
@@ -5963,8 +6041,12 @@ def build_market_information(global_news):
         text=base+'.'
     return {"topic":g['topic'],"text":text,"repeat_count":n,"source_count":sc,"evidence":g['items'][:6]}
 
-def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol=""):
-    """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다."""
+def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol="", alpha_earnings=None):
+    """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다.
+
+    STEP 13: 호출자가 이미 확보한 Alpha Vantage 실적 데이터를 재사용한다.
+    분석 함수 내부에서 동일 심볼의 EARNINGS API를 다시 호출하지 않는다.
+    """
     reasons = []
 
     # 1. 시장
@@ -6300,6 +6382,9 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
 # ----------------------------------------------------
 # 6. 전체 통합 파이프라인
 # ----------------------------------------------------
+# STEP 13: 분석 함수 간 데이터 재사용
+# optional 단계에서 수집한 Alpha Vantage 실적 데이터를 movement 분석에
+# 그대로 전달해 동일 종목의 EARNINGS 재호출을 제거한다.
 def _safe_future_result(future, default, label, timeout=None):
     """외부 API 하나가 실패해도 전체 /api/analyze가 500으로 끝나지 않게 한다."""
     if future is None:
@@ -6374,6 +6459,7 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
                 "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
                 "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+                "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
                 "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
                 "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
                 "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
@@ -6394,6 +6480,7 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             global_news = merge_news_sources(optional_results.get("global_news_rss") or [], optional_results.get("api_news") or [])
             macro_snapshot = optional_results.get("macro_snapshot") or {}
             consensus = optional_results.get("consensus")
+            alpha_earnings = optional_results.get("alpha_earnings") or {}
             dart_disclosures = optional_results.get("dart_disclosures") or []
             domestic_flow = optional_results.get("domestic_flow")
             world_board = CACHED_WORLD_BOARD or []
@@ -6404,7 +6491,8 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                     raw_price=raw_price, df=df, formal_name=formal_name, market_name=market_name,
                     world_board=world_board, stock_news=stock_news, dart_disclosures=dart_disclosures,
                     market_index_name=market_index_name, domestic_flow=domestic_flow, global_news=global_news,
-                    consensus=consensus, macro_snapshot=macro_snapshot, market_calendar=market_calendar, symbol=symbol
+                    consensus=consensus, macro_snapshot=macro_snapshot, market_calendar=market_calendar, symbol=symbol,
+                    alpha_earnings=alpha_earnings
                 )
             except Exception as exc:
                 print("[ANALYSIS ENRICH][MOVEMENT] 오류:", repr(exc))
@@ -6650,6 +6738,7 @@ def run_full_pipeline(query, lightweight=False):
             "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
             "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
             "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+            "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
             "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
             "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
             "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
@@ -6661,6 +6750,7 @@ def run_full_pipeline(query, lightweight=False):
         macro_snapshot = optional_results.get("macro_snapshot") or {}
         ticker_news = optional_results.get("ticker_news") or []
         consensus = optional_results.get("consensus")
+        alpha_earnings = optional_results.get("alpha_earnings") or {}
         dart_disclosures = optional_results.get("dart_disclosures") or []
         domestic_flow = optional_results.get("domestic_flow")
 
@@ -6675,6 +6765,7 @@ def run_full_pipeline(query, lightweight=False):
     stock_news = merge_news_sources(stock_news_rss, ticker_news)
     global_news = merge_news_sources(global_news_rss, api_news)
     consensus = optional_results.get("consensus")
+    alpha_earnings = optional_results.get("alpha_earnings") or {}
     dart_disclosures = optional_results.get("dart_disclosures") or []
     domestic_flow = optional_results.get("domestic_flow")
 
@@ -6708,6 +6799,7 @@ def run_full_pipeline(query, lightweight=False):
     except Exception as exc:
         print(f"[DB ASYNC] 퀀트 결과 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
+    _perf_stage("movement_reason_start")
     try:
         movement_reason = analyze_movement_reason(
         raw_price=raw_price,
@@ -6723,7 +6815,8 @@ def run_full_pipeline(query, lightweight=False):
         consensus=consensus,
         macro_snapshot=macro_snapshot,
         market_calendar=market_calendar,
-        symbol=symbol
+        symbol=symbol,
+        alpha_earnings=alpha_earnings
         )
     except Exception as exc:
         print("[MOVEMENT] 분석 엔진 오류:", repr(exc))
@@ -6739,6 +6832,7 @@ def run_full_pipeline(query, lightweight=False):
             "news_evidence": []
         }
 
+    _perf_stage("movement_reason")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -6750,6 +6844,7 @@ def run_full_pipeline(query, lightweight=False):
     df = df.sort_index()
     df = df[~df.index.duplicated(keep='last')]
 
+    _perf_stage("chart_build_start")
     candles = []
     ma20_line = []
     ma60_line = []
@@ -6776,6 +6871,8 @@ def run_full_pipeline(query, lightweight=False):
             bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
         if 'BB_DN' in row and not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
+
+    _perf_stage("chart_build")
 
     # 코멘트용 현재가/등락률은 가능하면 동일한 실시간 Snapshot을 사용한다.
     current_change_pct = None

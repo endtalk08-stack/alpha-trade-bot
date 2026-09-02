@@ -9340,6 +9340,9 @@ const voteKey = 'vote_' + symbol;
             input.value = '';
         }
 
+        const ANALYZE_CACHE = new Map();
+        const ANALYZE_CACHE_TTL = 30 * 1000;
+
         async function doSearch(query) {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
             let materialText = '';
@@ -9360,8 +9363,14 @@ const voteKey = 'vote_' + symbol;
             document.getElementById('main-view').style.display = 'none';
             document.getElementById('result-scroll-view').style.display = 'block';
             document.getElementById('bottom-bar').style.display = 'flex';
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('result-card-wrap').style.display = 'none';
+            document.getElementById('loading').style.display = 'flex';
+            document.getElementById('result-card-wrap').style.display = 'block';
+            const fastTitle = document.getElementById('rTitle');
+            const fastPrice = document.getElementById('rPrice');
+            const fastMeta = document.getElementById('rMeta');
+            if (fastTitle) fastTitle.textContent = cleanQ.toUpperCase();
+            if (fastPrice) fastPrice.textContent = '불러오는 중…';
+            if (fastMeta) fastMeta.textContent = '실시간 데이터를 불러오고 있어요';
 
             if (window.innerWidth <= 900) {
                 const side = document.getElementById('sidebar-wrapper');
@@ -9369,19 +9378,35 @@ const voteKey = 'vote_' + symbol;
             }
 
             try {
-                const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
-                const response = await fetch(url);
-                
+                const cacheKey = cleanQ.toUpperCase();
+                const cached = ANALYZE_CACHE.get(cacheKey);
                 let data;
-                const contentType = response.headers.get("content-type") || "";
-                if (contentType.includes("application/json")) {
-                    data = await response.json();
+                let response = null;
+
+                if (cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
+                    data = cached.data;
                 } else {
-                    const text = await response.text();
-                    throw new Error("서버 응답 오류 (" + response.status + ")");
+                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
+                    response = await fetch(url);
+
+                    const contentType = response.headers.get("content-type") || "";
+                    if (contentType.includes("application/json")) {
+                        data = await response.json();
+                    } else {
+                        await response.text();
+                        throw new Error("서버 응답 오류 (" + response.status + ")");
+                    }
+
+                    if (response.ok && data && !data.error) {
+                        ANALYZE_CACHE.set(cacheKey, { time: Date.now(), data });
+                    }
                 }
-                
-                if (!response.ok || data.error) {
+
+                if (!data) {
+                    throw new Error("분석 데이터를 받지 못했습니다.");
+                }
+
+if (!response.ok || data.error) {
                     alert(data.error || '종목을 찾을 수 없습니다.');
                     document.getElementById('loading').style.display = 'none';
                     return;

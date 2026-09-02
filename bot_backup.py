@@ -860,6 +860,19 @@ ANALYSIS_ENRICHING = set()
 ANALYSIS_ENRICH_LOCK = threading.Lock()
 ANALYSIS_CORE_TTL = 30
 
+# STEP 14: 퀀트 내부의 반복 외부조회/계산 캐시.
+# 거래대금 순위는 전 종목 공통 목록이므로 60초 동안 한 번만 조회한다.
+TRADING_VALUE_RANK_CACHE = None
+TRADING_VALUE_RANK_CACHE_TS = 0.0
+TRADING_VALUE_RANK_CACHE_TTL = 60
+TRADING_VALUE_RANK_CACHE_LOCK = threading.Lock()
+
+# 동일 종목의 백테스트는 현재 일봉이 바뀌기 전까지 결과가 동일하므로
+# 15분 동안 재계산하지 않는다. 키에는 마지막 거래일을 포함한다.
+QUANT_BACKTEST_CACHE = {}
+QUANT_BACKTEST_CACHE_TTL = 900
+QUANT_BACKTEST_CACHE_LOCK = threading.Lock()
+
 # ===== External API cache / rate-limit protection =====
 FRED_CACHE = {}
 FRED_CACHE_TTL = 900  # 15분
@@ -3306,7 +3319,12 @@ MARKET_DATA_CACHE_LOCK = threading.Lock()
 NAVER_REALTIME_CACHE = {}
 NAVER_REALTIME_CACHE_TTL = 15
 DOMESTIC_CANDLE_CACHE = {}
-DOMESTIC_CANDLE_CACHE_TTL = 10 * 60
+DOMESTIC_CANDLE_CACHE_TTL = 60 * 60
+# STEP 15 V2: 국내 일봉은 하루 단위 데이터이므로 10분마다 강제 재조회하지 않는다.
+# 신선 캐시는 1시간, 오래된 캐시는 최대 24시간까지 즉시 사용하고 백그라운드에서 갱신한다.
+DOMESTIC_CANDLE_STALE_TTL = 24 * 60 * 60
+DOMESTIC_CANDLE_REFRESHING = set()
+DOMESTIC_CANDLE_REFRESH_LOCK = threading.Lock()
 # STEP 10: /api/chart와 /api/analyze가 동시에 같은 종목을 요청할 때
 # 동일한 Naver 1200일봉 HTTP 요청이 중복 발생하지 않도록 single-flight를 사용한다.
 DOMESTIC_CANDLE_INFLIGHT = {}
@@ -3355,9 +3373,22 @@ def get_naver_realtime_price(code):
     return value
 
 def fetch_naver_domestic_flow_metrics(code):
-    """국내주식 실데이터: 당일 거래대금 + 최근 5거래일 외국인/기관 순매수."""
-    result={"trading_value":None,"foreigner_latest":None,"institution_latest":None,"foreigner_5d":None,"institution_5d":None,"trading_value_detail":"거래대금 데이터 확인 필요","foreigner_detail":"외국인 수급 데이터 확인 필요","institution_detail":"기관 수급 데이터 확인 필요"}
+    """국내주식 실데이터: 당일 거래대금 + 최근 5거래일 외국인/기관 순매수.
+
+    STEP 17:
+    - STEP 16에서 거래대금 필드 탐색 범위를 넓혔지만, 현재 사이트의 안정적인
+      국내 일봉 경로와 분리된 상태에서만 적용한다.
+    - Naver integration 응답의 여러 위치/필드명을 재귀 탐색한다.
+    - 거래대금은 구체적인 필드명을 우선하고, generic amount는 최후 fallback으로만 사용한다.
+    - 외국인/기관 수급 로직은 기존 구조를 유지한다.
+    """
+    result={"trading_value":None,"foreigner_latest":None,"institution_latest":None,
+            "foreigner_5d":None,"institution_5d":None,
+            "trading_value_detail":"거래대금 데이터 확인 필요",
+            "foreigner_detail":"외국인 수급 데이터 확인 필요",
+            "institution_detail":"기관 수급 데이터 확인 필요"}
     if not code: return result
+
     def num(v):
         if v is None: return None
         if isinstance(v,(int,float)) and not isinstance(v,bool): return float(v)
@@ -3367,37 +3398,96 @@ def fetch_naver_domestic_flow_metrics(code):
                 total=0.0; found=False
                 for u,mul in [('조',10**12),('억',10**8),('만',10**4)]:
                     m=re.search(r'([+-]?\d+(?:\.\d+)?)'+u,x)
-                    if m: total+=float(m.group(1))*mul; found=True
+                    if m:
+                        total += float(m.group(1))*mul; found=True
                 return total if found else None
             return float(x.replace('%',''))
-        except Exception: return None
+        except Exception:
+            return None
+
+    def norm_key(v):
+        return re.sub(r'[^0-9a-z가-힣]','',str(v).lower())
+
+    def walk_dicts(obj):
+        if isinstance(obj,dict):
+            yield obj
+            for v in obj.values():
+                yield from walk_dicts(v)
+        elif isinstance(obj,list):
+            for v in obj:
+                yield from walk_dicts(v)
+
     try:
         r=HTTP_SESSION.get(f"https://m.stock.naver.com/api/stock/{code}/integration",timeout=2.2)
-        if r.status_code!=200: return result
+        if r.status_code!=200:
+            return result
         data=r.json()
-        for it in (data.get('totalInfos') or []):
-            if not isinstance(it,dict): continue
-            for k in ('accumulatedTradingValue','tradingValue','accumulatedTradingAmount'):
-                v=num(it.get(k))
-                if v is not None: result['trading_value']=v; break
-            if result['trading_value'] is not None: break
+
+        # 1) 거래대금: 구체적인 필드명을 우선 탐색한다.
+        # generic 'amount'는 다른 금액 데이터일 가능성이 있어 마지막 fallback으로만 사용한다.
+        priority_groups = [
+            {
+                'accumulatedtradingvalue','accumulatedtradingamount',
+                'accumulatedtradingamountvalue','accumulatedamountvalue',
+                '누적거래대금','누적거래대금액'
+            },
+            {
+                'tradingvalue','tradingvalueamount','tradingamount',
+                '거래대금','거래대금액'
+            },
+            {
+                'amount','accumulatedamount'
+            },
+        ]
+        candidates_by_group=[[] for _ in priority_groups]
+        for obj in walk_dicts(data):
+            for raw_k,v in obj.items():
+                k=norm_key(raw_k)
+                for idx,keys in enumerate(priority_groups):
+                    if k in keys:
+                        n=num(v)
+                        if n is not None and n >= 0:
+                            candidates_by_group[idx].append(n)
+                        break
+
+        for candidates in candidates_by_group:
+            if candidates:
+                # 동일 응답 안에서 같은 필드가 여러 번 나타날 수 있으므로 최대값을 사용한다.
+                result['trading_value']=max(candidates)
+                break
+
         tv=result['trading_value']
         if tv is not None:
-            result['trading_value_detail']=f"당일 거래대금 {tv/10**12:.2f}조원" if tv>=10**12 else (f"당일 거래대금 {tv/10**8:.0f}억원" if tv>=10**8 else f"당일 거래대금 {tv:,.0f}원")
+            if tv >= 10**12:
+                result['trading_value_detail']=f"당일 거래대금 {tv/10**12:.2f}조원"
+            elif tv >= 10**8:
+                result['trading_value_detail']=f"당일 거래대금 {tv/10**8:.0f}억원"
+            else:
+                result['trading_value_detail']=f"당일 거래대금 {tv:,.0f}원"
+
+        # 2) 외국인/기관: 기존 dealTrendInfos 구조를 그대로 우선 사용한다.
         fv=[]; iv=[]
         for it in (data.get('dealTrendInfos') or [])[-5:]:
             if not isinstance(it,dict): continue
             for k in ('foreignerPureBuyQuant','foreignerNetBuyQuantity','foreignPureBuyQuant'):
                 v=num(it.get(k))
-                if v is not None: fv.append(v); break
+                if v is not None:
+                    fv.append(v); break
             for k in ('organPureBuyQuant','institutionPureBuyQuant','institutionNetBuyQuantity'):
                 v=num(it.get(k))
-                if v is not None: iv.append(v); break
+                if v is not None:
+                    iv.append(v); break
         if fv:
-            total=sum(fv); result['foreigner_latest']=fv[-1]; result['foreigner_5d']=total; result['foreigner_detail']=f"최근 5거래일 외국인 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
+            total=sum(fv); result['foreigner_latest']=fv[-1]; result['foreigner_5d']=total
+            result['foreigner_detail']=f"최근 5거래일 외국인 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
         if iv:
-            total=sum(iv); result['institution_latest']=iv[-1]; result['institution_5d']=total; result['institution_detail']=f"최근 5거래일 기관 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
-    except Exception as exc: print(f"[NAVER FLOW] {code} fetch failed: {exc}")
+            total=sum(iv); result['institution_latest']=iv[-1]; result['institution_5d']=total
+            result['institution_detail']=f"최근 5거래일 기관 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
+
+        if tv is None:
+            print(f"[NAVER FLOW] {code}: 거래대금 필드 미검출 (priority keys 탐색 완료)")
+    except Exception as exc:
+        print(f"[NAVER FLOW] {code} fetch failed: {exc}")
     return result
 
 def _parse_yahoo_domestic_candles(code):
@@ -3602,6 +3692,33 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
 
     return None
 
+def _schedule_domestic_candle_refresh(key):
+    """오래된 국내 일봉 캐시를 사용자 응답과 분리해 백그라운드에서 갱신한다."""
+    key = str(key or "").strip().upper()
+    if not key:
+        return False
+    with DOMESTIC_CANDLE_REFRESH_LOCK:
+        if key in DOMESTIC_CANDLE_REFRESHING:
+            return False
+        DOMESTIC_CANDLE_REFRESHING.add(key)
+    try:
+        def _worker():
+            try:
+                _refresh_domestic_candles_from_naver(key)
+            except Exception as exc:
+                print(f"[DOMESTIC CANDLE SWR] {key} refresh failed: {type(exc).__name__}: {exc}")
+            finally:
+                with DOMESTIC_CANDLE_REFRESH_LOCK:
+                    DOMESTIC_CANDLE_REFRESHING.discard(key)
+        PRICE_DATA_EXECUTOR.submit(_worker)
+        return True
+    except Exception as exc:
+        with DOMESTIC_CANDLE_REFRESH_LOCK:
+            DOMESTIC_CANDLE_REFRESHING.discard(key)
+        print(f"[DOMESTIC CANDLE SWR] {key} schedule failed: {type(exc).__name__}: {exc}")
+        return False
+
+
 def fetch_domestic_candles(code, anchor_price=None):
     key = str(code or "").strip().upper()
     if not key:
@@ -3609,19 +3726,41 @@ def fetch_domestic_candles(code, anchor_price=None):
 
     now = time.time()
     cached = DOMESTIC_CANDLE_CACHE.get(key)
-    if cached and now - cached["time"] < DOMESTIC_CANDLE_CACHE_TTL:
-        try:
-            df = cached["df"].copy(deep=True)
-            if anchor_price and anchor_price > 0 and not df.empty:
-                last_close = float(df["Close"].iloc[-1])
-                if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
-                    ratio = anchor_price / last_close
-                    df["Open"] *= ratio
-                    df["High"] *= ratio
-                    df["Low"] *= ratio
-                    df["Close"] *= ratio
-            return df
-        except Exception:
+    if cached:
+        age = now - cached.get("time", 0)
+        if age < DOMESTIC_CANDLE_CACHE_TTL:
+            try:
+                df = cached["df"].copy(deep=True)
+                if anchor_price and anchor_price > 0 and not df.empty:
+                    last_close = float(df["Close"].iloc[-1])
+                    if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                        ratio = anchor_price / last_close
+                        df["Open"] *= ratio
+                        df["High"] *= ratio
+                        df["Low"] *= ratio
+                        df["Close"] *= ratio
+                return df
+            except Exception:
+                DOMESTIC_CANDLE_CACHE.pop(key, None)
+        elif age < DOMESTIC_CANDLE_STALE_TTL:
+            # STEP 15 V2: stale-while-revalidate.
+            # 일봉 원천 데이터가 1시간 지났다는 이유만으로 사용자 요청을 Naver 응답까지
+            # 막지 않는다. 기존 1200일 데이터를 즉시 반환하고 백그라운드에서 최신화한다.
+            _schedule_domestic_candle_refresh(key)
+            try:
+                df = cached["df"].copy(deep=True)
+                if anchor_price and anchor_price > 0 and not df.empty:
+                    last_close = float(df["Close"].iloc[-1])
+                    if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                        ratio = anchor_price / last_close
+                        df["Open"] *= ratio
+                        df["High"] *= ratio
+                        df["Low"] *= ratio
+                        df["Close"] *= ratio
+                return df
+            except Exception:
+                DOMESTIC_CANDLE_CACHE.pop(key, None)
+        else:
             DOMESTIC_CANDLE_CACHE.pop(key, None)
 
     # STEP 10: single-flight
@@ -5252,18 +5391,50 @@ def fetch_all_world_board_parallel(force=False):
     return CACHED_WORLD_BOARD or results
 
 def get_trading_val_rank(symbol, is_krw=True):
+    """국내 거래대금 순위. 전체 순위 목록을 60초 캐시해 종목별 중복 HTTP를 제거한다."""
     if not is_krw:
         return ""
-    try:
-        url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
-        res = HTTP_SESSION.get(url, timeout=1.8).json()
-        stocks = res.get("stocks", [])
-        for idx, item in enumerate(stocks):
-            if str(item.get("itemCode", "")).strip() == symbol.strip():
-                return f" ({idx + 1}위)"
-    except Exception:
-        pass
-    return ""
+
+    global TRADING_VALUE_RANK_CACHE, TRADING_VALUE_RANK_CACHE_TS
+    key = str(symbol or "").strip()
+    if not key:
+        return ""
+
+    now = time.time()
+    with TRADING_VALUE_RANK_CACHE_LOCK:
+        if (
+            TRADING_VALUE_RANK_CACHE is not None
+            and now - TRADING_VALUE_RANK_CACHE_TS < TRADING_VALUE_RANK_CACHE_TTL
+        ):
+            rank = TRADING_VALUE_RANK_CACHE.get(key)
+            return f" ({rank}위)" if rank else ""
+
+    # 동시 요청이 모두 Naver를 호출하지 않도록 lock 안에서 한 번만 갱신한다.
+    with TRADING_VALUE_RANK_CACHE_LOCK:
+        now = time.time()
+        if (
+            TRADING_VALUE_RANK_CACHE is not None
+            and now - TRADING_VALUE_RANK_CACHE_TS < TRADING_VALUE_RANK_CACHE_TTL
+        ):
+            rank = TRADING_VALUE_RANK_CACHE.get(key)
+            return f" ({rank}위)" if rank else ""
+
+        try:
+            url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
+            res = HTTP_SESSION.get(url, timeout=1.8).json()
+            stocks = res.get("stocks", []) if isinstance(res, dict) else []
+            rank_map = {}
+            for idx, item in enumerate(stocks):
+                code = str(item.get("itemCode", "")).strip()
+                if code and code not in rank_map:
+                    rank_map[code] = idx + 1
+            TRADING_VALUE_RANK_CACHE = rank_map
+            TRADING_VALUE_RANK_CACHE_TS = time.time()
+            rank = rank_map.get(key)
+            return f" ({rank}위)" if rank else ""
+        except Exception:
+            # 실패도 짧게 캐시하지 않고 다음 요청에서 재시도한다.
+            return ""
 
 def run_real_vectorized_backtest(df):
     if df is None or len(df) < 30:
@@ -5325,6 +5496,34 @@ def run_real_vectorized_backtest(df):
         return round(float(min(98.0, max(42.0, win_1y))), 1), round(float(min(98.0, max(42.0, win_2y))), 1), float(max(1.5, rr))
     except Exception:
         return 72.0, 78.0, 2.4
+
+def _cached_quant_backtest(df, symbol=""):
+    """현재 일봉 기준 백테스트 결과를 15분 캐시한다."""
+    if df is None or df.empty:
+        return run_real_vectorized_backtest(df)
+
+    try:
+        last_idx = df.index[-1]
+        last_key = pd.to_datetime(last_idx).strftime("%Y-%m-%d")
+    except Exception:
+        last_key = str(len(df))
+    key = f"{str(symbol or '').upper()}:{last_key}:{len(df)}"
+    now = time.time()
+
+    with QUANT_BACKTEST_CACHE_LOCK:
+        item = QUANT_BACKTEST_CACHE.get(key)
+        if item and now - item[0] < QUANT_BACKTEST_CACHE_TTL:
+            return item[1]
+        if len(QUANT_BACKTEST_CACHE) > 500:
+            cutoff = now - QUANT_BACKTEST_CACHE_TTL
+            for old_key, old_item in list(QUANT_BACKTEST_CACHE.items()):
+                if old_item[0] < cutoff:
+                    QUANT_BACKTEST_CACHE.pop(old_key, None)
+
+    result = run_real_vectorized_backtest(df)
+    with QUANT_BACKTEST_CACHE_LOCK:
+        QUANT_BACKTEST_CACHE[key] = (time.time(), result)
+    return result
 
 def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     if df is None or len(df) < 10:
@@ -5558,7 +5757,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     stop_p = round_fn(stop_val)
 
     sig_fill_pct = min(92, max(8, int(((entry1_val - stop_val) / max(1, target2_val - stop_val)) * 100)))
-    win_1y, win_2y, rr_actual = run_real_vectorized_backtest(df)
+    win_1y, win_2y, rr_actual = _cached_quant_backtest(df, symbol=symbol)
 
     return {
         "quant_score": str(quant_score),
@@ -5840,7 +6039,12 @@ def analyze_global_impact(formal_name, market_name, world_board, stock_news,
     earnings_score=0
     earnings_detail="실적 실제값과 예상값을 함께 확인할 수 없음"
     earnings_event=_find_earnings_event(formal_name,symbol,market_calendar)
-    alpha_earnings=fetch_alpha_vantage_earnings(symbol) if market_name=="미국주식" else {}
+    # STEP 13: 이미 optional 단계에서 수집한 실적 데이터를 재사용한다.
+    # 함수 내부에서 Alpha Vantage EARNINGS를 다시 호출하지 않는다.
+    if market_name == "미국주식":
+        alpha_earnings = alpha_earnings if isinstance(alpha_earnings, dict) else {}
+    else:
+        alpha_earnings = {}
     if earnings_event:
         a=_safe_float(earnings_event.get("actual_eps")); e=_safe_float(earnings_event.get("expected_eps"))
         if (a is None or e is None) and alpha_earnings.get("quarterly"):
@@ -5963,8 +6167,12 @@ def build_market_information(global_news):
         text=base+'.'
     return {"topic":g['topic'],"text":text,"repeat_count":n,"source_count":sc,"evidence":g['items'][:6]}
 
-def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol=""):
-    """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다."""
+def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol="", alpha_earnings=None):
+    """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다.
+
+    STEP 13: 호출자가 이미 확보한 Alpha Vantage 실적 데이터를 재사용한다.
+    분석 함수 내부에서 동일 심볼의 EARNINGS API를 다시 호출하지 않는다.
+    """
     reasons = []
 
     # 1. 시장
@@ -6300,6 +6508,9 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
 # ----------------------------------------------------
 # 6. 전체 통합 파이프라인
 # ----------------------------------------------------
+# STEP 13: 분석 함수 간 데이터 재사용
+# optional 단계에서 수집한 Alpha Vantage 실적 데이터를 movement 분석에
+# 그대로 전달해 동일 종목의 EARNINGS 재호출을 제거한다.
 def _safe_future_result(future, default, label, timeout=None):
     """외부 API 하나가 실패해도 전체 /api/analyze가 500으로 끝나지 않게 한다."""
     if future is None:
@@ -6374,6 +6585,7 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
                 "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
                 "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+                "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
                 "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
                 "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
                 "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
@@ -6394,6 +6606,27 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             global_news = merge_news_sources(optional_results.get("global_news_rss") or [], optional_results.get("api_news") or [])
             macro_snapshot = optional_results.get("macro_snapshot") or {}
             consensus = optional_results.get("consensus")
+            if consensus is None:
+                consensus = base_result.get("consensus") or {
+                    "title": "애널리스트 컨센서스",
+                    "gauge_val": "-",
+                    "gauge_label": "확인 의견",
+                    "status_label": "데이터 확인 필요",
+                    "badge_text": "실제 데이터만 표시",
+                    "dots": "실제 컨센서스 데이터를 확인할 수 없습니다.",
+                    "primary_label": "평균 목표가",
+                    "primary_val": "실제 목표가 데이터 없음",
+                    "secondary_label": "현재가",
+                    "secondary_val": f"{raw_price:,.2f}" if raw_price else "-",
+                    "slider_left": f"{raw_price:,.2f}" if raw_price else "-",
+                    "slider_mid": "실제 목표가 확인 필요",
+                    "slider_right": "-",
+                    "fill_pct": 50,
+                    "list_title": "실제 애널리스트 의견",
+                    "source_tag": "실제 컨센서스 데이터 확인 필요",
+                    "items": []
+                }
+            alpha_earnings = optional_results.get("alpha_earnings") or {}
             dart_disclosures = optional_results.get("dart_disclosures") or []
             domestic_flow = optional_results.get("domestic_flow")
             world_board = CACHED_WORLD_BOARD or []
@@ -6404,7 +6637,8 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                     raw_price=raw_price, df=df, formal_name=formal_name, market_name=market_name,
                     world_board=world_board, stock_news=stock_news, dart_disclosures=dart_disclosures,
                     market_index_name=market_index_name, domestic_flow=domestic_flow, global_news=global_news,
-                    consensus=consensus, macro_snapshot=macro_snapshot, market_calendar=market_calendar, symbol=symbol
+                    consensus=consensus, macro_snapshot=macro_snapshot, market_calendar=market_calendar, symbol=symbol,
+                    alpha_earnings=alpha_earnings
                 )
             except Exception as exc:
                 print("[ANALYSIS ENRICH][MOVEMENT] 오류:", repr(exc))
@@ -6639,7 +6873,29 @@ def run_full_pipeline(query, lightweight=False):
         api_news = []
         macro_snapshot = {}
         ticker_news = []
-        consensus = None
+        # STEP 19: STEP 4 원본에서 존재하던 애널리스트 컨센서스 카드가
+        # 경량(core) 응답 단계에서 사라지지 않도록 즉시 표시용 최소 객체를 유지한다.
+        # 실제 목표가/의견 데이터는 기존 백그라운드 enrichment가 완료되면 교체한다.
+        consensus = {
+            "title": "애널리스트 컨센서스",
+            "gauge_val": "-",
+            "gauge_label": "확인 의견",
+            "status_label": "데이터 불러오는 중",
+            "badge_text": "실제 데이터만 표시",
+            "dots": "실제 컨센서스 데이터를 확인하고 있습니다.",
+            "primary_label": "평균 목표가",
+            "primary_val": "확인 중…",
+            "secondary_label": "현재가",
+            "secondary_val": price_str if 'price_str' in locals() else (f"{raw_price:,.2f}" if raw_price else "-"),
+            "slider_left": "-",
+            "slider_mid": "실제 목표가 확인 중",
+            "slider_right": "-",
+            "fill_pct": 50,
+            "list_title": "실제 애널리스트 의견",
+            "source_tag": "실제 데이터 조회 중",
+            "items": []
+        }
+        alpha_earnings = {}
         dart_disclosures = []
         domestic_flow = None
         _perf_stage("optional_external_skipped")
@@ -6650,6 +6906,7 @@ def run_full_pipeline(query, lightweight=False):
             "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
             "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
             "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+            "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
             "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
             "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
             "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
@@ -6661,10 +6918,14 @@ def run_full_pipeline(query, lightweight=False):
         macro_snapshot = optional_results.get("macro_snapshot") or {}
         ticker_news = optional_results.get("ticker_news") or []
         consensus = optional_results.get("consensus")
+        alpha_earnings = optional_results.get("alpha_earnings") or {}
         dart_disclosures = optional_results.get("dart_disclosures") or []
         domestic_flow = optional_results.get("domestic_flow")
 
 
+    # STEP 20: core 모드에서 만든 즉시 표시용 기본값을 공통 처리부가
+    # 다시 None/빈 값으로 덮어쓰지 않도록 한다.
+    # full 모드에서는 기존처럼 optional_results의 실제 데이터를 사용한다.
     stock_news_rss = optional_results.get("stock_news_rss") or []
     global_news_rss = optional_results.get("global_news_rss") or []
     api_news = optional_results.get("api_news") or []
@@ -6674,9 +6935,12 @@ def run_full_pipeline(query, lightweight=False):
     # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
     stock_news = merge_news_sources(stock_news_rss, ticker_news)
     global_news = merge_news_sources(global_news_rss, api_news)
-    consensus = optional_results.get("consensus")
-    dart_disclosures = optional_results.get("dart_disclosures") or []
-    domestic_flow = optional_results.get("domestic_flow")
+
+    if not lightweight:
+        consensus = optional_results.get("consensus")
+        alpha_earnings = optional_results.get("alpha_earnings") or {}
+        dart_disclosures = optional_results.get("dart_disclosures") or []
+        domestic_flow = optional_results.get("domestic_flow")
 
     # ====================================================
     # STEP 4: 세계시장 보드 / 시장 캘린더를 분석 API에서 분리
@@ -6708,6 +6972,7 @@ def run_full_pipeline(query, lightweight=False):
     except Exception as exc:
         print(f"[DB ASYNC] 퀀트 결과 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
+    _perf_stage("movement_reason_start")
     try:
         movement_reason = analyze_movement_reason(
         raw_price=raw_price,
@@ -6723,7 +6988,8 @@ def run_full_pipeline(query, lightweight=False):
         consensus=consensus,
         macro_snapshot=macro_snapshot,
         market_calendar=market_calendar,
-        symbol=symbol
+        symbol=symbol,
+        alpha_earnings=alpha_earnings
         )
     except Exception as exc:
         print("[MOVEMENT] 분석 엔진 오류:", repr(exc))
@@ -6739,6 +7005,7 @@ def run_full_pipeline(query, lightweight=False):
             "news_evidence": []
         }
 
+    _perf_stage("movement_reason")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
 
     df['MA20'] = df['Close'].rolling(20).mean()
@@ -6750,6 +7017,7 @@ def run_full_pipeline(query, lightweight=False):
     df = df.sort_index()
     df = df[~df.index.duplicated(keep='last')]
 
+    _perf_stage("chart_build_start")
     candles = []
     ma20_line = []
     ma60_line = []
@@ -6776,6 +7044,8 @@ def run_full_pipeline(query, lightweight=False):
             bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
         if 'BB_DN' in row and not np.isnan(row['BB_DN']):
             bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
+
+    _perf_stage("chart_build")
 
     # 코멘트용 현재가/등락률은 가능하면 동일한 실시간 Snapshot을 사용한다.
     current_change_pct = None
@@ -6859,6 +7129,193 @@ def run_full_pipeline(query, lightweight=False):
 # ----------------------------------------------------
 # 8. 웹 프론트엔드 UI
 # ----------------------------------------------------
+
+
+# ===== STEP 21: 우측 실시간 시장 사이드바 =====
+RIGHT_MARKET_BOARD_CACHE = {}
+RIGHT_MARKET_BOARD_CACHE_TTL = 30
+RIGHT_MARKET_BOARD_CACHE_LOCK = threading.Lock()
+RIGHT_MARKET_BOARD_SYMBOLS = [
+    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "AMD",
+    "AVGO", "PLTR", "MU", "TSM", "NFLX", "COIN", "MSTR"
+]
+
+
+def _right_sidebar_kr_rows(limit=15):
+    """국내 실시간 목록. 기존 Naver 모바일 주식 랭킹 API를 재사용한다.
+    거래대금 필드가 있으면 거래대금 기준으로 정렬하고, 공급자가 순위만 제공하면
+    그 순서를 그대로 사용한다. 화면에서는 실제 수신값만 표시한다.
+    """
+    url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
+    res = HTTP_SESSION.get(
+        url,
+        timeout=2.5,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"},
+    )
+    res.raise_for_status()
+    payload = res.json()
+    stocks = payload.get("stocks", []) if isinstance(payload, dict) else []
+    rows = []
+    for idx, item in enumerate(stocks):
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("itemCode") or item.get("code") or "").strip()
+        name = str(item.get("stockName") or item.get("itemName") or item.get("name") or "").strip()
+        if not code or not name:
+            continue
+        price = item.get("closePrice") or item.get("currentPrice") or item.get("price")
+        change = item.get("fluctuationRate") or item.get("changeRate") or item.get("changePercent")
+        change_amount = item.get("fluctuationValue") or item.get("change")
+        tv = item.get("accumulatedTradingValue") or item.get("tradingValue") or item.get("accumulatedTradingAmount")
+        try:
+            price_num = float(str(price).replace(",", "")) if price is not None else None
+        except Exception:
+            price_num = None
+        try:
+            change_num = float(str(change).replace("%", "").replace(",", "")) if change is not None else None
+        except Exception:
+            change_num = None
+        try:
+            change_amount_num = float(str(change_amount).replace(",", "")) if change_amount is not None else None
+        except Exception:
+            change_amount_num = None
+        try:
+            tv_num = float(str(tv).replace(",", "")) if tv is not None else None
+        except Exception:
+            tv_num = None
+        rows.append({
+            "rank": idx + 1,
+            "code": code,
+            "symbol": code,
+            "name": name,
+            "price": price_num,
+            "change_pct": change_num,
+            "change": change_amount_num,
+            "trading_value": tv_num,
+            "currency": "KRW",
+            "market": "국내",
+            "source": "Naver",
+        })
+    # 실제 거래대금 필드가 존재하는 경우에만 거래대금으로 재정렬한다.
+    if any(r.get("trading_value") is not None for r in rows):
+        rows = sorted(rows, key=lambda r: (r.get("trading_value") is not None, r.get("trading_value") or 0), reverse=True)
+        for i, row in enumerate(rows, 1):
+            row["rank"] = i
+    return rows[:limit]
+
+
+def _right_sidebar_us_rows(limit=15):
+    """해외주식 실시간 목록. Yahoo most-active 후보를 받은 뒤 현재가×거래량으로 정렬한다."""
+    symbols = list(RIGHT_MARKET_BOARD_SYMBOLS)
+    try:
+        screener_url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=25"
+        sr = HTTP_SESSION.get(screener_url, timeout=3.0, headers={"User-Agent": "Mozilla/5.0"})
+        if sr.ok:
+            sp = sr.json()
+            quotes = (((sp.get("finance") or {}).get("result") or [{}])[0].get("quotes") or [])
+            candidate = [str(q.get("symbol") or "").upper() for q in quotes if q.get("symbol")]
+            if candidate:
+                symbols = candidate[:25]
+    except Exception:
+        pass
+    url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + urllib.parse.quote(",".join(symbols))
+    res = HTTP_SESSION.get(url, timeout=4.0, headers={"User-Agent": "Mozilla/5.0"})
+    res.raise_for_status()
+    payload = res.json()
+    quotes = ((payload.get("quoteResponse") or {}).get("result") or [])
+    rows = []
+    for q in quotes:
+        symbol = str(q.get("symbol") or "").upper()
+        price = q.get("regularMarketPrice")
+        prev = q.get("regularMarketPreviousClose")
+        pct = q.get("regularMarketChangePercent")
+        volume = q.get("regularMarketVolume")
+        if price is None:
+            continue
+        if pct is None and prev:
+            pct = (float(price) - float(prev)) / float(prev) * 100.0
+        notional = float(price) * float(volume or 0)
+        rows.append({
+            "rank": 0,
+            "code": symbol,
+            "symbol": symbol,
+            "name": q.get("shortName") or q.get("longName") or symbol,
+            "price": float(price),
+            "change_pct": float(pct) if pct is not None else None,
+            "change": float(q.get("regularMarketChange")) if q.get("regularMarketChange") is not None else None,
+            "trading_value": notional,
+            "currency": q.get("currency") or "USD",
+            "market": "해외",
+            "source": "Yahoo Finance",
+        })
+    rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
+    for i, row in enumerate(rows[:limit], 1):
+        row["rank"] = i
+    return rows[:limit]
+
+
+def _right_sidebar_crypto_rows(limit=15):
+    """Binance USDT 현물 전체 티커에서 quoteVolume 기준 상위 코인을 조회한다."""
+    url = "https://api.binance.com/api/v3/ticker/24hr"
+    res = HTTP_SESSION.get(url, timeout=4.0, headers={"User-Agent": "Mozilla/5.0"})
+    res.raise_for_status()
+    payload = res.json()
+    rows = []
+    for item in payload if isinstance(payload, list) else []:
+        symbol = str(item.get("symbol") or "").upper()
+        if not symbol.endswith("USDT") or symbol.endswith("USDCUSDT"):
+            continue
+        try:
+            price = float(item.get("lastPrice") or 0)
+            pct = float(item.get("priceChangePercent") or 0)
+            change = float(item.get("priceChange") or 0)
+            qv = float(item.get("quoteVolume") or 0)
+        except Exception:
+            continue
+        base = symbol[:-4]
+        rows.append({
+            "rank": 0,
+            "code": symbol,
+            "symbol": symbol,
+            "name": base,
+            "price": price,
+            "change_pct": pct,
+            "change": change,
+            "trading_value": qv,
+            "currency": "USDT",
+            "market": "코인",
+            "source": "Binance",
+        })
+    rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
+    for i, row in enumerate(rows[:limit], 1):
+        row["rank"] = i
+    return rows[:limit]
+
+
+def fetch_right_market_board(market="kr", force=False):
+    key = str(market or "kr").strip().lower()
+    if key not in {"kr", "us", "crypto"}:
+        key = "kr"
+    now = time.time()
+    with RIGHT_MARKET_BOARD_CACHE_LOCK:
+        cached = RIGHT_MARKET_BOARD_CACHE.get(key)
+        if cached and not force and now - cached.get("time", 0) < RIGHT_MARKET_BOARD_CACHE_TTL:
+            return cached.get("data") or []
+    try:
+        if key == "kr":
+            rows = _right_sidebar_kr_rows()
+        elif key == "us":
+            rows = _right_sidebar_us_rows()
+        else:
+            rows = _right_sidebar_crypto_rows()
+    except Exception as exc:
+        print(f"[RIGHT MARKET BOARD] {key} fetch failed: {type(exc).__name__}: {exc}")
+        rows = []
+    if rows:
+        with RIGHT_MARKET_BOARD_CACHE_LOCK:
+            RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows}
+    return rows
+
 HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -8889,6 +9346,101 @@ HTML_PAGE = r"""<!DOCTYPE html>
             outline: 2px solid var(--border-line);
             outline-offset: -2px;
         }
+
+
+        /* ===== STEP 23: 좌우 사이드바 완전 독립 오버레이 ===== */
+        /* 어느 사이드바를 열고 닫아도 가운데 콘텐츠의 위치/폭은 절대 변하지 않는다. */
+        body { padding-right: 0; }
+        #content-wrapper { width: 100%; margin-left: 0; margin-right: 0; }
+        #right-market-rail {
+            position: fixed; top: 0; right: 0; width: 336px; height: 100vh;
+            display: flex; flex-direction: row; z-index: 120;
+            background: var(--bg-body); border-left: 1px solid var(--border-line);
+            box-sizing: border-box;
+        }
+        #right-market-rail.collapsed { width: 44px; }
+        #right-market-rail.collapsed #right-market-panel { display: none; }
+        #right-market-panel {
+            width: 292px; min-width: 292px; height: 100%; overflow: hidden;
+            display: flex; flex-direction: column; background: var(--bg-body);
+        }
+        .right-market-head { height: 58px; display:flex; align-items:center; justify-content:space-between; padding: 0 14px; border-bottom:1px solid var(--border-line); }
+        .right-market-title { font-size:.95rem; font-weight:700; color:var(--text-title); }
+        .right-market-time { font-size:.72rem; color:var(--text-muted); margin-left:5px; font-weight:500; }
+        .right-market-tabs { display:flex; gap:3px; padding:10px 10px 6px; }
+        .right-market-tab { flex:1; border:0; background:transparent; color:var(--text-muted); padding:8px 4px; border-radius:9px; font-weight:700; cursor:pointer; font-size:.78rem; }
+        .right-market-tab.active { background:var(--bg-card); color:var(--text-title); box-shadow: inset 0 0 0 1px var(--border-line); }
+        .right-market-sort { display:flex; justify-content:space-between; align-items:center; padding:6px 13px 8px; color:var(--text-sub); font-size:.75rem; border-bottom:1px solid var(--border-line); }
+        .right-market-list { flex:1; overflow-y:auto; padding:5px 8px 18px; scrollbar-width:thin; }
+        .right-market-row { display:grid; grid-template-columns:24px 34px minmax(0,1fr) auto; gap:7px; align-items:center; min-height:61px; padding:5px 5px; border-radius:9px; cursor:pointer; }
+        .right-market-row:hover { background:var(--btn-hover); }
+        .right-market-rank { color:var(--text-muted); font-size:.78rem; text-align:center; font-weight:700; }
+        .right-market-logo { width:31px; height:31px; border-radius:9px; display:flex; align-items:center; justify-content:center; background:var(--bg-card); border:1px solid var(--border-line); color:var(--text-title); font-size:.68rem; font-weight:800; overflow:hidden; }
+        .right-market-name { color:var(--text-title); font-size:.78rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .right-market-symbol { color:var(--text-muted); font-size:.62rem; margin-top:2px; }
+        .right-market-values { text-align:right; min-width:76px; }
+        .right-market-price { color:var(--text-title); font-size:.78rem; font-weight:700; white-space:nowrap; }
+        .right-market-change { font-size:.68rem; margin-top:3px; white-space:nowrap; }
+        .right-market-change.up { color:#ef4444; }
+        .right-market-change.down { color:#38a8ff; }
+        .right-market-empty { padding:28px 15px; color:var(--text-muted); text-align:center; font-size:.78rem; line-height:1.6; }
+        #right-market-icons { width:44px; min-width:44px; border-left:1px solid var(--border-line); display:flex; flex-direction:column; align-items:center; padding-top:8px; gap:7px; background:var(--bg-body); }
+        .right-market-icon-btn { width:36px; height:42px; border:0; border-radius:9px; background:transparent; color:var(--text-sub); cursor:pointer; font-size:1.05rem; font-family:Arial, sans-serif; font-weight:600; display:flex; align-items:center; justify-content:center; transition:.15s; }
+        .right-market-icon-btn:hover, .right-market-icon-btn.active { background:var(--bg-card); color:var(--text-title); }
+        .right-market-close { font-size:1.25rem; margin-bottom:4px; }
+        @media (max-width: 1100px) {
+            /* 모바일/좁은 화면에서도 사이드바는 콘텐츠를 밀지 않고 위에 겹친다. */
+            #content-wrapper { width:100%; margin-left:0; margin-right:0; }
+            #right-market-rail {
+                width: min(320px, 100vw);
+                max-width: 100vw;
+                right: 0;
+            }
+            #right-market-rail.collapsed { width: 44px; }
+            #right-market-panel {
+                width: calc(100% - 44px);
+                min-width: 0;
+                max-width: calc(100vw - 44px);
+            }
+            #right-market-icons { flex: 0 0 44px; }
+        }
+
+        /* STEP 24: 모바일에서는 오른쪽 패널도 왼쪽 사이드바처럼
+           처음에는 아이콘만 보이고, 버튼을 눌렀을 때만 화면 위에 열린다. */
+        @media (max-width: 560px) {
+            body { overflow-x: hidden; }
+            #right-market-rail {
+                width: 100vw;
+                max-width: 100vw;
+                background: transparent;
+                border-left: 0;
+                pointer-events: none;
+            }
+            #right-market-rail.collapsed {
+                width: 44px;
+                pointer-events: auto;
+            }
+            #right-market-rail:not(.collapsed) {
+                pointer-events: auto;
+            }
+            #right-market-panel {
+                width: calc(100vw - 44px);
+                min-width: 0;
+                max-width: calc(100vw - 44px);
+                box-shadow: -10px 0 28px rgba(0,0,0,.22);
+                border-left: 1px solid var(--border-line);
+            }
+            #right-market-icons {
+                width: 44px;
+                min-width: 44px;
+                flex: 0 0 44px;
+                background: var(--bg-body);
+                border-left: 1px solid var(--border-line);
+            }
+            /* 닫힌 상태에서는 데이터 패널을 확실히 화면에서 제거한다. */
+            #right-market-rail.collapsed #right-market-panel { display: none !important; }
+        }
+
 </style>
 </head>
 <body>
@@ -10292,6 +10844,14 @@ const voteKey = 'vote_' + symbol;
             const cleanQ = query.trim();
             if (!cleanQ) return;
 
+            // STEP 21: 최근검색종목 메뉴에서 사용할 최소 검색 이력을 로컬에 저장한다.
+            try {
+                const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                const recentItem = { name: cleanQ, symbol: cleanQ.toUpperCase(), price: null, change_pct: null, currency: '' };
+                const next = [recentItem, ...recent.filter(x => String(x?.name || '').toUpperCase() !== cleanQ.toUpperCase())].slice(0, 15);
+                localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
+            } catch (e) {}
+
             // 현재 분석 종목을 URL에 저장하여 새로고침해도 같은 종목을 유지
             const searchUrl = new URL(window.location.href);
             searchUrl.searchParams.set('q', cleanQ);
@@ -11437,6 +11997,141 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
+
+
+        // ===== STEP 21: 우측 실시간 시장 사이드바 =====
+        let rightMarketKey = 'kr';
+        let rightMarketMenu = 'live';
+        const rightMarketCache = {};
+
+        function escapeRightMarketText(value) {
+            return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+        }
+
+        function formatRightMarketPrice(row) {
+            const p = Number(row.price);
+            if (!Number.isFinite(p)) return '-';
+            if (row.currency === 'KRW') return `${Math.round(p).toLocaleString('ko-KR')}원`;
+            return `$${p.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        }
+
+        function renderRightMarketRows(rows) {
+            const list = document.getElementById('rightMarketList');
+            if (!list) return;
+            if (!Array.isArray(rows) || !rows.length) {
+                list.innerHTML = '<div class="right-market-empty">현재 실시간 데이터를 가져오지 못했습니다.<br>잠시 후 다시 시도합니다.</div>';
+                return;
+            }
+            list.innerHTML = rows.map((row, idx) => {
+                const pct = Number(row.change_pct);
+                const change = Number(row.change);
+                const cls = Number.isFinite(pct) && pct >= 0 ? 'up' : 'down';
+                const pctText = Number.isFinite(pct) ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '-';
+                let changeText = '';
+                if (Number.isFinite(change)) {
+                    changeText = row.currency === 'KRW'
+                        ? `${change >= 0 ? '+' : ''}${Math.round(change).toLocaleString('ko-KR')}원`
+                        : `${change >= 0 ? '+' : ''}${change.toFixed(2)}`;
+                }
+                const badge = escapeRightMarketText((row.name || row.symbol || '?').slice(0, 2));
+                const name = escapeRightMarketText(row.name || row.symbol || '-');
+                const symbol = escapeRightMarketText(row.symbol || '');
+                return `<div class="right-market-row" onclick="doSearch('${escapeRightMarketText(row.symbol || row.name || '')}')">
+                    <div class="right-market-rank">${row.rank || idx + 1}</div>
+                    <div class="right-market-logo">${badge}</div>
+                    <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>
+                    <div class="right-market-values"><div class="right-market-price">${formatRightMarketPrice(row)}</div><div class="right-market-change ${cls}">${changeText} ${pctText}</div></div>
+                </div>`;
+            }).join('');
+        }
+
+        async function loadRightMarketBoard(force=false) {
+            const list = document.getElementById('rightMarketList');
+            if (!list) return;
+            const cacheKey = rightMarketKey;
+            if (!force && rightMarketCache[cacheKey]) {
+                renderRightMarketRows(rightMarketCache[cacheKey]);
+                return;
+            }
+            try {
+                const r = await fetch(`/api/right-market-board?market=${encodeURIComponent(cacheKey)}${force ? '&force=1' : ''}`, {cache:'no-store'});
+                const payload = await r.json();
+                if (payload && payload.ok && Array.isArray(payload.data)) {
+                    rightMarketCache[cacheKey] = payload.data;
+                    renderRightMarketRows(payload.data);
+                } else {
+                    renderRightMarketRows([]);
+                }
+            } catch (e) {
+                renderRightMarketRows([]);
+            }
+            const t = document.getElementById('rightMarketTime');
+            if (t) t.textContent = `오늘 ${new Date().toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'})} 기준`;
+        }
+
+        function switchRightMarket(key) {
+            rightMarketKey = key;
+            document.querySelectorAll('.right-market-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.market === key));
+            loadRightMarketBoard(false);
+        }
+
+        function selectRightMenu(menu) {
+            rightMarketMenu = menu;
+            document.querySelectorAll('[data-right-menu]').forEach(btn => btn.classList.toggle('active', btn.dataset.rightMenu === menu));
+            const list = document.getElementById('rightMarketList');
+            if (menu === 'live') {
+                loadRightMarketBoard(false);
+                return;
+            }
+            if (menu === 'recent') {
+                const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                renderRightMarketRows(recent.slice(0, 15).map((x,i) => ({...x, rank:i+1})));
+                if (!recent.length && list) list.innerHTML = '<div class="right-market-empty">최근 검색 종목이 없습니다.</div>';
+                return;
+            }
+            if (menu === 'favorite') {
+                const fav = JSON.parse(localStorage.getItem('gaemiGTP_favorites') || '[]');
+                renderRightMarketRows(fav.slice(0, 15).map((x,i) => ({...x, rank:i+1})));
+                if (!fav.length && list) list.innerHTML = '<div class="right-market-empty">관심 종목이 없습니다.</div>';
+                return;
+            }
+            if (menu === 'leaders') {
+                loadRightMarketBoard(false).then(() => {
+                    const rows = rightMarketCache[rightMarketKey] || [];
+                    renderRightMarketRows([...rows].sort((a,b) => (Number(b.change_pct)||0) - (Number(a.change_pct)||0)));
+                });
+            }
+        }
+
+        function setRightMarketOpen(isOpen) {
+            const rail = document.getElementById('right-market-rail');
+            if (!rail) return;
+            // STEP 24: 모바일에서도 닫힌 상태는 아이콘 레일만 남기고,
+            // 열린 상태에서만 데이터 패널을 화면 위에 겹쳐 표시한다.
+            rail.classList.toggle('collapsed', !isOpen);
+            // STEP 23: 오른쪽 사이드바 상태가 가운데 콘텐츠 레이아웃에 영향을 주지 않도록 한다.
+            document.body.classList.remove('right-market-collapsed');
+            const btn = rail.querySelector('.right-market-close');
+            if (btn) {
+                btn.textContent = isOpen ? '»' : '«';
+                btn.title = isOpen ? '닫기' : '열기';
+            }
+        }
+
+        function toggleRightMarket() {
+            const rail = document.getElementById('right-market-rail');
+            if (!rail) return;
+            setRightMarketOpen(rail.classList.contains('collapsed'));
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            // 오른쪽 사이드바는 처음에는 닫힌 상태로 시작한다.
+            // 왼쪽 사이드바와 완전히 독립적으로 열리고 닫힌다.
+            setRightMarketOpen(false);
+            loadRightMarketBoard(false);
+            setInterval(() => loadRightMarketBoard(true), 60000);
+        });
+
         // STEP 4: 무거운 세계시장/캘린더 데이터는 분석 요청과 분리해서 병렬 로딩한다.
         window.addEventListener('DOMContentLoaded', () => {
             loadWorldBoard();
@@ -11455,6 +12150,31 @@ if ((response && !response.ok) || data.error) {
             }
         });
     </script>
+
+
+    <!-- STEP 23: 우측 실시간 시장 사이드바 -->
+    <aside id="right-market-rail" class="collapsed" aria-label="실시간 시장 사이드바">
+        <section id="right-market-panel">
+            <div class="right-market-head">
+                <div><span class="right-market-title">실시간</span><span class="right-market-time" id="rightMarketTime">오늘 --:-- 기준</span></div>
+            </div>
+            <div class="right-market-tabs">
+                <button class="right-market-tab active" data-market="kr" onclick="switchRightMarket('kr')">국내</button>
+                <button class="right-market-tab" data-market="us" onclick="switchRightMarket('us')">해외</button>
+                <button class="right-market-tab" data-market="crypto" onclick="switchRightMarket('crypto')">코인</button>
+            </div>
+            <div class="right-market-sort"><span id="rightMarketSortLabel">거래대금 상위⌄</span><span>실시간⌄</span></div>
+            <div class="right-market-list" id="rightMarketList"><div class="right-market-empty">실시간 시장 데이터를 불러오는 중입니다.</div></div>
+        </section>
+        <nav id="right-market-icons" aria-label="시장 메뉴">
+            <button class="right-market-icon-btn right-market-close" onclick="toggleRightMarket()" title="닫기/열기">»</button>
+            <button class="right-market-icon-btn active" data-right-menu="live" onclick="selectRightMenu('live')" title="실시간">◉</button>
+            <button class="right-market-icon-btn" data-right-menu="favorite" onclick="selectRightMenu('favorite')" title="관심">♡</button>
+            <button class="right-market-icon-btn" data-right-menu="recent" onclick="selectRightMenu('recent')" title="최근검색종목">◷</button>
+            <button class="right-market-icon-btn" data-right-menu="leaders" onclick="selectRightMenu('leaders')" title="실시간 상단">▥</button>
+        </nav>
+    </aside>
+
 </body>
 </html>
 """
@@ -11693,6 +12413,18 @@ class WebHandler(BaseHTTPRequestHandler):
             )
             return
 
+
+
+        if parsed.path == "/api/right-market-board":
+            try:
+                market = str(params.get("market", ["kr"])[0]).strip().lower()
+                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                rows = fetch_right_market_board(market=market, force=force)
+                self._json(200, {"ok": True, "market": market, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/right-market-board: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "실시간 시장 데이터를 가져오지 못했습니다."})
+            return
 
         if parsed.path == "/api/world-board":
             try:

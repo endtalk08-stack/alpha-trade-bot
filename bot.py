@@ -16,7 +16,7 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:
     ZoneInfo = None
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import requests
@@ -736,6 +736,9 @@ WORLD_BOARD_CONFIG = [
 # 2. JSON 정제 헬퍼 & 초고속 인메모리 캐시
 # ----------------------------------------------------
 CACHED_WORLD_BOARD = []
+CACHED_WORLD_BOARD_FETCH_TIME = 0
+WORLD_BOARD_TTL = 300
+WORLD_BOARD_CACHE_LOCK = threading.Lock()
 CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
@@ -749,6 +752,20 @@ ALPHA_EARNINGS_CACHE = {}
 ALPHA_EARNINGS_CACHE_TTL = 1800  # 30분
 FINNHUB_CONSENSUS_CACHE = {}
 FINNHUB_CONSENSUS_CACHE_TTL = 1800  # 30분
+
+# STEP 5: 뉴스/외부 데이터 공용 캐시와 백그라운드 I/O worker.
+# /api/analyze가 외부 API 하나의 느린 응답 때문에 전체를 기다리지 않도록
+# 동일한 worker pool에서 optional 데이터를 처리하고, 성공한 결과는 다음 요청에서 재사용한다.
+NEWS_CACHE = {}
+NEWS_CACHE_TTL = 600  # 10분
+EARNINGS_RESULT_CACHE = {}
+EARNINGS_RESULT_CACHE_TTL = 1800  # 30분
+EXTERNAL_CACHE_LOCK = threading.Lock()
+OPTIONAL_API_EXECUTOR = ThreadPoolExecutor(
+    max_workers=12,
+    thread_name_prefix="gaemi-optional",
+)
+OPTIONAL_API_SOFT_TIMEOUT = 1.20  # 사용자 응답에서 optional API에 허용하는 최대 대기시간
 
 # 통합 컨센서스 결과 캐시. 컨센서스는 초단위 데이터가 아니므로
 # 매 종목 검색마다 Naver/Finnhub/Yahoo fallback 체인을 다시 타지 않는다.
@@ -771,17 +788,24 @@ def _rate_limit_wait(min_interval):
         FRED_LAST_REQUEST_TS = time.time()
 
 def _cache_get(cache, key, ttl):
-    item = cache.get(key)
-    if not item:
-        return None
-    ts, value = item
-    if time.time() - ts > ttl:
-        cache.pop(key, None)
-        return None
-    return value
+    with EXTERNAL_CACHE_LOCK:
+        item = cache.get(key)
+        if not item:
+            return None
+        ts, value = item
+        if time.time() - ts > ttl:
+            cache.pop(key, None)
+            return None
+        return value
 
 def _cache_set(cache, key, value):
-    cache[key] = (time.time(), value)
+    with EXTERNAL_CACHE_LOCK:
+        cache[key] = (time.time(), value)
+        # 외부 API 캐시는 장시간 서버가 살아 있어도 무한히 커지지 않도록 제한한다.
+        if len(cache) > 1000:
+            oldest = sorted(cache.items(), key=lambda item: item[1][0])[:200]
+            for old_key, _ in oldest:
+                cache.pop(old_key, None)
     return value
 
 # ===== Theme co-movement engine =====
@@ -1843,7 +1867,7 @@ def _fetch_yahoo_earnings_timestamps(symbols):
     return result
 
 
-def fetch_all_real_earnings():
+def _fetch_all_real_earnings_uncached():
     """
     국내 + 미국 주요기업 실적 캘린더 수집기.
 
@@ -2463,6 +2487,18 @@ def _filter_kr_us_economic_events(events):
     ]
 
 
+
+def fetch_all_real_earnings():
+    """실적 캘린더 공용 캐시. 실제 발표일 데이터만 저장한다."""
+    cache_key = "all_real_earnings"
+    cached = _cache_get(EARNINGS_RESULT_CACHE, cache_key, EARNINGS_RESULT_CACHE_TTL)
+    if cached is not None:
+        return list(cached) if isinstance(cached, list) else cached
+    result = _fetch_all_real_earnings_uncached()
+    if result:
+        return _cache_set(EARNINGS_RESULT_CACHE, cache_key, list(result))
+    return result or []
+
 def fetch_real_market_calendar_live():
     """실적 + 경제 캘린더를 실제 API에서 가져와 화면용 단일 배열로 합칩니다."""
     global CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
@@ -2952,7 +2988,7 @@ def fetch_naver_news(query_keyword, limit=5):
     return headlines
 
 
-def fetch_rss_news(query_keyword, limit=5):
+def _fetch_rss_news_uncached(query_keyword, limit=5):
     """Google News RSS 우선. 실패/빈 결과이면 Naver News API로 fallback."""
     headlines = []
     clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
@@ -2987,6 +3023,23 @@ def fetch_rss_news(query_keyword, limit=5):
         headlines = fetch_naver_news(clean_k, limit)
 
     return headlines
+
+
+def fetch_rss_news(query_keyword, limit=5):
+    """뉴스 공용 캐시를 사용한다. 빈 결과도 짧게 캐시해 반복 실패를 막는다."""
+    clean_k = re.sub(r'\(.*?\)', '', str(query_keyword or '')).replace('USDT', '').strip()
+    if not clean_k:
+        return []
+    try:
+        lim = max(1, min(int(limit), 20))
+    except Exception:
+        lim = 5
+    key = f"{clean_k.lower()}|{lim}"
+    cached = _cache_get(NEWS_CACHE, key, NEWS_CACHE_TTL)
+    if cached is not None:
+        return list(cached) if isinstance(cached, list) else cached
+    result = _fetch_rss_news_uncached(clean_k, lim)
+    return _cache_set(NEWS_CACHE, key, list(result or []))
 
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
     if not is_krw or not stock_code or not stock_code.isdigit():
@@ -4823,10 +4876,30 @@ NEGATIVE_NEWS_KEYWORDS = [
 
 
 # ===== 복구된 핵심 헬퍼: 최신 통합본에서 누락되어 /api/analyze 500을 일으키던 함수들 =====
-def fetch_all_world_board_parallel():
+def fetch_all_world_board_parallel(force=False):
+    """세계시장 보드를 캐시 기반으로 조회한다.
+
+    STEP 4: /api/analyze의 사용자 응답 경로에서는 이 함수를 호출하지 않는다.
+    별도 /api/world-board에서만 갱신하며, 5분 캐시로 반복적인 10개 외부 호출을 줄인다.
+    """
+    global CACHED_WORLD_BOARD, CACHED_WORLD_BOARD_FETCH_TIME
+
+    now = time.time()
+    with WORLD_BOARD_CACHE_LOCK:
+        if (not force and CACHED_WORLD_BOARD
+                and now - CACHED_WORLD_BOARD_FETCH_TIME < WORLD_BOARD_TTL):
+            return CACHED_WORLD_BOARD
+
     with ThreadPoolExecutor(max_workers=10) as executor:
         results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
-    return results
+    results = [r for r in results if r]
+
+    if results:
+        with WORLD_BOARD_CACHE_LOCK:
+            CACHED_WORLD_BOARD = results
+            CACHED_WORLD_BOARD_FETCH_TIME = now
+
+    return CACHED_WORLD_BOARD or results
 
 def get_trading_val_rank(symbol, is_krw=True):
     if not is_krw:
@@ -5877,15 +5950,51 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
 # ----------------------------------------------------
 # 6. 전체 통합 파이프라인
 # ----------------------------------------------------
-def _safe_future_result(future, default, label):
+def _safe_future_result(future, default, label, timeout=None):
     """외부 API 하나가 실패해도 전체 /api/analyze가 500으로 끝나지 않게 한다."""
     if future is None:
         return default
     try:
-        return future.result()
+        if timeout is None:
+            return future.result()
+        return future.result(timeout=max(0.0, float(timeout)))
     except Exception as exc:
-        print(f"[OPTIONAL API] {label} failed: {repr(exc)}")
+        print(f"[OPTIONAL API] {label} failed/timeout: {type(exc).__name__}: {exc}")
         return default
+
+
+def _collect_optional_results(futures, timeout=OPTIONAL_API_SOFT_TIMEOUT):
+    """Optional API들을 한 번에 시작하고, 전체 대기시간만 제한한다.
+
+    timeout을 넘긴 future는 취소하지 않는다. 해당 작업은 worker에서 계속 실행되어
+    각 함수의 공용 캐시를 채우고, 다음 사용자 요청은 캐시 결과를 즉시 사용한다.
+    """
+    if not futures:
+        return {}
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    pending = set(f for f in futures.values() if f is not None)
+    results = {}
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        done, pending = wait(pending, timeout=remaining)
+        for future in done:
+            for name, candidate in futures.items():
+                if candidate is future:
+                    try:
+                        results[name] = future.result()
+                    except Exception as exc:
+                        print(f"[OPTIONAL API] {name} failed: {type(exc).__name__}: {exc}")
+                        results[name] = None
+                    break
+    for name, future in futures.items():
+        if name in results:
+            continue
+        results[name] = None
+        if future is not None and not future.done():
+            print(f"[OPTIONAL API] {name} background refresh continues")
+    return results
 
 
 def run_full_pipeline(query):
@@ -5896,6 +6005,9 @@ def run_full_pipeline(query):
     if clean_q in ANALYSIS_CACHE:
         cached_time, cached_data = ANALYSIS_CACHE[clean_q]
         if now_ts - cached_time < 30:
+            # STEP 4: 세계시장 보드/시장 캘린더는 별도 API가 담당한다.
+            # 분석 캐시 응답에 현재 서버 캐시가 있으면 화면 호환성을 위해
+            # 붙여주되, 캐시가 없다고 해서 외부 API를 호출하지 않는다.
             if CACHED_WORLD_BOARD:
                 cached_data["world_board"] = CACHED_WORLD_BOARD
             if CACHED_MARKET_CALENDAR:
@@ -6024,63 +6136,60 @@ def run_full_pipeline(query):
     except Exception as exc:
         print(f"[DB ASYNC] 원천 OHLCV 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
-    with ThreadPoolExecutor(max_workers=9) as executor:
-        f_news = executor.submit(fetch_rss_news, formal_name, 10)
-        f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10)
-        f_api_news = executor.submit(fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro")
-        f_macro = executor.submit(fetch_fred_macro_snapshot)
-        f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
-        f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 5)
-        f_domestic_flow = executor.submit(fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None
+    # ====================================================
+    # STEP 5: 선택 데이터는 공용 worker + 짧은 soft timeout으로 처리한다.
+    # 첫 요청에서 외부 API가 느려도 가격/차트/퀀트 응답을 오래 붙잡지 않는다.
+    # 완료되지 않은 작업은 worker가 계속 수행하여 공용 캐시를 채운다.
+    # ====================================================
+    optional_futures = {
+        "stock_news_rss": OPTIONAL_API_EXECUTOR.submit(fetch_rss_news, formal_name, 10),
+        "global_news_rss": OPTIONAL_API_EXECUTOR.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+        "api_news": OPTIONAL_API_EXECUTOR.submit(
+            fetch_alpha_vantage_news,
+            symbol if market_name == "미국주식" else "",
+            "economy_macro",
+        ),
+        "macro_snapshot": OPTIONAL_API_EXECUTOR.submit(fetch_fred_macro_snapshot),
+        "consensus": OPTIONAL_API_EXECUTOR.submit(
+            fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name
+        ),
+        "dart_disclosures": OPTIONAL_API_EXECUTOR.submit(
+            fetch_dart_disclosures, symbol, is_krw, 5
+        ),
+        "domestic_flow": (
+            OPTIONAL_API_EXECUTOR.submit(fetch_naver_domestic_flow_metrics, symbol)
+            if is_krw and market_name == "국내주식"
+            else None
+        ),
+        "ticker_news": (
+            OPTIONAL_API_EXECUTOR.submit(fetch_alpha_vantage_news, symbol, "")
+            if market_name == "미국주식" and symbol
+            else None
+        ),
+    }
+    optional_results = _collect_optional_results(optional_futures)
 
-        stock_news_rss = _safe_future_result(f_news, [], "stock RSS")
-        global_news_rss = _safe_future_result(f_global_news, [], "global RSS")
-        api_news = _safe_future_result(f_api_news, [], "Alpha Vantage news")
-        macro_snapshot = _safe_future_result(f_macro, {}, "FRED macro")
+    stock_news_rss = optional_results.get("stock_news_rss") or []
+    global_news_rss = optional_results.get("global_news_rss") or []
+    api_news = optional_results.get("api_news") or []
+    macro_snapshot = optional_results.get("macro_snapshot") or {}
+    ticker_news = optional_results.get("ticker_news") or []
 
-        ticker_news = _safe_future_result(
-            executor.submit(fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None,
-            [], "Alpha ticker news"
-        )
-        # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
-        stock_news = merge_news_sources(stock_news_rss, ticker_news)
-        global_news = merge_news_sources(global_news_rss, api_news)
-        consensus = _safe_future_result(f_consensus, None, "consensus")
-        dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
-        domestic_flow = _safe_future_result(f_domestic_flow, None, "domestic flow") if f_domestic_flow else None
+    # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
+    stock_news = merge_news_sources(stock_news_rss, ticker_news)
+    global_news = merge_news_sources(global_news_rss, api_news)
+    consensus = optional_results.get("consensus")
+    dart_disclosures = optional_results.get("dart_disclosures") or []
+    domestic_flow = optional_results.get("domestic_flow")
 
-    # 세계시장 보드와 경제 캘린더도 서로 독립적이므로
-    # 둘 다 캐시가 없을 때만 병렬 조회한다.
-    world_board = CACHED_WORLD_BOARD
-    market_calendar = CACHED_MARKET_CALENDAR
-
-    need_world = not world_board
-    need_calendar = not market_calendar
-
-    if need_world or need_calendar:
-        with ThreadPoolExecutor(max_workers=2) as board_executor:
-            world_future = (
-                board_executor.submit(fetch_all_world_board_parallel)
-                if need_world else None
-            )
-            calendar_future = (
-                board_executor.submit(fetch_real_market_calendar_live)
-                if need_calendar else None
-            )
-
-            if need_world:
-                try:
-                    world_board = world_future.result() or []
-                except Exception as exc:
-                    print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
-                    world_board = []
-
-            if need_calendar:
-                try:
-                    market_calendar = calendar_future.result() or []
-                except Exception as exc:
-                    print("[MARKET CALENDAR] 조회 실패:", repr(exc))
-                    market_calendar = []
+    # ====================================================
+    # STEP 4: 세계시장 보드 / 시장 캘린더를 분석 API에서 분리
+    # ====================================================
+    # /api/analyze가 최초 호출될 때 10개 세계시장 + 실적/경제 캘린더를
+    # 기다리지 않는다. 이미 별도 API가 채워둔 서버 캐시가 있다면 사용하고,
+    # 없으면 빈 배열로 분석을 진행한다. 화면에서는 별도 API가 병렬로 로딩한다.
+    world_board = CACHED_WORLD_BOARD or []
+    market_calendar = CACHED_MARKET_CALENDAR or []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 
@@ -10677,6 +10786,66 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
+        function renderWorldBoard(rows) {
+            const wBoardGrid = document.getElementById('worldBoardGrid');
+            if (!wBoardGrid) return;
+            const items = Array.isArray(rows) ? rows : [];
+            if (!items.length) {
+                wBoardGrid.innerHTML = '<div class="us-leading-sector-loading">세계시장 데이터를 불러오지 못했습니다.</div>';
+                return;
+            }
+            wBoardGrid.innerHTML = items.map(w => {
+                const cls = w.up ? 'val-up' : 'val-down';
+                const sparkSvg = renderSparklineSVG(w.sparkline, w.up);
+                const clickName = w.name === 'USD/KRW' ? '환율' : w.name;
+                const safeClick = String(clickName || '').replace(/'/g, "\\'");
+                return `
+                    <div class="mini-index-card" onclick="doSearch('${safeClick}')">
+                        <div class="mini-top">
+                            <span class="mini-name">${String(w.name || '')}</span>
+                            <span class="mini-tag">${String(w.tag || '')}</span>
+                        </div>
+                        <div class="mini-mid-row">
+                            <div>
+                                <div class="mini-price">${String(w.price || '')}</div>
+                                <div class="mini-rate ${cls}">${String(w.rate || '')}</div>
+                            </div>
+                            ${sparkSvg}
+                        </div>
+                    </div>`;
+            }).join('');
+        }
+
+        async function loadWorldBoard() {
+            try {
+                const response = await fetch('/api/world-board');
+                const data = await response.json().catch(() => null);
+                if (!response.ok || !data || data.error) throw new Error((data && data.error) || '세계시장 데이터 오류');
+                renderWorldBoard(data.data);
+            } catch (error) {
+                console.error('World board:', error);
+                const box = document.getElementById('worldBoardGrid');
+                if (box) box.innerHTML = '<div class="us-leading-sector-loading">세계시장 데이터를 잠시 후 다시 불러옵니다.</div>';
+            }
+        }
+
+        async function loadMarketCalendar() {
+            try {
+                const response = await fetch('/api/market-calendar');
+                const data = await response.json().catch(() => null);
+                if (!response.ok || !data || data.error) throw new Error((data && data.error) || '시장 캘린더 데이터 오류');
+                if (Array.isArray(data.data)) {
+                    globalMarketCalendar = data.data;
+                    economicCalendarAutoJumped = false;
+                    economicCalOffset = 0;
+                    economicCalPage = 1;
+                    renderMarketCalendarView();
+                }
+            } catch (error) {
+                console.error('Market calendar:', error);
+            }
+        }
+
         async function loadUsLeadingSectors() {
             const box = document.getElementById('usLeadingSectorList');
             if (!box) return;
@@ -10736,7 +10905,12 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
-        window.addEventListener('DOMContentLoaded', loadUsLeadingSectors);
+        // STEP 4: 무거운 세계시장/캘린더 데이터는 분석 요청과 분리해서 병렬 로딩한다.
+        window.addEventListener('DOMContentLoaded', () => {
+            loadWorldBoard();
+            loadMarketCalendar();
+            loadUsLeadingSectors();
+        });
         window.addEventListener('DOMContentLoaded', () => {
             initTheme();
 
@@ -10948,6 +11122,29 @@ class WebHandler(BaseHTTPRequestHandler):
             )
             return
 
+
+        if parsed.path == "/api/world-board":
+            try:
+                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                rows = fetch_all_world_board_parallel(force=force)
+                self._json(200, {"ok": True, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/world-board: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "세계시장 데이터를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/market-calendar":
+            try:
+                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                if force:
+                    global LAST_CALENDAR_FETCH_TIME
+                    LAST_CALENDAR_FETCH_TIME = 0
+                rows = fetch_real_market_calendar_live()
+                self._json(200, {"ok": True, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/market-calendar: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "시장 캘린더 데이터를 가져오지 못했습니다."})
+            return
 
         if parsed.path == "/api/us-leading-stocks":
             try:

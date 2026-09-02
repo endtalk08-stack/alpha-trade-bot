@@ -6343,6 +6343,10 @@ def run_full_pipeline(query, lightweight=False):
     # core 모드에서는 선택 외부 데이터를 기다리지 않는다. 완료 작업은 백그라운드에서
     # 캐시를 채우고, /api/analyze-details가 준비 여부를 알려준다.
     # ====================================================
+    # STEP 8 FIX: core 모드에서도 아래 공통 처리부가 참조하므로
+    # optional_results를 항상 초기화한다. 기존 코드에서는 core 모드일 때
+    # optional_results가 정의되지 않아 UnboundLocalError가 발생했다.
+    optional_results = {}
     if lightweight:
         stock_news = []
         global_news = []

@@ -12112,26 +12112,50 @@ if ((response && !response.ok) || data.error) {
         }
 
 
+        // STEP 36: 해외 거래대금 상위 종목명을 한글로 표시한다.
         const US_SHORT_KR_NAMES = {
-            NVDA: '엔비디아',
-            AVGO: '브로드컴',
-            AMD: 'AMD',
-            MU: '마이크론',
-            MRVL: '마벨',
-            QCOM: '퀄컴',
-            TSM: 'TSMC',
-            LRCX: '램리서치',
-            AMAT: '어플라이드',
-            KLAC: 'KLA',
-            XOM: '엑손모빌',
-            CVX: '셰브론',
-            COP: '코노코필립스',
-            TSLA: '테슬라',
-            AAPL: '애플',
-            MSFT: '마이크로소프트',
-            AMZN: '아마존',
-            GOOGL: '구글',
-            META: '메타'
+            // 반도체 / AI
+            NVDA: '엔비디아', AVGO: '브로드컴', AMD: 'AMD', MU: '마이크론',
+            MRVL: '마벨테크놀로지', QCOM: '퀄컴', TSM: 'TSMC', LRCX: '램리서치',
+            AMAT: '어플라이드머티어리얼즈', KLAC: 'KLA', ASML: 'ASML', ARM: 'ARM',
+            INTC: '인텔', TXN: '텍사스인스트루먼트', ON: '온세미',
+            MPWR: '모놀리식파워', ADI: '아날로그디바이스', NXPI: 'NXP반도체',
+            SMCI: '슈퍼마이크로컴퓨터', WDC: '웨스턴디지털', STX: '씨게이트',
+           
+            // 빅테크 / 플랫폼
+            TSLA: '테슬라', AAPL: '애플', MSFT: '마이크로소프트', AMZN: '아마존',
+            GOOGL: '구글', GOOG: '구글', META: '메타', NFLX: '넷플릭스',
+            ORCL: '오라클', CRM: '세일즈포스', ADBE: '어도비', NOW: '서비스나우',
+            PLTR: '팔란티어', UBER: '우버', ABNB: '에어비앤비', SHOP: '쇼피파이',
+           
+            // 금융 / 결제
+            JPM: 'JP모건', BAC: '뱅크오브아메리카', WFC: '웰스파고', C: '씨티그룹',
+            GS: '골드만삭스', MS: '모건스탠리', V: '비자', MA: '마스터카드',
+            COIN: '코인베이스', HOOD: '로빈후드', MSTR: '마이크로스트래티지',
+           
+            // 전기차 / 자동차
+            RIVN: '리비안', LCID: '루시드', NIO: '니오', F: '포드', GM: '제너럴모터스',
+           
+            // 에너지 / 산업
+            XOM: '엑손모빌', CVX: '셰브론', COP: '코노코필립스', SLB: '슐럼버거',
+            OXY: '옥시덴털페트롤리엄', CAT: '캐터필러', DE: '디어', GE: 'GE에어로스페이스',
+            BA: '보잉', RTX: 'RTX', LMT: '록히드마틴',
+           
+            // 헬스케어 / 바이오
+            LLY: '일라이릴리', NVO: '노보노디스크', UNH: '유나이티드헬스', JNJ: '존슨앤드존슨',
+            PFE: '화이자', MRK: '머크', ABBV: '애브비', MRNA: '모더나',
+           
+            // 소비 / 미디어
+            WMT: '월마트', COST: '코스트코', MCD: '맥도날드', NKE: '나이키',
+            SBUX: '스타벅스', DIS: '디즈니', KO: '코카콜라', PEP: '펩시코',
+           
+            // 주요 ETF
+            QQQ: '나스닥100 ETF', SPY: 'S&P500 ETF', SOXL: '반도체 3배 ETF',
+            TQQQ: '나스닥100 3배 ETF', DIA: '다우존스 ETF', SOXX: '반도체 ETF',
+           
+            // 기타 자주 조회되는 종목
+            TSMC: 'TSMC', PDD: '핀둬둬', BABA: '알리바바', JD: '징둥닷컴',
+            BIDU: '바이두', IONQ: '아이온큐', RKLB: '로켓랩', ASTS: 'AST스페이스모바일'
         };
 
         function getUsShortKrName(symbol, fallback) {
@@ -12391,8 +12415,11 @@ if ((response && !response.ok) || data.error) {
                         ? `${change >= 0 ? '+' : ''}${Math.round(change).toLocaleString('ko-KR')}원`
                         : `${change >= 0 ? '+' : ''}${change.toFixed(2)}`;
                 }
-                const badge = escapeRightMarketText((row.name || row.symbol || '?').slice(0, 2));
-                const name = escapeRightMarketText(row.name || row.symbol || '-');
+                const krName = (rightMarketKey === 'us' && typeof getUsShortKrName === 'function')
+                    ? getUsShortKrName(row.symbol, row.name)
+                    : (row.name || row.symbol || '-');
+                const badge = escapeRightMarketText((krName || row.symbol || '?').slice(0, 2));
+                const name = escapeRightMarketText(krName || row.symbol || '-');
                 const symbol = escapeRightMarketText(row.symbol || '');
                 return `<div class="right-market-row" onclick="doSearch('${escapeRightMarketText(row.symbol || row.name || '')}')">
                     <div class="right-market-rank">${row.rank || idx + 1}</div>

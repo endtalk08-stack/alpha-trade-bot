@@ -17,7 +17,7 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:
     ZoneInfo = None
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor, wait, Future
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import requests
@@ -3252,6 +3252,49 @@ def get_naver_stock_market_type(code):
         pass
     return None
 
+
+def _get_cached_domestic_market_type(code):
+    key = str(code or "").strip().upper()
+    if not key:
+        return None
+    item = DOMESTIC_MARKET_TYPE_CACHE.get(key)
+    if item and time.time() - item["time"] < DOMESTIC_MARKET_TYPE_CACHE_TTL:
+        return item.get("value")
+    return None
+
+def _refresh_domestic_market_type(code):
+    key = str(code or "").strip().upper()
+    if not key:
+        return None
+    with DOMESTIC_MARKET_TYPE_LOCK:
+        future = DOMESTIC_MARKET_TYPE_INFLIGHT.get(key)
+        if future is None:
+            future = Future()
+            DOMESTIC_MARKET_TYPE_INFLIGHT[key] = future
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        try:
+            return future.result(timeout=3.0)
+        except Exception:
+            return None
+    try:
+        value = get_naver_stock_market_type(key)
+        DOMESTIC_MARKET_TYPE_CACHE[key] = {"time": time.time(), "value": value}
+        future.set_result(value)
+        return value
+    except Exception as exc:
+        try:
+            future.set_result(None)
+        except Exception:
+            pass
+        print(f"[DOMESTIC MARKET TYPE] {key} refresh failed: {type(exc).__name__}: {exc}")
+        return None
+    finally:
+        with DOMESTIC_MARKET_TYPE_LOCK:
+            DOMESTIC_MARKET_TYPE_INFLIGHT.pop(key, None)
+
 # ===== SPEED OPTIMIZATION 3: 공용 시세/차트 캐시 =====
 # 같은 종목을 /api/analyze 와 /api/chart 에서 연속 조회할 때
 # Naver/Yahoo/Binance를 다시 호출하지 않도록 공용 TTL 캐시를 사용한다.
@@ -3260,6 +3303,14 @@ NAVER_REALTIME_CACHE = {}
 NAVER_REALTIME_CACHE_TTL = 15
 DOMESTIC_CANDLE_CACHE = {}
 DOMESTIC_CANDLE_CACHE_TTL = 10 * 60
+# STEP 10: /api/chart와 /api/analyze가 동시에 같은 종목을 요청할 때
+# 동일한 Naver 1200일봉 HTTP 요청이 중복 발생하지 않도록 single-flight를 사용한다.
+DOMESTIC_CANDLE_INFLIGHT = {}
+DOMESTIC_CANDLE_INFLIGHT_LOCK = threading.Lock()
+DOMESTIC_MARKET_TYPE_CACHE = {}
+DOMESTIC_MARKET_TYPE_CACHE_TTL = 24 * 60 * 60
+DOMESTIC_MARKET_TYPE_INFLIGHT = {}
+DOMESTIC_MARKET_TYPE_LOCK = threading.Lock()
 OVERSEAS_QUOTE_CACHE = {}
 OVERSEAS_QUOTE_CACHE_TTL = 30
 CRYPTO_CANDLE_CACHE = {}
@@ -3430,7 +3481,6 @@ def fetch_domestic_candles(code, anchor_price=None):
     if cached and now - cached["time"] < DOMESTIC_CANDLE_CACHE_TTL:
         try:
             df = cached["df"].copy(deep=True)
-            # 기존 함수의 anchor_price 보정 계약을 그대로 유지한다.
             if anchor_price and anchor_price > 0 and not df.empty:
                 last_close = float(df["Close"].iloc[-1])
                 if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
@@ -3443,22 +3493,64 @@ def fetch_domestic_candles(code, anchor_price=None):
         except Exception:
             DOMESTIC_CANDLE_CACHE.pop(key, None)
 
-    # 원본 수집기는 anchor 보정 없이 저장해 두고, 요청별 보정만 반환 시 적용한다.
-    raw_df = _fetch_domestic_candles_uncached(key, anchor_price=None)
-    if raw_df is None or raw_df.empty:
-        return None
-    DOMESTIC_CANDLE_CACHE[key] = {"time": now, "df": raw_df.copy(deep=True)}
+    # STEP 10: single-flight
+    # /api/chart와 /api/analyze가 같은 종목을 동시에 요청하면 한쪽만
+    # 실제 Naver/Yahoo 수집을 수행하고 다른 쪽은 그 결과를 기다린다.
+    with DOMESTIC_CANDLE_INFLIGHT_LOCK:
+        inflight = DOMESTIC_CANDLE_INFLIGHT.get(key)
+        if inflight is None:
+            inflight = Future()
+            DOMESTIC_CANDLE_INFLIGHT[key] = inflight
+            owner = True
+        else:
+            owner = False
 
-    df = raw_df.copy(deep=True)
-    if anchor_price and anchor_price > 0:
-        last_close = float(df["Close"].iloc[-1])
-        if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
-            ratio = anchor_price / last_close
-            df["Open"] *= ratio
-            df["High"] *= ratio
-            df["Low"] *= ratio
-            df["Close"] *= ratio
-    return df
+    if not owner:
+        try:
+            raw_df = inflight.result(timeout=6.0)
+            if raw_df is None:
+                return None
+            df = raw_df.copy(deep=True)
+            if anchor_price and anchor_price > 0 and not df.empty:
+                last_close = float(df["Close"].iloc[-1])
+                if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                    ratio = anchor_price / last_close
+                    df["Open"] *= ratio
+                    df["High"] *= ratio
+                    df["Low"] *= ratio
+                    df["Close"] *= ratio
+            return df
+        except Exception:
+            return None
+
+    try:
+        raw_df = _fetch_domestic_candles_uncached(key, anchor_price=None)
+        if raw_df is None or raw_df.empty:
+            inflight.set_result(None)
+            return None
+        DOMESTIC_CANDLE_CACHE[key] = {"time": time.time(), "df": raw_df.copy(deep=True)}
+        inflight.set_result(raw_df.copy(deep=True))
+
+        df = raw_df.copy(deep=True)
+        if anchor_price and anchor_price > 0:
+            last_close = float(df["Close"].iloc[-1])
+            if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                ratio = anchor_price / last_close
+                df["Open"] *= ratio
+                df["High"] *= ratio
+                df["Low"] *= ratio
+                df["Close"] *= ratio
+        return df
+    except Exception as exc:
+        try:
+            inflight.set_result(None)
+        except Exception:
+            pass
+        print(f"[DOMESTIC CANDLE] {key} fetch failed: {type(exc).__name__}: {exc}")
+        return None
+    finally:
+        with DOMESTIC_CANDLE_INFLIGHT_LOCK:
+            DOMESTIC_CANDLE_INFLIGHT.pop(key, None)
 
 # ===== SPEED OPTIMIZATION 2: overseas candle cache =====
 # 5년치 일봉을 매 검색마다 Yahoo에서 다시 받지 않는다.
@@ -6139,6 +6231,10 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             raw_price = context["raw_price"]
             is_krw = context["is_krw"]
             market_index_name = context.get("market_index_name")
+            if market_index_name is None and market_name == "국내주식":
+                market_index_name = _get_cached_domestic_market_type(symbol)
+                if market_index_name is None:
+                    market_index_name = _refresh_domestic_market_type(symbol)
             df = context["df"]
 
             optional_futures = {
@@ -6314,11 +6410,17 @@ def run_full_pipeline(query, lightweight=False):
         # 기존에는 거래소 구분 → 실시간 가격 → 1200일 차트가 순차 실행되어
         # 각 HTTP 지연시간이 합산됐다. 이제 세 작업을 동시에 시작하고 가장
         # 늦게 끝나는 작업만 기다린다. 기존 데이터/기능은 그대로 유지한다.
-        market_type_future = _perf_submit(PRICE_DATA_EXECUTOR, get_naver_stock_market_type, symbol)
+        # STEP 10: KOSPI/KOSDAQ 구분은 첫 화면의 가격/차트 계산에 필수적이지 않다.
+        # 캐시가 있으면 즉시 사용하고, 없으면 core 응답을 막지 않고 백그라운드에서 갱신한다.
+        market_index_name = _get_cached_domestic_market_type(symbol)
+        if market_index_name is None and not lightweight:
+            market_index_name = _perf_submit(PRICE_DATA_EXECUTOR, _refresh_domestic_market_type, symbol).result()
+        elif market_index_name is None:
+            _perf_submit(OPTIONAL_API_EXECUTOR, _refresh_domestic_market_type, symbol)
+
         realtime_future = _perf_submit(PRICE_DATA_EXECUTOR, get_naver_realtime_price, symbol)
         candle_future = _perf_submit(PRICE_DATA_EXECUTOR, fetch_domestic_candles, symbol, None)
 
-        market_index_name = market_type_future.result()
         raw_price, price_str = realtime_future.result()
         df = candle_future.result()
 

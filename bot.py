@@ -3341,11 +3341,6 @@ PRICE_DATA_EXECUTOR = ThreadPoolExecutor(max_workers=8)
 # STEP 12: 국내주식 Yahoo .KS/.KQ 동시 조회 전용 풀.
 # 기존 가격 executor 안에서 다시 작업을 제출할 때의 worker 고갈을 방지한다.
 DOMESTIC_FAST_CANDLE_EXECUTOR = ThreadPoolExecutor(max_workers=6)
-# STEP 15: 빠른 Yahoo 데이터로 응답한 직후 Naver 1200일봉을 백그라운드에서
-# 보강한다. 사용자 요청 스레드는 Naver 응답을 기다리지 않는다.
-DOMESTIC_NAVER_REFRESH_EXECUTOR = ThreadPoolExecutor(max_workers=3)
-DOMESTIC_NAVER_REFRESH_INFLIGHT = set()
-DOMESTIC_NAVER_REFRESH_LOCK = threading.Lock()
 
 def _get_naver_realtime_price_uncached(code):
     try:
@@ -3620,70 +3615,7 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
 
     return None
 
-def _schedule_domestic_naver_refresh(code):
-    """STEP 15: 빠른 응답 이후 Naver 1200일봉을 백그라운드에서 캐시 보강한다."""
-    key = str(code or "").strip().upper()
-    if not key:
-        return
-    with DOMESTIC_NAVER_REFRESH_LOCK:
-        if key in DOMESTIC_NAVER_REFRESH_INFLIGHT:
-            return
-        DOMESTIC_NAVER_REFRESH_INFLIGHT.add(key)
-
-    def worker():
-        try:
-            df = _fetch_domestic_candles_naver_uncached(key)
-            if df is not None and not df.empty and len(df) >= 1200:
-                DOMESTIC_CANDLE_CACHE[key] = {
-                    "time": time.time(),
-                    "df": df.copy(deep=True),
-                }
-                print(f"[DOMESTIC CANDLE PREFETCH] {key} Naver 1200일봉 cache refreshed")
-        except Exception as exc:
-            print(f"[DOMESTIC CANDLE PREFETCH] {key} failed: {type(exc).__name__}: {exc}")
-        finally:
-            with DOMESTIC_NAVER_REFRESH_LOCK:
-                DOMESTIC_NAVER_REFRESH_INFLIGHT.discard(key)
-
-    try:
-        DOMESTIC_NAVER_REFRESH_EXECUTOR.submit(worker)
-    except Exception as exc:
-        with DOMESTIC_NAVER_REFRESH_LOCK:
-            DOMESTIC_NAVER_REFRESH_INFLIGHT.discard(key)
-        print(f"[DOMESTIC CANDLE PREFETCH] {key} submit failed: {type(exc).__name__}: {exc}")
-
-
-def _apply_domestic_anchor(df, anchor_price):
-    if df is None or df.empty:
-        return df
-    if anchor_price and anchor_price > 0:
-        try:
-            last_close = float(df["Close"].iloc[-1])
-            if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
-                ratio = anchor_price / last_close
-                df = df.copy(deep=True)
-                df["Open"] *= ratio
-                df["High"] *= ratio
-                df["Low"] *= ratio
-                df["Close"] *= ratio
-        except Exception:
-            pass
-    return df
-
-
 def fetch_domestic_candles(code, anchor_price=None):
-    """국내주식 일봉 공용 조회.
-
-    STEP 15:
-    - 이미 Naver 1200일봉 캐시가 있으면 그대로 사용한다.
-    - 캐시가 없을 때는 Yahoo 5년 일봉을 우선 확보해 첫 응답을 빠르게 만든다.
-    - Yahoo 데이터가 충분하면 즉시 공용 캐시에 넣고, Naver 1200일봉은
-      백그라운드에서 보강한다.
-    - Yahoo가 실패하거나 1200개 미만이면 기존 Naver 1200일봉 경로를 사용한다.
-
-    따라서 기존의 장기 이동평균 계산에 필요한 데이터가 부족한 상태로
-    성공 처리하지 않으며, Naver는 정확도 보강용 원천으로 계속 유지한다.
-    """
     key = str(code or "").strip().upper()
     if not key:
         return None
@@ -3693,12 +3625,21 @@ def fetch_domestic_candles(code, anchor_price=None):
     if cached and now - cached["time"] < DOMESTIC_CANDLE_CACHE_TTL:
         try:
             df = cached["df"].copy(deep=True)
-            return _apply_domestic_anchor(df, anchor_price)
+            if anchor_price and anchor_price > 0 and not df.empty:
+                last_close = float(df["Close"].iloc[-1])
+                if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                    ratio = anchor_price / last_close
+                    df["Open"] *= ratio
+                    df["High"] *= ratio
+                    df["Low"] *= ratio
+                    df["Close"] *= ratio
+            return df
         except Exception:
             DOMESTIC_CANDLE_CACHE.pop(key, None)
 
-    # STEP 10 single-flight: /api/chart와 /api/analyze가 동시에 같은 종목을
-    # 요청해도 실제 원천 조회는 하나만 수행한다.
+    # STEP 10: single-flight
+    # /api/chart와 /api/analyze가 같은 종목을 동시에 요청하면 한쪽만
+    # 실제 Naver/Yahoo 수집을 수행하고 다른 쪽은 그 결과를 기다린다.
     with DOMESTIC_CANDLE_INFLIGHT_LOCK:
         inflight = DOMESTIC_CANDLE_INFLIGHT.get(key)
         if inflight is None:
@@ -3713,34 +3654,37 @@ def fetch_domestic_candles(code, anchor_price=None):
             raw_df = inflight.result(timeout=6.0)
             if raw_df is None:
                 return None
-            return _apply_domestic_anchor(raw_df.copy(deep=True), anchor_price)
+            df = raw_df.copy(deep=True)
+            if anchor_price and anchor_price > 0 and not df.empty:
+                last_close = float(df["Close"].iloc[-1])
+                if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                    ratio = anchor_price / last_close
+                    df["Open"] *= ratio
+                    df["High"] *= ratio
+                    df["Low"] *= ratio
+                    df["Close"] *= ratio
+            return df
         except Exception:
             return None
 
     try:
-        # STEP 15 FAST PATH: Yahoo 5년 일봉을 먼저 확보한다.
-        # 1200일 이상 확보된 경우에만 장기 이동평균 계산에 사용한다.
-        fast_df = _parse_yahoo_domestic_candles(key)
-        if fast_df is not None and not fast_df.empty and len(fast_df) >= 1200:
-            fast_df = fast_df.sort_index()
-            fast_df.attrs["_gaemi_raw_df"] = fast_df.copy()
-            DOMESTIC_CANDLE_CACHE[key] = {
-                "time": time.time(),
-                "df": fast_df.copy(deep=True),
-            }
-            inflight.set_result(fast_df.copy(deep=True))
-            # 응답은 여기서 끝낸다. Naver 1200일봉은 뒤에서 캐시를 보강한다.
-            _schedule_domestic_naver_refresh(key)
-            return _apply_domestic_anchor(fast_df.copy(deep=True), anchor_price)
-
-        # FAST PATH 실패 시 기존의 검증된 Naver 경로로 fallback한다.
         raw_df = _fetch_domestic_candles_uncached(key, anchor_price=None)
         if raw_df is None or raw_df.empty:
             inflight.set_result(None)
             return None
         DOMESTIC_CANDLE_CACHE[key] = {"time": time.time(), "df": raw_df.copy(deep=True)}
         inflight.set_result(raw_df.copy(deep=True))
-        return _apply_domestic_anchor(raw_df.copy(deep=True), anchor_price)
+
+        df = raw_df.copy(deep=True)
+        if anchor_price and anchor_price > 0:
+            last_close = float(df["Close"].iloc[-1])
+            if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                ratio = anchor_price / last_close
+                df["Open"] *= ratio
+                df["High"] *= ratio
+                df["Low"] *= ratio
+                df["Close"] *= ratio
+        return df
     except Exception as exc:
         try:
             inflight.set_result(None)
@@ -3751,6 +3695,12 @@ def fetch_domestic_candles(code, anchor_price=None):
     finally:
         with DOMESTIC_CANDLE_INFLIGHT_LOCK:
             DOMESTIC_CANDLE_INFLIGHT.pop(key, None)
+
+# ===== SPEED OPTIMIZATION 2: overseas candle cache =====
+# 5년치 일봉을 매 검색마다 Yahoo에서 다시 받지 않는다.
+# 기본 TTL은 10분이며, 캐시가 없거나 만료된 경우에만 갱신한다.
+OVERSEAS_CANDLE_CACHE = {}
+OVERSEAS_CANDLE_CACHE_TTL = 10 * 60
 
 def fetch_overseas_candles(symbol):
     """

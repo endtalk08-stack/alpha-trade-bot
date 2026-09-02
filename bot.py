@@ -9486,6 +9486,19 @@ const voteKey = 'vote_' + symbol;
                     .catch(() => null);
 
             try {
+            // 차트 데이터는 분석 API와 완전히 병렬로 처리한다.
+            // /api/analyze가 끝날 때까지 차트 렌더링을 기다리지 않는다.
+            fastChartPromise.then(chartData => {
+                if (chartData?._perf) {
+                    console.log(
+                        `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
+                    );
+                    console.table(chartData._perf.slowest_http || []);
+                }
+                if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
+                initTvChart(chartData.candles);
+            });
+
                 const cacheKey = cleanQ.toUpperCase();
                 const cached = ANALYZE_CACHE.get(cacheKey);
                 let data;
@@ -9519,26 +9532,6 @@ const voteKey = 'vote_' + symbol;
                         `[gaemiGTP 성능] ${cleanQ} | 전체 ${data._perf.total_ms}ms | HTTP ${data._perf.http_call_count}회`
                     );
                     console.table(data._perf.slowest_http || []);
-                }
-
-                // 차트는 전체 분석 완료를 기다리지 않는다.
-                if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
-                    setTimeout(() => {
-                        if (searchToken === activeSearchToken) {
-                            initTvChart(cached.data.candles);
-                        }
-                    }, 0);
-                } else {
-                    fastChartPromise.then(chartData => {
-                        if (chartData?._perf) {
-                            console.log(
-                                `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
-                            );
-                            console.table(chartData._perf.slowest_http || []);
-                        }
-                        if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                        initTvChart(chartData.candles);
-                    });
                 }
 
 if ((response && !response.ok) || data.error) {

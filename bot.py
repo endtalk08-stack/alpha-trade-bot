@@ -9478,34 +9478,42 @@ HTML_PAGE = r"""<!DOCTYPE html>
             z-index: 13000;
         }
         @media (max-width: 560px) {
+            /* STEP 29: 모바일 닫힘 상태에서는 오른쪽 레일 자체가 폭을 차지하지 않는다.
+               열기 버튼만 화면 최상단 오른쪽에 떠서 표시되며, 세로 구분선도 숨긴다.
+               따라서 검색창/차트/가운데 콘텐츠가 오른쪽에서 잘리지 않는다. */
             #right-market-rail {
                 display: flex !important;
                 position: fixed !important;
                 top: 0 !important;
                 right: 0 !important;
-                width: 44px !important;
-                max-width: 44px !important;
+                width: 0 !important;
+                max-width: none !important;
                 height: 100vh !important;
                 z-index: 9999 !important;
                 pointer-events: none;
                 background: transparent !important;
-                border-left: 1px solid var(--border-line) !important;
+                border-left: 0 !important;
             }
             #right-market-rail.collapsed {
-                width: 44px !important;
-                max-width: 44px !important;
+                width: 0 !important;
+                max-width: none !important;
+                border-left: 0 !important;
             }
             #right-market-rail #right-market-icons {
-                pointer-events: auto;
+                pointer-events: none;
+                position: fixed !important;
+                top: 0 !important;
+                right: 0 !important;
                 width: 44px !important;
                 min-width: 44px !important;
-                flex: 0 0 44px !important;
+                height: auto !important;
+                flex: none !important;
                 display: flex !important;
                 visibility: visible !important;
                 opacity: 1 !important;
                 padding-top: 8px !important;
-                background: var(--bg-body) !important;
-                border-left: 1px solid var(--border-line) !important;
+                background: transparent !important;
+                border-left: 0 !important;
             }
             #right-market-rail.collapsed #right-market-panel {
                 display: none !important;
@@ -9515,6 +9523,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
             #right-market-rail .right-market-close {
                 display: flex !important;
+                pointer-events: auto !important;
                 visibility: visible !important;
                 opacity: 1 !important;
                 width: 36px !important;
@@ -9539,7 +9548,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 display: flex !important;
             }
             #right-market-rail:not(.collapsed) #right-market-icons {
+                position: absolute !important;
+                top: 0 !important;
+                right: 0 !important;
+                width: 44px !important;
+                min-width: 44px !important;
+                height: 100% !important;
                 flex: 0 0 44px !important;
+                background: var(--bg-body) !important;
+                border-left: 1px solid var(--border-line) !important;
+                pointer-events: auto !important;
             }
         }
 </style>

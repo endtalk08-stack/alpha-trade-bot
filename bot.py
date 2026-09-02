@@ -615,6 +615,104 @@ HTTP_SESSION.headers.update({
 # 화면 동작에는 영향을 주지 않고, /api/analyze와 /api/chart 응답에 _perf로 포함한다.
 # ----------------------------------------------------
 _PERF_LOCAL = threading.local()
+_PERF_REQUESTS = {}
+_PERF_REQUESTS_LOCK = threading.Lock()
+_PERF_HISTORY = []
+_PERF_HISTORY_MAX = 100
+
+
+def _perf_record_http(url, elapsed_ms):
+    request_id = getattr(_PERF_LOCAL, "request_id", None)
+    if not request_id:
+        return
+    try:
+        parsed_url = urllib.parse.urlparse(str(url))
+        host = parsed_url.netloc or parsed_url.path
+        path = parsed_url.path or "/"
+        call = {"host": host, "path": path[:160], "ms": round(elapsed_ms, 1)}
+        with _PERF_REQUESTS_LOCK:
+            record = _PERF_REQUESTS.get(request_id)
+            if record is not None:
+                record["http_calls"].append(call)
+    except Exception:
+        pass
+
+
+def _perf_run_with_context(func, request_id, *args, **kwargs):
+    # ThreadPoolExecutor worker에서도 동일 request_id를 전달해 실제 외부 HTTP 시간을 집계한다.
+    previous = getattr(_PERF_LOCAL, "request_id", None)
+    _PERF_LOCAL.request_id = request_id
+    try:
+        return func(*args, **kwargs)
+    finally:
+        if previous is None:
+            try:
+                del _PERF_LOCAL.request_id
+            except AttributeError:
+                pass
+        else:
+            _PERF_LOCAL.request_id = previous
+
+
+def _perf_submit(executor, func, *args, **kwargs):
+    """현재 분석 요청의 request_id를 worker thread로 전달한다."""
+    request_id = getattr(_PERF_LOCAL, "request_id", None)
+    if request_id:
+        return executor.submit(_perf_run_with_context, func, request_id, *args, **kwargs)
+    return executor.submit(func, *args, **kwargs)
+
+
+def _perf_stage(name):
+    request_id = getattr(_PERF_LOCAL, "request_id", None)
+    if not request_id:
+        return
+    now = time.perf_counter()
+    with _PERF_REQUESTS_LOCK:
+        record = _PERF_REQUESTS.get(request_id)
+        if record is None:
+            return
+        last = record.get("last_stage_ts", record["started"])
+        record["stages"][str(name)] = round((now - last) * 1000.0, 1)
+        record["last_stage_ts"] = now
+
+
+def _perf_store_history(snapshot):
+    if not snapshot:
+        return
+    with _PERF_REQUESTS_LOCK:
+        _PERF_HISTORY.append(dict(snapshot))
+        if len(_PERF_HISTORY) > _PERF_HISTORY_MAX:
+            del _PERF_HISTORY[:-_PERF_HISTORY_MAX]
+
+
+def _perf_history_snapshot(limit=20):
+    with _PERF_REQUESTS_LOCK:
+        rows = list(_PERF_HISTORY[-max(1, min(int(limit), _PERF_HISTORY_MAX)):])
+    analyze_rows = [r for r in rows if r.get("kind") == "analyze"]
+    chart_rows = [r for r in rows if r.get("kind") == "chart"]
+
+    def _summary(items):
+        vals = sorted(float(x.get("total_ms") or 0) for x in items)
+        if not vals:
+            return {"count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "max_ms": 0}
+        def pct(p):
+            idx = min(len(vals) - 1, max(0, int(round((len(vals) - 1) * p))))
+            return round(vals[idx], 1)
+        return {
+            "count": len(vals),
+            "avg_ms": round(sum(vals) / len(vals), 1),
+            "p50_ms": pct(0.50),
+            "p95_ms": pct(0.95),
+            "max_ms": round(vals[-1], 1),
+        }
+
+    return {
+        "recent": rows,
+        "analyze": _summary(analyze_rows),
+        "chart": _summary(chart_rows),
+        "history_limit": _PERF_HISTORY_MAX,
+    }
+
 
 _original_http_get = HTTP_SESSION.get
 
@@ -624,38 +722,53 @@ def _timed_http_get(url, *args, **kwargs):
         return _original_http_get(url, *args, **kwargs)
     finally:
         elapsed_ms = (time.perf_counter() - started) * 1000.0
-        perf = getattr(_PERF_LOCAL, "http_calls", None)
-        if perf is not None:
-            try:
-                parsed_url = urllib.parse.urlparse(str(url))
-                host = parsed_url.netloc or parsed_url.path
-                path = parsed_url.path or "/"
-                perf.append({
-                    "host": host,
-                    "path": path[:160],
-                    "ms": round(elapsed_ms, 1)
-                })
-            except Exception:
-                pass
+        _perf_record_http(url, elapsed_ms)
 
 HTTP_SESSION.get = _timed_http_get
 
 def _perf_begin(kind, query):
+    request_id = f"{threading.get_ident()}-{time.time_ns()}"
+    started = time.perf_counter()
     _PERF_LOCAL.kind = kind
     _PERF_LOCAL.query = query
-    _PERF_LOCAL.started = time.perf_counter()
+    _PERF_LOCAL.started = started
+    _PERF_LOCAL.request_id = request_id
     _PERF_LOCAL.http_calls = []
+    with _PERF_REQUESTS_LOCK:
+        _PERF_REQUESTS[request_id] = {
+            "kind": kind,
+            "query": str(query),
+            "started": started,
+            "last_stage_ts": started,
+            "http_calls": [],
+            "stages": {},
+        }
+    return request_id
+
 
 def _perf_snapshot():
+    request_id = getattr(_PERF_LOCAL, "request_id", None)
     started = getattr(_PERF_LOCAL, "started", None)
-    calls = list(getattr(_PERF_LOCAL, "http_calls", []) or [])
+    with _PERF_REQUESTS_LOCK:
+        record = dict(_PERF_REQUESTS.get(request_id, {}) or {}) if request_id else {}
+        calls = list(record.get("http_calls", []) or [])
+        stages = dict(record.get("stages", {}) or {})
     total_ms = ((time.perf_counter() - started) * 1000.0) if started else None
     calls.sort(key=lambda x: x.get("ms", 0), reverse=True)
-    return {
+    snapshot = {
+        "request_id": request_id,
+        "kind": getattr(_PERF_LOCAL, "kind", None),
+        "query": getattr(_PERF_LOCAL, "query", None),
         "total_ms": round(total_ms, 1) if total_ms is not None else None,
         "http_call_count": len(calls),
-        "slowest_http": calls[:10]
+        "slowest_http": calls[:10],
+        "stages": stages,
     }
+    _perf_store_history(snapshot)
+    if request_id:
+        with _PERF_REQUESTS_LOCK:
+            _PERF_REQUESTS.pop(request_id, None)
+    return snapshot
 
 
 # ----------------------------------------------------
@@ -6003,6 +6116,8 @@ def run_full_pipeline(query):
     clean_q = query.strip().replace(" ", "").upper()
     now_ts = time.time()
 
+    _perf_stage("cache_check")
+
     if clean_q in ANALYSIS_CACHE:
         cached_time, cached_data = ANALYSIS_CACHE[clean_q]
         if now_ts - cached_time < 30:
@@ -6064,8 +6179,8 @@ def run_full_pipeline(query):
         formal_name = query.strip()
         # 차트와 실시간 시세는 서로 의존하지 않으므로 동시에 조회한다.
         with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
-            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
+            chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
+            quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
             chart_price, _, df = chart_future.result()
             quote_snapshot = quote_future.result()
 
@@ -6085,8 +6200,8 @@ def run_full_pipeline(query):
         formal_name = symbol
         # 차트와 실시간 시세를 병렬 조회한다.
         with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
-            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
+            chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
+            quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
             chart_price, _, df = chart_future.result()
             quote_snapshot = quote_future.result()
 
@@ -6110,6 +6225,8 @@ def run_full_pipeline(query):
         if raw_price is None and df is not None and not df.empty:
             raw_price = float(df['Close'].iloc[-1])
             price_str = f"{int(raw_price):,} 원"
+
+    _perf_stage("price_chart")
 
     if raw_price is None or df is None:
         return None
@@ -6143,32 +6260,33 @@ def run_full_pipeline(query):
     # 완료되지 않은 작업은 worker가 계속 수행하여 공용 캐시를 채운다.
     # ====================================================
     optional_futures = {
-        "stock_news_rss": OPTIONAL_API_EXECUTOR.submit(fetch_rss_news, formal_name, 10),
-        "global_news_rss": OPTIONAL_API_EXECUTOR.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
-        "api_news": OPTIONAL_API_EXECUTOR.submit(
+        "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
+        "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+        "api_news": _perf_submit(OPTIONAL_API_EXECUTOR,
             fetch_alpha_vantage_news,
             symbol if market_name == "미국주식" else "",
             "economy_macro",
         ),
-        "macro_snapshot": OPTIONAL_API_EXECUTOR.submit(fetch_fred_macro_snapshot),
-        "consensus": OPTIONAL_API_EXECUTOR.submit(
+        "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
+        "consensus": _perf_submit(OPTIONAL_API_EXECUTOR,
             fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name
         ),
-        "dart_disclosures": OPTIONAL_API_EXECUTOR.submit(
+        "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR,
             fetch_dart_disclosures, symbol, is_krw, 5
         ),
         "domestic_flow": (
-            OPTIONAL_API_EXECUTOR.submit(fetch_naver_domestic_flow_metrics, symbol)
+            _perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol)
             if is_krw and market_name == "국내주식"
             else None
         ),
         "ticker_news": (
-            OPTIONAL_API_EXECUTOR.submit(fetch_alpha_vantage_news, symbol, "")
+            _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "")
             if market_name == "미국주식" and symbol
             else None
         ),
     }
     optional_results = _collect_optional_results(optional_futures)
+    _perf_stage("optional_external")
 
     stock_news_rss = optional_results.get("stock_news_rss") or []
     global_news_rss = optional_results.get("global_news_rss") or []
@@ -6193,6 +6311,7 @@ def run_full_pipeline(query):
     market_calendar = CACHED_MARKET_CALENDAR or []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
+    _perf_stage("quant")
 
     try:
         # 퀀트 결과도 응답을 막지 않도록 백그라운드 저장한다.
@@ -6306,6 +6425,8 @@ def run_full_pipeline(query):
                 current_price_source = "calculated"
         except Exception:
             pass
+
+    _perf_stage("result_build")
 
     result_data = {
         "name": formal_name,
@@ -11050,6 +11171,7 @@ class WebHandler(BaseHTTPRequestHandler):
         return "gzip" in str(self.headers.get("Accept-Encoding", "")).lower()
 
     def _write_bytes_response(self, status, body, content_type, compress=True, cache_control="no-store"):
+        perf_headers = getattr(self, "_perf_headers", None) or {}
         send_gzip = bool(compress and len(body) >= 1024 and self._client_accepts_gzip())
         wire_body = gzip.compress(body, compresslevel=6, mtime=0) if send_gzip else body
 
@@ -11059,12 +11181,27 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", cache_control)
         if send_gzip:
             self.send_header("Content-Encoding", "gzip")
+        for header_name, header_value in perf_headers.items():
+            self.send_header(header_name, str(header_value))
         self.send_header("Content-Length", str(len(wire_body)))
         self.end_headers()
+        self._perf_headers = {}
         self.wfile.write(wire_body)
 
     def _json(self, status, payload):
         clean_payload = clean_for_json(payload)
+        if isinstance(clean_payload, dict) and isinstance(clean_payload.get("_perf"), dict):
+            perf = clean_payload.get("_perf") or {}
+            self._perf_headers = {
+                "X-Gaemi-Response-Time-Ms": perf.get("total_ms", ""),
+                "X-Gaemi-HTTP-Calls": perf.get("http_call_count", ""),
+            }
+            stages = perf.get("stages") or {}
+            if stages:
+                # Server-Timing은 브라우저 Network/Timing 화면에서도 단계별 시간을 확인할 수 있다.
+                self._perf_headers["Server-Timing"] = ", ".join(
+                    f"{str(k).replace('-', '_')};dur={v}" for k, v in stages.items() if v is not None
+                )[:1800]
         # STEP 6: JSON 구분자 공백을 제거하고 gzip을 적용해 네트워크 전송량을 줄인다.
         body = json.dumps(
             clean_payload,
@@ -11183,6 +11320,18 @@ class WebHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"API ERROR /api/us-leading-sectors: {type(exc).__name__}: {exc}")
                 self._json(500, {"ok": False, "error": "미국 업종 데이터를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/performance":
+            try:
+                try:
+                    limit = int(params.get("limit", ["20"])[0])
+                except Exception:
+                    limit = 20
+                perf_data = _perf_history_snapshot(limit)
+                self._json(200, {"ok": True, "data": perf_data})
+            except Exception as exc:
+                self._json(500, {"ok": False, "error": "성능 데이터를 가져오지 못했습니다.", "detail": str(exc)[:300]})
             return
 
         if parsed.path == "/api/chart":

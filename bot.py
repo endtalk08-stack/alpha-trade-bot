@@ -7338,8 +7338,34 @@ def _right_sidebar_kr_rows(limit=15):
                 if not item:
                     continue
                 price = _to_number(d.get("nv") or d.get("closePrice") or item.get("price"))
-                pct = _to_number(d.get("cr") or d.get("fluctuationsRatio") or item.get("change_pct"))
-                change = _to_number(d.get("cv") or d.get("compareToPreviousClosePrice"))
+
+                # Naver polling의 cr/cv는 일부 응답에서 절대값으로 내려오고,
+                # 실제 상승/하락 방향은 rf 코드로 구분된다.
+                # rf=2 상승, rf=5 하락, 그 외는 보합으로 처리한다.
+                raw_pct = _to_number(d.get("cr") or d.get("fluctuationsRatio") or item.get("change_pct"))
+                raw_change = _to_number(d.get("cv") or d.get("compareToPreviousClosePrice"))
+                rise_fall = str(d.get("rf") or "").strip()
+                if raw_pct is not None:
+                    pct = abs(raw_pct)
+                    if rise_fall == "5":
+                        pct = -pct
+                    elif rise_fall == "2":
+                        pct = pct
+                    else:
+                        # rf가 없는 예외 응답은 기존 signed 값을 보존한다.
+                        pct = raw_pct
+                else:
+                    pct = None
+                if raw_change is not None:
+                    change = abs(raw_change)
+                    if rise_fall == "5":
+                        change = -change
+                    elif rise_fall == "2":
+                        change = change
+                    else:
+                        change = raw_change
+                else:
+                    change = None
                 volume = _to_number(d.get("aq") or d.get("accumulatedTradingVolume"))
                 trading_value = _to_number(d.get("aa") or d.get("accumulatedTradingValue"))
                 if trading_value is None and price is not None and volume is not None:

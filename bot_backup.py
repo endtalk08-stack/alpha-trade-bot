@@ -736,6 +736,9 @@ WORLD_BOARD_CONFIG = [
 # 2. JSON 정제 헬퍼 & 초고속 인메모리 캐시
 # ----------------------------------------------------
 CACHED_WORLD_BOARD = []
+CACHED_WORLD_BOARD_FETCH_TIME = 0
+WORLD_BOARD_TTL = 300
+WORLD_BOARD_CACHE_LOCK = threading.Lock()
 CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
@@ -4823,10 +4826,30 @@ NEGATIVE_NEWS_KEYWORDS = [
 
 
 # ===== 복구된 핵심 헬퍼: 최신 통합본에서 누락되어 /api/analyze 500을 일으키던 함수들 =====
-def fetch_all_world_board_parallel():
+def fetch_all_world_board_parallel(force=False):
+    """세계시장 보드를 캐시 기반으로 조회한다.
+
+    STEP 4: /api/analyze의 사용자 응답 경로에서는 이 함수를 호출하지 않는다.
+    별도 /api/world-board에서만 갱신하며, 5분 캐시로 반복적인 10개 외부 호출을 줄인다.
+    """
+    global CACHED_WORLD_BOARD, CACHED_WORLD_BOARD_FETCH_TIME
+
+    now = time.time()
+    with WORLD_BOARD_CACHE_LOCK:
+        if (not force and CACHED_WORLD_BOARD
+                and now - CACHED_WORLD_BOARD_FETCH_TIME < WORLD_BOARD_TTL):
+            return CACHED_WORLD_BOARD
+
     with ThreadPoolExecutor(max_workers=10) as executor:
         results = list(executor.map(fetch_single_world_item, WORLD_BOARD_CONFIG))
-    return results
+    results = [r for r in results if r]
+
+    if results:
+        with WORLD_BOARD_CACHE_LOCK:
+            CACHED_WORLD_BOARD = results
+            CACHED_WORLD_BOARD_FETCH_TIME = now
+
+    return CACHED_WORLD_BOARD or results
 
 def get_trading_val_rank(symbol, is_krw=True):
     if not is_krw:
@@ -5896,6 +5919,9 @@ def run_full_pipeline(query):
     if clean_q in ANALYSIS_CACHE:
         cached_time, cached_data = ANALYSIS_CACHE[clean_q]
         if now_ts - cached_time < 30:
+            # STEP 4: 세계시장 보드/시장 캘린더는 별도 API가 담당한다.
+            # 분석 캐시 응답에 현재 서버 캐시가 있으면 화면 호환성을 위해
+            # 붙여주되, 캐시가 없다고 해서 외부 API를 호출하지 않는다.
             if CACHED_WORLD_BOARD:
                 cached_data["world_board"] = CACHED_WORLD_BOARD
             if CACHED_MARKET_CALENDAR:
@@ -6049,38 +6075,14 @@ def run_full_pipeline(query):
         dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
         domestic_flow = _safe_future_result(f_domestic_flow, None, "domestic flow") if f_domestic_flow else None
 
-    # 세계시장 보드와 경제 캘린더도 서로 독립적이므로
-    # 둘 다 캐시가 없을 때만 병렬 조회한다.
-    world_board = CACHED_WORLD_BOARD
-    market_calendar = CACHED_MARKET_CALENDAR
-
-    need_world = not world_board
-    need_calendar = not market_calendar
-
-    if need_world or need_calendar:
-        with ThreadPoolExecutor(max_workers=2) as board_executor:
-            world_future = (
-                board_executor.submit(fetch_all_world_board_parallel)
-                if need_world else None
-            )
-            calendar_future = (
-                board_executor.submit(fetch_real_market_calendar_live)
-                if need_calendar else None
-            )
-
-            if need_world:
-                try:
-                    world_board = world_future.result() or []
-                except Exception as exc:
-                    print("[WORLD BOARD] 전체 조회 실패:", repr(exc))
-                    world_board = []
-
-            if need_calendar:
-                try:
-                    market_calendar = calendar_future.result() or []
-                except Exception as exc:
-                    print("[MARKET CALENDAR] 조회 실패:", repr(exc))
-                    market_calendar = []
+    # ====================================================
+    # STEP 4: 세계시장 보드 / 시장 캘린더를 분석 API에서 분리
+    # ====================================================
+    # /api/analyze가 최초 호출될 때 10개 세계시장 + 실적/경제 캘린더를
+    # 기다리지 않는다. 이미 별도 API가 채워둔 서버 캐시가 있다면 사용하고,
+    # 없으면 빈 배열로 분석을 진행한다. 화면에서는 별도 API가 병렬로 로딩한다.
+    world_board = CACHED_WORLD_BOARD or []
+    market_calendar = CACHED_MARKET_CALENDAR or []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
 
@@ -10677,6 +10679,66 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
+        function renderWorldBoard(rows) {
+            const wBoardGrid = document.getElementById('worldBoardGrid');
+            if (!wBoardGrid) return;
+            const items = Array.isArray(rows) ? rows : [];
+            if (!items.length) {
+                wBoardGrid.innerHTML = '<div class="us-leading-sector-loading">세계시장 데이터를 불러오지 못했습니다.</div>';
+                return;
+            }
+            wBoardGrid.innerHTML = items.map(w => {
+                const cls = w.up ? 'val-up' : 'val-down';
+                const sparkSvg = renderSparklineSVG(w.sparkline, w.up);
+                const clickName = w.name === 'USD/KRW' ? '환율' : w.name;
+                const safeClick = String(clickName || '').replace(/'/g, "\\'");
+                return `
+                    <div class="mini-index-card" onclick="doSearch('${safeClick}')">
+                        <div class="mini-top">
+                            <span class="mini-name">${String(w.name || '')}</span>
+                            <span class="mini-tag">${String(w.tag || '')}</span>
+                        </div>
+                        <div class="mini-mid-row">
+                            <div>
+                                <div class="mini-price">${String(w.price || '')}</div>
+                                <div class="mini-rate ${cls}">${String(w.rate || '')}</div>
+                            </div>
+                            ${sparkSvg}
+                        </div>
+                    </div>`;
+            }).join('');
+        }
+
+        async function loadWorldBoard() {
+            try {
+                const response = await fetch('/api/world-board');
+                const data = await response.json().catch(() => null);
+                if (!response.ok || !data || data.error) throw new Error((data && data.error) || '세계시장 데이터 오류');
+                renderWorldBoard(data.data);
+            } catch (error) {
+                console.error('World board:', error);
+                const box = document.getElementById('worldBoardGrid');
+                if (box) box.innerHTML = '<div class="us-leading-sector-loading">세계시장 데이터를 잠시 후 다시 불러옵니다.</div>';
+            }
+        }
+
+        async function loadMarketCalendar() {
+            try {
+                const response = await fetch('/api/market-calendar');
+                const data = await response.json().catch(() => null);
+                if (!response.ok || !data || data.error) throw new Error((data && data.error) || '시장 캘린더 데이터 오류');
+                if (Array.isArray(data.data)) {
+                    globalMarketCalendar = data.data;
+                    economicCalendarAutoJumped = false;
+                    economicCalOffset = 0;
+                    economicCalPage = 1;
+                    renderMarketCalendarView();
+                }
+            } catch (error) {
+                console.error('Market calendar:', error);
+            }
+        }
+
         async function loadUsLeadingSectors() {
             const box = document.getElementById('usLeadingSectorList');
             if (!box) return;
@@ -10736,7 +10798,12 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
-        window.addEventListener('DOMContentLoaded', loadUsLeadingSectors);
+        // STEP 4: 무거운 세계시장/캘린더 데이터는 분석 요청과 분리해서 병렬 로딩한다.
+        window.addEventListener('DOMContentLoaded', () => {
+            loadWorldBoard();
+            loadMarketCalendar();
+            loadUsLeadingSectors();
+        });
         window.addEventListener('DOMContentLoaded', () => {
             initTheme();
 
@@ -10948,6 +11015,29 @@ class WebHandler(BaseHTTPRequestHandler):
             )
             return
 
+
+        if parsed.path == "/api/world-board":
+            try:
+                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                rows = fetch_all_world_board_parallel(force=force)
+                self._json(200, {"ok": True, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/world-board: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "세계시장 데이터를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/market-calendar":
+            try:
+                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                if force:
+                    global LAST_CALENDAR_FETCH_TIME
+                    LAST_CALENDAR_FETCH_TIME = 0
+                rows = fetch_real_market_calendar_live()
+                self._json(200, {"ok": True, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/market-calendar: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "시장 캘린더 데이터를 가져오지 못했습니다."})
+            return
 
         if parsed.path == "/api/us-leading-stocks":
             try:

@@ -1356,6 +1356,13 @@ US_SECTOR_STOCK_UNIVERSE = {
     ],
 }
 
+# 주도종목 카드에서 선택된 티커는 일반 검색과 동일한 미국주식 경로로 처리한다.
+# 기존 US_STOCK_MAP에 없는 티커(XOM, CVX, COP, MPC 등)가 일반 분기로 빠져
+# 불필요한 해석 차이가 생기는 것을 방지한다.
+for _sector_candidates in US_SECTOR_STOCK_UNIVERSE.values():
+    for _ticker, _ko_name in _sector_candidates:
+        US_STOCK_MAP.setdefault(_ticker, _ticker)
+
 CACHED_US_LEADING_STOCKS = {}
 LAST_US_LEADING_STOCKS_FETCH = {}
 US_LEADING_STOCKS_TTL = 300
@@ -3440,6 +3447,35 @@ def _fetch_overseas_quote_snapshot_uncached(symbol):
     except Exception as exc:
         print(f"[YAHOO QUOTE ERROR] {symbol}: {type(exc).__name__}: {exc}")
         return None
+
+
+def fetch_overseas_quote_snapshot(symbol):
+    """해외주식 현재가 공용 TTL 캐시 래퍼.
+
+    /api/analyze, /api/chart, 미국 주도종목 상세분석에서 동일 종목의
+    Yahoo quote를 반복 호출하지 않도록 STEP 3 공용 캐시를 사용한다.
+    기존 호출부의 함수명/반환 형식은 그대로 유지한다.
+    """
+    key = str(symbol or "").strip().upper()
+    if not key:
+        return None
+
+    now = time.time()
+    with MARKET_DATA_CACHE_LOCK:
+        cached = OVERSEAS_QUOTE_CACHE.get(key)
+        if cached and (now - cached.get("time", 0.0)) < OVERSEAS_QUOTE_CACHE_TTL:
+            value = cached.get("value")
+            return dict(value) if isinstance(value, dict) else value
+
+    value = _fetch_overseas_quote_snapshot_uncached(key)
+
+    with MARKET_DATA_CACHE_LOCK:
+        OVERSEAS_QUOTE_CACHE[key] = {
+            "time": time.time(),
+            "value": dict(value) if isinstance(value, dict) else value,
+        }
+
+    return dict(value) if isinstance(value, dict) else value
 
 def _fetch_crypto_candles_uncached(symbol):
     clean_sym = symbol.upper().replace("-", "")
@@ -5920,9 +5956,12 @@ def run_full_pipeline(query):
             chart_price, _, df = chart_future.result()
             quote_snapshot = quote_future.result()
 
-        if quote_snapshot:
-            raw_price = quote_snapshot["price"]
-            price_str = f"{raw_price:,.2f} 달러"
+        if isinstance(quote_snapshot, dict) and quote_snapshot.get("price") is not None:
+            try:
+                raw_price = float(quote_snapshot.get("price"))
+            except (TypeError, ValueError):
+                raw_price = chart_price
+            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
         else:
             raw_price = chart_price
             price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
@@ -9699,6 +9738,11 @@ const voteKey = 'vote_' + symbol;
                     throw new Error("분석 데이터를 받지 못했습니다.");
                 }
 
+                if (data.error) {
+                    const detail = data.detail ? ` · ${data.detail}` : '';
+                    throw new Error(`${data.error}${detail}`);
+                }
+
                 if (data._perf) {
                     console.log(
                         `[gaemiGTP 성능] ${cleanQ} | 전체 ${data._perf.total_ms}ms | HTTP ${data._perf.http_call_count}회`
@@ -10552,6 +10596,42 @@ if ((response && !response.ok) || data.error) {
                     loadCommunityData(cleanSymbol, cleanName);
                 }
             }, 0);
+        }
+
+        async function loadSectorChart(sectorSymbol, sectorName) {
+            const symbol = String(sectorSymbol || '').trim().toUpperCase();
+            const name = String(sectorName || '').trim();
+            if (!symbol) return;
+
+            const title = document.getElementById('rTitle');
+            const price = document.getElementById('rPrice');
+            const meta = document.getElementById('rMeta');
+
+            if (title) title.textContent = name || symbol;
+            if (price) price.textContent = '업종 차트 불러오는 중…';
+            if (meta) meta.textContent = '미국 주도업종 · 실제 Yahoo 일봉 데이터';
+
+            try {
+                const response = await fetch('/api/chart?q=' + encodeURIComponent(symbol), {
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => null);
+                if (!response.ok || !data || data.error) {
+                    throw new Error((data && data.error) || ('차트 데이터 오류 (' + response.status + ')'));
+                }
+
+                if (!Array.isArray(data.candles) || !data.candles.length) {
+                    throw new Error('업종 차트 데이터가 없습니다.');
+                }
+
+                initTvChart(data.candles);
+                if (price) price.textContent = '업종 흐름';
+                if (meta) meta.textContent = `${name || symbol} · 최근 65거래일`;
+            } catch (error) {
+                console.error('US sector chart:', error);
+                if (price) price.textContent = '업종 차트를 불러오지 못했습니다.';
+                if (meta) meta.textContent = error && error.message ? error.message : '잠시 후 다시 시도해주세요.';
+            }
         }
 
         async function loadUsLeadingStocks(sectorSymbol, sectorName) {

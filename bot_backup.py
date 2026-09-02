@@ -4,6 +4,7 @@ import os
 EARNINGS_PREVIEW_COUNT = 4
 import re
 import io
+import gzip
 import gc
 import json
 import time
@@ -16,7 +17,7 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:
     ZoneInfo = None
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, Future
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import requests
@@ -614,6 +615,104 @@ HTTP_SESSION.headers.update({
 # 화면 동작에는 영향을 주지 않고, /api/analyze와 /api/chart 응답에 _perf로 포함한다.
 # ----------------------------------------------------
 _PERF_LOCAL = threading.local()
+_PERF_REQUESTS = {}
+_PERF_REQUESTS_LOCK = threading.Lock()
+_PERF_HISTORY = []
+_PERF_HISTORY_MAX = 100
+
+
+def _perf_record_http(url, elapsed_ms):
+    request_id = getattr(_PERF_LOCAL, "request_id", None)
+    if not request_id:
+        return
+    try:
+        parsed_url = urllib.parse.urlparse(str(url))
+        host = parsed_url.netloc or parsed_url.path
+        path = parsed_url.path or "/"
+        call = {"host": host, "path": path[:160], "ms": round(elapsed_ms, 1)}
+        with _PERF_REQUESTS_LOCK:
+            record = _PERF_REQUESTS.get(request_id)
+            if record is not None:
+                record["http_calls"].append(call)
+    except Exception:
+        pass
+
+
+def _perf_run_with_context(func, request_id, *args, **kwargs):
+    # ThreadPoolExecutor worker에서도 동일 request_id를 전달해 실제 외부 HTTP 시간을 집계한다.
+    previous = getattr(_PERF_LOCAL, "request_id", None)
+    _PERF_LOCAL.request_id = request_id
+    try:
+        return func(*args, **kwargs)
+    finally:
+        if previous is None:
+            try:
+                del _PERF_LOCAL.request_id
+            except AttributeError:
+                pass
+        else:
+            _PERF_LOCAL.request_id = previous
+
+
+def _perf_submit(executor, func, *args, **kwargs):
+    """현재 분석 요청의 request_id를 worker thread로 전달한다."""
+    request_id = getattr(_PERF_LOCAL, "request_id", None)
+    if request_id:
+        return executor.submit(_perf_run_with_context, func, request_id, *args, **kwargs)
+    return executor.submit(func, *args, **kwargs)
+
+
+def _perf_stage(name):
+    request_id = getattr(_PERF_LOCAL, "request_id", None)
+    if not request_id:
+        return
+    now = time.perf_counter()
+    with _PERF_REQUESTS_LOCK:
+        record = _PERF_REQUESTS.get(request_id)
+        if record is None:
+            return
+        last = record.get("last_stage_ts", record["started"])
+        record["stages"][str(name)] = round((now - last) * 1000.0, 1)
+        record["last_stage_ts"] = now
+
+
+def _perf_store_history(snapshot):
+    if not snapshot:
+        return
+    with _PERF_REQUESTS_LOCK:
+        _PERF_HISTORY.append(dict(snapshot))
+        if len(_PERF_HISTORY) > _PERF_HISTORY_MAX:
+            del _PERF_HISTORY[:-_PERF_HISTORY_MAX]
+
+
+def _perf_history_snapshot(limit=20):
+    with _PERF_REQUESTS_LOCK:
+        rows = list(_PERF_HISTORY[-max(1, min(int(limit), _PERF_HISTORY_MAX)):])
+    analyze_rows = [r for r in rows if r.get("kind") == "analyze"]
+    chart_rows = [r for r in rows if r.get("kind") == "chart"]
+
+    def _summary(items):
+        vals = sorted(float(x.get("total_ms") or 0) for x in items)
+        if not vals:
+            return {"count": 0, "avg_ms": 0, "p50_ms": 0, "p95_ms": 0, "max_ms": 0}
+        def pct(p):
+            idx = min(len(vals) - 1, max(0, int(round((len(vals) - 1) * p))))
+            return round(vals[idx], 1)
+        return {
+            "count": len(vals),
+            "avg_ms": round(sum(vals) / len(vals), 1),
+            "p50_ms": pct(0.50),
+            "p95_ms": pct(0.95),
+            "max_ms": round(vals[-1], 1),
+        }
+
+    return {
+        "recent": rows,
+        "analyze": _summary(analyze_rows),
+        "chart": _summary(chart_rows),
+        "history_limit": _PERF_HISTORY_MAX,
+    }
+
 
 _original_http_get = HTTP_SESSION.get
 
@@ -623,38 +722,53 @@ def _timed_http_get(url, *args, **kwargs):
         return _original_http_get(url, *args, **kwargs)
     finally:
         elapsed_ms = (time.perf_counter() - started) * 1000.0
-        perf = getattr(_PERF_LOCAL, "http_calls", None)
-        if perf is not None:
-            try:
-                parsed_url = urllib.parse.urlparse(str(url))
-                host = parsed_url.netloc or parsed_url.path
-                path = parsed_url.path or "/"
-                perf.append({
-                    "host": host,
-                    "path": path[:160],
-                    "ms": round(elapsed_ms, 1)
-                })
-            except Exception:
-                pass
+        _perf_record_http(url, elapsed_ms)
 
 HTTP_SESSION.get = _timed_http_get
 
 def _perf_begin(kind, query):
+    request_id = f"{threading.get_ident()}-{time.time_ns()}"
+    started = time.perf_counter()
     _PERF_LOCAL.kind = kind
     _PERF_LOCAL.query = query
-    _PERF_LOCAL.started = time.perf_counter()
+    _PERF_LOCAL.started = started
+    _PERF_LOCAL.request_id = request_id
     _PERF_LOCAL.http_calls = []
+    with _PERF_REQUESTS_LOCK:
+        _PERF_REQUESTS[request_id] = {
+            "kind": kind,
+            "query": str(query),
+            "started": started,
+            "last_stage_ts": started,
+            "http_calls": [],
+            "stages": {},
+        }
+    return request_id
+
 
 def _perf_snapshot():
+    request_id = getattr(_PERF_LOCAL, "request_id", None)
     started = getattr(_PERF_LOCAL, "started", None)
-    calls = list(getattr(_PERF_LOCAL, "http_calls", []) or [])
+    with _PERF_REQUESTS_LOCK:
+        record = dict(_PERF_REQUESTS.get(request_id, {}) or {}) if request_id else {}
+        calls = list(record.get("http_calls", []) or [])
+        stages = dict(record.get("stages", {}) or {})
     total_ms = ((time.perf_counter() - started) * 1000.0) if started else None
     calls.sort(key=lambda x: x.get("ms", 0), reverse=True)
-    return {
+    snapshot = {
+        "request_id": request_id,
+        "kind": getattr(_PERF_LOCAL, "kind", None),
+        "query": getattr(_PERF_LOCAL, "query", None),
         "total_ms": round(total_ms, 1) if total_ms is not None else None,
         "http_call_count": len(calls),
-        "slowest_http": calls[:10]
+        "slowest_http": calls[:10],
+        "stages": stages,
     }
+    _perf_store_history(snapshot)
+    if request_id:
+        with _PERF_REQUESTS_LOCK:
+            _PERF_REQUESTS.pop(request_id, None)
+    return snapshot
 
 
 # ----------------------------------------------------
@@ -742,6 +856,9 @@ WORLD_BOARD_CACHE_LOCK = threading.Lock()
 CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
+ANALYSIS_ENRICHING = set()
+ANALYSIS_ENRICH_LOCK = threading.Lock()
+ANALYSIS_CORE_TTL = 30
 
 # ===== External API cache / rate-limit protection =====
 FRED_CACHE = {}
@@ -752,6 +869,24 @@ ALPHA_EARNINGS_CACHE = {}
 ALPHA_EARNINGS_CACHE_TTL = 1800  # 30분
 FINNHUB_CONSENSUS_CACHE = {}
 FINNHUB_CONSENSUS_CACHE_TTL = 1800  # 30분
+
+# STEP 5: 뉴스/외부 데이터 공용 캐시와 백그라운드 I/O worker.
+# /api/analyze가 외부 API 하나의 느린 응답 때문에 전체를 기다리지 않도록
+# 동일한 worker pool에서 optional 데이터를 처리하고, 성공한 결과는 다음 요청에서 재사용한다.
+NEWS_CACHE = {}
+NEWS_CACHE_TTL = 600  # 10분
+EARNINGS_RESULT_CACHE = {}
+EARNINGS_RESULT_CACHE_TTL = 1800  # 30분
+EXTERNAL_CACHE_LOCK = threading.Lock()
+OPTIONAL_API_EXECUTOR = ThreadPoolExecutor(
+    max_workers=12,
+    thread_name_prefix="gaemi-optional",
+)
+ANALYSIS_ENRICH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="gaemi-enrich",
+)
+OPTIONAL_API_SOFT_TIMEOUT = 1.20  # 사용자 응답에서 optional API에 허용하는 최대 대기시간
 
 # 통합 컨센서스 결과 캐시. 컨센서스는 초단위 데이터가 아니므로
 # 매 종목 검색마다 Naver/Finnhub/Yahoo fallback 체인을 다시 타지 않는다.
@@ -774,17 +909,24 @@ def _rate_limit_wait(min_interval):
         FRED_LAST_REQUEST_TS = time.time()
 
 def _cache_get(cache, key, ttl):
-    item = cache.get(key)
-    if not item:
-        return None
-    ts, value = item
-    if time.time() - ts > ttl:
-        cache.pop(key, None)
-        return None
-    return value
+    with EXTERNAL_CACHE_LOCK:
+        item = cache.get(key)
+        if not item:
+            return None
+        ts, value = item
+        if time.time() - ts > ttl:
+            cache.pop(key, None)
+            return None
+        return value
 
 def _cache_set(cache, key, value):
-    cache[key] = (time.time(), value)
+    with EXTERNAL_CACHE_LOCK:
+        cache[key] = (time.time(), value)
+        # 외부 API 캐시는 장시간 서버가 살아 있어도 무한히 커지지 않도록 제한한다.
+        if len(cache) > 1000:
+            oldest = sorted(cache.items(), key=lambda item: item[1][0])[:200]
+            for old_key, _ in oldest:
+                cache.pop(old_key, None)
     return value
 
 # ===== Theme co-movement engine =====
@@ -1366,6 +1508,10 @@ for _sector_candidates in US_SECTOR_STOCK_UNIVERSE.values():
     for _ticker, _ko_name in _sector_candidates:
         US_STOCK_MAP.setdefault(_ticker, _ticker)
 
+# STEP 11: 일반적인 영문 티커는 별도 목록에 없어도 미국주식 후보로 처리한다.
+# 실제 존재 여부는 Yahoo 시세 조회 결과로 최종 판단하며, 국내주식 자동완성은 호출하지 않는다.
+US_TICKER_PATTERN = re.compile(r"^[A-Z]{1,6}$")
+
 CACHED_US_LEADING_STOCKS = {}
 LAST_US_LEADING_STOCKS_FETCH = {}
 US_LEADING_STOCKS_TTL = 300
@@ -1846,7 +1992,7 @@ def _fetch_yahoo_earnings_timestamps(symbols):
     return result
 
 
-def fetch_all_real_earnings():
+def _fetch_all_real_earnings_uncached():
     """
     국내 + 미국 주요기업 실적 캘린더 수집기.
 
@@ -2466,6 +2612,18 @@ def _filter_kr_us_economic_events(events):
     ]
 
 
+
+def fetch_all_real_earnings():
+    """실적 캘린더 공용 캐시. 실제 발표일 데이터만 저장한다."""
+    cache_key = "all_real_earnings"
+    cached = _cache_get(EARNINGS_RESULT_CACHE, cache_key, EARNINGS_RESULT_CACHE_TTL)
+    if cached is not None:
+        return list(cached) if isinstance(cached, list) else cached
+    result = _fetch_all_real_earnings_uncached()
+    if result:
+        return _cache_set(EARNINGS_RESULT_CACHE, cache_key, list(result))
+    return result or []
+
 def fetch_real_market_calendar_live():
     """실적 + 경제 캘린더를 실제 API에서 가져와 화면용 단일 배열로 합칩니다."""
     global CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
@@ -2955,7 +3113,7 @@ def fetch_naver_news(query_keyword, limit=5):
     return headlines
 
 
-def fetch_rss_news(query_keyword, limit=5):
+def _fetch_rss_news_uncached(query_keyword, limit=5):
     """Google News RSS 우선. 실패/빈 결과이면 Naver News API로 fallback."""
     headlines = []
     clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
@@ -2990,6 +3148,23 @@ def fetch_rss_news(query_keyword, limit=5):
         headlines = fetch_naver_news(clean_k, limit)
 
     return headlines
+
+
+def fetch_rss_news(query_keyword, limit=5):
+    """뉴스 공용 캐시를 사용한다. 빈 결과도 짧게 캐시해 반복 실패를 막는다."""
+    clean_k = re.sub(r'\(.*?\)', '', str(query_keyword or '')).replace('USDT', '').strip()
+    if not clean_k:
+        return []
+    try:
+        lim = max(1, min(int(limit), 20))
+    except Exception:
+        lim = 5
+    key = f"{clean_k.lower()}|{lim}"
+    cached = _cache_get(NEWS_CACHE, key, NEWS_CACHE_TTL)
+    if cached is not None:
+        return list(cached) if isinstance(cached, list) else cached
+    result = _fetch_rss_news_uncached(clean_k, lim)
+    return _cache_set(NEWS_CACHE, key, list(result or []))
 
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
     if not is_krw or not stock_code or not stock_code.isdigit():
@@ -3081,6 +3256,49 @@ def get_naver_stock_market_type(code):
         pass
     return None
 
+
+def _get_cached_domestic_market_type(code):
+    key = str(code or "").strip().upper()
+    if not key:
+        return None
+    item = DOMESTIC_MARKET_TYPE_CACHE.get(key)
+    if item and time.time() - item["time"] < DOMESTIC_MARKET_TYPE_CACHE_TTL:
+        return item.get("value")
+    return None
+
+def _refresh_domestic_market_type(code):
+    key = str(code or "").strip().upper()
+    if not key:
+        return None
+    with DOMESTIC_MARKET_TYPE_LOCK:
+        future = DOMESTIC_MARKET_TYPE_INFLIGHT.get(key)
+        if future is None:
+            future = Future()
+            DOMESTIC_MARKET_TYPE_INFLIGHT[key] = future
+            owner = True
+        else:
+            owner = False
+    if not owner:
+        try:
+            return future.result(timeout=3.0)
+        except Exception:
+            return None
+    try:
+        value = get_naver_stock_market_type(key)
+        DOMESTIC_MARKET_TYPE_CACHE[key] = {"time": time.time(), "value": value}
+        future.set_result(value)
+        return value
+    except Exception as exc:
+        try:
+            future.set_result(None)
+        except Exception:
+            pass
+        print(f"[DOMESTIC MARKET TYPE] {key} refresh failed: {type(exc).__name__}: {exc}")
+        return None
+    finally:
+        with DOMESTIC_MARKET_TYPE_LOCK:
+            DOMESTIC_MARKET_TYPE_INFLIGHT.pop(key, None)
+
 # ===== SPEED OPTIMIZATION 3: 공용 시세/차트 캐시 =====
 # 같은 종목을 /api/analyze 와 /api/chart 에서 연속 조회할 때
 # Naver/Yahoo/Binance를 다시 호출하지 않도록 공용 TTL 캐시를 사용한다.
@@ -3089,10 +3307,27 @@ NAVER_REALTIME_CACHE = {}
 NAVER_REALTIME_CACHE_TTL = 15
 DOMESTIC_CANDLE_CACHE = {}
 DOMESTIC_CANDLE_CACHE_TTL = 10 * 60
+# STEP 10: /api/chart와 /api/analyze가 동시에 같은 종목을 요청할 때
+# 동일한 Naver 1200일봉 HTTP 요청이 중복 발생하지 않도록 single-flight를 사용한다.
+DOMESTIC_CANDLE_INFLIGHT = {}
+DOMESTIC_CANDLE_INFLIGHT_LOCK = threading.Lock()
+DOMESTIC_MARKET_TYPE_CACHE = {}
+DOMESTIC_MARKET_TYPE_CACHE_TTL = 24 * 60 * 60
+DOMESTIC_MARKET_TYPE_INFLIGHT = {}
+DOMESTIC_MARKET_TYPE_LOCK = threading.Lock()
 OVERSEAS_QUOTE_CACHE = {}
 OVERSEAS_QUOTE_CACHE_TTL = 30
 CRYPTO_CANDLE_CACHE = {}
 CRYPTO_CANDLE_CACHE_TTL = 10 * 60
+
+# ===== SPEED OPTIMIZATION 4: 국내주식 가격/차트 병렬 조회 =====
+# 국내 종목 분석에서 실시간 가격, 거래소 구분, 일봉 차트를 순차 호출하지 않고
+# 하나의 분석 요청 안에서 동시에 조회한다. 캐시는 각 함수가 독립적으로 사용한다.
+# 기존 ThreadPoolExecutor를 매 요청마다 생성하는 비용도 줄이기 위해 공용 executor를 사용한다.
+PRICE_DATA_EXECUTOR = ThreadPoolExecutor(max_workers=8)
+# STEP 12: 국내주식 Yahoo .KS/.KQ 동시 조회 전용 풀.
+# 기존 가격 executor 안에서 다시 작업을 제출할 때의 worker 고갈을 방지한다.
+DOMESTIC_FAST_CANDLE_EXECUTOR = ThreadPoolExecutor(max_workers=6)
 
 def _get_naver_realtime_price_uncached(code):
     try:
@@ -3165,7 +3400,64 @@ def fetch_naver_domestic_flow_metrics(code):
     except Exception as exc: print(f"[NAVER FLOW] {code} fetch failed: {exc}")
     return result
 
-def _fetch_domestic_candles_uncached(code, anchor_price=None):
+def _parse_yahoo_domestic_candles(code):
+    """국내 종목의 5년 일봉을 Yahoo에서 빠르게 확보한다.
+    .KS/.KQ를 동시에 조회해 시장 구분을 별도로 확인하지 않고도
+    먼저 도착한 유효 데이터를 사용할 수 있게 한다.
+    """
+    def _one(suffix):
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
+            res = HTTP_SESSION.get(url, timeout=1.5).json()
+            result = res.get("chart", {}).get("result", [])
+            if not result:
+                return None
+            item = result[0]
+            ts = item.get("timestamp", []) or []
+            quote = item.get("indicators", {}).get("quote", [{}])[0] or {}
+            opens = quote.get("open") or []
+            highs = quote.get("high") or []
+            lows = quote.get("low") or []
+            closes = quote.get("close") or []
+            volumes = quote.get("volume") or []
+            records = []
+            for i in range(len(ts)):
+                if i >= len(opens) or opens[i] is None or highs[i] is None or lows[i] is None or closes[i] is None:
+                    continue
+                records.append({
+                    "Date": pd.to_datetime(ts[i], unit="s"),
+                    "Open": float(opens[i]),
+                    "High": float(highs[i]),
+                    "Low": float(lows[i]),
+                    "Close": float(closes[i]),
+                    "Volume": float(volumes[i] or 0.0) if i < len(volumes) else 0.0,
+                })
+            if len(records) >= 250:
+                return pd.DataFrame(records).set_index("Date").sort_index()
+        except Exception:
+            return None
+        return None
+
+    # 두 시장 suffix를 동시에 요청한다. 유효 응답 하나만 있으면 즉시 사용한다.
+    futures = [
+        _perf_submit(DOMESTIC_FAST_CANDLE_EXECUTOR, _one, ".KS"),
+        _perf_submit(DOMESTIC_FAST_CANDLE_EXECUTOR, _one, ".KQ"),
+    ]
+    pending = set(futures)
+    while pending:
+        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+        for fut in done:
+            try:
+                df = fut.result()
+            except Exception:
+                df = None
+            if df is not None and not df.empty:
+                return df
+    return None
+
+
+def _fetch_domestic_candles_naver_uncached(code):
+    """Naver 1200일봉 원본. 정확도 보강/백그라운드 캐시 갱신용."""
     try:
         url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=1200&requestType=0"
         res = HTTP_SESSION.get(url, timeout=2.2)
@@ -3182,23 +3474,76 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
                         "High": float(p[2]),
                         "Low": float(p[3]),
                         "Close": float(p[4]),
-                        "Volume": float(p[5])
+                        "Volume": float(p[5]),
                     })
             if len(records) >= 15:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 df.attrs["_gaemi_raw_df"] = df.copy()
-                if anchor_price and anchor_price > 0:
-                    last_close = float(df['Close'].iloc[-1])
-                    if abs(last_close - anchor_price) / anchor_price > 0.3:
-                        ratio = anchor_price / last_close
-                        df['Open'] *= ratio
-                        df['High'] *= ratio
-                        df['Low'] *= ratio
-                        df['Close'] *= ratio
                 return df
     except Exception:
         pass
+    return None
 
+
+def _refresh_domestic_candles_from_naver(code):
+    """빠른 Yahoo 응답 이후 Naver 1200일봉으로 공용 캐시를 보강한다."""
+    key = str(code or "").strip().upper()
+    if not key:
+        return None
+    try:
+        df = _fetch_domestic_candles_naver_uncached(key)
+        if df is not None and not df.empty:
+            DOMESTIC_CANDLE_CACHE[key] = {"time": time.time(), "df": df.copy(deep=True)}
+            return df
+    except Exception as exc:
+        print(f"[DOMESTIC CANDLE NAVER REFRESH] {key} failed: {type(exc).__name__}: {exc}")
+    return None
+
+
+def _fetch_domestic_candles_uncached(code, anchor_price=None):
+    """국내주식 일봉 원본 조회.
+
+    STEP 12의 Yahoo 우선 경로에서 국내 종목이 "실제 데이터를 가져오지
+    못했습니다"로 끝나는 문제가 확인되어, 검증된 Naver 경로를 우선한다.
+    Yahoo는 Naver가 실패했을 때의 최종 fallback으로만 사용한다.
+    이렇게 하면 기존 국내 퀀트/차트의 데이터 안정성을 우선하면서
+    공용 캐시와 single-flight 효과는 그대로 유지할 수 있다.
+    """
+    # 1) 검증된 Naver 1200일봉
+    try:
+        url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe=day&count=1200&requestType=0"
+        res = HTTP_SESSION.get(url, timeout=2.2)
+        if res.status_code == 200 and '<item data=' in res.text:
+            root = ET.fromstring(res.content)
+            records = []
+            for it in root.findall(".//item"):
+                d_str = it.get("data", "")
+                p = d_str.split("|")
+                if len(p) >= 6:
+                    records.append({
+                        "Date": pd.to_datetime(p[0]),
+                        "Open": float(p[1]),
+                        "High": float(p[2]),
+                        "Low": float(p[3]),
+                        "Close": float(p[4]),
+                        "Volume": float(p[5]),
+                    })
+            if len(records) >= 15:
+                df = pd.DataFrame(records).set_index("Date").sort_index()
+                df.attrs["_gaemi_raw_df"] = df.copy()
+                if anchor_price and anchor_price > 0 and not df.empty:
+                    last_close = float(df["Close"].iloc[-1])
+                    if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                        ratio = anchor_price / last_close
+                        df["Open"] *= ratio
+                        df["High"] *= ratio
+                        df["Low"] *= ratio
+                        df["Close"] *= ratio
+                return df
+    except Exception as exc:
+        print(f"[DOMESTIC NAVER CANDLE] {code} failed: {type(exc).__name__}: {exc}")
+
+    # 2) Naver trend 120일 fallback
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
         res = HTTP_SESSION.get(url, timeout=2.0).json()
@@ -3206,40 +3551,54 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
             records = []
             for it in res:
                 records.append({
-                    "Date": pd.to_datetime(it['localTrdDd']),
-                    "Open": float(str(it['openPrice']).replace(',', '')),
-                    "High": float(str(it['highPrice']).replace(',', '')),
-                    "Low": float(str(it['lowPrice']).replace(',', '')),
-                    "Close": float(str(it['closePrice']).replace(',', '')),
-                    "Volume": float(str(it['accumulatedTradingVolume']).replace(',', ''))
+                    "Date": pd.to_datetime(it["localTrdDd"]),
+                    "Open": float(str(it["openPrice"]).replace(",", "")),
+                    "High": float(str(it["highPrice"]).replace(",", "")),
+                    "Low": float(str(it["lowPrice"]).replace(",", "")),
+                    "Close": float(str(it["closePrice"]).replace(",", "")),
+                    "Volume": float(str(it["accumulatedTradingVolume"]).replace(",", "")),
                 })
             if len(records) >= 15:
                 df = pd.DataFrame(records).set_index("Date").sort_index()
                 df.attrs["_gaemi_raw_df"] = df.copy()
                 return df
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[DOMESTIC NAVER TREND] {code} failed: {type(exc).__name__}: {exc}")
 
+    # 3) Yahoo 최종 fallback (.KS/.KQ 순차 확인)
     for suffix in [".KS", ".KQ"]:
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
             res = HTTP_SESSION.get(url, timeout=2.0).json()
             result = res.get("chart", {}).get("result", [])
             if result:
-                ts = result[0].get("timestamp", [])
-                quote = result[0].get("indicators", {}).get("quote", [{}])[0]
-                records = [{
-                    "Date": pd.to_datetime(ts[i], unit='s'),
-                    "Open": float(quote['open'][i]),
-                    "High": float(quote['high'][i]),
-                    "Low": float(quote['low'][i]),
-                    "Close": float(quote['close'][i]),
-                    "Volume": float(quote['volume'][i] or 0.0)
-                } for i in range(len(ts)) if quote.get('open') and quote['open'][i] is not None]
+                ts = result[0].get("timestamp", []) or []
+                quote = result[0].get("indicators", {}).get("quote", [{}])[0] or {}
+                opens = quote.get("open") or []
+                highs = quote.get("high") or []
+                lows = quote.get("low") or []
+                closes = quote.get("close") or []
+                volumes = quote.get("volume") or []
+                records = []
+                for i in range(len(ts)):
+                    if i >= len(opens) or i >= len(highs) or i >= len(lows) or i >= len(closes):
+                        continue
+                    if opens[i] is None or highs[i] is None or lows[i] is None or closes[i] is None:
+                        continue
+                    records.append({
+                        "Date": pd.to_datetime(ts[i], unit="s"),
+                        "Open": float(opens[i]),
+                        "High": float(highs[i]),
+                        "Low": float(lows[i]),
+                        "Close": float(closes[i]),
+                        "Volume": float(volumes[i] or 0.0) if i < len(volumes) else 0.0,
+                    })
                 if len(records) >= 15:
-                    return pd.DataFrame(records).set_index("Date").sort_index()
-        except Exception:
-            pass
+                    df = pd.DataFrame(records).set_index("Date").sort_index()
+                    df.attrs["_gaemi_raw_df"] = df.copy()
+                    return df
+        except Exception as exc:
+            print(f"[DOMESTIC YAHOO FALLBACK] {code}{suffix} failed: {type(exc).__name__}: {exc}")
 
     return None
 
@@ -3253,7 +3612,6 @@ def fetch_domestic_candles(code, anchor_price=None):
     if cached and now - cached["time"] < DOMESTIC_CANDLE_CACHE_TTL:
         try:
             df = cached["df"].copy(deep=True)
-            # 기존 함수의 anchor_price 보정 계약을 그대로 유지한다.
             if anchor_price and anchor_price > 0 and not df.empty:
                 last_close = float(df["Close"].iloc[-1])
                 if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
@@ -3266,22 +3624,64 @@ def fetch_domestic_candles(code, anchor_price=None):
         except Exception:
             DOMESTIC_CANDLE_CACHE.pop(key, None)
 
-    # 원본 수집기는 anchor 보정 없이 저장해 두고, 요청별 보정만 반환 시 적용한다.
-    raw_df = _fetch_domestic_candles_uncached(key, anchor_price=None)
-    if raw_df is None or raw_df.empty:
-        return None
-    DOMESTIC_CANDLE_CACHE[key] = {"time": now, "df": raw_df.copy(deep=True)}
+    # STEP 10: single-flight
+    # /api/chart와 /api/analyze가 같은 종목을 동시에 요청하면 한쪽만
+    # 실제 Naver/Yahoo 수집을 수행하고 다른 쪽은 그 결과를 기다린다.
+    with DOMESTIC_CANDLE_INFLIGHT_LOCK:
+        inflight = DOMESTIC_CANDLE_INFLIGHT.get(key)
+        if inflight is None:
+            inflight = Future()
+            DOMESTIC_CANDLE_INFLIGHT[key] = inflight
+            owner = True
+        else:
+            owner = False
 
-    df = raw_df.copy(deep=True)
-    if anchor_price and anchor_price > 0:
-        last_close = float(df["Close"].iloc[-1])
-        if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
-            ratio = anchor_price / last_close
-            df["Open"] *= ratio
-            df["High"] *= ratio
-            df["Low"] *= ratio
-            df["Close"] *= ratio
-    return df
+    if not owner:
+        try:
+            raw_df = inflight.result(timeout=6.0)
+            if raw_df is None:
+                return None
+            df = raw_df.copy(deep=True)
+            if anchor_price and anchor_price > 0 and not df.empty:
+                last_close = float(df["Close"].iloc[-1])
+                if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                    ratio = anchor_price / last_close
+                    df["Open"] *= ratio
+                    df["High"] *= ratio
+                    df["Low"] *= ratio
+                    df["Close"] *= ratio
+            return df
+        except Exception:
+            return None
+
+    try:
+        raw_df = _fetch_domestic_candles_uncached(key, anchor_price=None)
+        if raw_df is None or raw_df.empty:
+            inflight.set_result(None)
+            return None
+        DOMESTIC_CANDLE_CACHE[key] = {"time": time.time(), "df": raw_df.copy(deep=True)}
+        inflight.set_result(raw_df.copy(deep=True))
+
+        df = raw_df.copy(deep=True)
+        if anchor_price and anchor_price > 0:
+            last_close = float(df["Close"].iloc[-1])
+            if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                ratio = anchor_price / last_close
+                df["Open"] *= ratio
+                df["High"] *= ratio
+                df["Low"] *= ratio
+                df["Close"] *= ratio
+        return df
+    except Exception as exc:
+        try:
+            inflight.set_result(None)
+        except Exception:
+            pass
+        print(f"[DOMESTIC CANDLE] {key} fetch failed: {type(exc).__name__}: {exc}")
+        return None
+    finally:
+        with DOMESTIC_CANDLE_INFLIGHT_LOCK:
+            DOMESTIC_CANDLE_INFLIGHT.pop(key, None)
 
 # ===== SPEED OPTIMIZATION 2: overseas candle cache =====
 # 5년치 일봉을 매 검색마다 Yahoo에서 다시 받지 않는다.
@@ -5900,25 +6300,144 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
 # ----------------------------------------------------
 # 6. 전체 통합 파이프라인
 # ----------------------------------------------------
-def _safe_future_result(future, default, label):
+def _safe_future_result(future, default, label, timeout=None):
     """외부 API 하나가 실패해도 전체 /api/analyze가 500으로 끝나지 않게 한다."""
     if future is None:
         return default
     try:
-        return future.result()
+        if timeout is None:
+            return future.result()
+        return future.result(timeout=max(0.0, float(timeout)))
     except Exception as exc:
-        print(f"[OPTIONAL API] {label} failed: {repr(exc)}")
+        print(f"[OPTIONAL API] {label} failed/timeout: {type(exc).__name__}: {exc}")
         return default
 
 
-def run_full_pipeline(query):
+def _collect_optional_results(futures, timeout=OPTIONAL_API_SOFT_TIMEOUT):
+    """Optional API들을 한 번에 시작하고, 전체 대기시간만 제한한다.
+
+    timeout을 넘긴 future는 취소하지 않는다. 해당 작업은 worker에서 계속 실행되어
+    각 함수의 공용 캐시를 채우고, 다음 사용자 요청은 캐시 결과를 즉시 사용한다.
+    """
+    if not futures:
+        return {}
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    pending = set(f for f in futures.values() if f is not None)
+    results = {}
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        done, pending = wait(pending, timeout=remaining)
+        for future in done:
+            for name, candidate in futures.items():
+                if candidate is future:
+                    try:
+                        results[name] = future.result()
+                    except Exception as exc:
+                        print(f"[OPTIONAL API] {name} failed: {type(exc).__name__}: {exc}")
+                        results[name] = None
+                    break
+    for name, future in futures.items():
+        if name in results:
+            continue
+        results[name] = None
+        if future is not None and not future.done():
+            print(f"[OPTIONAL API] {name} background refresh continues")
+    return results
+
+
+def _schedule_analysis_enrichment(clean_q, base_result, context):
+    """핵심 응답 이후 선택 외부 데이터를 백그라운드에서 채워 캐시를 완성한다."""
+    with ANALYSIS_ENRICH_LOCK:
+        if clean_q in ANALYSIS_ENRICHING:
+            return
+        ANALYSIS_ENRICHING.add(clean_q)
+
+    def worker():
+        try:
+            market_name = context["market_name"]
+            symbol = context["symbol"]
+            formal_name = context["formal_name"]
+            raw_price = context["raw_price"]
+            is_krw = context["is_krw"]
+            market_index_name = context.get("market_index_name")
+            if market_index_name is None and market_name == "국내주식":
+                market_index_name = _get_cached_domestic_market_type(symbol)
+                if market_index_name is None:
+                    market_index_name = _refresh_domestic_market_type(symbol)
+            df = context["df"]
+
+            optional_futures = {
+                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
+                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+                "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
+                "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
+                "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+                "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
+                "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
+                "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
+            }
+
+            optional_results = {}
+            for name, future in optional_futures.items():
+                if future is None:
+                    optional_results[name] = None
+                    continue
+                try:
+                    optional_results[name] = future.result()
+                except Exception as exc:
+                    print(f"[ANALYSIS ENRICH] {name} failed: {type(exc).__name__}: {exc}")
+                    optional_results[name] = None
+
+            stock_news = merge_news_sources(optional_results.get("stock_news_rss") or [], optional_results.get("ticker_news") or [])
+            global_news = merge_news_sources(optional_results.get("global_news_rss") or [], optional_results.get("api_news") or [])
+            macro_snapshot = optional_results.get("macro_snapshot") or {}
+            consensus = optional_results.get("consensus")
+            dart_disclosures = optional_results.get("dart_disclosures") or []
+            domestic_flow = optional_results.get("domestic_flow")
+            world_board = CACHED_WORLD_BOARD or []
+            market_calendar = CACHED_MARKET_CALENDAR or []
+
+            try:
+                movement_reason = analyze_movement_reason(
+                    raw_price=raw_price, df=df, formal_name=formal_name, market_name=market_name,
+                    world_board=world_board, stock_news=stock_news, dart_disclosures=dart_disclosures,
+                    market_index_name=market_index_name, domestic_flow=domestic_flow, global_news=global_news,
+                    consensus=consensus, macro_snapshot=macro_snapshot, market_calendar=market_calendar, symbol=symbol
+                )
+            except Exception as exc:
+                print("[ANALYSIS ENRICH][MOVEMENT] 오류:", repr(exc))
+                movement_reason = base_result.get("movement_reason")
+
+            enriched = dict(base_result)
+            enriched.update({
+                "stock_news": stock_news, "global_news": global_news, "macro_snapshot": macro_snapshot,
+                "consensus": consensus, "dart_disclosures": dart_disclosures, "domestic_flow": domestic_flow,
+                "movement_reason": movement_reason, "world_board": world_board, "market_calendar": market_calendar,
+                "_details_ready": True,
+            })
+            ANALYSIS_CACHE[clean_q] = (time.time(), enriched)
+            print(f"[ANALYSIS ENRICH] {clean_q} details ready")
+        except Exception as exc:
+            print(f"[ANALYSIS ENRICH] {clean_q} failed: {type(exc).__name__}: {exc}")
+        finally:
+            with ANALYSIS_ENRICH_LOCK:
+                ANALYSIS_ENRICHING.discard(clean_q)
+
+    ANALYSIS_ENRICH_EXECUTOR.submit(worker)
+
+
+def run_full_pipeline(query, lightweight=False):
     global ANALYSIS_CACHE, CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR
     clean_q = query.strip().replace(" ", "").upper()
     now_ts = time.time()
 
+    _perf_stage("cache_check")
+
     if clean_q in ANALYSIS_CACHE:
         cached_time, cached_data = ANALYSIS_CACHE[clean_q]
-        if now_ts - cached_time < 30:
+        if now_ts - cached_time < ANALYSIS_CORE_TTL:
             # STEP 4: 세계시장 보드/시장 캘린더는 별도 API가 담당한다.
             # 분석 캐시 응답에 현재 서버 캐시가 있으면 화면 호환성을 위해
             # 붙여주되, 캐시가 없다고 해서 외부 API를 호출하지 않는다.
@@ -5977,8 +6496,33 @@ def run_full_pipeline(query):
         formal_name = query.strip()
         # 차트와 실시간 시세는 서로 의존하지 않으므로 동시에 조회한다.
         with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
-            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
+            chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
+            quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
+            chart_price, _, df = chart_future.result()
+            quote_snapshot = quote_future.result()
+
+        if isinstance(quote_snapshot, dict) and quote_snapshot.get("price") is not None:
+            try:
+                raw_price = float(quote_snapshot.get("price"))
+            except (TypeError, ValueError):
+                raw_price = chart_price
+            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
+        else:
+            raw_price = chart_price
+            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
+        market_name = "미국주식"
+        is_krw = False
+    # STEP 11: 영문 티커는 대소문자와 관계없이 미국주식 경로로 처리한다.
+    # 기존에는 소문자 티커(예: xom, nvda)가 US_STOCK_MAP에 없으면
+    # 국내주식 분기로 떨어져 Naver autoComplete를 호출했다.
+    # 그 결과 XOM 분석에서도 약 480ms가 불필요하게 발생했다.
+    # 1~6자리 영문 입력은 Naver 검색을 거치지 않고 Yahoo 경로로 바로 보낸다.
+    elif US_TICKER_PATTERN.fullmatch(clean_q or ""):
+        symbol = clean_q
+        formal_name = query.strip() or symbol
+        with ThreadPoolExecutor(max_workers=2) as price_executor:
+            chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
+            quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
             chart_price, _, df = chart_future.result()
             quote_snapshot = quote_future.result()
 
@@ -5998,8 +6542,8 @@ def run_full_pipeline(query):
         formal_name = symbol
         # 차트와 실시간 시세를 병렬 조회한다.
         with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = price_executor.submit(fetch_overseas_candles, symbol)
-            quote_future = price_executor.submit(fetch_overseas_quote_snapshot, symbol)
+            chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
+            quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
             chart_price, _, df = chart_future.result()
             quote_snapshot = quote_future.result()
 
@@ -6017,12 +6561,42 @@ def run_full_pipeline(query):
         if not code:
             return None
         symbol, formal_name = code, name
-        market_index_name = get_naver_stock_market_type(symbol)
-        raw_price, price_str = get_naver_realtime_price(symbol)
-        df = fetch_domestic_candles(symbol, anchor_price=raw_price)
+
+        # STEP 9: 국내주식 가격/차트 관련 외부 호출을 병렬화한다.
+        # 기존에는 거래소 구분 → 실시간 가격 → 1200일 차트가 순차 실행되어
+        # 각 HTTP 지연시간이 합산됐다. 이제 세 작업을 동시에 시작하고 가장
+        # 늦게 끝나는 작업만 기다린다. 기존 데이터/기능은 그대로 유지한다.
+        # STEP 10: KOSPI/KOSDAQ 구분은 첫 화면의 가격/차트 계산에 필수적이지 않다.
+        # 캐시가 있으면 즉시 사용하고, 없으면 core 응답을 막지 않고 백그라운드에서 갱신한다.
+        market_index_name = _get_cached_domestic_market_type(symbol)
+        if market_index_name is None and not lightweight:
+            market_index_name = _perf_submit(PRICE_DATA_EXECUTOR, _refresh_domestic_market_type, symbol).result()
+        elif market_index_name is None:
+            _perf_submit(OPTIONAL_API_EXECUTOR, _refresh_domestic_market_type, symbol)
+
+        realtime_future = _perf_submit(PRICE_DATA_EXECUTOR, get_naver_realtime_price, symbol)
+        candle_future = _perf_submit(PRICE_DATA_EXECUTOR, fetch_domestic_candles, symbol, None)
+
+        raw_price, price_str = realtime_future.result()
+        df = candle_future.result()
+
+        # 실시간 가격이 없을 때만 차트 종가를 현재가 대체값으로 사용한다.
+        # anchor_price는 기존 함수 계약상 반환 후 보정이 필요할 수 있으므로
+        # 실시간 가격을 확보한 경우에만 기존과 동일하게 차트 데이터를 맞춘다.
         if raw_price is None and df is not None and not df.empty:
             raw_price = float(df['Close'].iloc[-1])
             price_str = f"{int(raw_price):,} 원"
+        elif raw_price is not None and df is not None and not df.empty:
+            last_close = float(df['Close'].iloc[-1])
+            if last_close > 0 and abs(last_close - raw_price) / raw_price > 0.3:
+                ratio = raw_price / last_close
+                df = df.copy(deep=True)
+                df['Open'] *= ratio
+                df['High'] *= ratio
+                df['Low'] *= ratio
+                df['Close'] *= ratio
+
+    _perf_stage("price_chart")
 
     if raw_price is None or df is None:
         return None
@@ -6050,30 +6624,59 @@ def run_full_pipeline(query):
     except Exception as exc:
         print(f"[DB ASYNC] 원천 OHLCV 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
-    with ThreadPoolExecutor(max_workers=9) as executor:
-        f_news = executor.submit(fetch_rss_news, formal_name, 10)
-        f_global_news = executor.submit(fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10)
-        f_api_news = executor.submit(fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro")
-        f_macro = executor.submit(fetch_fred_macro_snapshot)
-        f_consensus = executor.submit(fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name)
-        f_dart = executor.submit(fetch_dart_disclosures, symbol, is_krw, 5)
-        f_domestic_flow = executor.submit(fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None
+    # ====================================================
+    # STEP 8: /api/analyze 경량화
+    # core 모드에서는 선택 외부 데이터를 기다리지 않는다. 완료 작업은 백그라운드에서
+    # 캐시를 채우고, /api/analyze-details가 준비 여부를 알려준다.
+    # ====================================================
+    # STEP 8 FIX: core 모드에서도 아래 공통 처리부가 참조하므로
+    # optional_results를 항상 초기화한다. 기존 코드에서는 core 모드일 때
+    # optional_results가 정의되지 않아 UnboundLocalError가 발생했다.
+    optional_results = {}
+    if lightweight:
+        stock_news = []
+        global_news = []
+        api_news = []
+        macro_snapshot = {}
+        ticker_news = []
+        consensus = None
+        dart_disclosures = []
+        domestic_flow = None
+        _perf_stage("optional_external_skipped")
+    else:
+        optional_futures = {
+            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
+            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+            "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
+            "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
+            "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
+            "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
+            "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
+            "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
+        }
+        optional_results = _collect_optional_results(optional_futures)
+        _perf_stage("optional_external")
+        stock_news = merge_news_sources(optional_results.get("stock_news_rss") or [], optional_results.get("ticker_news") or [])
+        global_news = merge_news_sources(optional_results.get("global_news_rss") or [], optional_results.get("api_news") or [])
+        macro_snapshot = optional_results.get("macro_snapshot") or {}
+        ticker_news = optional_results.get("ticker_news") or []
+        consensus = optional_results.get("consensus")
+        dart_disclosures = optional_results.get("dart_disclosures") or []
+        domestic_flow = optional_results.get("domestic_flow")
 
-        stock_news_rss = _safe_future_result(f_news, [], "stock RSS")
-        global_news_rss = _safe_future_result(f_global_news, [], "global RSS")
-        api_news = _safe_future_result(f_api_news, [], "Alpha Vantage news")
-        macro_snapshot = _safe_future_result(f_macro, {}, "FRED macro")
 
-        ticker_news = _safe_future_result(
-            executor.submit(fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None,
-            [], "Alpha ticker news"
-        )
-        # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
-        stock_news = merge_news_sources(stock_news_rss, ticker_news)
-        global_news = merge_news_sources(global_news_rss, api_news)
-        consensus = _safe_future_result(f_consensus, None, "consensus")
-        dart_disclosures = _safe_future_result(f_dart, [], "DART/Naver disclosure") or []
-        domestic_flow = _safe_future_result(f_domestic_flow, None, "domestic flow") if f_domestic_flow else None
+    stock_news_rss = optional_results.get("stock_news_rss") or []
+    global_news_rss = optional_results.get("global_news_rss") or []
+    api_news = optional_results.get("api_news") or []
+    macro_snapshot = optional_results.get("macro_snapshot") or {}
+    ticker_news = optional_results.get("ticker_news") or []
+
+    # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
+    stock_news = merge_news_sources(stock_news_rss, ticker_news)
+    global_news = merge_news_sources(global_news_rss, api_news)
+    consensus = optional_results.get("consensus")
+    dart_disclosures = optional_results.get("dart_disclosures") or []
+    domestic_flow = optional_results.get("domestic_flow")
 
     # ====================================================
     # STEP 4: 세계시장 보드 / 시장 캘린더를 분석 API에서 분리
@@ -6085,6 +6688,7 @@ def run_full_pipeline(query):
     market_calendar = CACHED_MARKET_CALENDAR or []
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
+    _perf_stage("quant")
 
     try:
         # 퀀트 결과도 응답을 막지 않도록 백그라운드 저장한다.
@@ -6199,6 +6803,8 @@ def run_full_pipeline(query):
         except Exception:
             pass
 
+    _perf_stage("result_build")
+
     result_data = {
         "name": formal_name,
         "formal_name": formal_name,
@@ -6230,7 +6836,24 @@ def run_full_pipeline(query):
         "bb_dn_line": bb_dn_line
     }
 
+    result_data["_details_ready"] = not lightweight
     ANALYSIS_CACHE[clean_q] = (now_ts, result_data)
+
+    if lightweight:
+        try:
+            enrich_df = df.copy(deep=True)
+            _schedule_analysis_enrichment(
+                clean_q,
+                result_data,
+                {
+                    "market_name": market_name, "symbol": symbol, "formal_name": formal_name,
+                    "raw_price": raw_price, "is_krw": is_krw, "market_index_name": market_index_name,
+                    "df": enrich_df,
+                },
+            )
+        except Exception as exc:
+            print(f"[ANALYSIS ENRICH] scheduling failed: {type(exc).__name__}: {exc}")
+
     return result_data
 
 # ----------------------------------------------------
@@ -9660,7 +10283,7 @@ const voteKey = 'vote_' + symbol;
         const FAST_CHART_CACHE = new Map();
         const FAST_CHART_CACHE_TTL = 30 * 1000;
 
-        async function doSearch(query) {
+        async function doSearch(query, forceServer = false) {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
             let materialText = '';
 
@@ -9717,10 +10340,10 @@ const voteKey = 'vote_' + symbol;
                 let data;
                 let response = null;
 
-                if (cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
+                if (!forceServer && cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
                     data = cached.data;
                 } else {
-                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ);
+                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + (forceServer ? '&mode=full' : '&mode=core');
                     response = await fetch(url);
 
                     const contentType = response.headers.get("content-type") || "";
@@ -9795,27 +10418,30 @@ if ((response && !response.ok) || data.error) {
                 // 1. 글로벌 보드 렌더링
                 const wBoardGrid = document.getElementById('worldBoardGrid');
                 if (wBoardGrid) {
-                    wBoardGrid.innerHTML = '';
-                    if (data.world_board) {
-                        data.world_board.forEach(w => {
+                    if (Array.isArray(data.world_board) && data.world_board.length) {
+                        // STEP 6: innerHTML += 반복을 제거해 DOM 파싱/리플로우를 한 번으로 줄인다.
+                        wBoardGrid.innerHTML = data.world_board.map(w => {
                             const cls = w.up ? 'val-up' : 'val-down';
                             const sparkSvg = renderSparklineSVG(w.sparkline, w.up);
-                            wBoardGrid.innerHTML += `
-                                <div class="mini-index-card" onclick="doSearch('${w.name === 'USD/KRW' ? '환율' : w.name}')">
+                            const clickName = String(w.name || '').replace(/'/g, "\\'");
+                            return `
+                                <div class="mini-index-card" onclick="doSearch('${clickName === 'USD/KRW' ? '환율' : clickName}')">
                                     <div class="mini-top">
-                                        <span class="mini-name">${w.name}</span>
-                                        <span class="mini-tag">${w.tag}</span>
+                                        <span class="mini-name">${String(w.name || '')}</span>
+                                        <span class="mini-tag">${String(w.tag || '')}</span>
                                     </div>
                                     <div class="mini-mid-row">
                                         <div>
-                                            <div class="mini-price">${w.price}</div>
-                                            <div class="mini-rate ${cls}">${w.rate}</div>
+                                            <div class="mini-price">${String(w.price || '')}</div>
+                                            <div class="mini-rate ${cls}">${String(w.rate || '')}</div>
                                         </div>
                                         ${sparkSvg}
                                     </div>
                                 </div>
                             `;
-                        });
+                        }).join('');
+                    } else {
+                        wBoardGrid.innerHTML = '';
                     }
                 }
 
@@ -10312,16 +10938,13 @@ if ((response && !response.ok) || data.error) {
                 // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {
-                    sNews.innerHTML = '';
-                    if (data.stock_news && data.stock_news.length > 0) {
-                        data.stock_news.slice(0, 6).forEach(n => {
-                            sNews.innerHTML += `
-                                <a href="${n.link}" target="_blank" class="news-item">
-                                    <div class="news-title">${n.title}</div>
-                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                                </a>
-                            `;
-                        });
+                    if (Array.isArray(data.stock_news) && data.stock_news.length > 0) {
+                        sNews.innerHTML = data.stock_news.slice(0, 6).map(n => `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `).join('');
                     } else {
                         sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
                     }
@@ -10329,16 +10952,13 @@ if ((response && !response.ok) || data.error) {
 
                 const gNews = document.getElementById('globalNewsList');
                 if (gNews) {
-                    gNews.innerHTML = '';
-                    if (data.global_news && data.global_news.length > 0) {
-                        data.global_news.slice(0, 6).forEach(n => {
-                            gNews.innerHTML += `
-                                <a href="${n.link}" target="_blank" class="news-item">
-                                    <div class="news-title">${n.title}</div>
-                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                                </a>
-                            `;
-                        });
+                    if (Array.isArray(data.global_news) && data.global_news.length > 0) {
+                        gNews.innerHTML = data.global_news.slice(0, 6).map(n => `
+                            <a href="${n.link}" target="_blank" class="news-item">
+                                <div class="news-title">${n.title}</div>
+                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                            </a>
+                        `).join('');
                     } else {
                         gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
                     }
@@ -10443,17 +11063,14 @@ if ((response && !response.ok) || data.error) {
                 const dCard = document.getElementById('rowDart');
                 const dList = document.getElementById('dartList');
                 if (dCard && dList) {
-                    if (data.dart_disclosures && data.dart_disclosures.length > 0) {
-                        dList.innerHTML = '';
-                        data.dart_disclosures.forEach(d => {
-                            dList.innerHTML += `
-                                <a href="${d.link}" target="_blank" class="dart-item">
-                                    <span class="dart-tag tag-${d.tag_type}">${d.tag_name}</span>
-                                    <span class="dart-title">${d.title}</span>
-                                    <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${d.date}</span>
-                                </a>
-                            `;
-                        });
+                    if (Array.isArray(data.dart_disclosures) && data.dart_disclosures.length > 0) {
+                        dList.innerHTML = data.dart_disclosures.map(d => `
+                            <a href="${d.link}" target="_blank" class="dart-item">
+                                <span class="dart-tag tag-${d.tag_type}">${d.tag_name}</span>
+                                <span class="dart-title">${d.title}</span>
+                                <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${d.date}</span>
+                            </a>
+                        `).join('');
                         dCard.style.display = 'block';
                     } else {
                         dCard.style.display = 'none';
@@ -10462,6 +11079,11 @@ if ((response && !response.ok) || data.error) {
 
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
+
+                // STEP 8: 핵심 결과를 먼저 표시하고 선택 데이터는 백그라운드에서 보강한다.
+                if (data._details_ready === false) {
+                    pollAnalysisDetails(cleanQ, searchToken);
+                }
 
                 // 차트는 위의 fastChartPromise에서 먼저 그려진다.
                 // 서버 전체 분석의 candles는 기존 호환성을 위해 그대로 유지한다.
@@ -10473,6 +11095,23 @@ if ((response && !response.ok) || data.error) {
                 alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
                 document.getElementById('loading').style.display = 'none';
             }
+        }
+
+        async function pollAnalysisDetails(query, searchToken, attempt = 0) {
+            if (searchToken !== activeSearchToken || attempt >= 10) return;
+            try {
+                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query), {cache: 'no-store'});
+                if (r.status === 200) {
+                    const payload = await r.json();
+                    if (payload && payload.ready && payload.data) {
+                        if (searchToken !== activeSearchToken) return;
+                        ANALYZE_CACHE.delete(query.trim().toUpperCase());
+                        await doSearch(query, true);
+                        return;
+                    }
+                }
+            } catch (e) {}
+            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 450);
         }
 
         function initTvChart(candles) {
@@ -10924,8 +11563,9 @@ def run_fast_chart_pipeline(query):
         df = _fetch_fast_overseas_chart(symbol)
         return _finish(df)
 
-    if any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
-        symbol = query.upper().strip()
+    # STEP 11: 영문 티커는 소문자로 입력해도 Naver 자동완성으로 가지 않는다.
+    if US_TICKER_PATTERN.fullmatch(clean_q or ""):
+        symbol = clean_q
         df = _fetch_fast_overseas_chart(symbol)
         return _build_chart_payload(df) if df is not None else None
 
@@ -10944,16 +11584,54 @@ class WebHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print("WEB", fmt % args)
 
+    def _client_accepts_gzip(self):
+        return "gzip" in str(self.headers.get("Accept-Encoding", "")).lower()
+
+    def _write_bytes_response(self, status, body, content_type, compress=True, cache_control="no-store"):
+        perf_headers = getattr(self, "_perf_headers", None) or {}
+        send_gzip = bool(compress and len(body) >= 1024 and self._client_accepts_gzip())
+        wire_body = gzip.compress(body, compresslevel=6, mtime=0) if send_gzip else body
+
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", cache_control)
+        if send_gzip:
+            self.send_header("Content-Encoding", "gzip")
+        for header_name, header_value in perf_headers.items():
+            self.send_header(header_name, str(header_value))
+        self.send_header("Content-Length", str(len(wire_body)))
+        self.end_headers()
+        self._perf_headers = {}
+        self.wfile.write(wire_body)
+
     def _json(self, status, payload):
         clean_payload = clean_for_json(payload)
-        body = json.dumps(clean_payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        if isinstance(clean_payload, dict) and isinstance(clean_payload.get("_perf"), dict):
+            perf = clean_payload.get("_perf") or {}
+            self._perf_headers = {
+                "X-Gaemi-Response-Time-Ms": perf.get("total_ms", ""),
+                "X-Gaemi-HTTP-Calls": perf.get("http_call_count", ""),
+            }
+            stages = perf.get("stages") or {}
+            if stages:
+                # Server-Timing은 브라우저 Network/Timing 화면에서도 단계별 시간을 확인할 수 있다.
+                self._perf_headers["Server-Timing"] = ", ".join(
+                    f"{str(k).replace('-', '_')};dur={v}" for k, v in stages.items() if v is not None
+                )[:1800]
+        # STEP 6: JSON 구분자 공백을 제거하고 gzip을 적용해 네트워크 전송량을 줄인다.
+        body = json.dumps(
+            clean_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self._write_bytes_response(
+            status,
+            body,
+            "application/json; charset=utf-8",
+            compress=True,
+            cache_control="no-store",
+        )
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -11061,6 +11739,18 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(500, {"ok": False, "error": "미국 업종 데이터를 가져오지 못했습니다."})
             return
 
+        if parsed.path == "/api/performance":
+            try:
+                try:
+                    limit = int(params.get("limit", ["20"])[0])
+                except Exception:
+                    limit = 20
+                perf_data = _perf_history_snapshot(limit)
+                self._json(200, {"ok": True, "data": perf_data})
+            except Exception as exc:
+                self._json(500, {"ok": False, "error": "성능 데이터를 가져오지 못했습니다.", "detail": str(exc)[:300]})
+            return
+
         if parsed.path == "/api/chart":
             q = str(params.get("q", [""])[0]).strip()
             if not q:
@@ -11083,14 +11773,31 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(500, {"error": "차트 데이터를 가져오지 못했습니다.", "_perf": perf})
             return
 
+        if parsed.path == "/api/analyze-details":
+            q = str(params.get("q", [""])[0]).strip()
+            if not q:
+                self._json(400, {"ok": False, "error": "종목명을 입력해주세요."})
+                return
+            clean_q = q.replace(" ", "").upper()
+            cached = ANALYSIS_CACHE.get(clean_q)
+            if cached:
+                cached_time, cached_data = cached
+                if time.time() - cached_time < ANALYSIS_CORE_TTL and cached_data.get("_details_ready"):
+                    self._json(200, {"ok": True, "ready": True, "data": cached_data})
+                    return
+            self._json(202, {"ok": True, "ready": False})
+            return
+
         if parsed.path == "/api/analyze":
             q = str(params.get("q", [""])[0]).strip()
             if not q:
                 self._json(400, {"error": "종목명을 입력해주세요."})
                 return
+            mode = str(params.get("mode", ["full"])[0]).strip().lower()
+            lightweight = mode == "core"
             _perf_begin("analyze", q)
             try:
-                data = run_full_pipeline(q)
+                data = run_full_pipeline(q, lightweight=lightweight)
                 perf = _perf_snapshot()
                 if not data:
                     print(f"[PERF][analyze] {q}: {perf}")
@@ -11109,13 +11816,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 })
             return
 
+        # STEP 6: 초기 HTML도 gzip으로 전송해 첫 화면 로딩 비용을 줄인다.
         html_bytes = HTML_PAGE.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(html_bytes)))
-        self.end_headers()
-        self.wfile.write(html_bytes)
+        self._write_bytes_response(
+            200,
+            html_bytes,
+            "text/html; charset=utf-8",
+            compress=True,
+            cache_control="no-store",
+        )
 
 def run_web_server():
     # DB가 실패해도 기존 서버를 막지 않는다.

@@ -6728,7 +6728,7 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 print("[ANALYSIS ENRICH][MOVEMENT] 오류:", repr(exc))
                 movement_reason = base_result.get("movement_reason")
 
-            kiwoom_deep_comment = build_kiwoom_deep_briefing(
+           kiwoom_deep_comment = build_kiwoom_deep_briefing(
             formal_name=formal_name,
             price_str=base_result.get("price") or base_result.get("price_str"),
             current_change_pct=base_result.get("current_change_pct"),
@@ -6746,8 +6746,8 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             "kiwoom_deep_comment": kiwoom_deep_comment,
             "_details_ready": True,
         })
-            ANALYSIS_CACHE[clean_q] = (time.time(), enriched)
-            print(f"[ANALYSIS ENRICH] {clean_q} details ready")
+        ANALYSIS_CACHE[clean_q] = (time.time(), enriched)
+        print(f"[ANALYSIS ENRICH] {clean_q} details ready")
         except Exception as exc:
             print(f"[ANALYSIS ENRICH] {clean_q} failed: {type(exc).__name__}: {exc}")
         finally:

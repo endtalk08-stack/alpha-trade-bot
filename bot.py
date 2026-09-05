@@ -62,9 +62,7 @@ class ScannerWorker(QThread):
             self.log_signal.emit(f"   ▶ ({idx+1}/{len(top_stocks)}) {name} 차트 수신 및 분석 중...")
             df = self.get_candles(code)
             
-            # 150이평 계산을 위해 최소 150개 봉 확보 확인
             if not df.empty and len(df) >= 150:
-                # 증권사 수신 데이터의 가장 최신 봉 날짜를 기준일로 설정
                 target_date = str(df.iloc[-1]["date"])
                 
                 df["ma20"] = df["close"].rolling(20).mean()
@@ -72,8 +70,9 @@ class ScannerWorker(QThread):
                 df["ma150"] = df["close"].rolling(150).mean()
                 
                 for i in range(len(df) - 1, 149, -1):
+                    if not self.is_running:
+                        break
                     curr = df.iloc[i]
-                    # 기준 거래일 이전 날짜로 넘어가면 당일 검사 종료
                     if str(curr.get("date", "")) != target_date:
                         break
 
@@ -98,8 +97,7 @@ class ScannerWorker(QThread):
 
             time.sleep(0.15)
             
-        # UI 연동 확인용 더미 데이터
-        if not found_any:
+        if not found_any and self.is_running:
             self.log_signal.emit("💡 조건 만족 종목이 없어 UI 연동 테스트용 가상 데이터를 표에 추가합니다.")
             self.result_signal.emit({"code": "005930", "name": "[테스트] 삼성전자", "price": "70,000", "status": "🔥눌림목 대기"})
             self.result_signal.emit({"code": "086520", "name": "[테스트] 에코프로", "price": "105,000", "status": "⏳시간초과"})
@@ -120,8 +118,9 @@ class ScannerWorker(QThread):
         next_key = ""
         cont_yn = "N"
 
-        # 150이평 산출을 위해 최대 3회 연속 조회(약 300봉) 수행
         for _ in range(3):
+            if not self.is_running:
+                break
             req_headers = headers.copy()
             if cont_yn == "Y" and next_key:
                 req_headers["cont-yn"] = "Y"
@@ -181,8 +180,6 @@ class ScannerWorker(QThread):
                 clean_df[c] = 0
 
         clean_df["value"] = clean_df["close"] * clean_df["volume"]
-        
-        # 중복 봉 제거 및 시간순 정렬
         return clean_df.drop_duplicates(subset=["date", "time"]).sort_values(by=["date", "time"]).reset_index(drop=True)
 
     def stop(self):
@@ -208,7 +205,7 @@ class KiwoomHTS(QMainWindow):
         main_layout = QVBoxLayout()
         main_widget.setLayout(main_layout)
 
-        # 상단
+        # 상단 패널
         top_layout = QHBoxLayout()
         self.btn_login = QPushButton("🔑 API 접속")
         self.btn_login.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px; font-weight: bold; width: 150px;")
@@ -224,7 +221,7 @@ class KiwoomHTS(QMainWindow):
         top_layout.addStretch(1)
         main_layout.addLayout(top_layout)
 
-        # 중앙
+        # 중앙 패널 (테이블 + 콘솔창)
         mid_layout = QHBoxLayout()
         self.table = QTableWidget()
         self.table.setColumnCount(4)
@@ -236,6 +233,7 @@ class KiwoomHTS(QMainWindow):
         self.table.setColumnWidth(2, 100)
         self.table.setColumnWidth(3, 150)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows) # 행 전체 선택 모드
         self.table.cellDoubleClicked.connect(self.on_table_double_click)
         mid_layout.addWidget(self.table, stretch=1)
 
@@ -244,7 +242,7 @@ class KiwoomHTS(QMainWindow):
         mid_layout.addWidget(self.log_window, stretch=1)
         main_layout.addLayout(mid_layout)
 
-        # 하단
+        # 하단 패널 (주문 및 계좌)
         bottom_box = QGroupBox("실전 주문 및 계좌 패널")
         bottom_box.setStyleSheet("QGroupBox { border: 1px solid #555; margin-top: 10px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }")
         bottom_layout = QHBoxLayout()
@@ -277,17 +275,21 @@ class KiwoomHTS(QMainWindow):
         bottom_layout.addWidget(line)
         bottom_layout.addSpacing(20)
 
+        # [종목코드 입력칸: 정규식으로 숫자만 6자리 입력 제한]
         bottom_layout.addWidget(QLabel("종목코드:"))
         self.input_code = QLineEdit()
         self.input_code.setPlaceholderText("6자리")
         self.input_code.setMaxLength(6)
+        self.input_code.setValidator(QRegExpValidator(QRegExp(r"^[0-9]{6}$")))
         self.input_code.setFixedWidth(70)
         self.input_code.setStyleSheet("background-color: white; color: black; font-weight: bold;")
         bottom_layout.addWidget(self.input_code)
 
+        # [수량 입력칸: 1~999,999 범위 정수만 입력 제한]
         bottom_layout.addWidget(QLabel("수량(주):"))
         self.input_qty = QLineEdit("10")
-        self.input_qty.setFixedWidth(50)
+        self.input_qty.setValidator(QIntValidator(1, 999999))
+        self.input_qty.setFixedWidth(60)
         self.input_qty.setStyleSheet("background-color: white; color: black; font-weight: bold;")
         bottom_layout.addWidget(self.input_qty)
         
@@ -319,9 +321,7 @@ class KiwoomHTS(QMainWindow):
             self.btn_login.setText("🔑 API 접속")
             self.btn_login.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px; font-weight: bold;")
             self.btn_scan.setEnabled(False)
-            if self.scanner_thread and self.scanner_thread.isRunning():
-                self.scanner_thread.stop()
-                self.scanner_thread.wait(1000)
+            self.stop_scanner()
         else:
             if not APP_KEY or not APP_SECRET:
                 self.log_message("⚠️ APP_KEY와 APP_SECRET을 코드 상단에 먼저 입력하세요.")
@@ -348,7 +348,8 @@ class KiwoomHTS(QMainWindow):
                 self.log_message(f"❌ 통신 에러: {e}")
 
     def start_scanner(self):
-        if not self.token: return
+        if not self.token:
+            return
         self.table.setRowCount(0)
         self.btn_scan.setEnabled(False)
         self.btn_scan.setText("⏳ 스캔 진행 중...")
@@ -359,6 +360,12 @@ class KiwoomHTS(QMainWindow):
         self.scanner_thread.finish_signal.connect(self.scan_finished)
         self.scanner_thread.start()
 
+    def stop_scanner(self):
+        if self.scanner_thread and self.scanner_thread.isRunning():
+            self.scanner_thread.stop()
+            self.scanner_thread.wait(2000)
+            self.scanner_thread = None
+
     def add_table_row(self, data):
         row = self.table.rowCount()
         self.table.insertRow(row)
@@ -366,7 +373,8 @@ class KiwoomHTS(QMainWindow):
         self.table.setItem(row, 1, QTableWidgetItem(data["name"]))
         self.table.setItem(row, 2, QTableWidgetItem(data["price"]))
         item_status = QTableWidgetItem(data["status"])
-        if "대기" in data["status"]: item_status.setForeground(QBrush(QColor("#E83D3D")))
+        if "대기" in data["status"]:
+            item_status.setForeground(QBrush(QColor("#E83D3D")))
         self.table.setItem(row, 3, item_status)
         self.log_message(f"🍔 [포착] {data['name']} - {data['status']}")
 
@@ -380,22 +388,28 @@ class KiwoomHTS(QMainWindow):
         item_name = self.table.item(row, 1)
         if not item_code or not item_name:
             return
-        code = item_code.text()
-        name = item_name.text()
+        code = item_code.text().strip()
+        name = item_name.text().strip()
         self.input_code.setText(code)
-        self.log_message(f"📌 '{name}' 종목이 하단 주문창에 세팅되었습니다.")
+        self.log_message(f"📌 '{name}'({code}) 종목이 하단 주문창에 세팅되었습니다.")
 
     def check_balance(self):
-        if not self.token: return
+        if not self.token:
+            self.log_message("⚠️ 먼저 API 접속을 진행하세요.")
+            return
         self.log_message("💰 가상 예수금 조회가 완료되었습니다.")
         self.label_balance.setText("주문가능금액: 15,400,200 원")
 
     def send_order(self, order_type):
+        if not self.token:
+            self.log_message("⚠️ API 접속 상태에서만 주문 전송이 가능합니다.")
+            return
+
         code = self.input_code.text().strip()
         qty = self.input_qty.text().strip()
         
         if len(code) != 6 or not code.isdigit():
-            self.log_message("⚠️ 매매할 종목코드를 숫자 6자리로 입력하세요.")
+            self.log_message("⚠️ 유효한 종목코드 6자리를 입력하세요.")
             return
             
         if not qty.isdigit() or int(qty) <= 0:
@@ -404,6 +418,10 @@ class KiwoomHTS(QMainWindow):
             
         order_name = "매수" if order_type == "BUY" else "매도"
         self.log_message(f"✅ {order_name} 주문 전송! [종목:{code} / 수량:{qty}주 / 시장가]")
+
+    def closeEvent(self, event):
+        self.stop_scanner()
+        event.accept()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

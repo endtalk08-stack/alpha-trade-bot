@@ -1,4 +1,5 @@
 import os
+import ast
 
 # 실적 캘린더 첫 화면에 보여줄 주요 예정 실적 수
 EARNINGS_PREVIEW_COUNT = 4
@@ -3633,7 +3634,153 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
     except Exception as exc:
         print(f"[DOMESTIC NAVER CANDLE] {code} failed: {type(exc).__name__}: {exc}")
 
-    # 2) Naver trend 120일 fallback
+    # 2) Naver 신형 Chart API fallback
+    # 일부 국내 종목(예: Reg.S 종목)은 legacy fchart에서 차트가 404/빈 응답이
+    # 발생할 수 있다. 이 경우 api.stock.naver.com의 신형 chart endpoint를 사용한다.
+    # 기존 fchart가 정상인 종목은 기존 경로를 그대로 사용한다.
+    try:
+        end_dt = datetime.now().strftime("%Y%m%d")
+        start_dt = (datetime.now() - timedelta(days=365 * 5 + 20)).strftime("%Y%m%d")
+        url = (
+            f"https://api.stock.naver.com/chart/domestic/item/{code}"
+            f"?periodType=dayCandle&startDateTime={start_dt}&endDateTime={end_dt}"
+        )
+        res = HTTP_SESSION.get(url, timeout=2.2, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": "https://stock.naver.com/",
+        })
+        res.raise_for_status()
+        payload = res.json()
+
+        # 응답 버전에 따라 priceInfos/priceInfo/data/result 아래에 배열이 들어올 수 있으므로
+        # 날짜 필드(localDate)를 가진 레코드 배열을 재귀적으로 찾는다.
+        candidates = []
+        def _walk_chart_payload(obj, depth=0):
+            if depth > 7:
+                return
+            if isinstance(obj, list):
+                if obj and all(isinstance(x, dict) for x in obj[:min(len(obj), 8)]):
+                    if any((x.get("localDate") or x.get("date")) for x in obj[:min(len(obj), 8)]):
+                        candidates.append(obj)
+                for child in obj[:20]:
+                    _walk_chart_payload(child, depth + 1)
+            elif isinstance(obj, dict):
+                for child in obj.values():
+                    _walk_chart_payload(child, depth + 1)
+        _walk_chart_payload(payload)
+
+        best = max(candidates, key=len) if candidates else []
+        records = []
+        for it in best:
+            if not isinstance(it, dict):
+                continue
+            date_value = it.get("localDate") or it.get("date")
+            try:
+                date_value = pd.to_datetime(str(date_value))
+                op = it.get("openPrice", it.get("open"))
+                hi = it.get("highPrice", it.get("high"))
+                lo = it.get("lowPrice", it.get("low"))
+                cl = it.get("closePrice", it.get("close"))
+                vol = it.get("accumulatedTradingVolume", it.get("volume", 0))
+                if any(v is None for v in (op, hi, lo, cl)):
+                    continue
+                records.append({
+                    "Date": date_value,
+                    "Open": float(str(op).replace(",", "")),
+                    "High": float(str(hi).replace(",", "")),
+                    "Low": float(str(lo).replace(",", "")),
+                    "Close": float(str(cl).replace(",", "")),
+                    "Volume": float(str(vol or 0).replace(",", "")),
+                })
+            except Exception:
+                continue
+
+        if len(records) >= 15:
+            df = pd.DataFrame(records).drop_duplicates(subset=["Date"]).set_index("Date").sort_index()
+            df.attrs["_gaemi_raw_df"] = df.copy()
+            if anchor_price and anchor_price > 0 and not df.empty:
+                last_close = float(df["Close"].iloc[-1])
+                if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                    ratio = anchor_price / last_close
+                    df["Open"] *= ratio
+                    df["High"] *= ratio
+                    df["Low"] *= ratio
+                    df["Close"] *= ratio
+            return df
+    except Exception as exc:
+        print(f"[DOMESTIC NAVER NEW CHART] {code} failed: {type(exc).__name__}: {exc}")
+
+    # 3) Naver 공식/공개 JSON형 과거시세 fallback
+    # 일부 국내 종목(특히 외국계/Reg.S 종목)은 fchart와 신형 chart endpoint 중
+    # 하나가 404를 반환할 수 있다. 이 경우 api.finance.naver.com의 siseJson
+    # 엔드포인트에서 동일한 일봉 OHLCV를 받아 차트를 구성한다.
+    try:
+        end_dt = datetime.now().strftime("%Y%m%d")
+        start_dt = (datetime.now() - timedelta(days=365 * 6 + 30)).strftime("%Y%m%d")
+        url = (
+            "https://api.finance.naver.com/siseJson.naver"
+            f"?symbol={code}&requestType=1&startTime={start_dt}&endTime={end_dt}&timeframe=day"
+        )
+        res = HTTP_SESSION.get(url, timeout=2.2, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": f"https://finance.naver.com/item/main.naver?code={code}",
+        })
+        if res.status_code == 200 and res.text.strip():
+            raw = res.text.strip()
+            try:
+                rows = json.loads(raw)
+            except Exception:
+                # siseJson은 JSON처럼 보이지만 환경에 따라 JavaScript-like
+                # 배열 텍스트를 반환할 수 있어 literal_eval을 보조 사용한다.
+                normalized = raw
+                normalized = re.sub(r'\bnull\b', 'None', normalized)
+                normalized = re.sub(r'\btrue\b', 'True', normalized, flags=re.I)
+                normalized = re.sub(r'\bfalse\b', 'False', normalized, flags=re.I)
+                rows = ast.literal_eval(normalized)
+
+            if isinstance(rows, list) and len(rows) >= 15:
+                records = []
+                for item in rows:
+                    if not isinstance(item, (list, tuple)) or len(item) < 6:
+                        continue
+                    try:
+                        # [날짜, 시가, 고가, 저가, 종가, 거래량, ...]
+                        d = pd.to_datetime(str(item[0]))
+                        op = float(str(item[1]).replace(",", ""))
+                        hi = float(str(item[2]).replace(",", ""))
+                        lo = float(str(item[3]).replace(",", ""))
+                        cl = float(str(item[4]).replace(",", ""))
+                        vol = float(str(item[5] or 0).replace(",", ""))
+                        if not any(np.isnan(v) for v in (op, hi, lo, cl)):
+                            records.append({
+                                "Date": d,
+                                "Open": op,
+                                "High": hi,
+                                "Low": lo,
+                                "Close": cl,
+                                "Volume": vol,
+                            })
+                    except Exception:
+                        continue
+
+                if len(records) >= 15:
+                    df = pd.DataFrame(records).drop_duplicates(subset=["Date"]).set_index("Date").sort_index()
+                    df.attrs["_gaemi_raw_df"] = df.copy()
+                    if anchor_price and anchor_price > 0 and not df.empty:
+                        last_close = float(df["Close"].iloc[-1])
+                        if last_close > 0 and abs(last_close - anchor_price) / anchor_price > 0.3:
+                            ratio = anchor_price / last_close
+                            df["Open"] *= ratio
+                            df["High"] *= ratio
+                            df["Low"] *= ratio
+                            df["Close"] *= ratio
+                    return df
+    except Exception as exc:
+        print(f"[DOMESTIC NAVER SISEJSON] {code} failed: {type(exc).__name__}: {exc}")
+
+    # 4) Naver trend 120일 fallback
     try:
         url = f"https://m.stock.naver.com/api/stock/{code}/trend?pageSize=120"
         res = HTTP_SESSION.get(url, timeout=2.0).json()
@@ -3655,7 +3802,7 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
     except Exception as exc:
         print(f"[DOMESTIC NAVER TREND] {code} failed: {type(exc).__name__}: {exc}")
 
-    # 3) Yahoo 최종 fallback (.KS/.KQ 순차 확인)
+    # 5) Yahoo 최종 fallback (.KS/.KQ 순차 확인)
     for suffix in [".KS", ".KQ"]:
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?range=5y&interval=1d"
@@ -7134,7 +7281,14 @@ def run_full_pipeline(query, lightweight=False):
 # ===== STEP 21: 우측 실시간 시장 사이드바 =====
 RIGHT_MARKET_BOARD_CACHE = {}
 RIGHT_MARKET_BOARD_CACHE_TTL = 30
+RIGHT_MARKET_BOARD_CACHE_VERSION = 42
 RIGHT_MARKET_BOARD_CACHE_LOCK = threading.Lock()
+# STEP 41: 국내 우측 실시간 목록에서 현재 gaemiGTP 차트/분석 API가 지원하지
+# 않는 외국기업 계열 종목코드(9xxxxx)를 제외한다.
+# 거래대금 데이터 자체는 정상이어도 차트/분석이 404가 되는 종목을
+# 사용자가 클릭하지 않도록 사이드바 단계에서 미리 걸러낸다.
+RIGHT_MARKET_KR_EXCLUDED_PREFIXES = ("9",)
+RIGHT_MARKET_KR_EXCLUDED_CODES = {"950260"}
 RIGHT_MARKET_BOARD_SYMBOLS = [
     "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "AMD",
     "AVGO", "PLTR", "MU", "TSM", "NFLX", "COIN", "MSTR"
@@ -7142,117 +7296,382 @@ RIGHT_MARKET_BOARD_SYMBOLS = [
 
 
 def _right_sidebar_kr_rows(limit=15):
-    """국내 실시간 목록. 기존 Naver 모바일 주식 랭킹 API를 재사용한다.
-    거래대금 필드가 있으면 거래대금 기준으로 정렬하고, 공급자가 순위만 제공하면
-    그 순서를 그대로 사용한다. 화면에서는 실제 수신값만 표시한다.
-    """
-    url = "https://m.stock.naver.com/api/stocks/tradingVolume?pageSize=50&page=1"
-    res = HTTP_SESSION.get(
-        url,
-        timeout=2.5,
-        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json,text/plain,*/*"},
-    )
-    res.raise_for_status()
-    payload = res.json()
-    stocks = payload.get("stocks", []) if isinstance(payload, dict) else []
-    rows = []
-    for idx, item in enumerate(stocks):
-        if not isinstance(item, dict):
-            continue
-        code = str(item.get("itemCode") or item.get("code") or "").strip()
-        name = str(item.get("stockName") or item.get("itemName") or item.get("name") or "").strip()
-        if not code or not name:
-            continue
-        price = item.get("closePrice") or item.get("currentPrice") or item.get("price")
-        change = item.get("fluctuationRate") or item.get("changeRate") or item.get("changePercent")
-        change_amount = item.get("fluctuationValue") or item.get("change")
-        tv = item.get("accumulatedTradingValue") or item.get("tradingValue") or item.get("accumulatedTradingAmount")
-        try:
-            price_num = float(str(price).replace(",", "")) if price is not None else None
-        except Exception:
-            price_num = None
-        try:
-            change_num = float(str(change).replace("%", "").replace(",", "")) if change is not None else None
-        except Exception:
-            change_num = None
-        try:
-            change_amount_num = float(str(change_amount).replace(",", "")) if change_amount is not None else None
-        except Exception:
-            change_amount_num = None
-        try:
-            tv_num = float(str(tv).replace(",", "")) if tv is not None else None
-        except Exception:
-            tv_num = None
-        rows.append({
-            "rank": idx + 1,
-            "code": code,
-            "symbol": code,
-            "name": name,
-            "price": price_num,
-            "change_pct": change_num,
-            "change": change_amount_num,
-            "trading_value": tv_num,
-            "currency": "KRW",
-            "market": "국내",
-            "source": "Naver",
-        })
-    # 실제 거래대금 필드가 존재하는 경우에만 거래대금으로 재정렬한다.
-    if any(r.get("trading_value") is not None for r in rows):
-        rows = sorted(rows, key=lambda r: (r.get("trading_value") is not None, r.get("trading_value") or 0), reverse=True)
-        for i, row in enumerate(rows, 1):
-            row["rank"] = i
-    return rows[:limit]
+    """국내 실시간 거래대금 상위.
 
+    STEP 33:
+    - 국내 종목 후보는 Naver stock market JSON에서 가져온다.
+    - 실제 현재가/등락률/누적거래량/누적거래대금은 Naver 실시간 polling API로
+      한 번에 배치 조회한다.
+    - 따라서 목록 API의 필드 구조에 거래대금이 없더라도 실제 거래대금(aa)을 사용한다.
+    - 해외(Yahoo) / 코인(Binance) 수집 로직은 변경하지 않는다.
+    """
+    def _clean_key(value):
+        return re.sub(r"[^a-z0-9가-힣]", "", str(value or "").lower())
+
+    def _to_number(value):
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            try:
+                return float(value)
+            except Exception:
+                return None
+        text = str(value).strip().replace(",", "").replace("%", "").replace("원", "")
+        if text in {"", "-", "--", "nan", "NaN", "None", "null"}:
+            return None
+        try:
+            return float(text)
+        except Exception:
+            pass
+        m = re.match(r"^([0-9.]+)조(?:\s*([0-9.]+)억)?(?:\s*([0-9.]+)만)?$", text)
+        if m:
+            return float(m.group(1))*1_000_000_000_000 + float(m.group(2) or 0)*100_000_000 + float(m.group(3) or 0)*10_000
+        m = re.match(r"^([0-9.]+)억(?:\s*([0-9.]+)만)?$", text)
+        if m:
+            return float(m.group(1))*100_000_000 + float(m.group(2) or 0)*10_000
+        m = re.match(r"^([0-9.]+)백만$", text)
+        if m:
+            return float(m.group(1))*1_000_000
+        m = re.match(r"^([0-9.]+)천만$", text)
+        if m:
+            return float(m.group(1))*10_000_000
+        return None
+
+    def _find_value(item, aliases):
+        if not isinstance(item, dict):
+            return None
+        aliases = {_clean_key(x) for x in aliases}
+        for k, v in item.items():
+            if _clean_key(k) in aliases:
+                return v
+        for v in item.values():
+            if isinstance(v, dict):
+                for k, nv in v.items():
+                    if _clean_key(k) in aliases:
+                        return nv
+        return None
+
+    def _extract_candidate_items(payload):
+        """stock.naver.com / m.stock.naver.com 응답에서 종목 배열을 찾는다."""
+        candidates = []
+        preferred = {"result", "data", "items", "stocks", "stocklist", "stockitems", "list"}
+
+        def visit(obj, depth=0):
+            if depth > 6:
+                return
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if _clean_key(k) in preferred and isinstance(v, (list, dict)):
+                        candidates.append(v)
+                    visit(v, depth + 1)
+            elif isinstance(obj, list):
+                if obj and any(isinstance(x, dict) for x in obj):
+                    candidates.append(obj)
+                for v in obj[:20]:
+                    visit(v, depth + 1)
+        visit(payload)
+
+        best = []
+        best_score = -1
+        for candidate in candidates:
+            arr = candidate if isinstance(candidate, list) else [candidate]
+            arr = [x for x in arr if isinstance(x, dict)]
+            if not arr:
+                continue
+            score = 0
+            for x in arr[:10]:
+                keys = {_clean_key(k) for k in x.keys()}
+                if keys & {"itemcode", "itemname", "stockcode", "stockname", "code", "name"}:
+                    score += 2
+                if keys & {"nowprice", "currentprice", "closeprice", "price"}:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best = arr
+        return best
+
+    def _candidate_from_item(item):
+        code = _find_value(item, ["itemCode", "itemcode", "stockCode", "stockcode", "code", "종목코드"])
+        name = _find_value(item, ["itemName", "itemname", "stockName", "stockname", "name", "종목명"])
+        price = _find_value(item, ["nowPrice", "tradePrice", "currentPrice", "closePrice", "price", "현재가"])
+        pct = _find_value(item, ["prevChangeRate", "changeRate", "fluctuationsRatio", "changePercent", "등락률"])
+        code = re.sub(r"[^0-9]", "", str(code or ""))
+        name = str(name or "").strip()
+        if len(code) != 6 or not name:
+            return None
+        return {"code": code, "name": name, "price": _to_number(price), "change_pct": _to_number(pct)}
+
+    # 1) 먼저 전체 국내 후보를 한 번에 받는다.
+    candidate_items = []
+    candidate_urls = [
+        "https://stock.naver.com/api/domestic/market/stock/default?tradeType=KRX&marketType=ALL&orderType=quantTop&startIdx=0&pageSize=100",
+        "https://m.stock.naver.com/front-api/stock/domestic/stockList?sortType=quantTop&category=KOSPI&page=1&pageSize=100",
+        "https://m.stock.naver.com/front-api/stock/domestic/stockList?sortType=quantTop&category=KOSDAQ&page=1&pageSize=100",
+    ]
+    for url in candidate_urls:
+        try:
+            res = HTTP_SESSION.get(url, timeout=3.5, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": "https://stock.naver.com/",
+            })
+            res.raise_for_status()
+            items = _extract_candidate_items(res.json())
+            for item in items:
+                row = _candidate_from_item(item)
+                if row:
+                    candidate_items.append(row)
+            if len(candidate_items) >= 60:
+                break
+        except Exception as exc:
+            print(f"[RIGHT MARKET BOARD] KR candidate API failed: {type(exc).__name__}: {exc}")
+
+    # 후보가 없으면 국내 기능만을 위한 마지막 fallback으로 기존 HTML을 사용한다.
+    if not candidate_items:
+        for sosok, exchange in ((0, "KOSPI"), (1, "KOSDAQ")):
+            try:
+                url = f"https://finance.naver.com/sise/sise_quant.naver?sosok={sosok}"
+                res = HTTP_SESSION.get(url, timeout=3.5, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": "https://finance.naver.com/",
+                })
+                res.raise_for_status()
+                tables = pd.read_html(io.StringIO(res.text))
+                for table in tables:
+                    if not isinstance(table, pd.DataFrame) or table.empty:
+                        continue
+                    flat = [str(c[-1] if isinstance(c, tuple) else c).strip() for c in table.columns]
+                    if "종목명" not in flat:
+                        continue
+                    table = table.copy(); table.columns = flat
+                    for _, item in table.iterrows():
+                        name = str(item.get("종목명") or "").strip()
+                        if name:
+                            candidate_items.append({"code": "", "name": name,
+                                "price": _to_number(item.get("현재가")),
+                                "change_pct": _to_number(item.get("등락률"))})
+                    break
+            except Exception as exc:
+                print(f"[RIGHT MARKET BOARD] KR HTML fallback failed: {type(exc).__name__}: {exc}")
+
+    # STEP 41: 현재 차트/분석 API에서 지원하지 않는 9xxxxx 계열 종목은
+    # 우측 국내 거래대금 목록에서 제외한다.
+    # (예: 950260 인제니아테라퓨틱스)
+    code_map = {}
+    for item in candidate_items:
+        code = str(item.get("code") or "").strip()
+        if not code or code in code_map:
+            continue
+        if code in RIGHT_MARKET_KR_EXCLUDED_CODES or any(code.startswith(prefix) for prefix in RIGHT_MARKET_KR_EXCLUDED_PREFIXES):
+            continue
+        code_map[code] = item
+    codes = list(code_map.keys())[:100]
+
+    if codes:
+        try:
+            query = "SERVICE_ITEM:" + ",".join(codes)
+            url = "https://polling.finance.naver.com/api/realtime?query=" + urllib.parse.quote(query, safe=":,")
+            res = HTTP_SESSION.get(url, timeout=3.5, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": "https://stock.naver.com/",
+            })
+            res.raise_for_status()
+            payload = res.json()
+            datas = []
+            for area in (payload.get("result", {}).get("areas", []) if isinstance(payload, dict) else []):
+                if isinstance(area, dict):
+                    datas.extend(area.get("datas") or [])
+            # 일부 응답은 result.areas가 아닌 최상위 areas를 사용한다.
+            if not datas and isinstance(payload, dict):
+                for area in payload.get("areas", []) or []:
+                    if isinstance(area, dict):
+                        datas.extend(area.get("datas") or [])
+            rows = []
+            for d in datas:
+                if not isinstance(d, dict):
+                    continue
+                code = str(d.get("cd") or d.get("itemCode") or "").strip()
+                item = code_map.get(code)
+                if not item:
+                    continue
+                price = _to_number(d.get("nv") or d.get("closePrice") or item.get("price"))
+
+                # Naver polling의 cr/cv는 일부 응답에서 절대값으로 내려오고,
+                # 실제 상승/하락 방향은 rf 코드로 구분된다.
+                # rf=2 상승, rf=5 하락, 그 외는 보합으로 처리한다.
+                raw_pct = _to_number(d.get("cr") or d.get("fluctuationsRatio") or item.get("change_pct"))
+                raw_change = _to_number(d.get("cv") or d.get("compareToPreviousClosePrice"))
+                rise_fall = str(d.get("rf") or "").strip()
+                if raw_pct is not None:
+                    pct = abs(raw_pct)
+                    if rise_fall == "5":
+                        pct = -pct
+                    elif rise_fall == "2":
+                        pct = pct
+                    else:
+                        # rf가 없는 예외 응답은 기존 signed 값을 보존한다.
+                        pct = raw_pct
+                else:
+                    pct = None
+                if raw_change is not None:
+                    change = abs(raw_change)
+                    if rise_fall == "5":
+                        change = -change
+                    elif rise_fall == "2":
+                        change = change
+                    else:
+                        change = raw_change
+                else:
+                    change = None
+                volume = _to_number(d.get("aq") or d.get("accumulatedTradingVolume"))
+                trading_value = _to_number(d.get("aa") or d.get("accumulatedTradingValue"))
+                if trading_value is None and price is not None and volume is not None:
+                    trading_value = price * volume
+                if trading_value is None:
+                    continue
+                rows.append({
+                    "rank": 0, "code": code, "symbol": code, "name": item["name"],
+                    "price": price, "change_pct": pct, "change": change,
+                    "trading_value": trading_value, "currency": "KRW", "market": "국내",
+                    "source": "Naver Realtime Polling", "exchange": "KRX",
+                })
+            if rows:
+                # STEP 42: 최종 안전필터. 후보 단계에서 제외되지 않았거나
+                # API 응답에서 코드가 다시 들어오는 경우에도 분석 불가능한
+                # 9xxxxx 계열 종목은 화면에 절대 노출하지 않는다.
+                rows = [
+                    row for row in rows
+                    if not any(
+                        (
+                            str(row.get("code") or row.get("symbol") or "").strip() in RIGHT_MARKET_KR_EXCLUDED_CODES
+                            or str(row.get("code") or row.get("symbol") or "").strip().startswith(prefix)
+                        )
+                        for prefix in RIGHT_MARKET_KR_EXCLUDED_PREFIXES
+                    )
+                ]
+                if not rows:
+                    return []
+                rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
+                for i, row in enumerate(rows[:limit], 1):
+                    row["rank"] = i
+                return rows[:limit]
+        except Exception as exc:
+            print(f"[RIGHT MARKET BOARD] KR realtime polling failed: {type(exc).__name__}: {exc}")
+
+    # 실시간 polling이 실패하더라도 후보 목록에 가격/거래대금이 있는 경우만 표시한다.
+    # 거래대금 없는 추정값을 만들어 순위를 왜곡하지 않는다.
+    return []
 
 def _right_sidebar_us_rows(limit=15):
-    """해외주식 실시간 목록. Yahoo most-active 후보를 받은 뒤 현재가×거래량으로 정렬한다."""
-    symbols = list(RIGHT_MARKET_BOARD_SYMBOLS)
-    try:
-        screener_url = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=25"
-        sr = HTTP_SESSION.get(screener_url, timeout=3.0, headers={"User-Agent": "Mozilla/5.0"})
-        if sr.ok:
+    """해외주식 실시간 목록.
+    Yahoo의 most_actives screener 응답 자체에 포함된 현재가/등락률/거래량을 사용한다.
+    별도의 v7 quote 호출은 현재 Yahoo의 인증(crumb) 정책 때문에 실패할 수 있어 사용하지 않는다.
+    """
+    screener_urls = [
+        "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=50",
+        "https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=50",
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://finance.yahoo.com/research-hub/screener/most-active/",
+    }
+
+    quotes = []
+    last_error = None
+    for screener_url in screener_urls:
+        try:
+            sr = HTTP_SESSION.get(screener_url, timeout=4.0, headers=headers)
+            sr.raise_for_status()
             sp = sr.json()
-            quotes = (((sp.get("finance") or {}).get("result") or [{}])[0].get("quotes") or [])
-            candidate = [str(q.get("symbol") or "").upper() for q in quotes if q.get("symbol")]
-            if candidate:
-                symbols = candidate[:25]
-    except Exception:
-        pass
-    url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + urllib.parse.quote(",".join(symbols))
-    res = HTTP_SESSION.get(url, timeout=4.0, headers={"User-Agent": "Mozilla/5.0"})
-    res.raise_for_status()
-    payload = res.json()
-    quotes = ((payload.get("quoteResponse") or {}).get("result") or [])
+            result = ((sp.get("finance") or {}).get("result") or [])
+            if result and isinstance(result[0], dict):
+                quotes = result[0].get("quotes") or []
+            if quotes:
+                break
+        except Exception as exc:
+            last_error = exc
+
+    if not quotes:
+        if last_error:
+            print(f"[RIGHT MARKET BOARD] US screener failed: {type(last_error).__name__}: {last_error}")
+        return []
+
     rows = []
     for q in quotes:
-        symbol = str(q.get("symbol") or "").upper()
+        if not isinstance(q, dict):
+            continue
+        symbol = str(q.get("symbol") or "").upper().strip()
+        if not symbol:
+            continue
+
+        # Screener 응답의 실시간 필드를 우선 사용한다.
         price = q.get("regularMarketPrice")
         prev = q.get("regularMarketPreviousClose")
         pct = q.get("regularMarketChangePercent")
+        change = q.get("regularMarketChange")
         volume = q.get("regularMarketVolume")
+
+        # 응답 버전에 따라 현재가가 marketPrice 형태로 내려오는 경우도 지원한다.
         if price is None:
+            price = q.get("marketPrice")
+        if prev is None:
+            prev = q.get("previousClose")
+        if volume is None:
+            volume = q.get("dayVolume")
+        if pct is None and price is not None and prev:
+            try:
+                pct = (float(price) - float(prev)) / float(prev) * 100.0
+            except Exception:
+                pct = None
+        if change is None and price is not None and prev:
+            try:
+                change = float(price) - float(prev)
+            except Exception:
+                change = None
+
+        try:
+            price_f = float(price)
+        except Exception:
             continue
-        if pct is None and prev:
-            pct = (float(price) - float(prev)) / float(prev) * 100.0
-        notional = float(price) * float(volume or 0)
+        try:
+            volume_f = float(volume or 0)
+        except Exception:
+            volume_f = 0.0
+
+        # Yahoo screener의 most_actives는 거래량 기준이다.
+        # 우측 메뉴의 표시 기준은 거래대금이므로 현재가 × 거래량으로 정렬한다.
+        notional = price_f * volume_f
+        try:
+            pct_f = float(pct) if pct is not None else None
+        except Exception:
+            pct_f = None
+        try:
+            change_f = float(change) if change is not None else None
+        except Exception:
+            change_f = None
+
         rows.append({
             "rank": 0,
             "code": symbol,
             "symbol": symbol,
             "name": q.get("shortName") or q.get("longName") or symbol,
-            "price": float(price),
-            "change_pct": float(pct) if pct is not None else None,
-            "change": float(q.get("regularMarketChange")) if q.get("regularMarketChange") is not None else None,
+            "price": price_f,
+            "change_pct": pct_f,
+            "change": change_f,
             "trading_value": notional,
             "currency": q.get("currency") or "USD",
             "market": "해외",
             "source": "Yahoo Finance",
         })
+
     rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
     for i, row in enumerate(rows[:limit], 1):
         row["rank"] = i
     return rows[:limit]
-
 
 def _right_sidebar_crypto_rows(limit=15):
     """Binance USDT 현물 전체 티커에서 quoteVolume 기준 상위 코인을 조회한다."""
@@ -7299,7 +7718,7 @@ def fetch_right_market_board(market="kr", force=False):
     now = time.time()
     with RIGHT_MARKET_BOARD_CACHE_LOCK:
         cached = RIGHT_MARKET_BOARD_CACHE.get(key)
-        if cached and not force and now - cached.get("time", 0) < RIGHT_MARKET_BOARD_CACHE_TTL:
+        if cached and cached.get("version") == RIGHT_MARKET_BOARD_CACHE_VERSION and not force and now - cached.get("time", 0) < RIGHT_MARKET_BOARD_CACHE_TTL:
             return cached.get("data") or []
     try:
         if key == "kr":
@@ -7313,7 +7732,7 @@ def fetch_right_market_board(market="kr", force=False):
         rows = []
     if rows:
         with RIGHT_MARKET_BOARD_CACHE_LOCK:
-            RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows}
+            RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows, "version": RIGHT_MARKET_BOARD_CACHE_VERSION}
     return rows
 
 HTML_PAGE = r"""<!DOCTYPE html>
@@ -9385,6 +9804,9 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .right-market-change.down { color:#38a8ff; }
         .right-market-empty { padding:28px 15px; color:var(--text-muted); text-align:center; font-size:.78rem; line-height:1.6; }
         #right-market-icons { width:44px; min-width:44px; border-left:1px solid var(--border-line); display:flex; flex-direction:column; align-items:center; padding-top:8px; gap:7px; background:var(--bg-body); }
+        /* 테마 버튼은 우측 시장 레일과 겹치지 않도록 우측 여백을 확보한다. */
+        #themeToggleBtn { position: relative; z-index: 13000; }
+        header { padding-right: 60px; }
         .right-market-icon-btn { width:36px; height:42px; border:0; border-radius:9px; background:transparent; color:var(--text-sub); cursor:pointer; font-size:1.05rem; font-family:Arial, sans-serif; font-weight:600; display:flex; align-items:center; justify-content:center; transition:.15s; }
         .right-market-icon-btn:hover, .right-market-icon-btn.active { background:var(--bg-card); color:var(--text-title); }
         .right-market-close { font-size:1.25rem; margin-bottom:4px; }
@@ -9410,6 +9832,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
            화면 위에 오버레이되도록 한다. */
         @media (max-width: 560px) {
             body { overflow-x: hidden; }
+            /* 고정 우측 레일과 겹치지 않도록 기존 다크/화이트 전환 버튼의 가시 영역을 확보한다. */
+            header { padding-right: 60px !important; }
             #content-wrapper {
                 width: 100% !important;
                 margin-left: 0 !important;
@@ -9461,6 +9885,100 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
         }
 
+
+        /* STEP 28: 오른쪽 열기/닫기 버튼을 사이드바 최상단에 고정한다.
+           다크/화이트 테마 버튼과 겹치지 않도록 헤더의 테마 버튼은 항상 위에 보존한다.
+           가운데 콘텐츠의 위치/폭에는 영향을 주지 않는다. */
+        .right-market-close {
+            order: -1;
+        }
+        #themeToggleBtn {
+            position: relative;
+            z-index: 13000;
+        }
+        @media (max-width: 560px) {
+            /* STEP 29: 모바일 닫힘 상태에서는 오른쪽 레일 자체가 폭을 차지하지 않는다.
+               열기 버튼만 화면 최상단 오른쪽에 떠서 표시되며, 세로 구분선도 숨긴다.
+               따라서 검색창/차트/가운데 콘텐츠가 오른쪽에서 잘리지 않는다. */
+            #right-market-rail {
+                display: flex !important;
+                position: fixed !important;
+                top: 0 !important;
+                right: 0 !important;
+                width: 0 !important;
+                max-width: none !important;
+                height: 100vh !important;
+                z-index: 9999 !important;
+                pointer-events: none;
+                background: transparent !important;
+                border-left: 0 !important;
+            }
+            #right-market-rail.collapsed {
+                width: 0 !important;
+                max-width: none !important;
+                border-left: 0 !important;
+            }
+            #right-market-rail #right-market-icons {
+                pointer-events: none;
+                position: fixed !important;
+                top: 0 !important;
+                right: 0 !important;
+                width: 44px !important;
+                min-width: 44px !important;
+                height: auto !important;
+                flex: none !important;
+                display: flex !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                padding-top: 8px !important;
+                background: transparent !important;
+                border-left: 0 !important;
+            }
+            #right-market-rail.collapsed #right-market-panel {
+                display: none !important;
+            }
+            #right-market-rail.collapsed .right-market-icon-btn:not(.right-market-close) {
+                display: none !important;
+            }
+            #right-market-rail .right-market-close {
+                display: flex !important;
+                pointer-events: auto !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                width: 36px !important;
+                height: 42px !important;
+                margin: 0 !important;
+                color: var(--text-title) !important;
+                background: var(--bg-card) !important;
+                border: 1px solid var(--border-line) !important;
+                border-radius: 9px !important;
+                font-size: 1.15rem !important;
+                line-height: 1 !important;
+                order: -1 !important;
+            }
+            #right-market-rail:not(.collapsed) {
+                width: min(320px, 92vw) !important;
+                max-width: 92vw !important;
+                pointer-events: auto;
+                background: var(--bg-body) !important;
+                border-left: 1px solid var(--border-line) !important;
+            }
+            #right-market-rail:not(.collapsed) #right-market-panel {
+                display: flex !important;
+            }
+            #right-market-rail:not(.collapsed) #right-market-icons {
+                position: absolute !important;
+                top: 0 !important;
+                right: 0 !important;
+                width: 44px !important;
+                min-width: 44px !important;
+                height: 100% !important;
+                flex: 0 0 44px !important;
+                background: var(--bg-body) !important;
+                border-left: 1px solid var(--border-line) !important;
+                pointer-events: auto !important;
+            }
+        }
 </style>
 </head>
 <body>
@@ -10849,7 +11367,7 @@ const voteKey = 'vote_' + symbol;
         const FAST_CHART_CACHE = new Map();
         const FAST_CHART_CACHE_TTL = 30 * 1000;
 
-        async function doSearch(query, forceServer = false) {
+        async function doSearch(query, forceServer = false, displayNameOverride = '') {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
             let materialText = '';
 
@@ -10857,12 +11375,31 @@ const voteKey = 'vote_' + symbol;
 
             const cleanQ = query.trim();
             if (!cleanQ) return;
+            // STEP 37: 우측 실시간 시장에서 종목코드로 진입하더라도
+            // 목록에서 이미 확보한 한글 종목명을 상세 화면 제목에 유지한다.
+            const displayNameHint = String(displayNameOverride || '').trim();
 
             // STEP 21: 최근검색종목 메뉴에서 사용할 최소 검색 이력을 로컬에 저장한다.
             try {
                 const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
-                const recentItem = { name: cleanQ, symbol: cleanQ.toUpperCase(), price: null, change_pct: null, currency: '' };
-                const next = [recentItem, ...recent.filter(x => String(x?.name || '').toUpperCase() !== cleanQ.toUpperCase())].slice(0, 15);
+                // STEP 40: 최근검색종목은 검색에 사용한 코드가 아니라
+                // 화면에서 사용한 실제 표시명을 우선 저장한다.
+                // 우측 국내/해외/코인 목록에서 종목을 클릭한 경우에는
+                // displayNameOverride에 전달된 종목명을 그대로 보존한다.
+                const recentDisplayName = displayNameHint || cleanQ;
+                const recentSymbol = cleanQ.toUpperCase();
+                const recentItem = {
+                    name: recentDisplayName,
+                    symbol: recentSymbol,
+                    price: null,
+                    change_pct: null,
+                    currency: ''
+                };
+                const next = [recentItem, ...recent.filter(x => {
+                    const oldSymbol = String(x?.symbol || '').toUpperCase();
+                    const oldName = String(x?.name || '').toUpperCase();
+                    return oldSymbol !== recentSymbol && oldName !== recentSymbol;
+                })].slice(0, 15);
                 localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
             } catch (e) {}
 
@@ -10882,7 +11419,7 @@ const voteKey = 'vote_' + symbol;
             const fastTitle = document.getElementById('rTitle');
             const fastPrice = document.getElementById('rPrice');
             const fastMeta = document.getElementById('rMeta');
-            if (fastTitle) fastTitle.textContent = cleanQ.toUpperCase();
+            if (fastTitle) fastTitle.textContent = displayNameHint || cleanQ.toUpperCase();
             if (fastPrice) fastPrice.textContent = '불러오는 중…';
             if (fastMeta) fastMeta.textContent = '실시간 데이터를 불러오고 있어요';
 
@@ -10976,7 +11513,7 @@ if ((response && !response.ok) || data.error) {
                 }
 
                 const isKrw = data.market === '국내주식' || data.market === '국내증시';
-                const displayName = data.name || data.formal_name;
+                const displayName = displayNameHint || data.name || data.formal_name;
                 const displayPrice = data.price || data.price_str;
                 const displayTime = data.time || data.now_str;
 
@@ -11768,26 +12305,50 @@ if ((response && !response.ok) || data.error) {
         }
 
 
+        // STEP 36: 해외 거래대금 상위 종목명을 한글로 표시한다.
         const US_SHORT_KR_NAMES = {
-            NVDA: '엔비디아',
-            AVGO: '브로드컴',
-            AMD: 'AMD',
-            MU: '마이크론',
-            MRVL: '마벨',
-            QCOM: '퀄컴',
-            TSM: 'TSMC',
-            LRCX: '램리서치',
-            AMAT: '어플라이드',
-            KLAC: 'KLA',
-            XOM: '엑손모빌',
-            CVX: '셰브론',
-            COP: '코노코필립스',
-            TSLA: '테슬라',
-            AAPL: '애플',
-            MSFT: '마이크로소프트',
-            AMZN: '아마존',
-            GOOGL: '구글',
-            META: '메타'
+            // 반도체 / AI
+            NVDA: '엔비디아', AVGO: '브로드컴', AMD: 'AMD', MU: '마이크론',
+            MRVL: '마벨테크놀로지', QCOM: '퀄컴', TSM: 'TSMC', LRCX: '램리서치',
+            AMAT: '어플라이드머티어리얼즈', KLAC: 'KLA', ASML: 'ASML', ARM: 'ARM',
+            INTC: '인텔', TXN: '텍사스인스트루먼트', ON: '온세미',
+            MPWR: '모놀리식파워', ADI: '아날로그디바이스', NXPI: 'NXP반도체',
+            SMCI: '슈퍼마이크로컴퓨터', WDC: '웨스턴디지털', STX: '씨게이트',
+           
+            // 빅테크 / 플랫폼
+            TSLA: '테슬라', AAPL: '애플', MSFT: '마이크로소프트', AMZN: '아마존',
+            GOOGL: '구글', GOOG: '구글', META: '메타', NFLX: '넷플릭스',
+            ORCL: '오라클', CRM: '세일즈포스', ADBE: '어도비', NOW: '서비스나우',
+            PLTR: '팔란티어', UBER: '우버', ABNB: '에어비앤비', SHOP: '쇼피파이',
+           
+            // 금융 / 결제
+            JPM: 'JP모건', BAC: '뱅크오브아메리카', WFC: '웰스파고', C: '씨티그룹',
+            GS: '골드만삭스', MS: '모건스탠리', V: '비자', MA: '마스터카드',
+            COIN: '코인베이스', HOOD: '로빈후드', MSTR: '마이크로스트래티지',
+           
+            // 전기차 / 자동차
+            RIVN: '리비안', LCID: '루시드', NIO: '니오', F: '포드', GM: '제너럴모터스',
+           
+            // 에너지 / 산업
+            XOM: '엑손모빌', CVX: '셰브론', COP: '코노코필립스', SLB: '슐럼버거',
+            OXY: '옥시덴털페트롤리엄', CAT: '캐터필러', DE: '디어', GE: 'GE에어로스페이스',
+            BA: '보잉', RTX: 'RTX', LMT: '록히드마틴',
+           
+            // 헬스케어 / 바이오
+            LLY: '일라이릴리', NVO: '노보노디스크', UNH: '유나이티드헬스', JNJ: '존슨앤드존슨',
+            PFE: '화이자', MRK: '머크', ABBV: '애브비', MRNA: '모더나',
+           
+            // 소비 / 미디어
+            WMT: '월마트', COST: '코스트코', MCD: '맥도날드', NKE: '나이키',
+            SBUX: '스타벅스', DIS: '디즈니', KO: '코카콜라', PEP: '펩시코',
+           
+            // 주요 ETF
+            QQQ: '나스닥100 ETF', SPY: 'S&P500 ETF', SOXL: '반도체 3배 ETF',
+            TQQQ: '나스닥100 3배 ETF', DIA: '다우존스 ETF', SOXX: '반도체 ETF',
+           
+            // 기타 자주 조회되는 종목
+            TSMC: 'TSMC', PDD: '핀둬둬', BABA: '알리바바', JD: '징둥닷컴',
+            BIDU: '바이두', IONQ: '아이온큐', RKLB: '로켓랩', ASTS: 'AST스페이스모바일'
         };
 
         function getUsShortKrName(symbol, fallback) {
@@ -12047,10 +12608,15 @@ if ((response && !response.ok) || data.error) {
                         ? `${change >= 0 ? '+' : ''}${Math.round(change).toLocaleString('ko-KR')}원`
                         : `${change >= 0 ? '+' : ''}${change.toFixed(2)}`;
                 }
-                const badge = escapeRightMarketText((row.name || row.symbol || '?').slice(0, 2));
-                const name = escapeRightMarketText(row.name || row.symbol || '-');
+                const krName = (rightMarketKey === 'us' && typeof getUsShortKrName === 'function')
+                    ? getUsShortKrName(row.symbol, row.name)
+                    : (row.name || row.symbol || '-');
+                const badge = escapeRightMarketText((krName || row.symbol || '?').slice(0, 2));
+                const name = escapeRightMarketText(krName || row.symbol || '-');
                 const symbol = escapeRightMarketText(row.symbol || '');
-                return `<div class="right-market-row" onclick="doSearch('${escapeRightMarketText(row.symbol || row.name || '')}')">
+                const clickSymbol = escapeRightMarketText(row.symbol || row.name || '');
+                const clickName = escapeRightMarketText(krName || row.name || row.symbol || '');
+                return `<div class="right-market-row" onclick="doSearch('${clickSymbol}', false, '${clickName}')">
                     <div class="right-market-rank">${row.rank || idx + 1}</div>
                     <div class="right-market-logo">${badge}</div>
                     <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>
@@ -12099,7 +12665,24 @@ if ((response && !response.ok) || data.error) {
             }
             if (menu === 'recent') {
                 const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
-                renderRightMarketRows(recent.slice(0, 15).map((x,i) => ({...x, rank:i+1})));
+                // STEP 40: 과거 버전에서 코드만 저장된 이력은 현재 국내 실시간
+                // 목록에 같은 종목이 있으면 그 한글명을 복원한다.
+                const krRows = Array.isArray(rightMarketCache.kr) ? rightMarketCache.kr : [];
+                const krNameMap = {};
+                krRows.forEach(row => {
+                    const sym = String(row?.symbol || '').toUpperCase();
+                    const nm = String(row?.name || '').trim();
+                    if (sym && nm && sym !== nm) krNameMap[sym] = nm;
+                });
+                const normalizedRecent = recent.slice(0, 15).map((x,i) => {
+                    const symbol = String(x?.symbol || '').toUpperCase();
+                    const name = String(x?.name || '').trim();
+                    const resolvedName = (name && name.toUpperCase() !== symbol)
+                        ? name
+                        : (krNameMap[symbol] || name || symbol);
+                    return {...x, name: resolvedName, symbol, rank:i+1};
+                });
+                renderRightMarketRows(normalizedRecent);
                 if (!recent.length && list) list.innerHTML = '<div class="right-market-empty">최근 검색 종목이 없습니다.</div>';
                 return;
             }
@@ -12127,7 +12710,7 @@ if ((response && !response.ok) || data.error) {
             document.body.classList.remove('right-market-collapsed');
             const btn = rail.querySelector('.right-market-close');
             if (btn) {
-                btn.textContent = isOpen ? '»' : '«';
+                btn.textContent = isOpen ? '«' : '»';
                 btn.title = isOpen ? '닫기' : '열기';
             }
         }
@@ -12171,7 +12754,7 @@ if ((response && !response.ok) || data.error) {
     </script>
 
 
-    <!-- STEP 26: 우측 실시간 시장 사이드바 -->
+    <!-- STEP 27: 우측 실시간 시장 사이드바 -->
     <aside id="right-market-rail" class="collapsed" aria-label="실시간 시장 사이드바">
         <section id="right-market-panel">
             <div class="right-market-head">
@@ -12186,7 +12769,7 @@ if ((response && !response.ok) || data.error) {
             <div class="right-market-list" id="rightMarketList"><div class="right-market-empty">실시간 시장 데이터를 불러오는 중입니다.</div></div>
         </section>
         <nav id="right-market-icons" aria-label="시장 메뉴">
-            <button class="right-market-icon-btn right-market-close" onclick="toggleRightMarket()" title="닫기/열기">»</button>
+            <button class="right-market-icon-btn right-market-close" onclick="toggleRightMarket()" title="오른쪽 사이드바 열기/닫기">»</button>
             <button class="right-market-icon-btn active" data-right-menu="live" onclick="selectRightMenu('live')" title="실시간">◉</button>
             <button class="right-market-icon-btn" data-right-menu="favorite" onclick="selectRightMenu('favorite')" title="관심">♡</button>
             <button class="right-market-icon-btn" data-right-menu="recent" onclick="selectRightMenu('recent')" title="최근검색종목">◷</button>

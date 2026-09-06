@@ -901,7 +901,7 @@ ANALYSIS_ENRICH_EXECUTOR = ThreadPoolExecutor(
     max_workers=6,
     thread_name_prefix="gaemi-enrich",
 )
-OPTIONAL_API_SOFT_TIMEOUT = 1.20  # 최초 응답에서 optional API에 허용하는 최대 대기시간
+OPTIONAL_API_SOFT_TIMEOUT = 6.0  # 첫 화면에서 뉴스/컨센서스 등 실제 데이터를 기다리는 최대 대기시간
 ANALYSIS_ENRICH_WAIT = 10.0  # 백그라운드 details 단계에서 외부 데이터가 준비될 최대 대기시간
 
 # 통합 컨센서스 결과 캐시. 컨센서스는 초단위 데이터가 아니므로
@@ -11416,7 +11416,7 @@ const voteKey = 'vote_' + symbol;
         }
 
         // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP49';
+        window.__GAEMIGTP_BUILD__ = 'STEP50';
 
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
@@ -11511,7 +11511,7 @@ const voteKey = 'vote_' + symbol;
                 if (!forceServer && cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
                     data = cached.data;
                 } else {
-                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + (forceServer ? '&mode=full' : '&mode=core');
+                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=full';
                     response = await fetch(url);
 
                     const contentType = response.headers.get("content-type") || "";
@@ -12294,7 +12294,7 @@ if ((response && !response.ok) || data.error) {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
 
-                // STEP 8: 핵심 결과를 먼저 표시하고 선택 데이터는 백그라운드에서 보강한다.
+                // STEP 50: 첫 검색부터 전체 분석 데이터를 받아 뉴스/컨센서스/트랙 분석이 빈 상태로 남지 않게 한다.
                 if (data._details_ready === false) {
                     pollAnalysisDetails(cleanQ, searchToken);
                 }

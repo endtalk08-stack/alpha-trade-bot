@@ -6316,6 +6316,226 @@ def build_market_information(global_news):
         text=base+'.'
     return {"topic":g['topic'],"text":text,"repeat_count":n,"source_count":sc,"evidence":g['items'][:6]}
 
+
+# ===== STEP 51: 국내 트랙 분석용 키움 데이터 =====
+# 국내주식 트랙 분석은 퀀트와 겹치는 기술지표를 제외하고,
+# 시장/업종·테마/외국인/기관/프로그램/공매도·대차/재료·공시/거래대금 8개로 고정한다.
+# 키움 REST API는 Render 환경변수의 인증정보가 있을 때만 사용하며,
+# 인증정보가 없거나 API가 실패하면 해당 근거는 "데이터 확인 필요"로 남긴다.
+KIWOOM_APP_KEY = os.environ.get("KIWOOM_APP_KEY", "").strip() or os.environ.get("KIWOOM_APPKEY", "").strip()
+KIWOOM_APP_SECRET = (
+    os.environ.get("KIWOOM_APP_SECRET", "").strip()
+    or os.environ.get("KIWOOM_APPSECRET", "").strip()
+    or os.environ.get("KIWOOM_SECRET", "").strip()
+)
+KIWOOM_API_BASE = "https://api.kiwoom.com"
+KIWOOM_TOKEN_CACHE = {"token": "", "expires": 0.0}
+KIWOOM_TOKEN_LOCK = threading.Lock()
+KIWOOM_DATA_CACHE = {}
+KIWOOM_DATA_CACHE_TTL = 10 * 60
+KIWOOM_DATA_CACHE_LOCK = threading.Lock()
+
+
+def _kiwoom_access_token():
+    if not KIWOOM_APP_KEY or not KIWOOM_APP_SECRET:
+        return ""
+    now = time.time()
+    with KIWOOM_TOKEN_LOCK:
+        if KIWOOM_TOKEN_CACHE.get("token") and now < KIWOOM_TOKEN_CACHE.get("expires", 0) - 300:
+            return KIWOOM_TOKEN_CACHE["token"]
+    try:
+        r = HTTP_SESSION.post(
+            KIWOOM_API_BASE + "/oauth2/token",
+            headers={"Content-Type": "application/json;charset=UTF-8"},
+            json={
+                "grant_type": "client_credentials",
+                "appkey": KIWOOM_APP_KEY,
+                "secretkey": KIWOOM_APP_SECRET,
+            },
+            timeout=3.0,
+        )
+        data = r.json() if r.content else {}
+        token = str(data.get("token") or data.get("access_token") or "").strip()
+        if not token:
+            return ""
+        expires_dt = str(data.get("expires_dt") or "").strip()
+        expires = now + 20 * 3600
+        if len(expires_dt) >= 14 and expires_dt[:14].isdigit():
+            try:
+                expires = datetime.strptime(expires_dt[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
+            except Exception:
+                pass
+        with KIWOOM_TOKEN_LOCK:
+            KIWOOM_TOKEN_CACHE["token"] = token
+            KIWOOM_TOKEN_CACHE["expires"] = expires
+        return token
+    except Exception as exc:
+        print(f"[KIWOOM] token failed: {type(exc).__name__}: {exc}")
+        return ""
+
+
+def _kiwoom_post(api_id, endpoint, body, timeout=2.2):
+    token = _kiwoom_access_token()
+    if not token:
+        return None
+    try:
+        headers = {
+            "Content-Type": "application/json;charset=UTF-8",
+            "authorization": f"Bearer {token}",
+            "cont-yn": "N",
+            "next-key": "",
+            "api-id": api_id,
+        }
+        r = HTTP_SESSION.post(KIWOOM_API_BASE + endpoint, headers=headers, json=body, timeout=timeout)
+        if r.status_code != 200:
+            return None
+        data = r.json() if r.content else {}
+        if isinstance(data, dict) and str(data.get("return_code", "0")) not in ("0", ""):
+            return None
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        print(f"[KIWOOM] {api_id} failed: {type(exc).__name__}: {exc}")
+        return None
+
+
+def _kiwoom_num(value):
+    if value is None:
+        return None
+    try:
+        x = str(value).replace(",", "").replace("%", "").replace("+", "").strip()
+        return float(x) if x not in ("", "-", "+") else None
+    except Exception:
+        return None
+
+
+def fetch_kiwoom_program_evidence(code):
+    """ka90013: 종목 일별 프로그램 매매. 최근 데이터에서 순매수 금액을 사용한다."""
+    key = f"program:{str(code or '').strip()}"
+    now = time.time()
+    with KIWOOM_DATA_CACHE_LOCK:
+        cached = KIWOOM_DATA_CACHE.get(key)
+        if cached and now - cached["time"] < KIWOOM_DATA_CACHE_TTL:
+            return cached["value"]
+    result = {"available": False, "score": 0, "detail": "프로그램 매매 데이터 확인 필요"}
+    code = str(code or "").strip()
+    if not code or not re.fullmatch(r"\d{6}", code):
+        return result
+    today = datetime.now().strftime("%Y%m%d")
+    data = _kiwoom_post(
+        "ka90013",
+        "/api/dostk/mrkcond",
+        {"stk_cd": code, "amt_qty_tp": "1", "date": today},
+    )
+    rows = data.get("stk_daly_prm_trde_trnsn", []) if isinstance(data, dict) else []
+    if not isinstance(rows, list):
+        rows = []
+    parsed = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        v = _kiwoom_num(row.get("prm_netprps_amt"))
+        if v is None:
+            continue
+        parsed.append((str(row.get("dt") or ""), v))
+    if parsed:
+        parsed.sort(key=lambda x: x[0], reverse=True)
+        latest = parsed[0][1]
+        prev = parsed[1][1] if len(parsed) > 1 else None
+        if latest > 0:
+            score = 2
+        elif latest < 0:
+            score = -2
+        else:
+            score = 0
+        sign = "+" if latest > 0 else ""
+        detail = f"최근 프로그램 순매수 {sign}{latest:,.0f}만원"
+        if prev is not None:
+            detail += f" · 직전 {prev:+,.0f}만원"
+        result = {"available": True, "score": score, "latest": latest, "previous": prev, "detail": detail}
+    with KIWOOM_DATA_CACHE_LOCK:
+        KIWOOM_DATA_CACHE[key] = {"time": now, "value": result}
+    return result
+
+
+def fetch_kiwoom_short_borrow_evidence(code):
+    """ka10014 + ka20068: 공매도 비중과 종목별 대차잔고 변화를 하나의 근거로 묶는다."""
+    key = f"shortborrow:{str(code or '').strip()}"
+    now = time.time()
+    with KIWOOM_DATA_CACHE_LOCK:
+        cached = KIWOOM_DATA_CACHE.get(key)
+        if cached and now - cached["time"] < KIWOOM_DATA_CACHE_TTL:
+            return cached["value"]
+    result = {"available": False, "score": 0, "detail": "공매도·대차 데이터 확인 필요"}
+    code = str(code or "").strip()
+    if not code or not re.fullmatch(r"\d{6}", code):
+        return result
+    today = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=14)).strftime("%Y%m%d")
+
+    short_data = _kiwoom_post(
+        "ka10014",
+        "/api/dostk/shsa",
+        {"stk_cd": code, "tm_tp": "1", "strt_dt": start, "end_dt": today},
+    )
+    short_rows = short_data.get("shrts_trnsn", []) if isinstance(short_data, dict) else []
+    if not isinstance(short_rows, list):
+        short_rows = []
+    short_parsed = []
+    for row in short_rows:
+        if not isinstance(row, dict):
+            continue
+        w = _kiwoom_num(row.get("trde_wght"))
+        if w is not None:
+            short_parsed.append((str(row.get("dt") or ""), w))
+    short_parsed.sort(key=lambda x: x[0], reverse=True)
+
+    borrow_data = _kiwoom_post(
+        "ka20068",
+        "/api/dostk/slb",
+        {"strt_dt": start, "end_dt": today, "all_tp": "0", "stk_cd": code},
+    )
+    borrow_rows = borrow_data.get("dbrt_trde_trnsn", []) if isinstance(borrow_data, dict) else []
+    if not isinstance(borrow_rows, list):
+        borrow_rows = []
+    borrow_parsed = []
+    for row in borrow_rows:
+        if not isinstance(row, dict):
+            continue
+        rem = _kiwoom_num(row.get("rmnd"))
+        if rem is not None:
+            borrow_parsed.append((str(row.get("dt") or ""), rem))
+    borrow_parsed.sort(key=lambda x: x[0], reverse=True)
+
+    score = 0
+    details = []
+    if short_parsed:
+        latest_short = short_parsed[0][1]
+        avg_short = sum(v for _, v in short_parsed[:5]) / min(5, len(short_parsed))
+        diff = latest_short - avg_short
+        if diff <= -1.0:
+            score += 1
+        elif diff >= 1.0:
+            score -= 1
+        details.append(f"공매도 비중 {latest_short:.2f}% (5일 평균 {avg_short:.2f}%)")
+    if borrow_parsed:
+        latest_borrow = borrow_parsed[0][1]
+        prev_borrow = borrow_parsed[1][1] if len(borrow_parsed) > 1 else None
+        if prev_borrow and prev_borrow > 0:
+            change_pct = (latest_borrow / prev_borrow - 1.0) * 100.0
+            if change_pct <= -3.0:
+                score += 1
+            elif change_pct >= 3.0:
+                score -= 1
+            details.append(f"대차잔고 {latest_borrow:,.0f}주 ({change_pct:+.1f}%)")
+        else:
+            details.append(f"대차잔고 {latest_borrow:,.0f}주")
+
+    if details:
+        result = {"available": True, "score": max(-2, min(2, score)), "detail": " · ".join(details)}
+    with KIWOOM_DATA_CACHE_LOCK:
+        KIWOOM_DATA_CACHE[key] = {"time": now, "value": result}
+    return result
+
 def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol="", alpha_earnings=None):
     """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다.
 
@@ -6427,109 +6647,204 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
 
     reasons.append({"key":"material","label":"기업 재료","score":material_score,"detail":material_detail,"news_clusters":clustered_material.get("clusters",[])})
 
-    # 4. 거래량
-    flow_score = 0
-    flow_detail = "거래량 변화 제한적"
-    price_change = None
-    volume_ratio = None
-    try:
-        if df is not None and len(df) >= 6:
-            close = df["Close"].astype(float)
-            volume = df["Volume"].astype(float)
-            current_close = float(close.iloc[-1])
-            previous_close = float(close.iloc[-2])
-            current_volume = float(volume.iloc[-1])
-            avg_volume = float(volume.tail(6).iloc[:-1].mean())
-            price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
-            volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
-            if price_change >= 1.0 and volume_ratio >= 150:
-                flow_score, flow_detail = 2, f"상승 +{price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
-            elif price_change >= 0.3 and volume_ratio >= 120:
-                flow_score, flow_detail = 1, f"상승 +{price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
-            elif price_change <= -1.0 and volume_ratio >= 150:
-                flow_score, flow_detail = -2, f"하락 {price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
-            elif price_change <= -0.3 and volume_ratio >= 120:
-                flow_score, flow_detail = -1, f"하락 {price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
-            else:
-                flow_detail = f"거래량 {volume_ratio:.0f}%"
-    except Exception:
-        pass
-    reasons.append({"key":"volume","label":"거래량","score":flow_score,"detail":flow_detail})
-
-    # 5. 거래대금
-    tv_score = 0
-    tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
-    tv_ratio = None
-    try:
-        if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
-            tv = float(domestic_flow["trading_value"])
-            close_s = df["Close"].astype(float)
-            vol_s = df["Volume"].astype(float)
-            proxy = close_s * vol_s
-            avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
-            tv_ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
-            # 거래대금은 실제 급증 + 가격 방향이 같이 있을 때 강한 원인으로 인정.
-            if tv_ratio >= 2.0 and flow_score > 0: tv_score = 2
-            elif tv_ratio >= 1.2 and flow_score > 0: tv_score = 1
-            elif tv_ratio >= 2.0 and flow_score < 0: tv_score = -2
-            elif tv_ratio >= 1.2 and flow_score < 0: tv_score = -1
-            tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%" if tv_ratio > 0 else ""
-    except Exception:
-        pass
-    reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
-
-    # 6. 외국인 수급
-    foreign_score = 0
-    foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
-    if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
+    if market_name in ("국내주식", "국내증시"):
+        # 4. 거래대금
+        # 거래량 자체는 퀀트 분석에 이미 있으므로 트랙 분석에서는 제외하고,
+        # 가격 방향 + 거래대금 급증만 원인 근거로 사용한다.
+        tv_score = 0
+        tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
+        tv_ratio = None
+        flow_score = 0
+        price_change = None
         try:
-            v = float(domestic_flow["foreigner_5d"])
-            latest = domestic_flow.get("foreigner_latest")
-            foreign_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+            if df is not None and len(df) >= 6:
+                close = df["Close"].astype(float)
+                volume = df["Volume"].astype(float)
+                current_close = float(close.iloc[-1])
+                previous_close = float(close.iloc[-2])
+                current_volume = float(volume.iloc[-1])
+                avg_volume = float(volume.tail(6).iloc[:-1].mean())
+                price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
+                volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
+                if price_change >= 1.0 and volume_ratio >= 150:
+                    flow_score = 2
+                elif price_change >= 0.3 and volume_ratio >= 120:
+                    flow_score = 1
+                elif price_change <= -1.0 and volume_ratio >= 150:
+                    flow_score = -2
+                elif price_change <= -0.3 and volume_ratio >= 120:
+                    flow_score = -1
         except Exception:
             pass
-    reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
-
-    # 7. 기관 수급
-    institution_score = 0
-    institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
-    if domestic_flow and domestic_flow.get("institution_5d") is not None:
         try:
-            v = float(domestic_flow["institution_5d"])
-            latest = domestic_flow.get("institution_latest")
-            institution_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+            if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
+                tv = float(domestic_flow["trading_value"])
+                close_s = df["Close"].astype(float)
+                vol_s = df["Volume"].astype(float)
+                proxy = close_s * vol_s
+                avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
+                tv_ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
+                if tv_ratio >= 2.0 and flow_score > 0: tv_score = 2
+                elif tv_ratio >= 1.2 and flow_score > 0: tv_score = 1
+                elif tv_ratio >= 2.0 and flow_score < 0: tv_score = -2
+                elif tv_ratio >= 1.2 and flow_score < 0: tv_score = -1
+                if tv_ratio > 0:
+                    tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%"
         except Exception:
             pass
-    reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
-
-    # 8. 최근 5거래일 시장 흐름
-    market5 = None
-    if market_name in ("국내주식", "국내증시") and market_index_name in ("KOSPI", "KOSDAQ"):
-        ref5 = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
-        market5 = fetch_naver_index_5day_returns(market_index_name, ref5)
-    elif market_name == "미국주식":
-        ref5 = _find_world_item(world_board, ["QQQ"])
-        market5 = fetch_market_5day_returns_from_symbol("QQQ", "NASDAQ", ref5)
-    elif market_name == "암호화폐":
-        market5 = fetch_market_5day_returns_from_df(df, formal_name or symbol or "Crypto")
-
-    if market5:
-        market5_score = int(market5["score"])
-        market5_detail = market5["detail"]
-        market5_points = market5["points"]
+        reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
+    
+        # 5. 외국인 수급
+        foreign_score = 0
+        foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
+        if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
+            try:
+                v = float(domestic_flow["foreigner_5d"])
+                latest = domestic_flow.get("foreigner_latest")
+                foreign_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+            except Exception:
+                pass
+        reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
+    
+        # 6. 기관 수급
+        institution_score = 0
+        institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
+        if domestic_flow and domestic_flow.get("institution_5d") is not None:
+            try:
+                v = float(domestic_flow["institution_5d"])
+                latest = domestic_flow.get("institution_latest")
+                institution_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+            except Exception:
+                pass
+        reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
+    
+        # 7. 프로그램 매매 — 키움 ka90013 실데이터
+        program_evidence = fetch_kiwoom_program_evidence(symbol) if market_name in ("국내주식", "국내증시") else {"available":False,"score":0,"detail":"프로그램 매매 데이터 확인 필요"}
+        reasons.append({
+            "key":"program","label":"프로그램 매매",
+            "score":int(program_evidence.get("score",0) or 0),
+            "detail":program_evidence.get("detail","프로그램 매매 데이터 확인 필요")
+        })
+    
+        # 8. 공매도·대차 — 키움 ka10014 + ka20068 실데이터
+        short_borrow = fetch_kiwoom_short_borrow_evidence(symbol) if market_name in ("국내주식", "국내증시") else {"available":False,"score":0,"detail":"공매도·대차 데이터 확인 필요"}
+        reasons.append({
+            "key":"short_borrow","label":"공매도·대차",
+            "score":int(short_borrow.get("score",0) or 0),
+            "detail":short_borrow.get("detail","공매도·대차 데이터 확인 필요")
+        })
+    
+        # 9. 기업 재료·공시
+        # 기존 material 근거는 유지하되 표시 명칭을 확정된 국내 트랙 용어로 맞춘다.
+        # (앞에서 이미 reasons.append("material") 되었으므로 라벨만 변경한다.)
+        for _r in reasons:
+            if _r.get("key") == "material":
+                _r["label"] = "기업 재료·공시"
+    
     else:
-        market5_score = 0
-        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else ("NASDAQ" if market_name == "미국주식" else (formal_name or symbol or "시장"))
-        market5_detail = f"{selected_index} 최근 5거래일 데이터 확인 필요"
-        market5_points = []
+        # 4. 거래량
+        flow_score = 0
+        flow_detail = "거래량 변화 제한적"
+        price_change = None
+        volume_ratio = None
+        try:
+            if df is not None and len(df) >= 6:
+                close = df["Close"].astype(float)
+                volume = df["Volume"].astype(float)
+                current_close = float(close.iloc[-1])
+                previous_close = float(close.iloc[-2])
+                current_volume = float(volume.iloc[-1])
+                avg_volume = float(volume.tail(6).iloc[:-1].mean())
+                price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
+                volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
+                if price_change >= 1.0 and volume_ratio >= 150:
+                    flow_score, flow_detail = 2, f"상승 +{price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
+                elif price_change >= 0.3 and volume_ratio >= 120:
+                    flow_score, flow_detail = 1, f"상승 +{price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
+                elif price_change <= -1.0 and volume_ratio >= 150:
+                    flow_score, flow_detail = -2, f"하락 {price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
+                elif price_change <= -0.3 and volume_ratio >= 120:
+                    flow_score, flow_detail = -1, f"하락 {price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
+                else:
+                    flow_detail = f"거래량 {volume_ratio:.0f}%"
+        except Exception:
+            pass
+        reasons.append({"key":"volume","label":"거래량","score":flow_score,"detail":flow_detail})
 
-    reasons.append({
-        "key":"market_5d","label":"시장 5일 흐름","score":market5_score,
-        "detail":market5_detail,"chart_points":market5_points,
-        "total_return":market5.get("total_return") if market5 else None,
-        "source":market5.get("source") if market5 else None,
-        "index_name":market5.get("index_name") if market5 else selected_index
-    })
+        # 5. 거래대금
+        tv_score = 0
+        tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
+        tv_ratio = None
+        try:
+            if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
+                tv = float(domestic_flow["trading_value"])
+                close_s = df["Close"].astype(float)
+                vol_s = df["Volume"].astype(float)
+                proxy = close_s * vol_s
+                avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
+                tv_ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
+                # 거래대금은 실제 급증 + 가격 방향이 같이 있을 때 강한 원인으로 인정.
+                if tv_ratio >= 2.0 and flow_score > 0: tv_score = 2
+                elif tv_ratio >= 1.2 and flow_score > 0: tv_score = 1
+                elif tv_ratio >= 2.0 and flow_score < 0: tv_score = -2
+                elif tv_ratio >= 1.2 and flow_score < 0: tv_score = -1
+                tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%" if tv_ratio > 0 else ""
+        except Exception:
+            pass
+        reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
+
+        # 6. 외국인 수급
+        foreign_score = 0
+        foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
+        if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
+            try:
+                v = float(domestic_flow["foreigner_5d"])
+                latest = domestic_flow.get("foreigner_latest")
+                foreign_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+            except Exception:
+                pass
+        reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
+
+        # 7. 기관 수급
+        institution_score = 0
+        institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
+        if domestic_flow and domestic_flow.get("institution_5d") is not None:
+            try:
+                v = float(domestic_flow["institution_5d"])
+                latest = domestic_flow.get("institution_latest")
+                institution_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
+            except Exception:
+                pass
+        reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
+
+        # 8. 최근 5거래일 시장 흐름
+        market5 = None
+        if market_name in ("국내주식", "국내증시") and market_index_name in ("KOSPI", "KOSDAQ"):
+            ref5 = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
+            market5 = fetch_naver_index_5day_returns(market_index_name, ref5)
+        elif market_name == "미국주식":
+            ref5 = _find_world_item(world_board, ["QQQ"])
+            market5 = fetch_market_5day_returns_from_symbol("QQQ", "NASDAQ", ref5)
+        elif market_name == "암호화폐":
+            market5 = fetch_market_5day_returns_from_df(df, formal_name or symbol or "Crypto")
+
+        if market5:
+            market5_score = int(market5["score"])
+            market5_detail = market5["detail"]
+            market5_points = market5["points"]
+        else:
+            market5_score = 0
+            selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else ("NASDAQ" if market_name == "미국주식" else (formal_name or symbol or "시장"))
+            market5_detail = f"{selected_index} 최근 5거래일 데이터 확인 필요"
+            market5_points = []
+
+        reasons.append({
+            "key":"market_5d","label":"시장 5일 흐름","score":market5_score,
+            "detail":market5_detail,"chart_points":market5_points,
+            "total_return":market5.get("total_return") if market5 else None,
+            "source":market5.get("source") if market5 else None,
+            "index_name":market5.get("index_name") if market5 else selected_index
+        })
 
     # ----------------------------------------------------
     # 핵심: "먼저 걸리는 조건"이 아니라 실제 강도를 비교한다.
@@ -6541,6 +6856,12 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
             move_direction = -1
     except Exception:
         pass
+
+    # 국내주식은 화면/점수의 근거 순서를 확정된 8개로 고정한다.
+    if market_name in ("국내주식", "국내증시"):
+        domestic_track_order = ["market", "theme", "foreign", "institution", "program", "short_borrow", "material", "trading_value"]
+        order_map = {k:i for i,k in enumerate(domestic_track_order)}
+        reasons = sorted(reasons, key=lambda x: order_map.get(x.get("key"), 999))[:8]
 
     positive_count = sum(1 for x in reasons if x["score"] > 0)
     negative_count = sum(1 for x in reasons if x["score"] < 0)
@@ -6574,12 +6895,14 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     else:
         top_keys = []
 
-    # 재료 > 양매수 수급 > 거래대금/거래량 > 테마 > 시장 순의 tie-break.
+    # 확정된 국내 트랙 8개 기준 tie-break.
     priority = {
         "material": 7,
         "foreign": 6,
         "institution": 6,
-        "trading_value": 5,
+        "program": 5,
+        "short_borrow": 5,
+        "trading_value": 4,
         "volume": 4,
         "theme": 3,
         "market": 2,
@@ -6591,18 +6914,15 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     if foreign_score > 0 and institution_score > 0 and main_key in ("foreign","institution"):
         main_key = "flow_pair"
 
-    # 재료가 약하고 거래가 매우 강하면 거래대금/거래량을 우선.
-    if main_key == "material" and material_score == 1:
-        if tv_score >= 2:
-            main_key = "trading_value"
-        elif flow_score >= 2:
-            main_key = "volume"
+    # 재료가 약하고 거래대금이 강하면 거래대금을 보조 주원인으로 선택.
+    if main_key == "material" and material_score == 1 and tv_score >= 2:
+        main_key = "trading_value"
 
     main_label_map = {
         "material":"기업 재료","flow_pair":"외국인·기관 수급",
         "foreign":"외국인 수급","institution":"기관 수급",
-        "trading_value":"거래대금","volume":"거래량",
-        "theme":"업종·테마","market":"시장","market_5d":"시장 5일 흐름"
+        "trading_value":"거래대금","volume":"거래량","program":"프로그램 매매",
+        "short_borrow":"공매도·대차","theme":"업종·테마","market":"시장","market_5d":"시장 5일 흐름"
     }
     main_reason = main_label_map.get(main_key, "-")
 
@@ -12112,13 +12432,13 @@ if ((response && !response.ok) || data.error) {
 
                     // 상세 근거: 표시 순서만 고정한다. 분석 데이터/점수 계산은 변경하지 않는다.
                     const trackDisplayOrder = [
-                        'market_5d',
                         'market',
                         'theme',
                         'foreign',
                         'institution',
+                        'program',
+                        'short_borrow',
                         'material',
-                        'volume',
                         'trading_value'
                     ];
                     const orderedEvidenceReasons = [...evidenceReasons].sort((a, b) => {

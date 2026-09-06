@@ -858,6 +858,7 @@ CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
 ANALYSIS_ENRICHING = set()
+ANALYSIS_ENRICH_CONTEXT = {}
 ANALYSIS_ENRICH_LOCK = threading.Lock()
 ANALYSIS_CORE_TTL = 30
 
@@ -897,7 +898,7 @@ OPTIONAL_API_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="gaemi-optional",
 )
 ANALYSIS_ENRICH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=2,
+    max_workers=4,
     thread_name_prefix="gaemi-enrich",
 )
 OPTIONAL_API_SOFT_TIMEOUT = 1.20  # 사용자 응답에서 optional API에 허용하는 최대 대기시간
@@ -6799,6 +6800,8 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "_details_ready": True,
             })
             ANALYSIS_CACHE[clean_q] = (time.time(), enriched)
+            with ANALYSIS_ENRICH_LOCK:
+                ANALYSIS_ENRICH_CONTEXT.pop(clean_q, None)
             print(f"[ANALYSIS ENRICH] {clean_q} details ready")
         except Exception as exc:
             print(f"[ANALYSIS ENRICH] {clean_q} failed: {type(exc).__name__}: {exc}")
@@ -6806,6 +6809,10 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             with ANALYSIS_ENRICH_LOCK:
                 ANALYSIS_ENRICHING.discard(clean_q)
 
+    # 재검색/새로고침으로 같은 core 캐시를 다시 읽더라도
+    # 이미 시작된 enrichment 작업의 실행 맥락을 잃지 않도록 보관한다.
+    with ANALYSIS_ENRICH_LOCK:
+        ANALYSIS_ENRICH_CONTEXT[clean_q] = context
     ANALYSIS_ENRICH_EXECUTOR.submit(worker)
 
 
@@ -6826,6 +6833,17 @@ def run_full_pipeline(query, lightweight=False):
                 cached_data["world_board"] = CACHED_WORLD_BOARD
             if CACHED_MARKET_CALENDAR:
                 cached_data["market_calendar"] = CACHED_MARKET_CALENDAR
+
+            # core 캐시가 아직 enrichment 전이라면 기존 작업이 끝날 때까지
+            # 기다릴 수 있도록 context가 보관되어 있는지 확인한다.
+            # 새로고침/사이드바 재진입 때 core 결과를 다시 만들면서
+            # 뉴스·컨센서스·트랙 분석이 비어 있는 상태가 반복되는 것을 막는다.
+            if lightweight and not cached_data.get("_details_ready"):
+                with ANALYSIS_ENRICH_LOCK:
+                    enriching = clean_q in ANALYSIS_ENRICHING
+                    enrich_context = ANALYSIS_ENRICH_CONTEXT.get(clean_q)
+                if (not enriching) and enrich_context:
+                    _schedule_analysis_enrichment(clean_q, cached_data, enrich_context)
             return cached_data
 
     market_name = "국내주식"
@@ -11782,49 +11800,45 @@ if ((response && !response.ok) || data.error) {
                     const soxxItem = findBoard('SOXX');
                     const soxxRate = rateNumber(soxxItem);
 
+                    // STEP 43: "왜 움직였을까?"는 AI가 뉴스 본문을 재해석하지 않고
+                    // 이미 확보된 하단 데이터(movement_reason / DART / 시장지수)만으로
+                    // 고정 템플릿을 조립한다. 화면의 숫자와 문장이 서로 어긋나지 않도록
+                    // 근거가 없는 원인·수치·인과관계는 문장에 넣지 않는다.
                     const parts = [];
-                    if (!isCryptoMarket) {
-                        if (marketRate !== null) {
-                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이고`);
-                        } else {
-                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 현재 흐름을 확인 중이고`);
-                        }
-                        if (isSemiconductor && soxxRate !== null) {
-                            parts[parts.length - 1] += ` 반도체 업종 SOXX는 ${soxxRate >= 0 ? '+' : ''}${soxxRate.toFixed(2)}% ${upDown(soxxRate)}!`;
-                        }
-                    }
 
+                    // 1) 첫 문장: 현재가/등락률은 화면의 실제 응답값 그대로 사용
                     parts.push(
                         Number.isFinite(pct)
-                            ? `${displayName}${topicParticle} 현재 ${priceText}, ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
-                            : `${displayName}${topicParticle} 현재 ${priceText} ${directionText} 중이야.`
+                            ? `🐜 개미들아! ${displayName}${topicParticle} 오늘 ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
+                            : `🐜 개미들아! ${displayName}${topicParticle} 현재 흐름을 확인하고 있어.`
                     );
 
-                    const domesticFlowValue = (movementReason, key) => {
-                        const r = Array.isArray(movementReason.reasons)
-                            ? movementReason.reasons.find(x => x.key === key)
-                            : null;
-                        if (!r) return null;
-                        const text = String(r.detail || '');
-                        const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
-                        if (!m) return null;
-                        const n = Number(m[2].replace(/,/g,''));
-                        if (!Number.isFinite(n)) return null;
-                        return m[1] === '순매도' ? -n : n;
-                    };
-
+                    // 2) 수급 근거: 실제 5거래일 순매수/순매도 수치가 있는 경우에만 출력
                     const flowCandidates = [
                         { key: 'foreign', label: '외국인', value: domesticFlowValue(mr, 'foreign') },
                         { key: 'institution', label: '기관', value: domesticFlowValue(mr, 'institution') }
                     ].filter(x => x.value !== null && Number.isFinite(x.value));
 
-                    if (flowCandidates.length) {
-                        const selectedFlow = flowCandidates.sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0];
-                        const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
-                        parts.push(`최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어.`);
-                    }
+                    const selectedFlow = flowCandidates.length
+                        ? flowCandidates.slice().sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0]
+                        : null;
 
-                    if (materialReason && Array.isArray(materialReason.news_clusters)) {
+                    // 3) 공시/기업 재료와 거시 이벤트를 분리한다.
+                    // STEP 44: 종목 뉴스에 FOMC/연준이 단순 언급된 것만으로
+                    // 거시 원인을 선택하지 않는다. 거시 이벤트는 global_news + 일정에서
+                    // 독립 출처가 2개 이상 확인되거나 실제 일정 이벤트가 있을 때만 채택한다.
+                    const disclosureItems = Array.isArray(data.dart_disclosures) ? data.dart_disclosures : [];
+                    const disclosurePositive = disclosureItems.filter(x => String(x?.tag_type || '') === 'positive').length;
+                    const disclosureNegative = disclosureItems.filter(x => String(x?.tag_type || '') === 'negative').length;
+                    const hasDisclosure = disclosureItems.length > 0;
+                    const hasMaterialCluster = !!(
+                        materialReason &&
+                        Array.isArray(materialReason.news_clusters) &&
+                        materialReason.news_clusters.length
+                    );
+
+                    // 종목 재료에서 거시 키워드는 제거한다.
+                    if (hasMaterialCluster) {
                         const cluster = materialReason.news_clusters[0] || null;
                         const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
                         const map = {
@@ -11835,40 +11849,88 @@ if ((response && !response.ok) || data.error) {
                         };
                         const mapped = kws.map(k => map[String(k).toLowerCase()] || String(k)).filter(Boolean);
                         const generic = new Set(['주가','시장','관련','소식','전망','기대','확대','증가','감소','하락','상승']);
-                        const filtered = mapped.filter(x => !generic.has(x));
+                        const macroOnly = new Set([
+                            'fomc','연준','fed','파월','금리','금리인하','금리인상','기준금리',
+                            'cpi','물가','소비자물가','인플레이션','고용','비농업','실업률','관세','무역'
+                        ]);
+                        const filtered = mapped.filter(x => !generic.has(x) && !macroOnly.has(String(x).toLowerCase()));
                         const uniq = [...new Set(filtered)];
                         if (uniq.length) materialText = uniq.slice(0, 2).join(' ');
                     }
 
-                    let marketEventTopic = '';
-                    const calendarEvents = Array.isArray(data.market_calendar) ? data.market_calendar : [];
-                    const macroText = [
-                        ...(Array.isArray(data.global_news) ? data.global_news.map(x => x?.title || '') : []),
-                        ...(Array.isArray(data.stock_news) ? data.stock_news.map(x => x?.title || '') : []),
-                        ...(Array.isArray(calendarEvents) ? calendarEvents.map(x => JSON.stringify(x)) : [])
-                    ].join(' ').toLowerCase();
+                    // STEP 45: 거시 이벤트는 '현재 영향이 있는 자료'만 사용한다.
+                    // 과거 7월 FOMC처럼 오래된 뉴스/일정을 9월 현재 원인으로 재사용하지 않는다.
+                    // 뉴스는 pubDate 기준 최근 72시간만 인정하고, 캘린더는 오늘 기준
+                    // 과거 2일 이내 또는 향후 7일 이내의 이벤트만 인정한다.
+                    const nowMs = Date.now();
+                    const newsFreshMs = 72 * 60 * 60 * 1000;
+                    const parseNewsDate = (x) => {
+                        const raw = x?.pubDate || x?.publishedAt || x?.date || x?.datetime || '';
+                        if (!raw) return null;
+                        const t = Date.parse(String(raw));
+                        return Number.isFinite(t) ? t : null;
+                    };
+                    const globalMacroItems = Array.isArray(data.global_news) ? data.global_news.filter(x => {
+                        const title = String(x?.title || '').toLowerCase();
+                        const t = parseNewsDate(x);
+                        const fresh = t !== null && Math.abs(nowMs - t) <= newsFreshMs;
+                        return fresh && /\bfomc\b|연준|fed|파월|기준금리|금리인하|금리인상|cpi|소비자물가|인플레이션|고용|비농업|실업률/.test(title);
+                    }) : [];
+                    const macroSources = new Set(
+                        globalMacroItems.map(x => String(x?.media || x?.source || '').trim().toLowerCase()).filter(Boolean)
+                    );
+                    const calendarFomcItems = Array.isArray(data.market_calendar) ? data.market_calendar.filter(x => {
+                        const text = JSON.stringify(x).toLowerCase();
+                        if (!/\bfomc\b|fomc statement|fomc press conference|연준/.test(text)) return false;
+                        const rawDate = x?.date_key || x?.date || x?.event_date || '';
+                        if (!rawDate) return false;
+                        const t = Date.parse(String(rawDate).slice(0, 10) + 'T00:00:00');
+                        if (!Number.isFinite(t)) return false;
+                        const days = (t - nowMs) / 86400000;
+                        return days >= -2 && days <= 7;
+                    }) : [];
+                    const calendarHasFomc = calendarFomcItems.length > 0;
+                    const validatedMacro = macroSources.size >= 2 || calendarHasFomc;
 
-                    if (/\bfomc\b|연준/.test(macroText)) marketEventTopic = 'FOMC·연준';
-                    else if (/\bcpi\b|소비자물가|물가/.test(macroText)) marketEventTopic = '미국 물가';
-                    else if (/고용|비농업|실업률/.test(macroText)) marketEventTopic = '미국 고용';
-                    else if (/관세|무역/.test(macroText)) marketEventTopic = '미국 관세 정책';
-                    else if (/금리인하|금리인상|기준금리/.test(macroText)) marketEventTopic = '미국 금리';
+                    let macroEventText = '';
+                    if (validatedMacro && globalMacroItems.length) {
+                        const macroBlob = globalMacroItems.map(x => String(x?.title || '')).join(' ').toLowerCase();
+                        if (/\bfomc\b|연준|fed|파월/.test(macroBlob)) {
+                            if (/금리인하|인하 기대|기대 약화|기대 후퇴|금리인상|매파|긴축/.test(macroBlob)) {
+                                macroEventText = 'FOMC·연준의 금리 경계';
+                            } else if (/기자회견|발언|성명/.test(macroBlob)) {
+                                macroEventText = 'FOMC·연준 발언';
+                            } else {
+                                macroEventText = 'FOMC·연준 관련 이슈';
+                            }
+                        } else if (/cpi|소비자물가|인플레이션|물가/.test(macroBlob)) {
+                            macroEventText = '미국 물가 관련 이슈';
+                        } else if (/고용|비농업|실업률/.test(macroBlob)) {
+                            macroEventText = '미국 고용 관련 이슈';
+                        }
+                    }
 
-                    if (materialText && marketEventTopic) {
-                        const macroWords = new Set(String(marketEventTopic).toLowerCase().split(/[^0-9a-z가-힣]+/).filter(Boolean));
-                        const materialWords = String(materialText).split(/\s+/).filter(Boolean);
-                        const dedupedMaterialWords = materialWords.filter(word => {
-                            const normalized = word.toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
-                            return normalized && !macroWords.has(normalized);
-                        });
-                        const dedupedMaterial = dedupedMaterialWords.join(' ').trim();
-                        parts.push(dedupedMaterial
-                            ? `${dedupedMaterial} ${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`
-                            : `${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
-                    } else if (materialText) {
-                        parts.push(`${materialText} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
-                    } else if (marketEventTopic) {
-                        parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                    // 4) 우선순위: 실제 수급 → 실제 공시/기업재료 → 검증된 거시 이벤트 → 시장 연동
+                    if (selectedFlow) {
+                        const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
+                        parts.push(
+                            `최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어. 하단 수급 차트와 퀀트 지표를 함께 확인해봐!`
+                        );
+                    } else if (hasDisclosure || (hasMaterialCluster && materialText)) {
+                        const materialLabel = materialText || '기업 관련 재료';
+                        if (hasDisclosure) {
+                            parts.push(`최근 ${materialLabel} 관련 공시·재료가 확인됐어. 세부 공시 원문은 아래 DART 위젯에서 확인할 수 있어.`);
+                        } else {
+                            parts.push(`최근 ${materialLabel} 관련 재료가 확인됐어. 아래 뉴스와 하단 데이터를 함께 확인해봐.`);
+                        }
+                    } else if (macroEventText && !isCryptoMarket) {
+                        parts.push(`${macroEventText}가 여러 독립 출처에서 확인됐어. 시장 흐름과 하단 데이터를 함께 확인해봐.`);
+                    } else if (marketRate !== null && !isCryptoMarket) {
+                        parts.push(
+                            `특이한 개별 수급 근거가 확인되지 않는 가운데 ${selectedMarketName} 지수는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이야. 시장 흐름과 하단 수급 데이터를 함께 확인해봐.`
+                        );
+                    } else {
+                        parts.push('현재 확인된 데이터만으로는 특정 원인을 단정하기 어려워. 하단 수급·퀀트 지표를 함께 확인해봐.');
                     }
 
                     parts.push('🐜 오늘도 개미들 힘내자! 💪');
@@ -12209,20 +12271,25 @@ if ((response && !response.ok) || data.error) {
         }
 
         async function pollAnalysisDetails(query, searchToken, attempt = 0) {
-            if (searchToken !== activeSearchToken || attempt >= 10) return;
+            // optional 데이터(종목뉴스/해외뉴스/컨센서스/트랙 분석)가 준비될 시간을
+            // 기존 4.5초보다 충분히 확보한다. 준비되면 full 재분석을 다시 돌리지 않고
+            // 서버의 완성 캐시를 그대로 한 번 렌더링한다.
+            if (searchToken !== activeSearchToken || attempt >= 30) return;
             try {
-                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query), {cache: 'no-store'});
+                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store'});
                 if (r.status === 200) {
                     const payload = await r.json();
                     if (payload && payload.ready && payload.data) {
                         if (searchToken !== activeSearchToken) return;
                         ANALYZE_CACHE.delete(query.trim().toUpperCase());
-                        await doSearch(query, true);
+                        // forceServer=true를 사용하면 무거운 외부 API를 다시 호출하므로 금지.
+                        // 서버 ANALYSIS_CACHE의 완성 데이터를 core 요청으로 받아 즉시 렌더링한다.
+                        await doSearch(query, false);
                         return;
                     }
                 }
             } catch (e) {}
-            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 450);
+            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 300);
         }
 
         function initTvChart(candles) {
@@ -13113,12 +13180,23 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": "종목명을 입력해주세요."})
                 return
             clean_q = q.replace(" ", "").upper()
-            cached = ANALYSIS_CACHE.get(clean_q)
-            if cached:
-                cached_time, cached_data = cached
-                if time.time() - cached_time < ANALYSIS_CORE_TTL and cached_data.get("_details_ready"):
-                    self._json(200, {"ok": True, "ready": True, "data": cached_data})
-                    return
+            # 클라이언트가 짧게 여러 번 폴링하지 않도록, 한 번의 요청에서
+            # 최대 8초 동안 enrichment 완료 여부를 확인한다.
+            try:
+                should_wait = str(params.get("wait", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+            except Exception:
+                should_wait = False
+            deadline = time.monotonic() + (8.0 if should_wait else 0.0)
+            while True:
+                cached = ANALYSIS_CACHE.get(clean_q)
+                if cached:
+                    cached_time, cached_data = cached
+                    if time.time() - cached_time < ANALYSIS_CORE_TTL and cached_data.get("_details_ready"):
+                        self._json(200, {"ok": True, "ready": True, "data": cached_data})
+                        return
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.2)
             self._json(202, {"ok": True, "ready": False})
             return
 

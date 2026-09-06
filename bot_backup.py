@@ -11840,18 +11840,38 @@ if ((response && !response.ok) || data.error) {
                         if (uniq.length) materialText = uniq.slice(0, 2).join(' ');
                     }
 
-                    // 실제 글로벌 뉴스/일정에서만 거시 이벤트를 검증한다.
+                    // STEP 45: 거시 이벤트는 '현재 영향이 있는 자료'만 사용한다.
+                    // 과거 7월 FOMC처럼 오래된 뉴스/일정을 9월 현재 원인으로 재사용하지 않는다.
+                    // 뉴스는 pubDate 기준 최근 72시간만 인정하고, 캘린더는 오늘 기준
+                    // 과거 2일 이내 또는 향후 7일 이내의 이벤트만 인정한다.
+                    const nowMs = Date.now();
+                    const newsFreshMs = 72 * 60 * 60 * 1000;
+                    const parseNewsDate = (x) => {
+                        const raw = x?.pubDate || x?.publishedAt || x?.date || x?.datetime || '';
+                        if (!raw) return null;
+                        const t = Date.parse(String(raw));
+                        return Number.isFinite(t) ? t : null;
+                    };
                     const globalMacroItems = Array.isArray(data.global_news) ? data.global_news.filter(x => {
                         const title = String(x?.title || '').toLowerCase();
-                        return /\bfomc\b|연준|fed|파월|기준금리|금리인하|금리인상|cpi|소비자물가|인플레이션|고용|비농업|실업률/.test(title);
+                        const t = parseNewsDate(x);
+                        const fresh = t !== null && Math.abs(nowMs - t) <= newsFreshMs;
+                        return fresh && /\bfomc\b|연준|fed|파월|기준금리|금리인하|금리인상|cpi|소비자물가|인플레이션|고용|비농업|실업률/.test(title);
                     }) : [];
                     const macroSources = new Set(
                         globalMacroItems.map(x => String(x?.media || x?.source || '').trim().toLowerCase()).filter(Boolean)
                     );
-                    const calendarText = Array.isArray(data.market_calendar)
-                        ? data.market_calendar.map(x => JSON.stringify(x)).join(' ').toLowerCase()
-                        : '';
-                    const calendarHasFomc = /\bfomc\b|fomc statement|fomc press conference|연준/.test(calendarText);
+                    const calendarFomcItems = Array.isArray(data.market_calendar) ? data.market_calendar.filter(x => {
+                        const text = JSON.stringify(x).toLowerCase();
+                        if (!/\bfomc\b|fomc statement|fomc press conference|연준/.test(text)) return false;
+                        const rawDate = x?.date_key || x?.date || x?.event_date || '';
+                        if (!rawDate) return false;
+                        const t = Date.parse(String(rawDate).slice(0, 10) + 'T00:00:00');
+                        if (!Number.isFinite(t)) return false;
+                        const days = (t - nowMs) / 86400000;
+                        return days >= -2 && days <= 7;
+                    }) : [];
+                    const calendarHasFomc = calendarFomcItems.length > 0;
                     const validatedMacro = macroSources.size >= 2 || calendarHasFomc;
 
                     let macroEventText = '';

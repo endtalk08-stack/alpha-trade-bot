@@ -858,8 +858,9 @@ CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
 ANALYSIS_ENRICHING = set()
+ANALYSIS_ENRICH_CONTEXT = {}
 ANALYSIS_ENRICH_LOCK = threading.Lock()
-ANALYSIS_CORE_TTL = 30
+ANALYSIS_CORE_TTL = 180  # core→details 전환에 충분한 시간 확보
 
 # STEP 14: 퀀트 내부의 반복 외부조회/계산 캐시.
 # 거래대금 순위는 전 종목 공통 목록이므로 60초 동안 한 번만 조회한다.
@@ -893,14 +894,15 @@ EARNINGS_RESULT_CACHE = {}
 EARNINGS_RESULT_CACHE_TTL = 1800  # 30분
 EXTERNAL_CACHE_LOCK = threading.Lock()
 OPTIONAL_API_EXECUTOR = ThreadPoolExecutor(
-    max_workers=12,
+    max_workers=18,
     thread_name_prefix="gaemi-optional",
 )
 ANALYSIS_ENRICH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=2,
+    max_workers=6,
     thread_name_prefix="gaemi-enrich",
 )
-OPTIONAL_API_SOFT_TIMEOUT = 1.20  # 사용자 응답에서 optional API에 허용하는 최대 대기시간
+OPTIONAL_API_SOFT_TIMEOUT = 6.0  # 첫 화면에서 뉴스/컨센서스 등 실제 데이터를 기다리는 최대 대기시간
+ANALYSIS_ENRICH_WAIT = 10.0  # 백그라운드 details 단계에서 외부 데이터가 준비될 최대 대기시간
 
 # 통합 컨센서스 결과 캐시. 컨센서스는 초단위 데이터가 아니므로
 # 매 종목 검색마다 Naver/Finnhub/Yahoo fallback 체인을 다시 타지 않는다.
@@ -6738,15 +6740,28 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
             }
 
+            # details 단계에서는 모든 외부 API를 무한정 기다리지 않는다.
+            # 느린 API 하나 때문에 뉴스/컨센서스/트랙 전체가 영원히 '불러오는 중'으로
+            # 남는 문제를 막기 위해 최대 10초까지만 기다리고, 준비된 결과부터 사용한다.
             optional_results = {}
+            active_futures = {name: future for name, future in optional_futures.items() if future is not None}
+            if active_futures:
+                done, pending = wait(
+                    set(active_futures.values()),
+                    timeout=ANALYSIS_ENRICH_WAIT,
+                )
+                for name, future in active_futures.items():
+                    if future not in done:
+                        optional_results[name] = None
+                        print(f"[ANALYSIS ENRICH] {name} still running after {ANALYSIS_ENRICH_WAIT:.1f}s")
+                        continue
+                    try:
+                        optional_results[name] = future.result()
+                    except Exception as exc:
+                        print(f"[ANALYSIS ENRICH] {name} failed: {type(exc).__name__}: {exc}")
+                        optional_results[name] = None
             for name, future in optional_futures.items():
                 if future is None:
-                    optional_results[name] = None
-                    continue
-                try:
-                    optional_results[name] = future.result()
-                except Exception as exc:
-                    print(f"[ANALYSIS ENRICH] {name} failed: {type(exc).__name__}: {exc}")
                     optional_results[name] = None
 
             stock_news = merge_news_sources(optional_results.get("stock_news_rss") or [], optional_results.get("ticker_news") or [])
@@ -6799,6 +6814,8 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "_details_ready": True,
             })
             ANALYSIS_CACHE[clean_q] = (time.time(), enriched)
+            with ANALYSIS_ENRICH_LOCK:
+                ANALYSIS_ENRICH_CONTEXT.pop(clean_q, None)
             print(f"[ANALYSIS ENRICH] {clean_q} details ready")
         except Exception as exc:
             print(f"[ANALYSIS ENRICH] {clean_q} failed: {type(exc).__name__}: {exc}")
@@ -6806,6 +6823,10 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             with ANALYSIS_ENRICH_LOCK:
                 ANALYSIS_ENRICHING.discard(clean_q)
 
+    # 재검색/새로고침으로 같은 core 캐시를 다시 읽더라도
+    # 이미 시작된 enrichment 작업의 실행 맥락을 잃지 않도록 보관한다.
+    with ANALYSIS_ENRICH_LOCK:
+        ANALYSIS_ENRICH_CONTEXT[clean_q] = context
     ANALYSIS_ENRICH_EXECUTOR.submit(worker)
 
 
@@ -6826,6 +6847,17 @@ def run_full_pipeline(query, lightweight=False):
                 cached_data["world_board"] = CACHED_WORLD_BOARD
             if CACHED_MARKET_CALENDAR:
                 cached_data["market_calendar"] = CACHED_MARKET_CALENDAR
+
+            # core 캐시가 아직 enrichment 전이라면 기존 작업이 끝날 때까지
+            # 기다릴 수 있도록 context가 보관되어 있는지 확인한다.
+            # 새로고침/사이드바 재진입 때 core 결과를 다시 만들면서
+            # 뉴스·컨센서스·트랙 분석이 비어 있는 상태가 반복되는 것을 막는다.
+            if lightweight and not cached_data.get("_details_ready"):
+                with ANALYSIS_ENRICH_LOCK:
+                    enriching = clean_q in ANALYSIS_ENRICHING
+                    enrich_context = ANALYSIS_ENRICH_CONTEXT.get(clean_q)
+                if (not enriching) and enrich_context:
+                    _schedule_analysis_enrichment(clean_q, cached_data, enrich_context)
             return cached_data
 
     market_name = "국내주식"
@@ -7281,7 +7313,7 @@ def run_full_pipeline(query, lightweight=False):
 # ===== STEP 21: 우측 실시간 시장 사이드바 =====
 RIGHT_MARKET_BOARD_CACHE = {}
 RIGHT_MARKET_BOARD_CACHE_TTL = 30
-RIGHT_MARKET_BOARD_CACHE_VERSION = 42
+RIGHT_MARKET_BOARD_CACHE_VERSION = 43
 RIGHT_MARKET_BOARD_CACHE_LOCK = threading.Lock()
 # STEP 41: 국내 우측 실시간 목록에서 현재 gaemiGTP 차트/분석 API가 지원하지
 # 않는 외국기업 계열 종목코드(9xxxxx)를 제외한다.
@@ -11361,6 +11393,31 @@ const voteKey = 'vote_' + symbol;
             input.value = '';
         }
 
+        // STEP 48: 프론트 공통 수급 파싱 함수
+        // doSearch 내부 const로 선언하면 다른 렌더링 경로/구버전 스크립트와
+        // 충돌할 때 ReferenceError가 발생할 수 있으므로 전역 함수로 고정한다.
+        function getDomesticFlowValue(movementReason, key) {
+            try {
+                const reasons = movementReason && Array.isArray(movementReason.reasons)
+                    ? movementReason.reasons
+                    : [];
+                const r = reasons.find(x => x && x.key === key);
+                if (!r) return null;
+                const text = String(r.detail || '');
+                const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
+                if (!m) return null;
+                const n = Number(String(m[2]).replace(/,/g, ''));
+                if (!Number.isFinite(n)) return null;
+                return m[1] === '순매도' ? -n : n;
+            } catch (e) {
+                console.warn('[FLOW PARSER] failed:', e);
+                return null;
+            }
+        }
+
+        // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
+        window.__GAEMIGTP_BUILD__ = 'STEP50';
+
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
         let activeSearchToken = 0;
@@ -11454,7 +11511,7 @@ const voteKey = 'vote_' + symbol;
                 if (!forceServer && cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
                     data = cached.data;
                 } else {
-                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + (forceServer ? '&mode=full' : '&mode=core');
+                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=full';
                     response = await fetch(url);
 
                     const contentType = response.headers.get("content-type") || "";
@@ -11795,10 +11852,12 @@ if ((response && !response.ok) || data.error) {
                             : `🐜 개미들아! ${displayName}${topicParticle} 현재 흐름을 확인하고 있어.`
                     );
 
+                    // STEP 48: 전역 공통 함수만 사용한다.
+                    // 이 블록 안에서 const domesticFlowValue를 다시 선언하지 않는다.
                     // 2) 수급 근거: 실제 5거래일 순매수/순매도 수치가 있는 경우에만 출력
                     const flowCandidates = [
-                        { key: 'foreign', label: '외국인', value: domesticFlowValue(mr, 'foreign') },
-                        { key: 'institution', label: '기관', value: domesticFlowValue(mr, 'institution') }
+                        { key: 'foreign', label: '외국인', value: getDomesticFlowValue(mr, 'foreign') },
+                        { key: 'institution', label: '기관', value: getDomesticFlowValue(mr, 'institution') }
                     ].filter(x => x.value !== null && Number.isFinite(x.value));
 
                     const selectedFlow = flowCandidates.length
@@ -12235,7 +12294,7 @@ if ((response && !response.ok) || data.error) {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('result-card-wrap').style.display = 'block';
 
-                // STEP 8: 핵심 결과를 먼저 표시하고 선택 데이터는 백그라운드에서 보강한다.
+                // STEP 50: 첫 검색부터 전체 분석 데이터를 받아 뉴스/컨센서스/트랙 분석이 빈 상태로 남지 않게 한다.
                 if (data._details_ready === false) {
                     pollAnalysisDetails(cleanQ, searchToken);
                 }
@@ -12253,20 +12312,25 @@ if ((response && !response.ok) || data.error) {
         }
 
         async function pollAnalysisDetails(query, searchToken, attempt = 0) {
-            if (searchToken !== activeSearchToken || attempt >= 10) return;
+            // optional 데이터(종목뉴스/해외뉴스/컨센서스/트랙 분석)가 준비될 시간을
+            // 기존 4.5초보다 충분히 확보한다. 준비되면 full 재분석을 다시 돌리지 않고
+            // 서버의 완성 캐시를 그대로 한 번 렌더링한다.
+            if (searchToken !== activeSearchToken || attempt >= 40) return;
             try {
-                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query), {cache: 'no-store'});
+                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store'});
                 if (r.status === 200) {
                     const payload = await r.json();
                     if (payload && payload.ready && payload.data) {
                         if (searchToken !== activeSearchToken) return;
                         ANALYZE_CACHE.delete(query.trim().toUpperCase());
-                        await doSearch(query, true);
+                        // forceServer=true를 사용하면 무거운 외부 API를 다시 호출하므로 금지.
+                        // 서버 ANALYSIS_CACHE의 완성 데이터를 core 요청으로 받아 즉시 렌더링한다.
+                        await doSearch(query, false);
                         return;
                     }
                 }
             } catch (e) {}
-            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 450);
+            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
         }
 
         function initTvChart(candles) {
@@ -13157,12 +13221,23 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(400, {"ok": False, "error": "종목명을 입력해주세요."})
                 return
             clean_q = q.replace(" ", "").upper()
-            cached = ANALYSIS_CACHE.get(clean_q)
-            if cached:
-                cached_time, cached_data = cached
-                if time.time() - cached_time < ANALYSIS_CORE_TTL and cached_data.get("_details_ready"):
-                    self._json(200, {"ok": True, "ready": True, "data": cached_data})
-                    return
+            # 클라이언트가 짧게 여러 번 폴링하지 않도록, 한 번의 요청에서
+            # 최대 8초 동안 enrichment 완료 여부를 확인한다.
+            try:
+                should_wait = str(params.get("wait", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+            except Exception:
+                should_wait = False
+            deadline = time.monotonic() + (12.0 if should_wait else 0.0)
+            while True:
+                cached = ANALYSIS_CACHE.get(clean_q)
+                if cached:
+                    cached_time, cached_data = cached
+                    if time.time() - cached_time < ANALYSIS_CORE_TTL and cached_data.get("_details_ready"):
+                        self._json(200, {"ok": True, "ready": True, "data": cached_data})
+                        return
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.2)
             self._json(202, {"ok": True, "ready": False})
             return
 

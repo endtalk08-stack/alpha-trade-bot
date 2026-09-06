@@ -7299,7 +7299,7 @@ def run_full_pipeline(query, lightweight=False):
 # ===== STEP 21: 우측 실시간 시장 사이드바 =====
 RIGHT_MARKET_BOARD_CACHE = {}
 RIGHT_MARKET_BOARD_CACHE_TTL = 30
-RIGHT_MARKET_BOARD_CACHE_VERSION = 42
+RIGHT_MARKET_BOARD_CACHE_VERSION = 43
 RIGHT_MARKET_BOARD_CACHE_LOCK = threading.Lock()
 # STEP 41: 국내 우측 실시간 목록에서 현재 gaemiGTP 차트/분석 API가 지원하지
 # 않는 외국기업 계열 종목코드(9xxxxx)를 제외한다.
@@ -11812,6 +11812,25 @@ if ((response && !response.ok) || data.error) {
                             ? `🐜 개미들아! ${displayName}${topicParticle} 오늘 ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
                             : `🐜 개미들아! ${displayName}${topicParticle} 현재 흐름을 확인하고 있어.`
                     );
+
+                    // STEP 47 FIX: STEP 46에서 누락된 국내 수급 파싱 헬퍼를 복구한다.
+                    // "왜 움직였을까?" 렌더링에서 외국인/기관 수급값을 참조하기 전에
+                    // 반드시 함수가 선언되어 있어야 한다.
+                    const domesticFlowValue = (movementReason, key) => {
+                        const r = Array.isArray(movementReason?.reasons)
+                            ? movementReason.reasons.find(x => x && x.key === key)
+                            : null;
+                        if (!r) return null;
+
+                        const text = String(r.detail || '');
+                        const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
+                        if (!m) return null;
+
+                        const n = Number(m[2].replace(/,/g, ''));
+                        if (!Number.isFinite(n)) return null;
+
+                        return m[1] === '순매도' ? -n : n;
+                    };
 
                     // 2) 수급 근거: 실제 5거래일 순매수/순매도 수치가 있는 경우에만 출력
                     const flowCandidates = [

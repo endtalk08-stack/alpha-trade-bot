@@ -11782,49 +11782,42 @@ if ((response && !response.ok) || data.error) {
                     const soxxItem = findBoard('SOXX');
                     const soxxRate = rateNumber(soxxItem);
 
+                    // STEP 43: "왜 움직였을까?"는 AI가 뉴스 본문을 재해석하지 않고
+                    // 이미 확보된 하단 데이터(movement_reason / DART / 시장지수)만으로
+                    // 고정 템플릿을 조립한다. 화면의 숫자와 문장이 서로 어긋나지 않도록
+                    // 근거가 없는 원인·수치·인과관계는 문장에 넣지 않는다.
                     const parts = [];
-                    if (!isCryptoMarket) {
-                        if (marketRate !== null) {
-                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이고`);
-                        } else {
-                            parts.push(`🐜 개미들아! 오늘 시장 ${selectedMarketName}는 현재 흐름을 확인 중이고`);
-                        }
-                        if (isSemiconductor && soxxRate !== null) {
-                            parts[parts.length - 1] += ` 반도체 업종 SOXX는 ${soxxRate >= 0 ? '+' : ''}${soxxRate.toFixed(2)}% ${upDown(soxxRate)}!`;
-                        }
-                    }
 
+                    // 1) 첫 문장: 현재가/등락률은 화면의 실제 응답값 그대로 사용
                     parts.push(
                         Number.isFinite(pct)
-                            ? `${displayName}${topicParticle} 현재 ${priceText}, ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
-                            : `${displayName}${topicParticle} 현재 ${priceText} ${directionText} 중이야.`
+                            ? `🐜 개미들아! ${displayName}${topicParticle} 오늘 ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
+                            : `🐜 개미들아! ${displayName}${topicParticle} 현재 흐름을 확인하고 있어.`
                     );
 
-                    const domesticFlowValue = (movementReason, key) => {
-                        const r = Array.isArray(movementReason.reasons)
-                            ? movementReason.reasons.find(x => x.key === key)
-                            : null;
-                        if (!r) return null;
-                        const text = String(r.detail || '');
-                        const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
-                        if (!m) return null;
-                        const n = Number(m[2].replace(/,/g,''));
-                        if (!Number.isFinite(n)) return null;
-                        return m[1] === '순매도' ? -n : n;
-                    };
-
+                    // 2) 수급 근거: 실제 5거래일 순매수/순매도 수치가 있는 경우에만 출력
                     const flowCandidates = [
                         { key: 'foreign', label: '외국인', value: domesticFlowValue(mr, 'foreign') },
                         { key: 'institution', label: '기관', value: domesticFlowValue(mr, 'institution') }
                     ].filter(x => x.value !== null && Number.isFinite(x.value));
 
-                    if (flowCandidates.length) {
-                        const selectedFlow = flowCandidates.sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0];
-                        const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
-                        parts.push(`최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어.`);
-                    }
+                    const selectedFlow = flowCandidates.length
+                        ? flowCandidates.slice().sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0]
+                        : null;
 
-                    if (materialReason && Array.isArray(materialReason.news_clusters)) {
+                    // 3) 공시/재료 근거: 실제 뉴스 클러스터 또는 DART 공시가 있을 때만 출력
+                    const disclosureItems = Array.isArray(data.dart_disclosures) ? data.dart_disclosures : [];
+                    const disclosurePositive = disclosureItems.filter(x => String(x?.tag_type || '') === 'positive').length;
+                    const disclosureNegative = disclosureItems.filter(x => String(x?.tag_type || '') === 'negative').length;
+                    const hasDisclosure = disclosureItems.length > 0;
+                    const hasMaterialCluster = !!(
+                        materialReason &&
+                        Array.isArray(materialReason.news_clusters) &&
+                        materialReason.news_clusters.length
+                    );
+
+                    // 기존 materialText 생성 로직을 유지하되, 실제 클러스터가 있을 때만 사용
+                    if (hasMaterialCluster) {
                         const cluster = materialReason.news_clusters[0] || null;
                         const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
                         const map = {
@@ -11840,35 +11833,25 @@ if ((response && !response.ok) || data.error) {
                         if (uniq.length) materialText = uniq.slice(0, 2).join(' ');
                     }
 
-                    let marketEventTopic = '';
-                    const calendarEvents = Array.isArray(data.market_calendar) ? data.market_calendar : [];
-                    const macroText = [
-                        ...(Array.isArray(data.global_news) ? data.global_news.map(x => x?.title || '') : []),
-                        ...(Array.isArray(data.stock_news) ? data.stock_news.map(x => x?.title || '') : []),
-                        ...(Array.isArray(calendarEvents) ? calendarEvents.map(x => JSON.stringify(x)) : [])
-                    ].join(' ').toLowerCase();
-
-                    if (/\bfomc\b|연준/.test(macroText)) marketEventTopic = 'FOMC·연준';
-                    else if (/\bcpi\b|소비자물가|물가/.test(macroText)) marketEventTopic = '미국 물가';
-                    else if (/고용|비농업|실업률/.test(macroText)) marketEventTopic = '미국 고용';
-                    else if (/관세|무역/.test(macroText)) marketEventTopic = '미국 관세 정책';
-                    else if (/금리인하|금리인상|기준금리/.test(macroText)) marketEventTopic = '미국 금리';
-
-                    if (materialText && marketEventTopic) {
-                        const macroWords = new Set(String(marketEventTopic).toLowerCase().split(/[^0-9a-z가-힣]+/).filter(Boolean));
-                        const materialWords = String(materialText).split(/\s+/).filter(Boolean);
-                        const dedupedMaterialWords = materialWords.filter(word => {
-                            const normalized = word.toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
-                            return normalized && !macroWords.has(normalized);
-                        });
-                        const dedupedMaterial = dedupedMaterialWords.join(' ').trim();
-                        parts.push(dedupedMaterial
-                            ? `${dedupedMaterial} ${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`
-                            : `${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
-                    } else if (materialText) {
-                        parts.push(`${materialText} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
-                    } else if (marketEventTopic) {
-                        parts.push(`${marketEventTopic} 관련 소식이 있으니 관련 자료 뉴스를 확인해봐.`);
+                    // 4) 우선순위: 수급 → 공시/재료 → 시장 연동 → 근거 부족
+                    if (selectedFlow) {
+                        const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
+                        parts.push(
+                            `최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어. 하단 수급 차트와 퀀트 지표를 함께 확인해봐!`
+                        );
+                    } else if (hasDisclosure || hasMaterialCluster) {
+                        const materialLabel = materialText || '기업 관련 재료';
+                        if (hasDisclosure) {
+                            parts.push(`최근 ${materialLabel} 관련 공시·재료가 확인됐어. 세부 공시 원문은 아래 DART 위젯에서 확인할 수 있어.`);
+                        } else {
+                            parts.push(`최근 ${materialLabel} 관련 재료가 확인됐어. 아래 뉴스와 하단 데이터를 함께 확인해봐.`);
+                        }
+                    } else if (marketRate !== null && !isCryptoMarket) {
+                        parts.push(
+                            `특이한 개별 수급 근거가 확인되지 않는 가운데 ${selectedMarketName} 지수는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이야. 시장 흐름과 하단 수급 데이터를 함께 확인해봐.`
+                        );
+                    } else {
+                        parts.push('현재 확인된 데이터만으로는 특정 원인을 단정하기 어려워. 하단 수급·퀀트 지표를 함께 확인해봐.');
                     }
 
                     parts.push('🐜 오늘도 개미들 힘내자! 💪');

@@ -6317,16 +6317,23 @@ def build_market_information(global_news):
     return {"topic":g['topic'],"text":text,"repeat_count":n,"source_count":sc,"evidence":g['items'][:6]}
 
 
+# ===== STEP 52: 국내 트랙 분석용 키움 실데이터 보강 =====
+# 프로그램매매는 ka90013의 최근 일별 데이터, 거래대금은 ka10007/ka10005를 사용한다.
 # ===== STEP 51: 국내 트랙 분석용 키움 데이터 =====
 # 국내주식 트랙 분석은 퀀트와 겹치는 기술지표를 제외하고,
 # 시장/업종·테마/외국인/기관/프로그램/공매도·대차/재료·공시/거래대금 8개로 고정한다.
 # 키움 REST API는 Render 환경변수의 인증정보가 있을 때만 사용하며,
 # 인증정보가 없거나 API가 실패하면 해당 근거는 "데이터 확인 필요"로 남긴다.
-KIWOOM_APP_KEY = os.environ.get("KIWOOM_APP_KEY", "").strip() or os.environ.get("KIWOOM_APPKEY", "").strip()
+KIWOOM_APP_KEY = (
+    os.environ.get("KIWOOM_APP_KEY", "").strip()
+    or os.environ.get("KIWOOM_APPKEY", "").strip()
+    or os.environ.get("APP_KEY", "").strip()
+)
 KIWOOM_APP_SECRET = (
     os.environ.get("KIWOOM_APP_SECRET", "").strip()
     or os.environ.get("KIWOOM_APPSECRET", "").strip()
     or os.environ.get("KIWOOM_SECRET", "").strip()
+    or os.environ.get("APP_SECRET", "").strip()
 )
 KIWOOM_API_BASE = "https://api.kiwoom.com"
 KIWOOM_TOKEN_CACHE = {"token": "", "expires": 0.0}
@@ -6420,11 +6427,12 @@ def fetch_kiwoom_program_evidence(code):
     code = str(code or "").strip()
     if not code or not re.fullmatch(r"\d{6}", code):
         return result
-    today = datetime.now().strftime("%Y%m%d")
+    # ka90013의 date는 선택값입니다. 주말/휴일에 오늘 날짜를 강제로 넣으면
+    # 빈 결과가 될 수 있으므로 날짜를 비워 최근 일별 데이터를 요청합니다.
     data = _kiwoom_post(
         "ka90013",
         "/api/dostk/mrkcond",
-        {"stk_cd": code, "amt_qty_tp": "1", "date": today},
+        {"stk_cd": code, "amt_qty_tp": "1", "date": ""},
     )
     rows = data.get("stk_daly_prm_trde_trnsn", []) if isinstance(data, dict) else []
     if not isinstance(rows, list):
@@ -6448,9 +6456,10 @@ def fetch_kiwoom_program_evidence(code):
         else:
             score = 0
         sign = "+" if latest > 0 else ""
-        detail = f"최근 프로그램 순매수 {sign}{latest:,.0f}만원"
+        # ka90013 금액 조회값은 백만원 단위이므로 화면에서는 억원으로 환산한다.
+        detail = f"최근 프로그램 순매수 {sign}{latest/100:,.1f}억원"
         if prev is not None:
-            detail += f" · 직전 {prev:+,.0f}만원"
+            detail += f" · 직전 {prev/100:+,.1f}억원"
         result = {"available": True, "score": score, "latest": latest, "previous": prev, "detail": detail}
     with KIWOOM_DATA_CACHE_LOCK:
         KIWOOM_DATA_CACHE[key] = {"time": now, "value": result}
@@ -6470,12 +6479,14 @@ def fetch_kiwoom_short_borrow_evidence(code):
     if not code or not re.fullmatch(r"\d{6}", code):
         return result
     today = datetime.now().strftime("%Y%m%d")
-    start = (datetime.now() - timedelta(days=14)).strftime("%Y%m%d")
+    # 주말/휴일에도 최근 거래일 데이터가 잡히도록 조회 구간을 30일로 넉넉하게 잡는다.
+    start = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
+    end = datetime.now().strftime("%Y%m%d")
 
     short_data = _kiwoom_post(
         "ka10014",
         "/api/dostk/shsa",
-        {"stk_cd": code, "tm_tp": "1", "strt_dt": start, "end_dt": today},
+        {"stk_cd": code, "tm_tp": "1", "strt_dt": start, "end_dt": end},
     )
     short_rows = short_data.get("shrts_trnsn", []) if isinstance(short_data, dict) else []
     if not isinstance(short_rows, list):
@@ -6492,7 +6503,7 @@ def fetch_kiwoom_short_borrow_evidence(code):
     borrow_data = _kiwoom_post(
         "ka20068",
         "/api/dostk/slb",
-        {"strt_dt": start, "end_dt": today, "all_tp": "0", "stk_cd": code},
+        {"strt_dt": start, "end_dt": end, "all_tp": "0", "stk_cd": code},
     )
     borrow_rows = borrow_data.get("dbrt_trde_trnsn", []) if isinstance(borrow_data, dict) else []
     if not isinstance(borrow_rows, list):
@@ -6502,6 +6513,8 @@ def fetch_kiwoom_short_borrow_evidence(code):
         if not isinstance(row, dict):
             continue
         rem = _kiwoom_num(row.get("rmnd"))
+        if rem is None:
+            rem = _kiwoom_num(row.get("rmnd_qty"))
         if rem is not None:
             borrow_parsed.append((str(row.get("dt") or ""), rem))
     borrow_parsed.sort(key=lambda x: x[0], reverse=True)
@@ -6535,6 +6548,66 @@ def fetch_kiwoom_short_borrow_evidence(code):
     with KIWOOM_DATA_CACHE_LOCK:
         KIWOOM_DATA_CACHE[key] = {"time": now, "value": result}
     return result
+
+def fetch_kiwoom_trading_value_evidence(code):
+    """키움 실데이터로 거래대금을 확인한다.
+
+    1) ka10007 시세표성정보의 당일 거래대금(trde_prica) 우선
+    2) 당일 값이 없으면 ka10005의 최근 거래일 거래대금(trde_prica) fallback
+    데이터가 실제로 존재할 때만 available=True로 표시한다.
+    """
+    key = f"tradingvalue:{str(code or '').strip()}"
+    now = time.time()
+    with KIWOOM_DATA_CACHE_LOCK:
+        cached = KIWOOM_DATA_CACHE.get(key)
+        if cached and now - cached["time"] < 60:
+            return cached["value"]
+
+    result = {"available": False, "score": 0, "detail": "거래대금 데이터 확인 필요"}
+    code = str(code or "").strip()
+    if not code or not re.fullmatch(r"\d{6}", code):
+        return result
+
+    # 1) 당일 시세표성정보
+    data = _kiwoom_post(
+        "ka10007",
+        "/api/dostk/mrkcond",
+        {"stk_cd": code},
+    )
+    if isinstance(data, dict):
+        tv = _kiwoom_num(data.get("trde_prica"))
+        if tv is not None and tv > 0:
+            # ka10007 거래대금은 백만원 단위로 제공된다.
+            detail = f"당일 거래대금 {tv/100:,.1f}억원" if tv >= 100 else f"당일 거래대금 {tv:,.0f}백만원"
+            result = {"available": True, "score": 0, "latest": tv, "date": str(data.get("date") or ""), "detail": detail}
+
+    # 2) 장중/휴장일에 당일 값이 없으면 최근 거래일 일주월시분 데이터
+    if not result["available"]:
+        data = _kiwoom_post(
+            "ka10005",
+            "/api/dostk/mrkcond",
+            {"stk_cd": code},
+        )
+        rows = data.get("stk_ddwkmm", []) if isinstance(data, dict) else []
+        if isinstance(rows, list):
+            parsed = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                tv = _kiwoom_num(row.get("trde_prica"))
+                dt = str(row.get("date") or "")
+                if tv is not None and tv > 0:
+                    parsed.append((dt, tv))
+            parsed.sort(key=lambda x: x[0], reverse=True)
+            if parsed:
+                dt, tv = parsed[0]
+                detail = f"최근 거래일 거래대금 {tv/100:,.1f}억원 ({dt})" if tv >= 100 else f"최근 거래일 거래대금 {tv:,.0f}백만원 ({dt})"
+                result = {"available": True, "score": 0, "latest": tv, "date": dt, "detail": detail}
+
+    with KIWOOM_DATA_CACHE_LOCK:
+        KIWOOM_DATA_CACHE[key] = {"time": now, "value": result}
+    return result
+
 
 def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol="", alpha_earnings=None):
     """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다.
@@ -6692,6 +6765,11 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
                     tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%"
         except Exception:
             pass
+        # Naver 거래대금이 비어 있으면 키움 실데이터로 보강한다.
+        if tv_score == 0 and symbol:
+            kiwoom_tv = fetch_kiwoom_trading_value_evidence(symbol)
+            if kiwoom_tv.get("available"):
+                tv_detail = kiwoom_tv.get("detail", tv_detail)
         reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
     
         # 5. 외국인 수급
@@ -11736,7 +11814,7 @@ const voteKey = 'vote_' + symbol;
         }
 
         // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP50';
+        window.__GAEMIGTP_BUILD__ = 'STEP52';
 
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;

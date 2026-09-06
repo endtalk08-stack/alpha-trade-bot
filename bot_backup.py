@@ -860,7 +860,7 @@ ANALYSIS_CACHE = {}
 ANALYSIS_ENRICHING = set()
 ANALYSIS_ENRICH_CONTEXT = {}
 ANALYSIS_ENRICH_LOCK = threading.Lock()
-ANALYSIS_CORE_TTL = 30
+ANALYSIS_CORE_TTL = 180  # core→details 전환에 충분한 시간 확보
 
 # STEP 14: 퀀트 내부의 반복 외부조회/계산 캐시.
 # 거래대금 순위는 전 종목 공통 목록이므로 60초 동안 한 번만 조회한다.
@@ -894,14 +894,15 @@ EARNINGS_RESULT_CACHE = {}
 EARNINGS_RESULT_CACHE_TTL = 1800  # 30분
 EXTERNAL_CACHE_LOCK = threading.Lock()
 OPTIONAL_API_EXECUTOR = ThreadPoolExecutor(
-    max_workers=12,
+    max_workers=18,
     thread_name_prefix="gaemi-optional",
 )
 ANALYSIS_ENRICH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=4,
+    max_workers=6,
     thread_name_prefix="gaemi-enrich",
 )
-OPTIONAL_API_SOFT_TIMEOUT = 1.20  # 사용자 응답에서 optional API에 허용하는 최대 대기시간
+OPTIONAL_API_SOFT_TIMEOUT = 1.20  # 최초 응답에서 optional API에 허용하는 최대 대기시간
+ANALYSIS_ENRICH_WAIT = 10.0  # 백그라운드 details 단계에서 외부 데이터가 준비될 최대 대기시간
 
 # 통합 컨센서스 결과 캐시. 컨센서스는 초단위 데이터가 아니므로
 # 매 종목 검색마다 Naver/Finnhub/Yahoo fallback 체인을 다시 타지 않는다.
@@ -6739,15 +6740,28 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
             }
 
+            # details 단계에서는 모든 외부 API를 무한정 기다리지 않는다.
+            # 느린 API 하나 때문에 뉴스/컨센서스/트랙 전체가 영원히 '불러오는 중'으로
+            # 남는 문제를 막기 위해 최대 10초까지만 기다리고, 준비된 결과부터 사용한다.
             optional_results = {}
+            active_futures = {name: future for name, future in optional_futures.items() if future is not None}
+            if active_futures:
+                done, pending = wait(
+                    set(active_futures.values()),
+                    timeout=ANALYSIS_ENRICH_WAIT,
+                )
+                for name, future in active_futures.items():
+                    if future not in done:
+                        optional_results[name] = None
+                        print(f"[ANALYSIS ENRICH] {name} still running after {ANALYSIS_ENRICH_WAIT:.1f}s")
+                        continue
+                    try:
+                        optional_results[name] = future.result()
+                    except Exception as exc:
+                        print(f"[ANALYSIS ENRICH] {name} failed: {type(exc).__name__}: {exc}")
+                        optional_results[name] = None
             for name, future in optional_futures.items():
                 if future is None:
-                    optional_results[name] = None
-                    continue
-                try:
-                    optional_results[name] = future.result()
-                except Exception as exc:
-                    print(f"[ANALYSIS ENRICH] {name} failed: {type(exc).__name__}: {exc}")
                     optional_results[name] = None
 
             stock_news = merge_news_sources(optional_results.get("stock_news_rss") or [], optional_results.get("ticker_news") or [])
@@ -11402,7 +11416,7 @@ const voteKey = 'vote_' + symbol;
         }
 
         // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP48';
+        window.__GAEMIGTP_BUILD__ = 'STEP49';
 
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
@@ -12301,7 +12315,7 @@ if ((response && !response.ok) || data.error) {
             // optional 데이터(종목뉴스/해외뉴스/컨센서스/트랙 분석)가 준비될 시간을
             // 기존 4.5초보다 충분히 확보한다. 준비되면 full 재분석을 다시 돌리지 않고
             // 서버의 완성 캐시를 그대로 한 번 렌더링한다.
-            if (searchToken !== activeSearchToken || attempt >= 30) return;
+            if (searchToken !== activeSearchToken || attempt >= 40) return;
             try {
                 const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store'});
                 if (r.status === 200) {
@@ -12316,7 +12330,7 @@ if ((response && !response.ok) || data.error) {
                     }
                 }
             } catch (e) {}
-            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 300);
+            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
         }
 
         function initTvChart(candles) {
@@ -13213,7 +13227,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 should_wait = str(params.get("wait", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
             except Exception:
                 should_wait = False
-            deadline = time.monotonic() + (8.0 if should_wait else 0.0)
+            deadline = time.monotonic() + (12.0 if should_wait else 0.0)
             while True:
                 cached = ANALYSIS_CACHE.get(clean_q)
                 if cached:

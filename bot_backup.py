@@ -11805,7 +11805,10 @@ if ((response && !response.ok) || data.error) {
                         ? flowCandidates.slice().sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0]
                         : null;
 
-                    // 3) 공시/재료 근거: 실제 뉴스 클러스터 또는 DART 공시가 있을 때만 출력
+                    // 3) 공시/기업 재료와 거시 이벤트를 분리한다.
+                    // STEP 44: 종목 뉴스에 FOMC/연준이 단순 언급된 것만으로
+                    // 거시 원인을 선택하지 않는다. 거시 이벤트는 global_news + 일정에서
+                    // 독립 출처가 2개 이상 확인되거나 실제 일정 이벤트가 있을 때만 채택한다.
                     const disclosureItems = Array.isArray(data.dart_disclosures) ? data.dart_disclosures : [];
                     const disclosurePositive = disclosureItems.filter(x => String(x?.tag_type || '') === 'positive').length;
                     const disclosureNegative = disclosureItems.filter(x => String(x?.tag_type || '') === 'negative').length;
@@ -11816,7 +11819,7 @@ if ((response && !response.ok) || data.error) {
                         materialReason.news_clusters.length
                     );
 
-                    // 기존 materialText 생성 로직을 유지하되, 실제 클러스터가 있을 때만 사용
+                    // 종목 재료에서 거시 키워드는 제거한다.
                     if (hasMaterialCluster) {
                         const cluster = materialReason.news_clusters[0] || null;
                         const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
@@ -11828,24 +11831,62 @@ if ((response && !response.ok) || data.error) {
                         };
                         const mapped = kws.map(k => map[String(k).toLowerCase()] || String(k)).filter(Boolean);
                         const generic = new Set(['주가','시장','관련','소식','전망','기대','확대','증가','감소','하락','상승']);
-                        const filtered = mapped.filter(x => !generic.has(x));
+                        const macroOnly = new Set([
+                            'fomc','연준','fed','파월','금리','금리인하','금리인상','기준금리',
+                            'cpi','물가','소비자물가','인플레이션','고용','비농업','실업률','관세','무역'
+                        ]);
+                        const filtered = mapped.filter(x => !generic.has(x) && !macroOnly.has(String(x).toLowerCase()));
                         const uniq = [...new Set(filtered)];
                         if (uniq.length) materialText = uniq.slice(0, 2).join(' ');
                     }
 
-                    // 4) 우선순위: 수급 → 공시/재료 → 시장 연동 → 근거 부족
+                    // 실제 글로벌 뉴스/일정에서만 거시 이벤트를 검증한다.
+                    const globalMacroItems = Array.isArray(data.global_news) ? data.global_news.filter(x => {
+                        const title = String(x?.title || '').toLowerCase();
+                        return /\bfomc\b|연준|fed|파월|기준금리|금리인하|금리인상|cpi|소비자물가|인플레이션|고용|비농업|실업률/.test(title);
+                    }) : [];
+                    const macroSources = new Set(
+                        globalMacroItems.map(x => String(x?.media || x?.source || '').trim().toLowerCase()).filter(Boolean)
+                    );
+                    const calendarText = Array.isArray(data.market_calendar)
+                        ? data.market_calendar.map(x => JSON.stringify(x)).join(' ').toLowerCase()
+                        : '';
+                    const calendarHasFomc = /\bfomc\b|fomc statement|fomc press conference|연준/.test(calendarText);
+                    const validatedMacro = macroSources.size >= 2 || calendarHasFomc;
+
+                    let macroEventText = '';
+                    if (validatedMacro && globalMacroItems.length) {
+                        const macroBlob = globalMacroItems.map(x => String(x?.title || '')).join(' ').toLowerCase();
+                        if (/\bfomc\b|연준|fed|파월/.test(macroBlob)) {
+                            if (/금리인하|인하 기대|기대 약화|기대 후퇴|금리인상|매파|긴축/.test(macroBlob)) {
+                                macroEventText = 'FOMC·연준의 금리 경계';
+                            } else if (/기자회견|발언|성명/.test(macroBlob)) {
+                                macroEventText = 'FOMC·연준 발언';
+                            } else {
+                                macroEventText = 'FOMC·연준 관련 이슈';
+                            }
+                        } else if (/cpi|소비자물가|인플레이션|물가/.test(macroBlob)) {
+                            macroEventText = '미국 물가 관련 이슈';
+                        } else if (/고용|비농업|실업률/.test(macroBlob)) {
+                            macroEventText = '미국 고용 관련 이슈';
+                        }
+                    }
+
+                    // 4) 우선순위: 실제 수급 → 실제 공시/기업재료 → 검증된 거시 이벤트 → 시장 연동
                     if (selectedFlow) {
                         const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
                         parts.push(
                             `최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어. 하단 수급 차트와 퀀트 지표를 함께 확인해봐!`
                         );
-                    } else if (hasDisclosure || hasMaterialCluster) {
+                    } else if (hasDisclosure || (hasMaterialCluster && materialText)) {
                         const materialLabel = materialText || '기업 관련 재료';
                         if (hasDisclosure) {
                             parts.push(`최근 ${materialLabel} 관련 공시·재료가 확인됐어. 세부 공시 원문은 아래 DART 위젯에서 확인할 수 있어.`);
                         } else {
                             parts.push(`최근 ${materialLabel} 관련 재료가 확인됐어. 아래 뉴스와 하단 데이터를 함께 확인해봐.`);
                         }
+                    } else if (macroEventText && !isCryptoMarket) {
+                        parts.push(`${macroEventText}가 여러 독립 출처에서 확인됐어. 시장 흐름과 하단 데이터를 함께 확인해봐.`);
                     } else if (marketRate !== null && !isCryptoMarket) {
                         parts.push(
                             `특이한 개별 수급 근거가 확인되지 않는 가운데 ${selectedMarketName} 지수는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이야. 시장 흐름과 하단 수급 데이터를 함께 확인해봐.`

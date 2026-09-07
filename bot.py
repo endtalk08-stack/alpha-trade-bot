@@ -11814,7 +11814,7 @@ const voteKey = 'vote_' + symbol;
         }
 
         // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP52';
+        window.__GAEMIGTP_BUILD__ = 'STEP54';
 
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
@@ -11909,7 +11909,7 @@ const voteKey = 'vote_' + symbol;
                 if (!forceServer && cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
                     data = cached.data;
                 } else {
-                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=full';
+                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=core';
                     response = await fetch(url);
 
                     const contentType = response.headers.get("content-type") || "";

@@ -12658,11 +12658,12 @@ if ((response && !response.ok) || data.error) {
                                 </a>
                             `).join('');
 
-                            if (visibleStockCount < allStockNews.length) {
-                                const nextCount = Math.min(moreCount, allStockNews.length - visibleStockCount);
+                            if (visibleStockCount < allStockNews.length || visibleStockCount > firstCount) {
                                 const moreBtn = document.createElement('button');
                                 moreBtn.type = 'button';
-                                moreBtn.textContent = `더보기 (${nextCount}개)`;
+                                moreBtn.textContent = visibleStockCount < allStockNews.length
+                                    ? `더보기 (${Math.min(moreCount, allStockNews.length - visibleStockCount)}개)`
+                                    : '접기';
                                 moreBtn.style.cssText = `
                                     width:100%; margin-top:10px; padding:9px 0;
                                     border:1px solid var(--border-line); border-radius:8px;
@@ -12670,7 +12671,11 @@ if ((response && !response.ok) || data.error) {
                                     font-size:0.82rem; font-weight:700; cursor:pointer;
                                 `;
                                 moreBtn.addEventListener('click', () => {
-                                    visibleStockCount = Math.min(visibleStockCount + moreCount, allStockNews.length);
+                                    if (visibleStockCount < allStockNews.length) {
+                                        visibleStockCount = Math.min(visibleStockCount + moreCount, allStockNews.length);
+                                    } else {
+                                        visibleStockCount = firstCount;
+                                    }
                                     renderStockNews();
                                 });
                                 sNews.appendChild(moreBtn);
@@ -12699,11 +12704,12 @@ if ((response && !response.ok) || data.error) {
                                 </a>
                             `).join('');
 
-                            if (visibleGlobalCount < allGlobalNews.length) {
-                                const nextCount = Math.min(moreCount, allGlobalNews.length - visibleGlobalCount);
+                            if (visibleGlobalCount < allGlobalNews.length || visibleGlobalCount > firstCount) {
                                 const moreBtn = document.createElement('button');
                                 moreBtn.type = 'button';
-                                moreBtn.textContent = `더보기 (${nextCount}개)`;
+                                moreBtn.textContent = visibleGlobalCount < allGlobalNews.length
+                                    ? `더보기 (${Math.min(moreCount, allGlobalNews.length - visibleGlobalCount)}개)`
+                                    : '접기';
                                 moreBtn.style.cssText = `
                                     width:100%; margin-top:10px; padding:9px 0;
                                     border:1px solid var(--border-line); border-radius:8px;
@@ -12711,7 +12717,11 @@ if ((response && !response.ok) || data.error) {
                                     font-size:0.82rem; font-weight:700; cursor:pointer;
                                 `;
                                 moreBtn.addEventListener('click', () => {
-                                    visibleGlobalCount = Math.min(visibleGlobalCount + moreCount, allGlobalNews.length);
+                                    if (visibleGlobalCount < allGlobalNews.length) {
+                                        visibleGlobalCount = Math.min(visibleGlobalCount + moreCount, allGlobalNews.length);
+                                    } else {
+                                        visibleGlobalCount = firstCount;
+                                    }
                                     renderGlobalNews();
                                 });
                                 gNews.appendChild(moreBtn);

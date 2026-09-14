@@ -3976,11 +3976,17 @@ def fetch_domestic_candles(code, anchor_price=None):
 # 기본 TTL은 10분이며, 캐시가 없거나 만료된 경우에만 갱신한다.
 OVERSEAS_CANDLE_CACHE = {}
 OVERSEAS_CANDLE_CACHE_TTL = 10 * 60
+# 동일 미국 종목에 /api/analyze와 다른 요청이 동시에 들어와도
+# Yahoo 5년 일봉을 한 번만 가져오도록 single-flight를 적용한다.
+OVERSEAS_CANDLE_INFLIGHT = {}
+OVERSEAS_CANDLE_INFLIGHT_LOCK = threading.Lock()
 
 def fetch_overseas_candles(symbol):
     """
-    해외주식 차트 데이터 조회 + 서버 메모리 TTL 캐시.
-    기존 함수 계약을 유지한다:
+    해외주식 차트 데이터 조회 + 서버 메모리 TTL 캐시 + single-flight.
+
+    같은 종목을 여러 요청이 동시에 요구하면 첫 요청만 Yahoo를 호출하고
+    나머지는 그 결과를 기다린다. 기존 반환 계약은 그대로 유지한다:
       (chart_close, price_text, df)
     """
     key = str(symbol or "").strip().upper()
@@ -3989,13 +3995,34 @@ def fetch_overseas_candles(symbol):
 
     now = time.time()
     cached = OVERSEAS_CANDLE_CACHE.get(key)
-    if cached and (now - cached["time"]) < OVERSEAS_CANDLE_CACHE_TTL:
+    if cached and (now - cached.get("time", 0)) < OVERSEAS_CANDLE_CACHE_TTL:
         try:
             df = cached["df"].copy()
             chart_close = float(df["Close"].iloc[-1])
             return chart_close, f"{chart_close:,.2f} 달러", df
         except Exception:
             OVERSEAS_CANDLE_CACHE.pop(key, None)
+
+    # 같은 티커의 동시 Yahoo 요청을 하나로 합친다.
+    with OVERSEAS_CANDLE_INFLIGHT_LOCK:
+        inflight = OVERSEAS_CANDLE_INFLIGHT.get(key)
+        if inflight is None:
+            inflight = Future()
+            OVERSEAS_CANDLE_INFLIGHT[key] = inflight
+            owner = True
+        else:
+            owner = False
+
+    if not owner:
+        try:
+            value = inflight.result(timeout=7.0)
+            if not value or value[2] is None:
+                return None, None, None
+            chart_close, price_text, df = value
+            return chart_close, price_text, df.copy()
+        except Exception as exc:
+            print(f"[YAHOO CHART WAIT ERROR] {key}: {type(exc).__name__}: {exc}")
+            return None, None, None
 
     try:
         encoded_sym = urllib.parse.quote(key)
@@ -4052,17 +4079,28 @@ def fetch_overseas_candles(symbol):
 
         df = pd.DataFrame(records).set_index("Date").sort_index()
         chart_close = float(df["Close"].iloc[-1])
+        result_value = (chart_close, f"{chart_close:,.2f} 달러", df)
 
         OVERSEAS_CANDLE_CACHE[key] = {
-            "time": now,
+            "time": time.time(),
             "df": df.copy(),
         }
-
+        try:
+            inflight.set_result(result_value)
+        except Exception:
+            pass
         return chart_close, f"{chart_close:,.2f} 달러", df
 
     except Exception as exc:
         print(f"[YAHOO CHART ERROR] {key}: {type(exc).__name__}: {exc}")
+        try:
+            inflight.set_result((None, None, None))
+        except Exception:
+            pass
         return None, None, None
+    finally:
+        with OVERSEAS_CANDLE_INFLIGHT_LOCK:
+            OVERSEAS_CANDLE_INFLIGHT.pop(key, None)
 
 
 def _fetch_overseas_quote_snapshot_uncached(symbol):
@@ -11416,11 +11454,15 @@ const voteKey = 'vote_' + symbol;
         }
 
         // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP50';
+        window.__GAEMIGTP_BUILD__ = 'STEP51-US-SIDEBAR-FIX';
 
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
         let activeSearchToken = 0;
+        let activeSearchController = null;
+        let activeDetailsController = null;
+        let rightMarketController = null;
+        let rightMarketRequestToken = 0;
         const FAST_CHART_CACHE = new Map();
         const FAST_CHART_CACHE_TTL = 30 * 1000;
 
@@ -11430,8 +11472,20 @@ const voteKey = 'vote_' + symbol;
 
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
 
-            const cleanQ = query.trim();
+            const cleanQ = String(query || '').trim();
             if (!cleanQ) return;
+
+            // 새 종목을 클릭하면 이전 분석/상세 폴링 요청을 즉시 중단한다.
+            // activeSearchToken은 화면 적용 방지용이고, AbortController는 실제 HTTP 요청을 중단한다.
+            if (activeSearchController) {
+                try { activeSearchController.abort(); } catch (e) {}
+            }
+            if (activeDetailsController) {
+                try { activeDetailsController.abort(); } catch (e) {}
+            }
+            activeSearchController = new AbortController();
+            const searchSignal = activeSearchController.signal;
+
             // STEP 37: 우측 실시간 시장에서 종목코드로 진입하더라도
             // 목록에서 이미 확보한 한글 종목명을 상세 화면 제목에 유지한다.
             const displayNameHint = String(displayNameOverride || '').trim();
@@ -11486,21 +11540,6 @@ const voteKey = 'vote_' + symbol;
             }
 
             const searchToken = ++activeSearchToken;
-            const fastChartKey = cleanQ.toUpperCase();
-            const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
-            const fastChartPromise = (
-                fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
-            )
-                ? Promise.resolve(fastChartCached.data)
-                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ))
-                    .then(r => r.ok ? r.json() : null)
-                    .then(chartData => {
-                        if (chartData) {
-                            FAST_CHART_CACHE.set(fastChartKey, {time: Date.now(), data: chartData});
-                        }
-                        return chartData;
-                    })
-                    .catch(() => null);
 
             try {
                 const cacheKey = cleanQ.toUpperCase();
@@ -11512,7 +11551,7 @@ const voteKey = 'vote_' + symbol;
                     data = cached.data;
                 } else {
                     const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=full';
-                    response = await fetch(url);
+                    response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
 
                     const contentType = response.headers.get("content-type") || "";
                     if (contentType.includes("application/json")) {
@@ -11543,24 +11582,10 @@ const voteKey = 'vote_' + symbol;
                     console.table(data._perf.slowest_http || []);
                 }
 
-                // 차트는 전체 분석 완료를 기다리지 않는다.
-                if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
-                    setTimeout(() => {
-                        if (searchToken === activeSearchToken) {
-                            initTvChart(cached.data.candles);
-                        }
-                    }, 0);
-                } else {
-                    fastChartPromise.then(chartData => {
-                        if (chartData?._perf) {
-                            console.log(
-                                `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
-                            );
-                            console.table(chartData._perf.slowest_http || []);
-                        }
-                        if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                        initTvChart(chartData.candles);
-                    });
+                // /api/chart를 별도로 호출하지 않는다. /api/analyze가 반환한
+                // 동일 candles를 바로 사용해 한 종목 클릭당 Yahoo 차트 중복 요청을 제거한다.
+                if (searchToken === activeSearchToken && Array.isArray(data.candles) && data.candles.length) {
+                    initTvChart(data.candles);
                 }
 
 if ((response && !response.ok) || data.error) {
@@ -12304,10 +12329,13 @@ if ((response && !response.ok) || data.error) {
                 window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
+                if (err && err.name === 'AbortError') return;
                 console.error("Analysis Error:", err);
                 const msg = err && err.message ? err.message : '알 수 없는 오류';
-                alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
-                document.getElementById('loading').style.display = 'none';
+                if (searchToken === activeSearchToken) {
+                    alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
+                    document.getElementById('loading').style.display = 'none';
+                }
             }
         }
 
@@ -12316,8 +12344,13 @@ if ((response && !response.ok) || data.error) {
             // 기존 4.5초보다 충분히 확보한다. 준비되면 full 재분석을 다시 돌리지 않고
             // 서버의 완성 캐시를 그대로 한 번 렌더링한다.
             if (searchToken !== activeSearchToken || attempt >= 40) return;
+            if (activeDetailsController) {
+                try { activeDetailsController.abort(); } catch (e) {}
+            }
+            activeDetailsController = new AbortController();
+            const detailsSignal = activeDetailsController.signal;
             try {
-                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store'});
+                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store', signal: detailsSignal});
                 if (r.status === 200) {
                     const payload = await r.json();
                     if (payload && payload.ready && payload.data) {
@@ -12329,8 +12362,12 @@ if ((response && !response.ok) || data.error) {
                         return;
                     }
                 }
-            } catch (e) {}
-            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
+            } catch (e) {
+                if (e && e.name === 'AbortError') return;
+            }
+            if (searchToken === activeSearchToken) {
+                setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
+            }
         }
 
         function initTvChart(candles) {
@@ -12724,7 +12761,7 @@ if ((response && !response.ok) || data.error) {
                 const symbol = escapeRightMarketText(row.symbol || '');
                 const clickSymbol = escapeRightMarketText(row.symbol || row.name || '');
                 const clickName = escapeRightMarketText(krName || row.name || row.symbol || '');
-                return `<div class="right-market-row" onclick="doSearch('${clickSymbol}', false, '${clickName}')">
+                return `<div class="right-market-row" role="button" tabindex="0" data-right-symbol="${clickSymbol}" data-right-name="${clickName}">
                     <div class="right-market-rank">${row.rank || idx + 1}</div>
                     <div class="right-market-logo">${badge}</div>
                     <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>
@@ -12737,13 +12774,20 @@ if ((response && !response.ok) || data.error) {
             const list = document.getElementById('rightMarketList');
             if (!list) return;
             const cacheKey = rightMarketKey;
+            const requestToken = ++rightMarketRequestToken;
+            if (rightMarketController) {
+                try { rightMarketController.abort(); } catch (e) {}
+            }
+            rightMarketController = new AbortController();
+            const boardSignal = rightMarketController.signal;
             if (!force && rightMarketCache[cacheKey]) {
                 renderRightMarketRows(rightMarketCache[cacheKey]);
                 return;
             }
             try {
-                const r = await fetch(`/api/right-market-board?market=${encodeURIComponent(cacheKey)}${force ? '&force=1' : ''}`, {cache:'no-store'});
+                const r = await fetch(`/api/right-market-board?market=${encodeURIComponent(cacheKey)}${force ? '&force=1' : ''}`, {cache:'no-store', signal: boardSignal});
                 const payload = await r.json();
+                if (requestToken !== rightMarketRequestToken || cacheKey !== rightMarketKey) return;
                 if (payload && payload.ok && Array.isArray(payload.data)) {
                     rightMarketCache[cacheKey] = payload.data;
                     renderRightMarketRows(payload.data);
@@ -12751,7 +12795,10 @@ if ((response && !response.ok) || data.error) {
                     renderRightMarketRows([]);
                 }
             } catch (e) {
-                renderRightMarketRows([]);
+                if (e && e.name === 'AbortError') return;
+                if (requestToken === rightMarketRequestToken && cacheKey === rightMarketKey) {
+                    renderRightMarketRows([]);
+                }
             }
             const t = document.getElementById('rightMarketTime');
             if (t) t.textContent = `오늘 ${new Date().toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'})} 기준`;
@@ -12761,6 +12808,33 @@ if ((response && !response.ok) || data.error) {
             rightMarketKey = key;
             document.querySelectorAll('.right-market-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.market === key));
             loadRightMarketBoard(false);
+        }
+
+        // 오른쪽 종목 행은 inline onclick 대신 이벤트 위임을 사용한다.
+        // HTML/JavaScript escape가 섞여 발생할 수 있는 클릭 오류를 제거하고
+        // 동적으로 다시 그려진 행에도 동일하게 동작한다.
+        function initRightMarketRowEvents() {
+            const list = document.getElementById('rightMarketList');
+            if (!list || list.dataset.eventsBound === '1') return;
+            list.dataset.eventsBound = '1';
+            const openRow = (row) => {
+                if (!row) return;
+                const symbol = row.getAttribute('data-right-symbol') || '';
+                const name = row.getAttribute('data-right-name') || '';
+                if (!symbol) return;
+                doSearch(symbol, false, name);
+            };
+            list.addEventListener('click', (event) => {
+                const row = event.target.closest('.right-market-row');
+                if (row && list.contains(row)) openRow(row);
+            });
+            list.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                const row = event.target.closest('.right-market-row');
+                if (!row || !list.contains(row)) return;
+                event.preventDefault();
+                openRow(row);
+            });
         }
 
         function selectRightMenu(menu) {
@@ -12837,6 +12911,7 @@ if ((response && !response.ok) || data.error) {
             // 데스크톱/모바일 모두 오른쪽 사이드바가 처음에는 닫힌 상태로 시작한다.
             // 왼쪽 사이드바와 완전히 독립적으로 열리고 닫힌다.
             setRightMarketOpen(false);
+            initRightMarketRowEvents();
             if (isMobileRightMarket) return;
             loadRightMarketBoard(false);
             setInterval(() => loadRightMarketBoard(true), 60000);

@@ -3490,7 +3490,17 @@ def fetch_finlight_economic_news(market_name="", limit=10):
         key=lambda x: (int(x.get("relevance_score") or 0), x.get("pubDate") or ""),
         reverse=True,
     )
-    merged = merged[:max(1, int(limit))]
+    pre_limit_count = len(merged)
+    final_limit = max(1, int(limit))
+    merged = merged[:final_limit]
+
+    print(
+        f"[FINLIGHT ECONOMIC SUMMARY] market={market_name!r} "
+        f"us_close={len(us_close or [])} "
+        f"us_driver={len(us_driver or [])} "
+        f"general={len(general or [])} "
+        f"deduped={pre_limit_count} final={len(merged)} limit={final_limit}"
+    )
 
     if merged:
         return merged

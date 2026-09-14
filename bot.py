@@ -12630,16 +12630,43 @@ if ((response && !response.ok) || data.error) {
                     }
                 }
 
-                // 4. 종목 뉴스 & 경제뉴스 렌더링 (종목뉴스 최대 20개 / 경제뉴스 6개+10개씩)
+                // 4. 종목 뉴스 & 경제뉴스 렌더링 (둘 다 6개 시작 / 10개씩 더보기)
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {
                     if (Array.isArray(data.stock_news) && data.stock_news.length > 0) {
-                        sNews.innerHTML = data.stock_news.slice(0, 20).map(n => `
-                            <a href="${n.link}" target="_blank" class="news-item">
-                                <div class="news-title">${n.title}</div>
-                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                            </a>
-                        `).join('');
+                        const allStockNews = data.stock_news.slice(0, 20);
+                        const firstCount = 6;
+                        const moreCount = 10;
+                        let visibleStockCount = Math.min(firstCount, allStockNews.length);
+
+                        const renderStockNews = () => {
+                            sNews.innerHTML = allStockNews.slice(0, visibleStockCount).map(n => `
+                                <a href="${n.link}" target="_blank" class="news-item">
+                                    <div class="news-title">${n.title}</div>
+                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                                </a>
+                            `).join('');
+
+                            if (visibleStockCount < allStockNews.length) {
+                                const nextCount = Math.min(moreCount, allStockNews.length - visibleStockCount);
+                                const moreBtn = document.createElement('button');
+                                moreBtn.type = 'button';
+                                moreBtn.textContent = `더보기 (${nextCount}개)`;
+                                moreBtn.style.cssText = `
+                                    width:100%; margin-top:10px; padding:9px 0;
+                                    border:1px solid var(--border-line); border-radius:8px;
+                                    background:var(--bg-card); color:var(--text-sub);
+                                    font-size:0.82rem; font-weight:700; cursor:pointer;
+                                `;
+                                moreBtn.addEventListener('click', () => {
+                                    visibleStockCount = Math.min(visibleStockCount + moreCount, allStockNews.length);
+                                    renderStockNews();
+                                });
+                                sNews.appendChild(moreBtn);
+                            }
+                        };
+
+                        renderStockNews();
                     } else {
                         sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
                     }

@@ -3147,16 +3147,65 @@ def _format_finlight_pubdate(value):
 
 
 def _finlight_relevance_score(item, target_name=""):
-    """감성(호재/악재)이 아니라 투자 관련성만 간단히 우선순위화한다."""
+    """
+    감성(호재/악재)이 아니라 '투자에 쓸모 있는가'를 기준으로 순위를 매긴다.
+
+    핵심 원칙:
+    1) 종목명이 제목에 직접 등장하는 뉴스는 강하게 우선한다.
+    2) 실적/수주/투자/규제/정책/업황처럼 주가에 영향을 줄 가능성이 높은 단어를 가산한다.
+    3) 셰프/연예/행사/제품 체험처럼 주가 영향이 약한 일반 뉴스는 감점한다.
+    4) 호재/악재 자체를 판단하지 않는다. 중요한 '재료'를 위로 올리는 용도다.
+    """
     categories = {str(x).lower() for x in (item.get("categories") or [])}
-    title = str(item.get("title") or "").lower()
+    title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip().lower()
+    summary = re.sub(r"\s+", " ", str(item.get("summary") or "")).strip().lower()
+    text = f"{title} {summary}"
+
     score = 0
+
+    # Finlight의 구조화 카테고리: 시장/경제/정책성 뉴스에 높은 기본점수.
     high_value = {"markets", "economy", "regulation", "geopolitics", "commodities", "energy"}
     medium_value = {"technology", "business", "crypto", "politics", "security"}
     score += 3 * len(categories & high_value)
     score += 2 * len(categories & medium_value)
-    if target_name and target_name.lower() in title:
+
+    # 선택 종목과 직접 관련된 제목을 가장 강하게 우선한다.
+    target = str(target_name or "").strip().lower()
+    target_terms = {target} if target else set()
+    # 국내 주요 종목의 실제 기사 표기 약칭도 함께 본다.
+    if "삼성전자" in target:
+        target_terms.update({"삼성전자", "삼성", "삼전", "삼전우"})
+    if "sk하이닉스" in target or "하이닉스" in target:
+        target_terms.update({"sk하이닉스", "하이닉스", "sk하닉"})
+
+    if any(term and term in title for term in target_terms):
+        score += 8
+    elif any(term and term in summary for term in target_terms):
         score += 3
+
+    # 국내/미국 주식에서 실제 가격 재료가 되기 쉬운 핵심 키워드.
+    market_keywords = [
+        "실적", "영업익", "영업이익", "순이익", "매출", "가이던스", "전망", "컨센서스",
+        "수주", "계약", "공급", "납품", "투자", "증설", "생산", "공장", "capex",
+        "hbм", "hbm", "메모리", "반도체", "ai", "인공지능", "데이터센터",
+        "인수", "합병", "지분", "자사주", "배당", "목표주가", "투자의견",
+        "외국인", "기관", "순매수", "순매도", "관세", "수출규제", "수입규제",
+        "제재", "규제", "정책", "금리", "연준", "fed", "cpi", "pce", "고용",
+        "환율", "달러", "유가", "원유", "전력", "전력기기", "업황", "가격",
+        "공급망", "특허", "기술", "협력", "파트너십", "mou", "ceo", "경영진",
+    ]
+    score += sum(2 for kw in market_keywords if kw in text)
+
+    # 투자 가치가 낮은 일반 기사/홍보성 제목은 감점한다.
+    low_value_keywords = [
+        "셰프", "맛집", "먹방", "연예", "배우", "가수", "축제", "전시",
+        "캠페인", "봉사", "사회공헌", "팝업", "체험", "콘서트", "팬미팅",
+        "갤러리", "화보", "패션", "브랜드 행사", "신제품 출시", "출시 행사",
+        "광고", "모델", "홍보대사", "이벤트", "사은품", "프로모션",
+        "쿠킹쇼", "셰프와", "클래스 열린다", "클래스", "요리", "배워요",
+    ]
+    score -= sum(5 for kw in low_value_keywords if kw in title)
+
     return score
 
 

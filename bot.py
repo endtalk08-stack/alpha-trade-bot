@@ -783,6 +783,7 @@ FRED_API_KEY = os.environ.get("FRED_API_KEY", "").strip()
 TRADING_ECONOMICS_API_KEY = os.environ.get("TRADING_ECONOMICS_API_KEY", "").strip()
 ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
+FINLIGHT_API_KEY = os.environ.get("FINLIGHT_API_KEY", "").strip()
 
 GLOBAL_INDEX_MAP = {
     "코스피": "^KS11", "KOSPI": "^KS11",
@@ -3127,6 +3128,215 @@ def fetch_naver_news(query_keyword, limit=5):
         print(f"[NAVER NEWS] fallback failed: {type(exc).__name__}: {exc}")
 
     return headlines
+
+
+def _format_finlight_pubdate(value):
+    """Finlight ISO 시간을 기존 뉴스 UI용 한국시간 문자열로 변환한다."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if ZoneInfo is not None:
+            dt = dt.astimezone(ZoneInfo("Asia/Seoul"))
+        else:
+            dt = dt.astimezone(timezone(timedelta(hours=9)))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return raw
+
+
+def _finlight_relevance_score(item, target_name=""):
+    """감성(호재/악재)이 아니라 투자 관련성만 간단히 우선순위화한다."""
+    categories = {str(x).lower() for x in (item.get("categories") or [])}
+    title = str(item.get("title") or "").lower()
+    score = 0
+    high_value = {"markets", "economy", "regulation", "geopolitics", "commodities", "energy"}
+    medium_value = {"technology", "business", "crypto", "politics", "security"}
+    score += 3 * len(categories & high_value)
+    score += 2 * len(categories & medium_value)
+    if target_name and target_name.lower() in title:
+        score += 3
+    return score
+
+
+def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", limit=10,
+                        language="en", countries=None, categories=None, cache_tag=""):
+    """Finlight REST API를 기존 gaemiGTP 뉴스 포맷으로 변환한다.
+
+    API Key는 Render 환경변수 FINLIGHT_API_KEY에서만 읽는다.
+    실패/빈 결과는 호출부에서 기존 뉴스 소스로 fallback할 수 있도록 []을 반환한다.
+    """
+    if not FINLIGHT_API_KEY:
+        print("[FINLIGHT NEWS] FINLIGHT_API_KEY not configured")
+        return []
+
+    try:
+        lim = max(1, min(int(limit), 20))
+    except Exception:
+        lim = 10
+
+    payload = {
+        "query": str(query or "").strip(),
+        "language": language or "en",
+        "pageSize": lim,
+        "orderBy": "publishDate",
+        "order": "DESC",
+    }
+    if countries:
+        payload["countries"] = list(countries)
+    if categories:
+        payload["categories"] = list(categories)
+
+    # 빈 query 키는 보내지 않는다.
+    if not payload["query"]:
+        payload.pop("query", None)
+
+    cache_key = "finlight|{}|{}|{}|{}|{}|{}".format(
+        cache_tag or "news",
+        symbol or "",
+        market_name or "",
+        language or "en",
+        json.dumps(countries or [], ensure_ascii=False, sort_keys=True),
+        json.dumps(categories or [], ensure_ascii=False, sort_keys=True),
+    )
+    cache_key += "|" + (query or "") + f"|{lim}"
+    cached = _cache_get(NEWS_CACHE, cache_key, NEWS_CACHE_TTL)
+    if cached is not None:
+        return list(cached) if isinstance(cached, list) else []
+
+    try:
+        res = HTTP_SESSION.post(
+            "https://api.finlight.me/v2/articles",
+            headers={
+                "accept": "application/json",
+                "Content-Type": "application/json",
+                "X-API-KEY": FINLIGHT_API_KEY,
+            },
+            json=payload,
+            timeout=4.5,
+        )
+        if res.status_code != 200:
+            print(f"[FINLIGHT NEWS] HTTP {res.status_code} query={query!r}")
+            return []
+
+        data = res.json() if res.content else {}
+        articles = data.get("articles") or []
+        out = []
+        seen = set()
+        target = str(formal_name or "").strip()
+
+        for item in articles:
+            if not isinstance(item, dict):
+                continue
+            title = html.unescape(str(item.get("title") or "")).strip()
+            link = str(item.get("link") or "").strip()
+            if not title or not link:
+                continue
+            key = re.sub(r"\s+", " ", title).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            source = str(item.get("source") or "Finlight").strip()
+            pub = _format_finlight_pubdate(item.get("publishDate"))
+            categories_item = item.get("categories") or []
+            summary = html.unescape(str(item.get("summary") or "")).strip()
+
+            out.append({
+                "title": title,
+                "media": source,
+                "pubDate": pub,
+                "link": link,
+                "description": summary,
+                "source": "Finlight",
+                "categories": categories_item,
+                "countries": item.get("countries") or [],
+                "language": item.get("language") or language,
+                "relevance_score": _finlight_relevance_score(item, target),
+            })
+
+        # 감성은 사용하지 않는다. 투자 관련 카테고리와 최신성을 우선한다.
+        out.sort(key=lambda x: (int(x.get("relevance_score") or 0), x.get("pubDate") or ""), reverse=True)
+        out = out[:lim]
+        print(f"[FINLIGHT NEWS] query={query!r} lang={language} 결과={len(out)}건")
+        return _cache_set(NEWS_CACHE, cache_key, out)
+    except Exception as exc:
+        print(f"[FINLIGHT NEWS] fetch failed: {type(exc).__name__}: {exc}")
+        return []
+
+
+def fetch_finlight_stock_news(symbol="", market_name="", formal_name="", limit=10):
+    """선택 종목의 직접 관련 금융뉴스. Finlight 우선, 기존 RSS를 fallback으로 사용한다."""
+    if market_name == "국내주식":
+        language = "ko"
+        countries = ["KR"]
+        query = f"ticker:{symbol}" if symbol else formal_name
+        categories = ["markets", "economy", "business", "technology", "regulation", "geopolitics"]
+    elif market_name == "미국주식":
+        language = "en"
+        countries = ["US"]
+        query = f"ticker:{symbol}" if symbol else formal_name
+        categories = ["markets", "economy", "business", "technology", "regulation", "geopolitics"]
+    elif market_name == "암호화폐":
+        language = "en"
+        countries = None
+        query = formal_name or symbol
+        categories = ["crypto", "markets", "economy", "regulation", "technology"]
+    else:
+        language = "en"
+        countries = None
+        query = formal_name or symbol
+        categories = ["markets", "economy", "business", "technology", "regulation", "geopolitics", "energy", "commodities"]
+
+    result = fetch_finlight_news(
+        query=query,
+        symbol=symbol,
+        market_name=market_name,
+        formal_name=formal_name,
+        limit=limit,
+        language=language,
+        countries=countries,
+        categories=categories,
+        cache_tag="stock",
+    )
+    if result:
+        return result
+
+    # Finlight 장애/일시적 빈 결과에도 기존 뉴스 기능은 유지한다.
+    return fetch_rss_news(formal_name or symbol, limit)
+
+
+def fetch_finlight_economic_news(market_name="", limit=10):
+    """경제/시장/정책/산업 뉴스. 종목명과 무관한 시장 재료를 수집한다."""
+    if market_name == "국내주식" or market_name == "국내증시":
+        language = "ko"
+        query = "미국증시 OR 뉴욕증시 OR 연준 OR 금리 OR 인플레이션 OR 관세 OR 반도체 OR AI OR 원유"
+        countries = None
+    elif market_name == "암호화폐":
+        language = "en"
+        query = "Federal Reserve OR interest rates OR inflation OR crypto OR Bitcoin OR tariffs OR stock market"
+        countries = None
+    else:
+        language = "en"
+        query = "Federal Reserve OR interest rates OR inflation OR tariffs OR semiconductor OR AI OR oil OR stock market"
+        # 경제뉴스는 미국에만 가두지 않는다. 한국/중국/유럽 등 글로벌 정책·산업 뉴스도 필요하다.
+        countries = None
+
+    categories = ["markets", "economy", "regulation", "geopolitics", "technology", "energy", "commodities", "business"]
+    result = fetch_finlight_news(
+        query=query,
+        market_name=market_name,
+        limit=limit,
+        language=language,
+        countries=countries,
+        categories=categories,
+        cache_tag="economic",
+    )
+    if result:
+        return result
+
+    return fetch_rss_news("뉴욕증시 OR 미국증시 OR 나스닥", limit)
 
 
 def _fetch_rss_news_uncached(query_keyword, limit=5):
@@ -6767,8 +6977,8 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             df = context["df"]
 
             optional_futures = {
-                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
-                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 10),
+                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 10),
                 "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
                 "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
                 "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
@@ -7118,8 +7328,8 @@ def run_full_pipeline(query, lightweight=False):
         _perf_stage("optional_external_skipped")
     else:
         optional_futures = {
-            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
-            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 10),
+            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 10),
             "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
             "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
             "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
@@ -10372,7 +10582,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         <!-- 3행 우측: 해외 뉴스 (348px, 캘린더 바로 하단 & 종목 뉴스와 높이 100% 일치) -->
                         <div class="card" id="rowGlobalNews">
-                            <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
+                            <div class="board-header-title" style="margin-bottom:12px;">경제뉴스</div>
                             <div id="globalNewsList" style="flex:1;"></div>
                         </div>
 

@@ -3423,7 +3423,7 @@ def fetch_finlight_economic_news(market_name="", limit=10):
 
     # 1) 미국 증시 마감 시황을 별도 수집한다.
     # 국내주식 화면에서는 한국어 기사로 받아 사용자가 바로 읽을 수 있게 한다.
-    us_close_limit = max(4, min(6, int(limit)))
+    us_close_limit = max(6, min(10, int(limit)))
     us_close = fetch_finlight_news(
         query=(
             "미국증시 OR 뉴욕증시 OR 나스닥 OR 다우 OR S&P500 "
@@ -3442,7 +3442,7 @@ def fetch_finlight_economic_news(market_name="", limit=10):
 
     # 2) 미국 증시를 움직인 '원인'도 별도 수집한다.
     # 예: 이란/중동 전쟁 → 유가 → 인플레이션 → 국채금리 → Fed → 주가
-    driver_limit = max(3, min(5, int(limit) // 2 if int(limit) > 1 else 3))
+    driver_limit = max(5, min(10, int(limit) // 2 if int(limit) > 1 else 5))
     us_driver = fetch_finlight_news(
         query=(
             "이란 OR 이란전쟁 OR 중동 OR 호르무즈 OR 유가 OR 원유 OR WTI "
@@ -3462,7 +3462,7 @@ def fetch_finlight_economic_news(market_name="", limit=10):
     )
 
     # 3) 기존 경제/정책/산업 뉴스도 유지한다.
-    general_limit = max(6, int(limit))
+    general_limit = max(10, int(limit))
     general = fetch_finlight_news(
         query=query,
         market_name=market_name,
@@ -7147,7 +7147,7 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
 
             optional_futures = {
                 "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 10),
-                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 10),
+                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 40),
                 "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
                 "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
                 "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
@@ -7498,7 +7498,7 @@ def run_full_pipeline(query, lightweight=False):
     else:
         optional_futures = {
             "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 10),
-            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 10),
+            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 40),
             "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
             "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
             "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
@@ -12571,14 +12571,41 @@ if ((response && !response.ok) || data.error) {
                 const gNews = document.getElementById('globalNewsList');
                 if (gNews) {
                     if (Array.isArray(data.global_news) && data.global_news.length > 0) {
-                        gNews.innerHTML = data.global_news.slice(0, 6).map(n => `
-                            <a href="${n.link}" target="_blank" class="news-item">
-                                <div class="news-title">${n.title}</div>
-                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                            </a>
-                        `).join('');
+                        const allGlobalNews = data.global_news;
+                        const firstCount = 20;
+                        const moreCount = 20;
+                        let visibleGlobalCount = Math.min(firstCount, allGlobalNews.length);
+
+                        const renderGlobalNews = () => {
+                            gNews.innerHTML = allGlobalNews.slice(0, visibleGlobalCount).map(n => `
+                                <a href="${n.link}" target="_blank" class="news-item">
+                                    <div class="news-title">${n.title}</div>
+                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
+                                </a>
+                            `).join('');
+
+                            if (visibleGlobalCount < allGlobalNews.length) {
+                                const nextCount = Math.min(moreCount, allGlobalNews.length - visibleGlobalCount);
+                                const moreBtn = document.createElement('button');
+                                moreBtn.type = 'button';
+                                moreBtn.textContent = `더보기 (${nextCount}개)`;
+                                moreBtn.style.cssText = `
+                                    width:100%; margin-top:10px; padding:9px 0;
+                                    border:1px solid var(--border-line); border-radius:8px;
+                                    background:var(--bg-card); color:var(--text-sub);
+                                    font-size:0.82rem; font-weight:700; cursor:pointer;
+                                `;
+                                moreBtn.addEventListener('click', () => {
+                                    visibleGlobalCount = Math.min(visibleGlobalCount + moreCount, allGlobalNews.length);
+                                    renderGlobalNews();
+                                });
+                                gNews.appendChild(moreBtn);
+                            }
+                        };
+
+                        renderGlobalNews();
                     } else {
-                        gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
+                        gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">경제뉴스를 불러오는 중입니다.</div>';
                     }
                 }
 

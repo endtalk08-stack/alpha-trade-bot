@@ -891,6 +891,14 @@ FINNHUB_CONSENSUS_CACHE_TTL = 1800  # 30분
 # 동일한 worker pool에서 optional 데이터를 처리하고, 성공한 결과는 다음 요청에서 재사용한다.
 NEWS_CACHE = {}
 NEWS_CACHE_TTL = 600  # 10분
+# STEP 7: 미국주식/영문 경제뉴스 제목 한국어 번역 캐시.
+# 기사 원문 링크와 출처는 그대로 유지하고, 화면에 보이는 제목만 번역한다.
+NEWS_TRANSLATION_CACHE = {}
+NEWS_TRANSLATION_CACHE_TTL = 21600  # 6시간
+NEWS_TRANSLATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=6,
+    thread_name_prefix="gaemi-news-translate",
+)
 EARNINGS_RESULT_CACHE = {}
 EARNINGS_RESULT_CACHE_TTL = 1800  # 30분
 EXTERNAL_CACHE_LOCK = threading.Lock()
@@ -3315,7 +3323,70 @@ def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", lim
         return []
 
 
-def fetch_finlight_stock_news(symbol="", market_name="", formal_name="", limit=10):
+def _translate_news_title_en_to_ko(title):
+    """영문 뉴스 제목을 한국어로 번역한다. 실패하면 원문을 그대로 반환한다."""
+    raw = html.unescape(str(title or "")).strip()
+    if not raw:
+        return raw
+    ko_count = len(re.findall(r"[가-힣]", raw))
+    alpha_count = len(re.findall(r"[A-Za-z]", raw))
+    if ko_count >= 2 or alpha_count < 4:
+        return raw
+    cache_key = f"en>ko:{raw}"
+    cached = _cache_get(NEWS_TRANSLATION_CACHE, cache_key, NEWS_TRANSLATION_CACHE_TTL)
+    if cached:
+        return str(cached)
+    try:
+        response = HTTP_SESSION.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params=[
+                ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
+                ("dt", "t"), ("q", raw),
+            ],
+            timeout=3.0,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if response.status_code != 200:
+            return raw
+        payload = response.json()
+        translated = "".join(
+            str(part[0]) for part in (payload[0] or [])
+            if isinstance(part, list) and part and part[0]
+        ).strip()
+        if not translated:
+            return raw
+        return _cache_set(NEWS_TRANSLATION_CACHE, cache_key, translated)
+    except Exception as exc:
+        print(f"[NEWS TRANSLATION] failed: {type(exc).__name__}: {exc}")
+        return raw
+
+
+def translate_news_titles_to_korean(items, market_name=""):
+    """미국주식 화면의 영문 기사 제목을 병렬 번역한다. 원문 링크/출처는 유지한다."""
+    if market_name != "미국주식" or not items:
+        return items or []
+    news_items = [dict(x) for x in items if isinstance(x, dict)]
+    if not news_items:
+        return []
+    futures = {}
+    for idx, item in enumerate(news_items):
+        title = str(item.get("title") or "").strip()
+        if title:
+            futures[idx] = NEWS_TRANSLATION_EXECUTOR.submit(
+                _translate_news_title_en_to_ko, title
+            )
+    for idx, future in futures.items():
+        try:
+            translated = future.result(timeout=3.5)
+            if translated and translated != news_items[idx].get("title"):
+                news_items[idx]["title"] = translated
+                news_items[idx]["title_original"] = str(news_items[idx].get("title_original") or "") or str(items[idx].get("title") or "")
+        except Exception as exc:
+            print(f"[NEWS TRANSLATION] result failed: {type(exc).__name__}: {exc}")
+    return news_items
+
+
+def fetch_finlight_stock_news(symbol="", market_name="", formal_name="", limit=20):
     """선택 종목의 직접 관련 금융뉴스. Finlight 우선, 기존 RSS를 fallback으로 사용한다."""
     if market_name == "국내주식":
         language = "ko"
@@ -7146,8 +7217,8 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             df = context["df"]
 
             optional_futures = {
-                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 10),
-                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 40),
+                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
+                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
                 "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
                 "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
                 "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
@@ -7497,8 +7568,8 @@ def run_full_pipeline(query, lightweight=False):
         _perf_stage("optional_external_skipped")
     else:
         optional_futures = {
-            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 10),
-            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 40),
+            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
+            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
             "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
             "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
             "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
@@ -7531,6 +7602,12 @@ def run_full_pipeline(query, lightweight=False):
     # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
     stock_news = merge_news_sources(stock_news_rss, ticker_news)
     global_news = merge_news_sources(global_news_rss, api_news)
+
+    # 미국주식은 영어 원문 제목 대신 한국어 제목을 표시한다.
+    # 원문 링크/언론사/발행일은 그대로 유지한다.
+    if market_name == "미국주식":
+        stock_news = translate_news_titles_to_korean(stock_news[:20], market_name)
+        global_news = translate_news_titles_to_korean(global_news[:20], market_name)
 
     if not lightweight:
         consensus = optional_results.get("consensus")
@@ -12553,11 +12630,11 @@ if ((response && !response.ok) || data.error) {
                     }
                 }
 
-                // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
+                // 4. 종목 뉴스 & 경제뉴스 렌더링 (종목뉴스 최대 20개 / 경제뉴스 6개+10개씩)
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {
                     if (Array.isArray(data.stock_news) && data.stock_news.length > 0) {
-                        sNews.innerHTML = data.stock_news.slice(0, 6).map(n => `
+                        sNews.innerHTML = data.stock_news.slice(0, 20).map(n => `
                             <a href="${n.link}" target="_blank" class="news-item">
                                 <div class="news-title">${n.title}</div>
                                 <div class="news-meta">${n.media} · ${n.pubDate}</div>
@@ -12572,8 +12649,8 @@ if ((response && !response.ok) || data.error) {
                 if (gNews) {
                     if (Array.isArray(data.global_news) && data.global_news.length > 0) {
                         const allGlobalNews = data.global_news;
-                        const firstCount = 20;
-                        const moreCount = 20;
+                        const firstCount = 6;
+                        const moreCount = 10;
                         let visibleGlobalCount = Math.min(firstCount, allGlobalNews.length);
 
                         const renderGlobalNews = () => {

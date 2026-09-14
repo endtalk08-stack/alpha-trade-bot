@@ -3356,11 +3356,58 @@ def fetch_finlight_stock_news(symbol="", market_name="", formal_name="", limit=1
     return fetch_rss_news(formal_name or symbol, limit)
 
 
+def _economic_news_priority(item, market_name=""):
+    """경제뉴스 안에서 미국 증시 마감 시황처럼 시장 방향 판단에 직접 쓰이는 기사를 우선한다."""
+    title = str(item.get("title") or "").lower()
+    score = int(item.get("relevance_score") or 0)
+
+    # 국내 종목의 "왜 움직였을까"에서 전일 미국 증시 흐름을 첫 번째 재료로
+    # 사용할 수 있도록 미국 증시 마감/지수/반도체 시황에 추가 가중치를 준다.
+    us_close_terms = [
+        "미국증시", "뉴욕증시", "뉴욕 증시", "미국 증시", "나스닥",
+        "s&p500", "s&p 500", "다우", "필라델피아반도체", "반도체지수",
+        "뉴욕증시 마감", "미국증시 마감", "마감 시황", "증시 마감",
+        "wall street", "nasdaq", "s&p 500", "dow", "phlx semiconductor",
+    ]
+    market_move_terms = [
+        "상승", "하락", "급등", "급락", "혼조", "마감", "지수",
+        "금리", "국채금리", "유가", "cpi", "ppi", "연준", "fomc",
+    ]
+
+    if any(term in title for term in us_close_terms):
+        score += 6
+    if any(term in title for term in market_move_terms):
+        score += 2
+    if "필라델피아반도체" in title or "반도체지수" in title or "phlx semiconductor" in title:
+        score += 3
+    if "마감" in title and any(term in title for term in ["미국", "뉴욕", "나스닥", "다우"]):
+        score += 3
+
+    # 미국 증시의 '왜 움직였는가'를 설명하는 원인 기사에 추가 가중치.
+    # 지정학 → 원유 → 물가 → 금리의 연결고리가 다음 단계 분석의 핵심 원재료다.
+    driver_terms = [
+        "이란", "이란전쟁", "중동", "호르무즈", "전쟁 장기화",
+        "유가", "원유", "wti", "브렌트", "국채금리", "미국채금리",
+        "인플레이션", "연준", "fomc", "금리인상", "공급차질",
+        "iran", "iran war", "middle east", "strait of hormuz", "oil",
+        "crude", "wti", "brent", "treasury yields", "inflation",
+        "federal reserve", "fomc", "rate hike", "supply disruption",
+    ]
+    driver_hits = sum(1 for term in driver_terms if term in title)
+    if driver_hits:
+        score += min(10, 4 + driver_hits * 2)
+    if any(term in title for term in ["유가", "원유", "wti", "브렌트", "oil", "crude"]):
+        score += 2
+    if any(term in title for term in ["국채금리", "미국채금리", "treasury yields"]):
+        score += 2
+    return score
+
+
 def fetch_finlight_economic_news(market_name="", limit=10):
-    """경제/시장/정책/산업 뉴스. 종목명과 무관한 시장 재료를 수집한다."""
+    """경제/시장/정책/산업 뉴스 + 미국 증시 마감 시황을 별도로 확보한다."""
     if market_name == "국내주식" or market_name == "국내증시":
         language = "ko"
-        query = "미국증시 OR 뉴욕증시 OR 연준 OR 금리 OR 인플레이션 OR 관세 OR 반도체 OR AI OR 원유"
+        query = "연준 OR 금리 OR 인플레이션 OR 관세 OR 반도체 OR AI OR 원유 OR 환율"
         countries = None
     elif market_name == "암호화폐":
         language = "en"
@@ -3373,17 +3420,80 @@ def fetch_finlight_economic_news(market_name="", limit=10):
         countries = None
 
     categories = ["markets", "economy", "regulation", "geopolitics", "technology", "energy", "commodities", "business"]
-    result = fetch_finlight_news(
+
+    # 1) 미국 증시 마감 시황을 별도 수집한다.
+    # 국내주식 화면에서는 한국어 기사로 받아 사용자가 바로 읽을 수 있게 한다.
+    us_close_limit = max(4, min(6, int(limit)))
+    us_close = fetch_finlight_news(
+        query=(
+            "미국증시 OR 뉴욕증시 OR 나스닥 OR 다우 OR S&P500 "
+            "OR 필라델피아반도체 OR 미국증시 마감 OR 뉴욕증시 마감"
+        ) if language == "ko" else (
+            "US stock market OR Wall Street OR Nasdaq OR Dow OR S&P 500 "
+            "OR Philadelphia Semiconductor OR market close"
+        ),
+        market_name=market_name,
+        limit=us_close_limit,
+        language=language,
+        countries=(None if language == "ko" else ["US"]),
+        categories=["markets", "economy", "technology"],
+        cache_tag="economic_us_close",
+    )
+
+    # 2) 미국 증시를 움직인 '원인'도 별도 수집한다.
+    # 예: 이란/중동 전쟁 → 유가 → 인플레이션 → 국채금리 → Fed → 주가
+    driver_limit = max(3, min(5, int(limit) // 2 if int(limit) > 1 else 3))
+    us_driver = fetch_finlight_news(
+        query=(
+            "이란 OR 이란전쟁 OR 중동 OR 호르무즈 OR 유가 OR 원유 OR WTI "
+            "OR 브렌트 OR 국채금리 OR 미국채금리 OR 인플레이션 OR 연준 "
+            "OR FOMC OR 금리인상 OR 공급차질"
+        ) if language == "ko" else (
+            "Iran OR Iran war OR Middle East OR Strait of Hormuz OR oil OR crude "
+            "OR WTI OR Brent OR Treasury yields OR inflation OR Federal Reserve "
+            "OR FOMC OR rate hike OR supply disruption"
+        ),
+        market_name=market_name,
+        limit=driver_limit,
+        language=language,
+        countries=(None if language == "ko" else ["US"]),
+        categories=["geopolitics", "commodities", "economy", "markets", "energy", "regulation"],
+        cache_tag="economic_us_driver",
+    )
+
+    # 3) 기존 경제/정책/산업 뉴스도 유지한다.
+    general_limit = max(6, int(limit))
+    general = fetch_finlight_news(
         query=query,
         market_name=market_name,
-        limit=limit,
+        limit=general_limit,
         language=language,
         countries=countries,
         categories=categories,
         cache_tag="economic",
     )
-    if result:
-        return result
+
+    merged = []
+    seen = set()
+    for item in (us_close or []) + (us_driver or []) + (general or []):
+        if not isinstance(item, dict):
+            continue
+        title_key = re.sub(r"\s+", " ", str(item.get("title") or "")).strip().lower()
+        if not title_key or title_key in seen:
+            continue
+        seen.add(title_key)
+        item = dict(item)
+        item["relevance_score"] = _economic_news_priority(item, market_name)
+        merged.append(item)
+
+    merged.sort(
+        key=lambda x: (int(x.get("relevance_score") or 0), x.get("pubDate") or ""),
+        reverse=True,
+    )
+    merged = merged[:max(1, int(limit))]
+
+    if merged:
+        return merged
 
     return fetch_rss_news("뉴욕증시 OR 미국증시 OR 나스닥", limit)
 

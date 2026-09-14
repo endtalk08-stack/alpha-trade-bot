@@ -12641,13 +12641,13 @@ if ((response && !response.ok) || data.error) {
                     }
                 }
 
-                // 4. 종목 뉴스 & 경제뉴스 렌더링 (둘 다 6개 시작 / 10개씩 더보기)
+                // 4. 종목 뉴스 & 경제뉴스 렌더링 (둘 다 최대 10개 / 6개 시작 / 4개 더보기)
                 const sNews = document.getElementById('stockNewsList');
                 if (sNews) {
                     if (Array.isArray(data.stock_news) && data.stock_news.length > 0) {
-                        const allStockNews = data.stock_news.slice(0, 20);
+                        const allStockNews = data.stock_news.slice(0, 10);
                         const firstCount = 6;
-                        const moreCount = 10;
+                        const moreCount = 4;
                         let visibleStockCount = Math.min(firstCount, allStockNews.length);
 
                         const renderStockNews = () => {
@@ -12691,9 +12691,9 @@ if ((response && !response.ok) || data.error) {
                 const gNews = document.getElementById('globalNewsList');
                 if (gNews) {
                     if (Array.isArray(data.global_news) && data.global_news.length > 0) {
-                        const allGlobalNews = data.global_news;
+                        const allGlobalNews = data.global_news.slice(0, 10);
                         const firstCount = 6;
-                        const moreCount = 10;
+                        const moreCount = 4;
                         let visibleGlobalCount = Math.min(firstCount, allGlobalNews.length);
 
                         const renderGlobalNews = () => {

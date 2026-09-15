@@ -11865,9 +11865,8 @@ if ((response && !response.ok) || data.error) {
                     pollAnalysisDetails(cleanQ, searchToken);
                 }
 
-                // 차트는 위의 fastChartPromise에서 먼저 그려진다.
-                // 서버 전체 분석의 candles는 기존 호환성을 위해 그대로 유지한다.
-                window.scrollTo({top: 0, behavior: 'smooth'});
+                // 오른쪽 사이드바 종목 클릭 시 사용자가 보고 있던 스크롤 위치를 유지한다.
+                // 자동으로 페이지 맨 위로 이동시키지 않는다.
 
             } catch (err) {
                 if (err && err.name === 'AbortError') return;

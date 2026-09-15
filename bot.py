@@ -783,6 +783,7 @@ FRED_API_KEY = os.environ.get("FRED_API_KEY", "").strip()
 TRADING_ECONOMICS_API_KEY = os.environ.get("TRADING_ECONOMICS_API_KEY", "").strip()
 ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
+FINLIGHT_API_KEY = os.environ.get("FINLIGHT_API_KEY", "").strip()
 
 GLOBAL_INDEX_MAP = {
     "코스피": "^KS11", "KOSPI": "^KS11",
@@ -890,6 +891,14 @@ FINNHUB_CONSENSUS_CACHE_TTL = 1800  # 30분
 # 동일한 worker pool에서 optional 데이터를 처리하고, 성공한 결과는 다음 요청에서 재사용한다.
 NEWS_CACHE = {}
 NEWS_CACHE_TTL = 600  # 10분
+# STEP 7: 미국주식/영문 경제뉴스 제목 한국어 번역 캐시.
+# 기사 원문 링크와 출처는 그대로 유지하고, 화면에 보이는 제목만 번역한다.
+NEWS_TRANSLATION_CACHE = {}
+NEWS_TRANSLATION_CACHE_TTL = 21600  # 6시간
+NEWS_TRANSLATION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=6,
+    thread_name_prefix="gaemi-news-translate",
+)
 EARNINGS_RESULT_CACHE = {}
 EARNINGS_RESULT_CACHE_TTL = 1800  # 30분
 EXTERNAL_CACHE_LOCK = threading.Lock()
@@ -3129,6 +3138,447 @@ def fetch_naver_news(query_keyword, limit=5):
     return headlines
 
 
+def _format_finlight_pubdate(value):
+    """Finlight ISO 시간을 기존 뉴스 UI용 한국시간 문자열로 변환한다."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if ZoneInfo is not None:
+            dt = dt.astimezone(ZoneInfo("Asia/Seoul"))
+        else:
+            dt = dt.astimezone(timezone(timedelta(hours=9)))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return raw
+
+
+def _finlight_relevance_score(item, target_name=""):
+    """
+    감성(호재/악재)이 아니라 '투자에 쓸모 있는가'를 기준으로 순위를 매긴다.
+
+    핵심 원칙:
+    1) 종목명이 제목에 직접 등장하는 뉴스는 강하게 우선한다.
+    2) 실적/수주/투자/규제/정책/업황처럼 주가에 영향을 줄 가능성이 높은 단어를 가산한다.
+    3) 셰프/연예/행사/제품 체험처럼 주가 영향이 약한 일반 뉴스는 감점한다.
+    4) 호재/악재 자체를 판단하지 않는다. 중요한 '재료'를 위로 올리는 용도다.
+    """
+    categories = {str(x).lower() for x in (item.get("categories") or [])}
+    title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip().lower()
+    summary = re.sub(r"\s+", " ", str(item.get("summary") or "")).strip().lower()
+    text = f"{title} {summary}"
+
+    score = 0
+
+    # Finlight의 구조화 카테고리: 시장/경제/정책성 뉴스에 높은 기본점수.
+    high_value = {"markets", "economy", "regulation", "geopolitics", "commodities", "energy"}
+    medium_value = {"technology", "business", "crypto", "politics", "security"}
+    score += 3 * len(categories & high_value)
+    score += 2 * len(categories & medium_value)
+
+    # 선택 종목과 직접 관련된 제목을 가장 강하게 우선한다.
+    target = str(target_name or "").strip().lower()
+    target_terms = {target} if target else set()
+    # 국내 주요 종목의 실제 기사 표기 약칭도 함께 본다.
+    if "삼성전자" in target:
+        target_terms.update({"삼성전자", "삼성", "삼전", "삼전우"})
+    if "sk하이닉스" in target or "하이닉스" in target:
+        target_terms.update({"sk하이닉스", "하이닉스", "sk하닉"})
+
+    if any(term and term in title for term in target_terms):
+        score += 8
+    elif any(term and term in summary for term in target_terms):
+        score += 3
+
+    # 국내/미국 주식에서 실제 가격 재료가 되기 쉬운 핵심 키워드.
+    market_keywords = [
+        "실적", "영업익", "영업이익", "순이익", "매출", "가이던스", "전망", "컨센서스",
+        "수주", "계약", "공급", "납품", "투자", "증설", "생산", "공장", "capex",
+        "hbм", "hbm", "메모리", "반도체", "ai", "인공지능", "데이터센터",
+        "인수", "합병", "지분", "자사주", "배당", "목표주가", "투자의견",
+        "외국인", "기관", "순매수", "순매도", "관세", "수출규제", "수입규제",
+        "제재", "규제", "정책", "금리", "연준", "fed", "cpi", "pce", "고용",
+        "환율", "달러", "유가", "원유", "전력", "전력기기", "업황", "가격",
+        "공급망", "특허", "기술", "협력", "파트너십", "mou", "ceo", "경영진",
+    ]
+    score += sum(2 for kw in market_keywords if kw in text)
+
+    # 투자 가치가 낮은 일반 기사/홍보성 제목은 감점한다.
+    low_value_keywords = [
+        "셰프", "맛집", "먹방", "연예", "배우", "가수", "축제", "전시",
+        "캠페인", "봉사", "사회공헌", "팝업", "체험", "콘서트", "팬미팅",
+        "갤러리", "화보", "패션", "브랜드 행사", "신제품 출시", "출시 행사",
+        "광고", "모델", "홍보대사", "이벤트", "사은품", "프로모션",
+        "쿠킹쇼", "셰프와", "클래스 열린다", "클래스", "요리", "배워요",
+    ]
+    score -= sum(5 for kw in low_value_keywords if kw in title)
+
+    return score
+
+
+def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", limit=10,
+                        language="en", countries=None, categories=None, cache_tag=""):
+    """Finlight REST API를 기존 gaemiGTP 뉴스 포맷으로 변환한다.
+
+    API Key는 Render 환경변수 FINLIGHT_API_KEY에서만 읽는다.
+    실패/빈 결과는 호출부에서 기존 뉴스 소스로 fallback할 수 있도록 []을 반환한다.
+    """
+    if not FINLIGHT_API_KEY:
+        print("[FINLIGHT NEWS] FINLIGHT_API_KEY not configured")
+        return []
+
+    try:
+        lim = max(1, min(int(limit), 20))
+    except Exception:
+        lim = 10
+
+    payload = {
+        "query": str(query or "").strip(),
+        "language": language or "en",
+        "pageSize": lim,
+        "orderBy": "publishDate",
+        "order": "DESC",
+    }
+    if countries:
+        payload["countries"] = list(countries)
+    if categories:
+        payload["categories"] = list(categories)
+
+    # 빈 query 키는 보내지 않는다.
+    if not payload["query"]:
+        payload.pop("query", None)
+
+    cache_key = "finlight|{}|{}|{}|{}|{}|{}".format(
+        cache_tag or "news",
+        symbol or "",
+        market_name or "",
+        language or "en",
+        json.dumps(countries or [], ensure_ascii=False, sort_keys=True),
+        json.dumps(categories or [], ensure_ascii=False, sort_keys=True),
+    )
+    cache_key += "|" + (query or "") + f"|{lim}"
+    cached = _cache_get(NEWS_CACHE, cache_key, NEWS_CACHE_TTL)
+    if cached is not None:
+        return list(cached) if isinstance(cached, list) else []
+
+    try:
+        res = HTTP_SESSION.post(
+            "https://api.finlight.me/v2/articles",
+            headers={
+                "accept": "application/json",
+                "Content-Type": "application/json",
+                "X-API-KEY": FINLIGHT_API_KEY,
+            },
+            json=payload,
+            timeout=4.5,
+        )
+        if res.status_code != 200:
+            print(f"[FINLIGHT NEWS] HTTP {res.status_code} query={query!r}")
+            return []
+
+        data = res.json() if res.content else {}
+        articles = data.get("articles") or []
+        out = []
+        seen = set()
+        target = str(formal_name or "").strip()
+
+        for item in articles:
+            if not isinstance(item, dict):
+                continue
+            title = html.unescape(str(item.get("title") or "")).strip()
+            link = str(item.get("link") or "").strip()
+            if not title or not link:
+                continue
+            key = re.sub(r"\s+", " ", title).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            source = str(item.get("source") or "Finlight").strip()
+            pub = _format_finlight_pubdate(item.get("publishDate"))
+            categories_item = item.get("categories") or []
+            summary = html.unescape(str(item.get("summary") or "")).strip()
+
+            out.append({
+                "title": title,
+                "media": source,
+                "pubDate": pub,
+                "link": link,
+                "description": summary,
+                "source": "Finlight",
+                "categories": categories_item,
+                "countries": item.get("countries") or [],
+                "language": item.get("language") or language,
+                "relevance_score": _finlight_relevance_score(item, target),
+            })
+
+        # 감성은 사용하지 않는다. 투자 관련 카테고리와 최신성을 우선한다.
+        out.sort(key=lambda x: (int(x.get("relevance_score") or 0), x.get("pubDate") or ""), reverse=True)
+        out = out[:lim]
+        print(f"[FINLIGHT NEWS] query={query!r} lang={language} 결과={len(out)}건")
+        return _cache_set(NEWS_CACHE, cache_key, out)
+    except Exception as exc:
+        print(f"[FINLIGHT NEWS] fetch failed: {type(exc).__name__}: {exc}")
+        return []
+
+
+def _translate_news_title_en_to_ko(title):
+    """영문 뉴스 제목을 한국어로 번역한다. 실패하면 원문을 그대로 반환한다."""
+    raw = html.unescape(str(title or "")).strip()
+    if not raw:
+        return raw
+    ko_count = len(re.findall(r"[가-힣]", raw))
+    alpha_count = len(re.findall(r"[A-Za-z]", raw))
+    if ko_count >= 2 or alpha_count < 4:
+        return raw
+    cache_key = f"en>ko:{raw}"
+    cached = _cache_get(NEWS_TRANSLATION_CACHE, cache_key, NEWS_TRANSLATION_CACHE_TTL)
+    if cached:
+        return str(cached)
+    try:
+        response = HTTP_SESSION.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params=[
+                ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
+                ("dt", "t"), ("q", raw),
+            ],
+            timeout=3.0,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if response.status_code != 200:
+            return raw
+        payload = response.json()
+        translated = "".join(
+            str(part[0]) for part in (payload[0] or [])
+            if isinstance(part, list) and part and part[0]
+        ).strip()
+        if not translated:
+            return raw
+        return _cache_set(NEWS_TRANSLATION_CACHE, cache_key, translated)
+    except Exception as exc:
+        print(f"[NEWS TRANSLATION] failed: {type(exc).__name__}: {exc}")
+        return raw
+
+
+def translate_news_titles_to_korean(items, market_name=""):
+    """미국주식 화면의 영문 기사 제목을 병렬 번역한다. 원문 링크/출처는 유지한다."""
+    if market_name != "미국주식" or not items:
+        return items or []
+    news_items = [dict(x) for x in items if isinstance(x, dict)]
+    if not news_items:
+        return []
+    futures = {}
+    for idx, item in enumerate(news_items):
+        title = str(item.get("title") or "").strip()
+        if title:
+            futures[idx] = NEWS_TRANSLATION_EXECUTOR.submit(
+                _translate_news_title_en_to_ko, title
+            )
+    for idx, future in futures.items():
+        try:
+            translated = future.result(timeout=3.5)
+            if translated and translated != news_items[idx].get("title"):
+                news_items[idx]["title"] = translated
+                news_items[idx]["title_original"] = str(news_items[idx].get("title_original") or "") or str(items[idx].get("title") or "")
+        except Exception as exc:
+            print(f"[NEWS TRANSLATION] result failed: {type(exc).__name__}: {exc}")
+    return news_items
+
+
+def fetch_finlight_stock_news(symbol="", market_name="", formal_name="", limit=20):
+    """선택 종목의 직접 관련 금융뉴스. Finlight 우선, 기존 RSS를 fallback으로 사용한다."""
+    if market_name == "국내주식":
+        language = "ko"
+        countries = ["KR"]
+        query = f"ticker:{symbol}" if symbol else formal_name
+        categories = ["markets", "economy", "business", "technology", "regulation", "geopolitics"]
+    elif market_name == "미국주식":
+        language = "en"
+        countries = ["US"]
+        query = f"ticker:{symbol}" if symbol else formal_name
+        categories = ["markets", "economy", "business", "technology", "regulation", "geopolitics"]
+    elif market_name == "암호화폐":
+        language = "en"
+        countries = None
+        query = formal_name or symbol
+        categories = ["crypto", "markets", "economy", "regulation", "technology"]
+    else:
+        language = "en"
+        countries = None
+        query = formal_name or symbol
+        categories = ["markets", "economy", "business", "technology", "regulation", "geopolitics", "energy", "commodities"]
+
+    result = fetch_finlight_news(
+        query=query,
+        symbol=symbol,
+        market_name=market_name,
+        formal_name=formal_name,
+        limit=limit,
+        language=language,
+        countries=countries,
+        categories=categories,
+        cache_tag="stock",
+    )
+    if result:
+        return result
+
+    # Finlight 장애/일시적 빈 결과에도 기존 뉴스 기능은 유지한다.
+    return fetch_rss_news(formal_name or symbol, limit)
+
+
+def _economic_news_priority(item, market_name=""):
+    """경제뉴스 안에서 미국 증시 마감 시황처럼 시장 방향 판단에 직접 쓰이는 기사를 우선한다."""
+    title = str(item.get("title") or "").lower()
+    score = int(item.get("relevance_score") or 0)
+
+    # 국내 종목의 "왜 움직였을까"에서 전일 미국 증시 흐름을 첫 번째 재료로
+    # 사용할 수 있도록 미국 증시 마감/지수/반도체 시황에 추가 가중치를 준다.
+    us_close_terms = [
+        "미국증시", "뉴욕증시", "뉴욕 증시", "미국 증시", "나스닥",
+        "s&p500", "s&p 500", "다우", "필라델피아반도체", "반도체지수",
+        "뉴욕증시 마감", "미국증시 마감", "마감 시황", "증시 마감",
+        "wall street", "nasdaq", "s&p 500", "dow", "phlx semiconductor",
+    ]
+    market_move_terms = [
+        "상승", "하락", "급등", "급락", "혼조", "마감", "지수",
+        "금리", "국채금리", "유가", "cpi", "ppi", "연준", "fomc",
+    ]
+
+    if any(term in title for term in us_close_terms):
+        score += 6
+    if any(term in title for term in market_move_terms):
+        score += 2
+    if "필라델피아반도체" in title or "반도체지수" in title or "phlx semiconductor" in title:
+        score += 3
+    if "마감" in title and any(term in title for term in ["미국", "뉴욕", "나스닥", "다우"]):
+        score += 3
+
+    # 미국 증시의 '왜 움직였는가'를 설명하는 원인 기사에 추가 가중치.
+    # 지정학 → 원유 → 물가 → 금리의 연결고리가 다음 단계 분석의 핵심 원재료다.
+    driver_terms = [
+        "이란", "이란전쟁", "중동", "호르무즈", "전쟁 장기화",
+        "유가", "원유", "wti", "브렌트", "국채금리", "미국채금리",
+        "인플레이션", "연준", "fomc", "금리인상", "공급차질",
+        "iran", "iran war", "middle east", "strait of hormuz", "oil",
+        "crude", "wti", "brent", "treasury yields", "inflation",
+        "federal reserve", "fomc", "rate hike", "supply disruption",
+    ]
+    driver_hits = sum(1 for term in driver_terms if term in title)
+    if driver_hits:
+        score += min(10, 4 + driver_hits * 2)
+    if any(term in title for term in ["유가", "원유", "wti", "브렌트", "oil", "crude"]):
+        score += 2
+    if any(term in title for term in ["국채금리", "미국채금리", "treasury yields"]):
+        score += 2
+    return score
+
+
+def fetch_finlight_economic_news(market_name="", limit=10):
+    """경제/시장/정책/산업 뉴스 + 미국 증시 마감 시황을 별도로 확보한다."""
+    if market_name == "국내주식" or market_name == "국내증시":
+        language = "ko"
+        query = "연준 OR 금리 OR 인플레이션 OR 관세 OR 반도체 OR AI OR 원유 OR 환율"
+        countries = None
+    elif market_name == "암호화폐":
+        language = "en"
+        query = "Federal Reserve OR interest rates OR inflation OR crypto OR Bitcoin OR tariffs OR stock market"
+        countries = None
+    else:
+        language = "en"
+        query = "Federal Reserve OR interest rates OR inflation OR tariffs OR semiconductor OR AI OR oil OR stock market"
+        # 경제뉴스는 미국에만 가두지 않는다. 한국/중국/유럽 등 글로벌 정책·산업 뉴스도 필요하다.
+        countries = None
+
+    categories = ["markets", "economy", "regulation", "geopolitics", "technology", "energy", "commodities", "business"]
+
+    # 1) 미국 증시 마감 시황을 별도 수집한다.
+    # 국내주식 화면에서는 한국어 기사로 받아 사용자가 바로 읽을 수 있게 한다.
+    us_close_limit = max(6, min(10, int(limit)))
+    us_close = fetch_finlight_news(
+        query=(
+            "미국증시 OR 뉴욕증시 OR 나스닥 OR 다우 OR S&P500 "
+            "OR 필라델피아반도체 OR 미국증시 마감 OR 뉴욕증시 마감"
+        ) if language == "ko" else (
+            "US stock market OR Wall Street OR Nasdaq OR Dow OR S&P 500 "
+            "OR Philadelphia Semiconductor OR market close"
+        ),
+        market_name=market_name,
+        limit=us_close_limit,
+        language=language,
+        countries=(None if language == "ko" else ["US"]),
+        categories=["markets", "economy", "technology"],
+        cache_tag="economic_us_close",
+    )
+
+    # 2) 미국 증시를 움직인 '원인'도 별도 수집한다.
+    # 예: 이란/중동 전쟁 → 유가 → 인플레이션 → 국채금리 → Fed → 주가
+    driver_limit = max(5, min(10, int(limit) // 2 if int(limit) > 1 else 5))
+    us_driver = fetch_finlight_news(
+        query=(
+            "이란 OR 이란전쟁 OR 중동 OR 호르무즈 OR 유가 OR 원유 OR WTI "
+            "OR 브렌트 OR 국채금리 OR 미국채금리 OR 인플레이션 OR 연준 "
+            "OR FOMC OR 금리인상 OR 공급차질"
+        ) if language == "ko" else (
+            "Iran OR Iran war OR Middle East OR Strait of Hormuz OR oil OR crude "
+            "OR WTI OR Brent OR Treasury yields OR inflation OR Federal Reserve "
+            "OR FOMC OR rate hike OR supply disruption"
+        ),
+        market_name=market_name,
+        limit=driver_limit,
+        language=language,
+        countries=(None if language == "ko" else ["US"]),
+        categories=["geopolitics", "commodities", "economy", "markets", "energy", "regulation"],
+        cache_tag="economic_us_driver",
+    )
+
+    # 3) 기존 경제/정책/산업 뉴스도 유지한다.
+    general_limit = max(10, int(limit))
+    general = fetch_finlight_news(
+        query=query,
+        market_name=market_name,
+        limit=general_limit,
+        language=language,
+        countries=countries,
+        categories=categories,
+        cache_tag="economic",
+    )
+
+    merged = []
+    seen = set()
+    for item in (us_close or []) + (us_driver or []) + (general or []):
+        if not isinstance(item, dict):
+            continue
+        title_key = re.sub(r"\s+", " ", str(item.get("title") or "")).strip().lower()
+        if not title_key or title_key in seen:
+            continue
+        seen.add(title_key)
+        item = dict(item)
+        item["relevance_score"] = _economic_news_priority(item, market_name)
+        merged.append(item)
+
+    merged.sort(
+        key=lambda x: (int(x.get("relevance_score") or 0), x.get("pubDate") or ""),
+        reverse=True,
+    )
+    pre_limit_count = len(merged)
+    final_limit = max(1, int(limit))
+    merged = merged[:final_limit]
+
+    print(
+        f"[FINLIGHT ECONOMIC SUMMARY] market={market_name!r} "
+        f"us_close={len(us_close or [])} "
+        f"us_driver={len(us_driver or [])} "
+        f"general={len(general or [])} "
+        f"deduped={pre_limit_count} final={len(merged)} limit={final_limit}"
+    )
+
+    if merged:
+        return merged
+
+    return fetch_rss_news("뉴욕증시 OR 미국증시 OR 나스닥", limit)
+
+
 def _fetch_rss_news_uncached(query_keyword, limit=5):
     """Google News RSS 우선. 실패/빈 결과이면 Naver News API로 fallback."""
     headlines = []
@@ -3379,10 +3829,8 @@ def fetch_naver_domestic_flow_metrics(code):
     """국내주식 실데이터: 당일 거래대금 + 최근 5거래일 외국인/기관 순매수.
 
     STEP 17:
-    - STEP 16에서 거래대금 필드 탐색 범위를 넓혔지만, 현재 사이트의 안정적인
-      국내 일봉 경로와 분리된 상태에서만 적용한다.
-    - Naver integration 응답의 여러 위치/필드명을 재귀 탐색한다.
-    - 거래대금은 구체적인 필드명을 우선하고, generic amount는 최후 fallback으로만 사용한다.
+    - 거래대금은 오른쪽 실시간 사이드바에서 검증된 Naver polling realtime의 aa 필드를 우선 사용한다.
+    - polling에서 거래대금을 못 가져오는 경우 기존 Naver integration 필드 탐색을 fallback으로 사용한다.
     - 외국인/기관 수급 로직은 기존 구조를 유지한다.
     """
     result={"trading_value":None,"foreigner_latest":None,"institution_latest":None,
@@ -3426,40 +3874,77 @@ def fetch_naver_domestic_flow_metrics(code):
             return result
         data=r.json()
 
-        # 1) 거래대금: 구체적인 필드명을 우선 탐색한다.
-        # generic 'amount'는 다른 금액 데이터일 가능성이 있어 마지막 fallback으로만 사용한다.
-        priority_groups = [
-            {
-                'accumulatedtradingvalue','accumulatedtradingamount',
-                'accumulatedtradingamountvalue','accumulatedamountvalue',
-                '누적거래대금','누적거래대금액'
-            },
-            {
-                'tradingvalue','tradingvalueamount','tradingamount',
-                '거래대금','거래대금액'
-            },
-            {
-                'amount','accumulatedamount'
-            },
-        ]
-        candidates_by_group=[[] for _ in priority_groups]
-        for obj in walk_dicts(data):
-            for raw_k,v in obj.items():
-                k=norm_key(raw_k)
-                for idx,keys in enumerate(priority_groups):
-                    if k in keys:
-                        n=num(v)
-                        if n is not None and n >= 0:
-                            candidates_by_group[idx].append(n)
-                        break
+        # 1) 거래대금: 오른쪽 실시간 사이드바에서 실제 검증된
+        # Naver polling realtime API의 aa(누적 거래대금)를 우선 사용한다.
+        # integration 응답은 구조/필드가 종목별로 달라 거래대금이 누락될 수 있어
+        # aa를 1순위로 두고, 기존 integration 탐색은 fallback으로 유지한다.
+        tv=None
+        try:
+            query = "SERVICE_ITEM:" + str(code).strip()
+            realtime_url = "https://polling.finance.naver.com/api/realtime?query=" + urllib.parse.quote(query, safe=":,")
+            realtime_res = HTTP_SESSION.get(realtime_url, timeout=2.5, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": "https://stock.naver.com/",
+            })
+            realtime_res.raise_for_status()
+            realtime_payload = realtime_res.json()
+            realtime_datas=[]
+            areas = realtime_payload.get("result", {}).get("areas", []) if isinstance(realtime_payload, dict) else []
+            for area in areas:
+                if isinstance(area,dict):
+                    realtime_datas.extend(area.get("datas") or [])
+            if not realtime_datas and isinstance(realtime_payload,dict):
+                for area in realtime_payload.get("areas",[]) or []:
+                    if isinstance(area,dict):
+                        realtime_datas.extend(area.get("datas") or [])
+            for item in realtime_datas:
+                if not isinstance(item,dict):
+                    continue
+                item_code=str(item.get("cd") or item.get("itemCode") or "").strip()
+                if item_code and item_code != str(code).strip():
+                    continue
+                candidate=num(item.get("aa") or item.get("accumulatedTradingValue"))
+                if candidate is not None and candidate >= 0:
+                    tv=candidate
+                    break
+        except Exception as realtime_exc:
+            print(f"[NAVER FLOW] {code}: realtime 거래대금 조회 실패: {type(realtime_exc).__name__}: {realtime_exc}")
 
-        for candidates in candidates_by_group:
-            if candidates:
-                # 동일 응답 안에서 같은 필드가 여러 번 나타날 수 있으므로 최대값을 사용한다.
-                result['trading_value']=max(candidates)
-                break
+        # realtime aa를 가져오지 못한 경우에만 기존 integration 필드 탐색을 fallback으로 사용한다.
+        if tv is None:
+            priority_groups = [
+                {
+                    'accumulatedtradingvalue','accumulatedtradingamount',
+                    'accumulatedtradingamountvalue','accumulatedamountvalue',
+                    '누적거래대금','누적거래대금액'
+                },
+                {
+                    'tradingvalue','tradingvalueamount','tradingamount',
+                    '거래대금','거래대금액'
+                },
+                {
+                    'amount','accumulatedamount'
+                },
+            ]
+            candidates_by_group=[[] for _ in priority_groups]
+            for obj in walk_dicts(data):
+                for raw_k,v in obj.items():
+                    k=norm_key(raw_k)
+                    for idx,keys in enumerate(priority_groups):
+                        if k in keys:
+                            n=num(v)
+                            if n is not None and n >= 0:
+                                candidates_by_group[idx].append(n)
+                            break
 
-        tv=result['trading_value']
+            for candidates in candidates_by_group:
+                if candidates:
+                    # 동일 응답 안에서 같은 필드가 여러 번 나타날 수 있으므로 최대값을 사용한다.
+                    tv=max(candidates)
+                    break
+
+        result['trading_value']=tv
         if tv is not None:
             if tv >= 10**12:
                 result['trading_value_detail']=f"당일 거래대금 {tv/10**12:.2f}조원"
@@ -3976,11 +4461,17 @@ def fetch_domestic_candles(code, anchor_price=None):
 # 기본 TTL은 10분이며, 캐시가 없거나 만료된 경우에만 갱신한다.
 OVERSEAS_CANDLE_CACHE = {}
 OVERSEAS_CANDLE_CACHE_TTL = 10 * 60
+# 동일 미국 종목에 /api/analyze와 다른 요청이 동시에 들어와도
+# Yahoo 5년 일봉을 한 번만 가져오도록 single-flight를 적용한다.
+OVERSEAS_CANDLE_INFLIGHT = {}
+OVERSEAS_CANDLE_INFLIGHT_LOCK = threading.Lock()
 
 def fetch_overseas_candles(symbol):
     """
-    해외주식 차트 데이터 조회 + 서버 메모리 TTL 캐시.
-    기존 함수 계약을 유지한다:
+    해외주식 차트 데이터 조회 + 서버 메모리 TTL 캐시 + single-flight.
+
+    같은 종목을 여러 요청이 동시에 요구하면 첫 요청만 Yahoo를 호출하고
+    나머지는 그 결과를 기다린다. 기존 반환 계약은 그대로 유지한다:
       (chart_close, price_text, df)
     """
     key = str(symbol or "").strip().upper()
@@ -3989,13 +4480,34 @@ def fetch_overseas_candles(symbol):
 
     now = time.time()
     cached = OVERSEAS_CANDLE_CACHE.get(key)
-    if cached and (now - cached["time"]) < OVERSEAS_CANDLE_CACHE_TTL:
+    if cached and (now - cached.get("time", 0)) < OVERSEAS_CANDLE_CACHE_TTL:
         try:
             df = cached["df"].copy()
             chart_close = float(df["Close"].iloc[-1])
             return chart_close, f"{chart_close:,.2f} 달러", df
         except Exception:
             OVERSEAS_CANDLE_CACHE.pop(key, None)
+
+    # 같은 티커의 동시 Yahoo 요청을 하나로 합친다.
+    with OVERSEAS_CANDLE_INFLIGHT_LOCK:
+        inflight = OVERSEAS_CANDLE_INFLIGHT.get(key)
+        if inflight is None:
+            inflight = Future()
+            OVERSEAS_CANDLE_INFLIGHT[key] = inflight
+            owner = True
+        else:
+            owner = False
+
+    if not owner:
+        try:
+            value = inflight.result(timeout=7.0)
+            if not value or value[2] is None:
+                return None, None, None
+            chart_close, price_text, df = value
+            return chart_close, price_text, df.copy()
+        except Exception as exc:
+            print(f"[YAHOO CHART WAIT ERROR] {key}: {type(exc).__name__}: {exc}")
+            return None, None, None
 
     try:
         encoded_sym = urllib.parse.quote(key)
@@ -4052,17 +4564,28 @@ def fetch_overseas_candles(symbol):
 
         df = pd.DataFrame(records).set_index("Date").sort_index()
         chart_close = float(df["Close"].iloc[-1])
+        result_value = (chart_close, f"{chart_close:,.2f} 달러", df)
 
         OVERSEAS_CANDLE_CACHE[key] = {
-            "time": now,
+            "time": time.time(),
             "df": df.copy(),
         }
-
+        try:
+            inflight.set_result(result_value)
+        except Exception:
+            pass
         return chart_close, f"{chart_close:,.2f} 달러", df
 
     except Exception as exc:
         print(f"[YAHOO CHART ERROR] {key}: {type(exc).__name__}: {exc}")
+        try:
+            inflight.set_result((None, None, None))
+        except Exception:
+            pass
         return None, None, None
+    finally:
+        with OVERSEAS_CANDLE_INFLIGHT_LOCK:
+            OVERSEAS_CANDLE_INFLIGHT.pop(key, None)
 
 
 def _fetch_overseas_quote_snapshot_uncached(symbol):
@@ -5911,7 +6434,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     return {
         "quant_score": str(quant_score),
         "score_badge": score_badge,
-        "score_dots": f"<span style='color:#10b981; font-weight:700;'>상승 시그널 {bullish_count}</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>중립 {6 - bullish_count}</span>",
+        "score_dots": f"<span style='color:#10b981; font-weight:700;'>상승 근거 {bullish_count}</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>중립 {6 - bullish_count}</span>",
         "trend": trend,
         "momentum_history": momentum_history,
         "z_score": f"{z_score:+.2f} σ", "z_state": z_state, "z_color": z_color,
@@ -5936,6 +6459,39 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "bt_1y": f"1년 실측 {win_1y}%", "bt_2y": f"2년 실측 {win_2y}%",
         "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}"
     }
+
+def _build_malicious_zones(df, raw_price):
+    """최근 가격대별 거래량 집중을 이용해 잠재적 악성 매물대 후보를 계산한다."""
+    try:
+        if df is None or len(df) < 20 or raw_price is None or 'Volume' not in df.columns:
+            return []
+        work = df.copy().tail(120)
+        work = work[['High','Low','Close','Volume']].apply(pd.to_numeric, errors='coerce').dropna()
+        work = work[(work['Volume'] > 0) & (work['High'] >= work['Low'])]
+        if len(work) < 15: return []
+        lo, hi = float(work['Low'].min()), float(work['High'].max())
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo: return []
+        bins = min(24, max(12, int(np.sqrt(len(work)) * 3)))
+        edges = np.linspace(lo, hi, bins + 1); profile = np.zeros(bins, dtype=float)
+        for _, r in work.iterrows():
+            l, h, v = float(r['Low']), float(r['High']), float(r['Volume'])
+            a = max(0, min(bins-1, int(np.searchsorted(edges, l, side='right')-1)))
+            b = max(0, min(bins-1, int(np.searchsorted(edges, h, side='left'))))
+            profile[a:b+1] += v / max(1, b-a+1)
+        zones=[]; current=float(raw_price); peak=float(profile.max())
+        if peak <= 0: return []
+        total=float(profile.sum()) or 1.0
+        for i in range(1, bins-1):
+            if profile[i] < peak*0.48 or profile[i] < profile[i-1] or profile[i] < profile[i+1]: continue
+            zlo,zhi=float(edges[i]),float(edges[i+1])
+            if zhi <= current*0.995: continue
+            intensity=min(99,max(50,round(profile[i]/peak*100)))
+            dist=(zlo-current)/current*100 if current else 0
+            zones.append({'low':round(zlo,2),'high':round(zhi,2),'intensity':int(intensity),'distance_pct':round(dist,1),'share_pct':round(profile[i]/total*100,1)})
+        zones.sort(key=lambda z:(z['distance_pct']))
+        return zones[:3]
+    except Exception:
+        return []
 
 def _movement_rate_to_float(value):
     try:
@@ -6113,7 +6669,8 @@ def _detect_theme(formal_name, stock_news):
 def analyze_global_impact(formal_name, market_name, world_board, stock_news,
                           global_news=None, dart_disclosures=None, df=None,
                           domestic_flow=None, market_index_name=None,
-                          consensus=None, macro_snapshot=None, market_calendar=None, symbol=""):
+                          consensus=None, macro_snapshot=None, market_calendar=None,
+                          symbol="", alpha_earnings=None):
     """
     글로벌/거시 → 미국 → 국내 → 업종 → 종목 전파 경로를 계산한다.
     숫자 비교가 가능한 실제 데이터만 강한 근거로 사용한다.
@@ -6316,299 +6873,6 @@ def build_market_information(global_news):
         text=base+'.'
     return {"topic":g['topic'],"text":text,"repeat_count":n,"source_count":sc,"evidence":g['items'][:6]}
 
-
-# ===== STEP 52: 국내 트랙 분석용 키움 실데이터 보강 =====
-# 프로그램매매는 ka90013의 최근 일별 데이터, 거래대금은 ka10007/ka10005를 사용한다.
-# ===== STEP 51: 국내 트랙 분석용 키움 데이터 =====
-# 국내주식 트랙 분석은 퀀트와 겹치는 기술지표를 제외하고,
-# 시장/업종·테마/외국인/기관/프로그램/공매도·대차/재료·공시/거래대금 8개로 고정한다.
-# 키움 REST API는 Render 환경변수의 인증정보가 있을 때만 사용하며,
-# 인증정보가 없거나 API가 실패하면 해당 근거는 "데이터 확인 필요"로 남긴다.
-KIWOOM_APP_KEY = (
-    os.environ.get("KIWOOM_APP_KEY", "").strip()
-    or os.environ.get("KIWOOM_APPKEY", "").strip()
-    or os.environ.get("APP_KEY", "").strip()
-)
-KIWOOM_APP_SECRET = (
-    os.environ.get("KIWOOM_APP_SECRET", "").strip()
-    or os.environ.get("KIWOOM_APPSECRET", "").strip()
-    or os.environ.get("KIWOOM_SECRET", "").strip()
-    or os.environ.get("APP_SECRET", "").strip()
-)
-KIWOOM_API_BASE = "https://api.kiwoom.com"
-KIWOOM_TOKEN_CACHE = {"token": "", "expires": 0.0}
-KIWOOM_TOKEN_LOCK = threading.Lock()
-KIWOOM_DATA_CACHE = {}
-KIWOOM_DATA_CACHE_TTL = 10 * 60
-KIWOOM_DATA_CACHE_LOCK = threading.Lock()
-
-
-def _kiwoom_access_token():
-    if not KIWOOM_APP_KEY or not KIWOOM_APP_SECRET:
-        return ""
-    now = time.time()
-    with KIWOOM_TOKEN_LOCK:
-        if KIWOOM_TOKEN_CACHE.get("token") and now < KIWOOM_TOKEN_CACHE.get("expires", 0) - 300:
-            return KIWOOM_TOKEN_CACHE["token"]
-    try:
-        r = HTTP_SESSION.post(
-            KIWOOM_API_BASE + "/oauth2/token",
-            headers={"Content-Type": "application/json;charset=UTF-8"},
-            json={
-                "grant_type": "client_credentials",
-                "appkey": KIWOOM_APP_KEY,
-                "secretkey": KIWOOM_APP_SECRET,
-            },
-            timeout=3.0,
-        )
-        data = r.json() if r.content else {}
-        token = str(data.get("token") or data.get("access_token") or "").strip()
-        if not token:
-            return ""
-        expires_dt = str(data.get("expires_dt") or "").strip()
-        expires = now + 20 * 3600
-        if len(expires_dt) >= 14 and expires_dt[:14].isdigit():
-            try:
-                expires = datetime.strptime(expires_dt[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc).timestamp()
-            except Exception:
-                pass
-        with KIWOOM_TOKEN_LOCK:
-            KIWOOM_TOKEN_CACHE["token"] = token
-            KIWOOM_TOKEN_CACHE["expires"] = expires
-        return token
-    except Exception as exc:
-        print(f"[KIWOOM] token failed: {type(exc).__name__}: {exc}")
-        return ""
-
-
-def _kiwoom_post(api_id, endpoint, body, timeout=2.2):
-    token = _kiwoom_access_token()
-    if not token:
-        return None
-    try:
-        headers = {
-            "Content-Type": "application/json;charset=UTF-8",
-            "authorization": f"Bearer {token}",
-            "cont-yn": "N",
-            "next-key": "",
-            "api-id": api_id,
-        }
-        r = HTTP_SESSION.post(KIWOOM_API_BASE + endpoint, headers=headers, json=body, timeout=timeout)
-        if r.status_code != 200:
-            return None
-        data = r.json() if r.content else {}
-        if isinstance(data, dict) and str(data.get("return_code", "0")) not in ("0", ""):
-            return None
-        return data if isinstance(data, dict) else None
-    except Exception as exc:
-        print(f"[KIWOOM] {api_id} failed: {type(exc).__name__}: {exc}")
-        return None
-
-
-def _kiwoom_num(value):
-    if value is None:
-        return None
-    try:
-        x = str(value).replace(",", "").replace("%", "").replace("+", "").strip()
-        return float(x) if x not in ("", "-", "+") else None
-    except Exception:
-        return None
-
-
-def fetch_kiwoom_program_evidence(code):
-    """ka90013: 종목 일별 프로그램 매매. 최근 데이터에서 순매수 금액을 사용한다."""
-    key = f"program:{str(code or '').strip()}"
-    now = time.time()
-    with KIWOOM_DATA_CACHE_LOCK:
-        cached = KIWOOM_DATA_CACHE.get(key)
-        if cached and now - cached["time"] < KIWOOM_DATA_CACHE_TTL:
-            return cached["value"]
-    result = {"available": False, "score": 0, "detail": "프로그램 매매 데이터 확인 필요"}
-    code = str(code or "").strip()
-    if not code or not re.fullmatch(r"\d{6}", code):
-        return result
-    # ka90013의 date는 선택값입니다. 주말/휴일에 오늘 날짜를 강제로 넣으면
-    # 빈 결과가 될 수 있으므로 날짜를 비워 최근 일별 데이터를 요청합니다.
-    data = _kiwoom_post(
-        "ka90013",
-        "/api/dostk/mrkcond",
-        {"stk_cd": code, "amt_qty_tp": "1", "date": ""},
-    )
-    rows = data.get("stk_daly_prm_trde_trnsn", []) if isinstance(data, dict) else []
-    if not isinstance(rows, list):
-        rows = []
-    parsed = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        v = _kiwoom_num(row.get("prm_netprps_amt"))
-        if v is None:
-            continue
-        parsed.append((str(row.get("dt") or ""), v))
-    if parsed:
-        parsed.sort(key=lambda x: x[0], reverse=True)
-        latest = parsed[0][1]
-        prev = parsed[1][1] if len(parsed) > 1 else None
-        if latest > 0:
-            score = 2
-        elif latest < 0:
-            score = -2
-        else:
-            score = 0
-        sign = "+" if latest > 0 else ""
-        # ka90013 금액 조회값은 백만원 단위이므로 화면에서는 억원으로 환산한다.
-        detail = f"최근 프로그램 순매수 {sign}{latest/100:,.1f}억원"
-        if prev is not None:
-            detail += f" · 직전 {prev/100:+,.1f}억원"
-        result = {"available": True, "score": score, "latest": latest, "previous": prev, "detail": detail}
-    with KIWOOM_DATA_CACHE_LOCK:
-        KIWOOM_DATA_CACHE[key] = {"time": now, "value": result}
-    return result
-
-
-def fetch_kiwoom_short_borrow_evidence(code):
-    """ka10014 + ka20068: 공매도 비중과 종목별 대차잔고 변화를 하나의 근거로 묶는다."""
-    key = f"shortborrow:{str(code or '').strip()}"
-    now = time.time()
-    with KIWOOM_DATA_CACHE_LOCK:
-        cached = KIWOOM_DATA_CACHE.get(key)
-        if cached and now - cached["time"] < KIWOOM_DATA_CACHE_TTL:
-            return cached["value"]
-    result = {"available": False, "score": 0, "detail": "공매도·대차 데이터 확인 필요"}
-    code = str(code or "").strip()
-    if not code or not re.fullmatch(r"\d{6}", code):
-        return result
-    today = datetime.now().strftime("%Y%m%d")
-    # 주말/휴일에도 최근 거래일 데이터가 잡히도록 조회 구간을 30일로 넉넉하게 잡는다.
-    start = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
-    end = datetime.now().strftime("%Y%m%d")
-
-    short_data = _kiwoom_post(
-        "ka10014",
-        "/api/dostk/shsa",
-        {"stk_cd": code, "tm_tp": "1", "strt_dt": start, "end_dt": end},
-    )
-    short_rows = short_data.get("shrts_trnsn", []) if isinstance(short_data, dict) else []
-    if not isinstance(short_rows, list):
-        short_rows = []
-    short_parsed = []
-    for row in short_rows:
-        if not isinstance(row, dict):
-            continue
-        w = _kiwoom_num(row.get("trde_wght"))
-        if w is not None:
-            short_parsed.append((str(row.get("dt") or ""), w))
-    short_parsed.sort(key=lambda x: x[0], reverse=True)
-
-    borrow_data = _kiwoom_post(
-        "ka20068",
-        "/api/dostk/slb",
-        {"strt_dt": start, "end_dt": end, "all_tp": "0", "stk_cd": code},
-    )
-    borrow_rows = borrow_data.get("dbrt_trde_trnsn", []) if isinstance(borrow_data, dict) else []
-    if not isinstance(borrow_rows, list):
-        borrow_rows = []
-    borrow_parsed = []
-    for row in borrow_rows:
-        if not isinstance(row, dict):
-            continue
-        rem = _kiwoom_num(row.get("rmnd"))
-        if rem is None:
-            rem = _kiwoom_num(row.get("rmnd_qty"))
-        if rem is not None:
-            borrow_parsed.append((str(row.get("dt") or ""), rem))
-    borrow_parsed.sort(key=lambda x: x[0], reverse=True)
-
-    score = 0
-    details = []
-    if short_parsed:
-        latest_short = short_parsed[0][1]
-        avg_short = sum(v for _, v in short_parsed[:5]) / min(5, len(short_parsed))
-        diff = latest_short - avg_short
-        if diff <= -1.0:
-            score += 1
-        elif diff >= 1.0:
-            score -= 1
-        details.append(f"공매도 비중 {latest_short:.2f}% (5일 평균 {avg_short:.2f}%)")
-    if borrow_parsed:
-        latest_borrow = borrow_parsed[0][1]
-        prev_borrow = borrow_parsed[1][1] if len(borrow_parsed) > 1 else None
-        if prev_borrow and prev_borrow > 0:
-            change_pct = (latest_borrow / prev_borrow - 1.0) * 100.0
-            if change_pct <= -3.0:
-                score += 1
-            elif change_pct >= 3.0:
-                score -= 1
-            details.append(f"대차잔고 {latest_borrow:,.0f}주 ({change_pct:+.1f}%)")
-        else:
-            details.append(f"대차잔고 {latest_borrow:,.0f}주")
-
-    if details:
-        result = {"available": True, "score": max(-2, min(2, score)), "detail": " · ".join(details)}
-    with KIWOOM_DATA_CACHE_LOCK:
-        KIWOOM_DATA_CACHE[key] = {"time": now, "value": result}
-    return result
-
-def fetch_kiwoom_trading_value_evidence(code):
-    """키움 실데이터로 거래대금을 확인한다.
-
-    1) ka10007 시세표성정보의 당일 거래대금(trde_prica) 우선
-    2) 당일 값이 없으면 ka10005의 최근 거래일 거래대금(trde_prica) fallback
-    데이터가 실제로 존재할 때만 available=True로 표시한다.
-    """
-    key = f"tradingvalue:{str(code or '').strip()}"
-    now = time.time()
-    with KIWOOM_DATA_CACHE_LOCK:
-        cached = KIWOOM_DATA_CACHE.get(key)
-        if cached and now - cached["time"] < 60:
-            return cached["value"]
-
-    result = {"available": False, "score": 0, "detail": "거래대금 데이터 확인 필요"}
-    code = str(code or "").strip()
-    if not code or not re.fullmatch(r"\d{6}", code):
-        return result
-
-    # 1) 당일 시세표성정보
-    data = _kiwoom_post(
-        "ka10007",
-        "/api/dostk/mrkcond",
-        {"stk_cd": code},
-    )
-    if isinstance(data, dict):
-        tv = _kiwoom_num(data.get("trde_prica"))
-        if tv is not None and tv > 0:
-            # ka10007 거래대금은 백만원 단위로 제공된다.
-            detail = f"당일 거래대금 {tv/100:,.1f}억원" if tv >= 100 else f"당일 거래대금 {tv:,.0f}백만원"
-            result = {"available": True, "score": 0, "latest": tv, "date": str(data.get("date") or ""), "detail": detail}
-
-    # 2) 장중/휴장일에 당일 값이 없으면 최근 거래일 일주월시분 데이터
-    if not result["available"]:
-        data = _kiwoom_post(
-            "ka10005",
-            "/api/dostk/mrkcond",
-            {"stk_cd": code},
-        )
-        rows = data.get("stk_ddwkmm", []) if isinstance(data, dict) else []
-        if isinstance(rows, list):
-            parsed = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                tv = _kiwoom_num(row.get("trde_prica"))
-                dt = str(row.get("date") or "")
-                if tv is not None and tv > 0:
-                    parsed.append((dt, tv))
-            parsed.sort(key=lambda x: x[0], reverse=True)
-            if parsed:
-                dt, tv = parsed[0]
-                detail = f"최근 거래일 거래대금 {tv/100:,.1f}억원 ({dt})" if tv >= 100 else f"최근 거래일 거래대금 {tv:,.0f}백만원 ({dt})"
-                result = {"available": True, "score": 0, "latest": tv, "date": dt, "detail": detail}
-
-    with KIWOOM_DATA_CACHE_LOCK:
-        KIWOOM_DATA_CACHE[key] = {"time": now, "value": result}
-    return result
-
-
 def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol="", alpha_earnings=None):
     """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다.
 
@@ -6720,209 +6984,109 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
 
     reasons.append({"key":"material","label":"기업 재료","score":material_score,"detail":material_detail,"news_clusters":clustered_material.get("clusters",[])})
 
-    if market_name in ("국내주식", "국내증시"):
-        # 4. 거래대금
-        # 거래량 자체는 퀀트 분석에 이미 있으므로 트랙 분석에서는 제외하고,
-        # 가격 방향 + 거래대금 급증만 원인 근거로 사용한다.
-        tv_score = 0
-        tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
-        tv_ratio = None
-        flow_score = 0
-        price_change = None
+    # 4. 거래량
+    flow_score = 0
+    flow_detail = "거래량 변화 제한적"
+    price_change = None
+    volume_ratio = None
+    try:
+        if df is not None and len(df) >= 6:
+            close = df["Close"].astype(float)
+            volume = df["Volume"].astype(float)
+            current_close = float(close.iloc[-1])
+            previous_close = float(close.iloc[-2])
+            current_volume = float(volume.iloc[-1])
+            avg_volume = float(volume.tail(6).iloc[:-1].mean())
+            price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
+            volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
+            if price_change >= 1.0 and volume_ratio >= 150:
+                flow_score, flow_detail = 2, f"상승 +{price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
+            elif price_change >= 0.3 and volume_ratio >= 120:
+                flow_score, flow_detail = 1, f"상승 +{price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
+            elif price_change <= -1.0 and volume_ratio >= 150:
+                flow_score, flow_detail = -2, f"하락 {price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
+            elif price_change <= -0.3 and volume_ratio >= 120:
+                flow_score, flow_detail = -1, f"하락 {price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
+            else:
+                flow_detail = f"거래량 {volume_ratio:.0f}%"
+    except Exception:
+        pass
+    reasons.append({"key":"volume","label":"거래량","score":flow_score,"detail":flow_detail})
+
+    # 5. 거래대금
+    tv_score = 0
+    tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
+    tv_ratio = None
+    try:
+        if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
+            tv = float(domestic_flow["trading_value"])
+            close_s = df["Close"].astype(float)
+            vol_s = df["Volume"].astype(float)
+            proxy = close_s * vol_s
+            avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
+            tv_ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
+            # 거래대금은 실제 급증 + 가격 방향이 같이 있을 때 강한 원인으로 인정.
+            if tv_ratio >= 2.0 and flow_score > 0: tv_score = 2
+            elif tv_ratio >= 1.2 and flow_score > 0: tv_score = 1
+            elif tv_ratio >= 2.0 and flow_score < 0: tv_score = -2
+            elif tv_ratio >= 1.2 and flow_score < 0: tv_score = -1
+            tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%" if tv_ratio > 0 else ""
+    except Exception:
+        pass
+    reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
+
+    # 6. 외국인 수급
+    foreign_score = 0
+    foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
+    if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
         try:
-            if df is not None and len(df) >= 6:
-                close = df["Close"].astype(float)
-                volume = df["Volume"].astype(float)
-                current_close = float(close.iloc[-1])
-                previous_close = float(close.iloc[-2])
-                current_volume = float(volume.iloc[-1])
-                avg_volume = float(volume.tail(6).iloc[:-1].mean())
-                price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
-                volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
-                if price_change >= 1.0 and volume_ratio >= 150:
-                    flow_score = 2
-                elif price_change >= 0.3 and volume_ratio >= 120:
-                    flow_score = 1
-                elif price_change <= -1.0 and volume_ratio >= 150:
-                    flow_score = -2
-                elif price_change <= -0.3 and volume_ratio >= 120:
-                    flow_score = -1
+            v = float(domestic_flow["foreigner_5d"])
+            latest = domestic_flow.get("foreigner_latest")
+            foreign_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
         except Exception:
             pass
+    reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
+
+    # 7. 기관 수급
+    institution_score = 0
+    institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
+    if domestic_flow and domestic_flow.get("institution_5d") is not None:
         try:
-            if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
-                tv = float(domestic_flow["trading_value"])
-                close_s = df["Close"].astype(float)
-                vol_s = df["Volume"].astype(float)
-                proxy = close_s * vol_s
-                avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
-                tv_ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
-                if tv_ratio >= 2.0 and flow_score > 0: tv_score = 2
-                elif tv_ratio >= 1.2 and flow_score > 0: tv_score = 1
-                elif tv_ratio >= 2.0 and flow_score < 0: tv_score = -2
-                elif tv_ratio >= 1.2 and flow_score < 0: tv_score = -1
-                if tv_ratio > 0:
-                    tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%"
+            v = float(domestic_flow["institution_5d"])
+            latest = domestic_flow.get("institution_latest")
+            institution_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
         except Exception:
             pass
-        # Naver 거래대금이 비어 있으면 키움 실데이터로 보강한다.
-        if tv_score == 0 and symbol:
-            kiwoom_tv = fetch_kiwoom_trading_value_evidence(symbol)
-            if kiwoom_tv.get("available"):
-                tv_detail = kiwoom_tv.get("detail", tv_detail)
-        reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
-    
-        # 5. 외국인 수급
-        foreign_score = 0
-        foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
-        if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
-            try:
-                v = float(domestic_flow["foreigner_5d"])
-                latest = domestic_flow.get("foreigner_latest")
-                foreign_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
-            except Exception:
-                pass
-        reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
-    
-        # 6. 기관 수급
-        institution_score = 0
-        institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
-        if domestic_flow and domestic_flow.get("institution_5d") is not None:
-            try:
-                v = float(domestic_flow["institution_5d"])
-                latest = domestic_flow.get("institution_latest")
-                institution_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
-            except Exception:
-                pass
-        reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
-    
-        # 7. 프로그램 매매 — 키움 ka90013 실데이터
-        program_evidence = fetch_kiwoom_program_evidence(symbol) if market_name in ("국내주식", "국내증시") else {"available":False,"score":0,"detail":"프로그램 매매 데이터 확인 필요"}
-        reasons.append({
-            "key":"program","label":"프로그램 매매",
-            "score":int(program_evidence.get("score",0) or 0),
-            "detail":program_evidence.get("detail","프로그램 매매 데이터 확인 필요")
-        })
-    
-        # 8. 공매도·대차 — 키움 ka10014 + ka20068 실데이터
-        short_borrow = fetch_kiwoom_short_borrow_evidence(symbol) if market_name in ("국내주식", "국내증시") else {"available":False,"score":0,"detail":"공매도·대차 데이터 확인 필요"}
-        reasons.append({
-            "key":"short_borrow","label":"공매도·대차",
-            "score":int(short_borrow.get("score",0) or 0),
-            "detail":short_borrow.get("detail","공매도·대차 데이터 확인 필요")
-        })
-    
-        # 9. 기업 재료·공시
-        # 기존 material 근거는 유지하되 표시 명칭을 확정된 국내 트랙 용어로 맞춘다.
-        # (앞에서 이미 reasons.append("material") 되었으므로 라벨만 변경한다.)
-        for _r in reasons:
-            if _r.get("key") == "material":
-                _r["label"] = "기업 재료·공시"
-    
+    reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
+
+    # 8. 최근 5거래일 시장 흐름
+    market5 = None
+    if market_name in ("국내주식", "국내증시") and market_index_name in ("KOSPI", "KOSDAQ"):
+        ref5 = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
+        market5 = fetch_naver_index_5day_returns(market_index_name, ref5)
+    elif market_name == "미국주식":
+        ref5 = _find_world_item(world_board, ["QQQ"])
+        market5 = fetch_market_5day_returns_from_symbol("QQQ", "NASDAQ", ref5)
+    elif market_name == "암호화폐":
+        market5 = fetch_market_5day_returns_from_df(df, formal_name or symbol or "Crypto")
+
+    if market5:
+        market5_score = int(market5["score"])
+        market5_detail = market5["detail"]
+        market5_points = market5["points"]
     else:
-        # 4. 거래량
-        flow_score = 0
-        flow_detail = "거래량 변화 제한적"
-        price_change = None
-        volume_ratio = None
-        try:
-            if df is not None and len(df) >= 6:
-                close = df["Close"].astype(float)
-                volume = df["Volume"].astype(float)
-                current_close = float(close.iloc[-1])
-                previous_close = float(close.iloc[-2])
-                current_volume = float(volume.iloc[-1])
-                avg_volume = float(volume.tail(6).iloc[:-1].mean())
-                price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
-                volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
-                if price_change >= 1.0 and volume_ratio >= 150:
-                    flow_score, flow_detail = 2, f"상승 +{price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
-                elif price_change >= 0.3 and volume_ratio >= 120:
-                    flow_score, flow_detail = 1, f"상승 +{price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
-                elif price_change <= -1.0 and volume_ratio >= 150:
-                    flow_score, flow_detail = -2, f"하락 {price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
-                elif price_change <= -0.3 and volume_ratio >= 120:
-                    flow_score, flow_detail = -1, f"하락 {price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
-                else:
-                    flow_detail = f"거래량 {volume_ratio:.0f}%"
-        except Exception:
-            pass
-        reasons.append({"key":"volume","label":"거래량","score":flow_score,"detail":flow_detail})
+        market5_score = 0
+        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else ("NASDAQ" if market_name == "미국주식" else (formal_name or symbol or "시장"))
+        market5_detail = f"{selected_index} 최근 5거래일 데이터 확인 필요"
+        market5_points = []
 
-        # 5. 거래대금
-        tv_score = 0
-        tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
-        tv_ratio = None
-        try:
-            if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
-                tv = float(domestic_flow["trading_value"])
-                close_s = df["Close"].astype(float)
-                vol_s = df["Volume"].astype(float)
-                proxy = close_s * vol_s
-                avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
-                tv_ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
-                # 거래대금은 실제 급증 + 가격 방향이 같이 있을 때 강한 원인으로 인정.
-                if tv_ratio >= 2.0 and flow_score > 0: tv_score = 2
-                elif tv_ratio >= 1.2 and flow_score > 0: tv_score = 1
-                elif tv_ratio >= 2.0 and flow_score < 0: tv_score = -2
-                elif tv_ratio >= 1.2 and flow_score < 0: tv_score = -1
-                tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%" if tv_ratio > 0 else ""
-        except Exception:
-            pass
-        reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
-
-        # 6. 외국인 수급
-        foreign_score = 0
-        foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
-        if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
-            try:
-                v = float(domestic_flow["foreigner_5d"])
-                latest = domestic_flow.get("foreigner_latest")
-                foreign_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
-            except Exception:
-                pass
-        reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
-
-        # 7. 기관 수급
-        institution_score = 0
-        institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
-        if domestic_flow and domestic_flow.get("institution_5d") is not None:
-            try:
-                v = float(domestic_flow["institution_5d"])
-                latest = domestic_flow.get("institution_latest")
-                institution_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
-            except Exception:
-                pass
-        reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
-
-        # 8. 최근 5거래일 시장 흐름
-        market5 = None
-        if market_name in ("국내주식", "국내증시") and market_index_name in ("KOSPI", "KOSDAQ"):
-            ref5 = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
-            market5 = fetch_naver_index_5day_returns(market_index_name, ref5)
-        elif market_name == "미국주식":
-            ref5 = _find_world_item(world_board, ["QQQ"])
-            market5 = fetch_market_5day_returns_from_symbol("QQQ", "NASDAQ", ref5)
-        elif market_name == "암호화폐":
-            market5 = fetch_market_5day_returns_from_df(df, formal_name or symbol or "Crypto")
-
-        if market5:
-            market5_score = int(market5["score"])
-            market5_detail = market5["detail"]
-            market5_points = market5["points"]
-        else:
-            market5_score = 0
-            selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else ("NASDAQ" if market_name == "미국주식" else (formal_name or symbol or "시장"))
-            market5_detail = f"{selected_index} 최근 5거래일 데이터 확인 필요"
-            market5_points = []
-
-        reasons.append({
-            "key":"market_5d","label":"시장 5일 흐름","score":market5_score,
-            "detail":market5_detail,"chart_points":market5_points,
-            "total_return":market5.get("total_return") if market5 else None,
-            "source":market5.get("source") if market5 else None,
-            "index_name":market5.get("index_name") if market5 else selected_index
-        })
+    reasons.append({
+        "key":"market_5d","label":"시장 5일 흐름","score":market5_score,
+        "detail":market5_detail,"chart_points":market5_points,
+        "total_return":market5.get("total_return") if market5 else None,
+        "source":market5.get("source") if market5 else None,
+        "index_name":market5.get("index_name") if market5 else selected_index
+    })
 
     # ----------------------------------------------------
     # 핵심: "먼저 걸리는 조건"이 아니라 실제 강도를 비교한다.
@@ -6934,12 +7098,6 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
             move_direction = -1
     except Exception:
         pass
-
-    # 국내주식은 화면/점수의 근거 순서를 확정된 8개로 고정한다.
-    if market_name in ("국내주식", "국내증시"):
-        domestic_track_order = ["market", "theme", "foreign", "institution", "program", "short_borrow", "material", "trading_value"]
-        order_map = {k:i for i,k in enumerate(domestic_track_order)}
-        reasons = sorted(reasons, key=lambda x: order_map.get(x.get("key"), 999))[:8]
 
     positive_count = sum(1 for x in reasons if x["score"] > 0)
     negative_count = sum(1 for x in reasons if x["score"] < 0)
@@ -6973,14 +7131,12 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     else:
         top_keys = []
 
-    # 확정된 국내 트랙 8개 기준 tie-break.
+    # 재료 > 양매수 수급 > 거래대금/거래량 > 테마 > 시장 순의 tie-break.
     priority = {
         "material": 7,
         "foreign": 6,
         "institution": 6,
-        "program": 5,
-        "short_borrow": 5,
-        "trading_value": 4,
+        "trading_value": 5,
         "volume": 4,
         "theme": 3,
         "market": 2,
@@ -6992,15 +7148,18 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
     if foreign_score > 0 and institution_score > 0 and main_key in ("foreign","institution"):
         main_key = "flow_pair"
 
-    # 재료가 약하고 거래대금이 강하면 거래대금을 보조 주원인으로 선택.
-    if main_key == "material" and material_score == 1 and tv_score >= 2:
-        main_key = "trading_value"
+    # 재료가 약하고 거래가 매우 강하면 거래대금/거래량을 우선.
+    if main_key == "material" and material_score == 1:
+        if tv_score >= 2:
+            main_key = "trading_value"
+        elif flow_score >= 2:
+            main_key = "volume"
 
     main_label_map = {
         "material":"기업 재료","flow_pair":"외국인·기관 수급",
         "foreign":"외국인 수급","institution":"기관 수급",
-        "trading_value":"거래대금","volume":"거래량","program":"프로그램 매매",
-        "short_borrow":"공매도·대차","theme":"업종·테마","market":"시장","market_5d":"시장 5일 흐름"
+        "trading_value":"거래대금","volume":"거래량",
+        "theme":"업종·테마","market":"시장","market_5d":"시장 5일 흐름"
     }
     main_reason = main_label_map.get(main_key, "-")
 
@@ -7031,7 +7190,8 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         consensus=consensus,
         macro_snapshot=macro_snapshot,
         market_calendar=market_calendar,
-        symbol=symbol
+        symbol=symbol,
+        alpha_earnings=alpha_earnings
     )
 
     # 직접 공시/재료가 없고 글로벌 전파가 충분히 강할 때만 글로벌 원인을 보조 주원인으로 선택.
@@ -7127,8 +7287,8 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             df = context["df"]
 
             optional_futures = {
-                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
-                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
+                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
                 "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
                 "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
                 "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
@@ -7478,8 +7638,8 @@ def run_full_pipeline(query, lightweight=False):
         _perf_stage("optional_external_skipped")
     else:
         optional_futures = {
-            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, formal_name, 10),
-            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_rss_news, "뉴욕증시 OR 미국증시 OR 나스닥", 10),
+            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
+            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
             "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
             "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
             "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
@@ -7512,6 +7672,12 @@ def run_full_pipeline(query, lightweight=False):
     # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
     stock_news = merge_news_sources(stock_news_rss, ticker_news)
     global_news = merge_news_sources(global_news_rss, api_news)
+
+    # 미국주식은 영어 원문 제목 대신 한국어 제목을 표시한다.
+    # 원문 링크/언론사/발행일은 그대로 유지한다.
+    if market_name == "미국주식":
+        stock_news = translate_news_titles_to_korean(stock_news[:20], market_name)
+        global_news = translate_news_titles_to_korean(global_news[:20], market_name)
 
     if not lightweight:
         consensus = optional_results.get("consensus")
@@ -7680,7 +7846,8 @@ def run_full_pipeline(query, lightweight=False):
         "ma20_line": ma20_line,
         "ma60_line": ma60_line,
         "bb_up_line": bb_up_line,
-        "bb_dn_line": bb_dn_line
+        "bb_dn_line": bb_dn_line,
+        "malicious_zones": _build_malicious_zones(df, raw_price)
     }
 
     result_data["_details_ready"] = not lightweight
@@ -8165,6 +8332,48 @@ def fetch_right_market_board(market="kr", force=False):
             RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows, "version": RIGHT_MARKET_BOARD_CACHE_VERSION}
     return rows
 
+DART_DISCLOSURE_WIDGET_JS = r"""
+(function () {
+    window.GaemiWidgets = window.GaemiWidgets || {};
+
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    window.GaemiWidgets.renderDartDisclosure = function (items) {
+        const card = document.getElementById('rowDart');
+        const list = document.getElementById('dartList');
+        if (!card || !list) return;
+
+        if (!Array.isArray(items) || items.length === 0) {
+            list.innerHTML = '';
+            card.style.display = 'none';
+            return;
+        }
+
+        list.innerHTML = items.map(function (d) {
+            const link = escapeHtml(d && d.link ? d.link : '#');
+            const tagType = escapeHtml(d && d.tag_type ? d.tag_type : 'neutral');
+            const tagName = escapeHtml(d && d.tag_name ? d.tag_name : '공시');
+            const title = escapeHtml(d && d.title ? d.title : '');
+            const date = escapeHtml(d && d.date ? d.date : '');
+            return '<a href="' + link + '" target="_blank" rel="noopener noreferrer" class="dart-item">' +
+                '<span class="dart-tag tag-' + tagType + '">' + tagName + '</span>' +
+                '<span class="dart-title">' + title + '</span>' +
+                '<span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">' + date + '</span>' +
+                '</a>';
+        }).join('');
+
+        card.style.display = 'block';
+    };
+})();
+"""
+
 HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -8176,6 +8385,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="/widgets/dart_disclosure.js"></script>
+    <script src="/widgets/chart.js"></script>
+    <script src="/widgets/stock_news.js"></script>
+    <script src="/widgets/global_news.js"></script>
+    <script src="/widgets/world_board.js"></script>
+    <script src="/widgets/us_leading_sectors.js"></script>
+    <script src="/widgets/us_leading_stocks.js"></script>
+    <script src="/widgets/quant.js"></script>
+    <script src="/widgets/track.js"></script>
+    <script src="/widgets/why_movement.js"></script>
+    <script src="/widgets/earnings_calendar.js"></script>
+    <script src="/widgets/economic_calendar.js"></script>
+    <script src="/widgets/analyst_consensus.js"></script>
+    <script src="/widgets/vote.js"></script>
+    <script src="/widgets/comment.js"></script>
+    <script src="/widgets/malicious_zone.js"></script>
     <style>
         :root {
             --bg-body: #131314;
@@ -8309,9 +8534,20 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
         #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
 
-        /* 3행: 종목 뉴스(좌) & 해외 뉴스(우) */
-        #rowNews { grid-column: 1; grid-row: 3; height: 100%; }
-        #rowGlobalNews { grid-column: 2; grid-row: 3; height: 100%; }
+        /* 3행: 종목 뉴스(좌) & 경제뉴스(우)
+           테스트 수정: 뉴스 카드끼리 높이를 강제로 공유하지 않음 */
+        #rowNews {
+            grid-column: 1;
+            grid-row: 3;
+            height: auto;
+            align-self: start;
+        }
+        #rowGlobalNews {
+            grid-column: 2;
+            grid-row: 3;
+            height: auto;
+            align-self: start;
+        }
 
         /* 4행: 트랙 분석(좌) & 실적 일정(우) */
         #rowTrack {
@@ -10677,10 +10913,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
 
                                 <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
-                                    <button class="calendar-star-btn active" data-cal-type="earn" data-stars="all" onclick="setCalendarStarFilter('earn','all',this)">전체</button>
-                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="3" onclick="setCalendarStarFilter('earn','3',this)">★★★</button>
-                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="2" onclick="setCalendarStarFilter('earn','2',this)">★★☆</button>
-                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="1" onclick="setCalendarStarFilter('earn','1',this)">★☆☆</button>
+                                    <button class="calendar-star-btn active" data-cal-type="earn" data-stars="all" onclick="setEarningsCalendarStarFilter('all',this)">전체</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="3" onclick="setEarningsCalendarStarFilter('3',this)">★★★</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="2" onclick="setEarningsCalendarStarFilter('2',this)">★★☆</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="1" onclick="setEarningsCalendarStarFilter('1',this)">★☆☆</button>
                                 </div>
                                 <div class="calendar-widget-subtitle" id="earnCalDayHeader">주요 기업 실적</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="earnCalEventList"></div>
@@ -10732,7 +10968,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         <!-- 3행 우측: 해외 뉴스 (348px, 캘린더 바로 하단 & 종목 뉴스와 높이 100% 일치) -->
                         <div class="card" id="rowGlobalNews">
-                            <div class="board-header-title" style="margin-bottom:12px;">해외 뉴스</div>
+                            <div class="board-header-title" style="margin-bottom:12px;">경제뉴스</div>
                             <div id="globalNewsList" style="flex:1;"></div>
                         </div>
 
@@ -10832,71 +11068,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="dartList"></div>
                         </div>
 
-                        <!-- 8행: gaemiGTP 시그널 박스 (832px) -->
-                        <div class="signal-premium-card" id="rowSignal">
-                            <div class="signal-card-header">
-                                <span class="signal-card-title">gaemiGTP 시그널</span>
+                        <!-- 8행: 악성 매물대 위젯 -->
+                        <div class="card" id="rowSignal">
+                            <div class="board-header">
+                                <span class="board-header-title">악성 매물대</span>
+                                <span style="font-size:0.72rem; color:var(--text-muted);">과거 거래가 집중된 저항 구간</span>
                             </div>
-                            
-                            <div id="signalBody" style="display:block; margin-top:16px;">
-                                <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid rgba(16,185,129,0.2);">
-                                    <div class="gauge-inner-box">
-                                        <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="rWinRateGauge"></span>
-                                        <span style="font-size:0.6rem; color:var(--text-muted); margin-top:3px; font-weight:700;">승률</span>
-                                    </div>
-                                    <div style="min-width:0;">
-                                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                            <span style="font-size:0.82rem; color:var(--text-muted);">시그널 종합</span>
-                                            <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.75rem; font-weight:800; padding:3px 8px; border-radius:10px;">분할 대응 유효</span>
-                                        </div>
-                                        <div style="font-size:0.78rem; color:var(--text-muted); margin-top:5px; word-break:keep-all;">
-                                            <span style="color:#10b981; font-weight:800;" id="rBt1yTag"></span> &nbsp; 
-                                            <span style="color:#10b981; font-weight:800;" id="rBt2yTag"></span> &nbsp; 
-                                            <span style="color:#38bdf8; font-weight:800;" id="rRrTag"></span>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div style="margin:20px 0 14px; position:relative;">
-                                    <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:6px; white-space:nowrap;">
-                                        <span style="color:#38bdf8; font-weight:800;" id="rSliderStop"></span>
-                                        <span style="color:var(--text-title); font-weight:800;" id="rSliderEntry"></span>
-                                        <span style="color:#10b981; font-weight:800;" id="rSliderTarget"></span>
-                                    </div>
-                                    <div style="width:100%; height:7px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                        <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="rSigBarFill"></div>
-                                        <div class="dot-marker-style" id="rSigDotMarker"></div>
-                                    </div>
-                                </div>
-
-                                <div style="margin-top:16px; border-top:1px solid rgba(16,185,129,0.2); padding-top:10px;">
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                        <div><span style="color:var(--text-title); font-weight:700;">1차 진입 기준가</span></div>
-                                        <div style="color:var(--text-title); font-weight:800;" id="rEntry1"></div>
-                                    </div>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                        <div><span style="color:var(--text-title); font-weight:700;">2차 분할 기준가</span></div>
-                                        <div style="color:var(--text-title); font-weight:800;" id="rEntry2"></div>
-                                    </div>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                        <div><span style="color:#10b981; font-weight:700;">1차 목표가</span></div>
-                                        <div style="color:#10b981; font-weight:800;" id="rTarget1"></div>
-                                    </div>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                        <div><span style="color:#10b981; font-weight:700;">2차 목표가</span></div>
-                                        <div style="color:#10b981; font-weight:800;" id="rTarget2"></div>
-                                    </div>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; font-size:0.86rem;">
-                                        <div><span style="color:#38bdf8; font-weight:700;">리스크 방어선</span></div>
-                                        <div style="color:#38bdf8; font-weight:800;" id="rStop"></div>
-                                    </div>
-                                </div>
-
-                                <div class="guide-box">
-                                    <div class="guide-title">gaemiGTP 시그널 가이드</div>
-                                    <div id="rGuideText" style="margin-top:4px; color:var(--text-sub); word-break:keep-all;"></div>
-                                </div>
-                            </div>
+                            <div id="maliciousZoneBody" style="margin-top:10px;"></div>
                         </div>
 </div>
 
@@ -10940,6 +11118,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
     </div>
 
+    <script src="/widgets/right_market.js"></script>
+
     <script>
         let chart = null;
         let selectedMode = 'gaemi';
@@ -10978,6 +11158,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             localStorage.setItem('gaemi_theme', isLight ? 'light' : 'dark');
             updateThemeIcon(isLight);
 
+            chart = window.gaemiChart || chart;
             if (chart) {
                 chart.applyOptions({
                     layout: {
@@ -11000,6 +11181,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function resizeChart() {
             const container = document.getElementById('tvChart');
+            chart = window.gaemiChart || chart;
             if (chart && container && container.clientWidth > 0) {
                 chart.applyOptions({ width: container.clientWidth });
             }
@@ -11273,392 +11455,58 @@ function renderSparklineSVG(points, isUp) {
         // - 같은 globalMarketCalendar 데이터를 사용하지만
         //   날짜 이동/페이지 상태/렌더링은 서로 완전히 분리
         // ============================================================
-        let economicCalOffset = 0;
-        let earningsCalOffset = 0;
-        let economicCalPage = 1;
-        let earningsCalPage = 1;
-        // 실적 캘린더는 오늘 실적이 없을 때 최초 1회만 '가장 가까운 예정 실적일'로 이동합니다.
-        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
-        let earningsCalendarAutoJumped = false;
-
-        // 경제 캘린더는 오늘 발표가 없을 때 최초 1회만
-        // '오늘 이후 가장 가까운 예정 일정'으로 이동합니다.
-        // 앞으로 일정이 없으면 오늘 이전 가장 최근 일정으로 이동합니다.
-        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
-        let economicCalendarAutoJumped = false;
-
-        let economicCalStarFilter = 'all';
-        let earningsCalStarFilter = 'all';
-        const calendarItemsPerPage = 4;
-
-        function renderCalendarEventCard(ev) {
-            const isEarn = ev.type === 'earn';
-            const clickAttr = isEarn && ev.ticker
-                ? `onclick="doSearch('${String(ev.ticker).replace(/'/g, "\\'")}')"`
-                : '';
-            const alarmKey = getCalendarEventKey(ev);
-            const alarmActive = !!getCalendarAlarms()[alarmKey];
-            const stars = ev.star_str || (ev.stars === 3 ? '★★★' : ev.stars === 2 ? '★★☆' : '★☆☆');
-            const timeLabel = ev.time || '--:--';
-            const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료') ? '발표완료' : '발표대기';
-            const metaParts = [];
-            if (ev.exp && ev.exp !== '-') {
-                const expText = String(ev.exp).trim();
-                metaParts.push(
-                    expText.startsWith('예상')
-                        ? expText
-                        : `예상 ${expText}`
-                );
-            }
-
-            // 실적 캘린더의 두 번째 값은 '이전'이 아니라 '예상 매출'입니다.
-            // 경제 캘린더에서만 ev.prev를 '이전'으로 표시합니다.
-            if (isEarn) {
-                const revenueText = String(
-                    ev.expected_revenue_str || ''
-                ).trim();
-                if (revenueText && revenueText !== '-') {
-                    metaParts.push(
-                        revenueText.startsWith('예상')
-                            ? revenueText
-                            : `예상 매출 ${revenueText}`
-                    );
-                }
-            } else if (ev.prev && ev.prev !== '-') {
-                metaParts.push(`이전 ${ev.prev}`);
-            }
-
-            const meta = metaParts.join('  ·  ');
-
-            // 실적 캘린더에서는 티커(NVDA 등)와 기업 마크를 표시하지 않습니다.
-            const rawEventName = ev.name || (isEarn ? '실적 발표' : '경제지표');
-            let eventName = isEarn
-                ? String(rawEventName).replace(/\s*\([A-Za-z0-9.\-]+\)/g, '').trim()
-                : String(rawEventName);
-
-            // 이전 데이터 형식에서 이름에 발표시점이 붙어 있어도 화면에서는 분리합니다.
-            let timingLabel = isEarn ? String(ev.timing_label || '').trim() : '';
-            if (isEarn && !timingLabel) {
-                const timingMatch = eventName.match(/\s*(\((?:미국 )?장 (?:마감 후|시작 전)\))\s*$/);
-                if (timingMatch) {
-                    timingLabel = timingMatch[1];
-                    eventName = eventName.slice(0, timingMatch.index).trim();
-                }
-            }
-
-            return `
-                <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
-                    <div class="cal-time-col">${timeLabel}</div>
-                    <div class="cal-detail-col">
-                        <div class="cal-event-topline">
-                            <span class="cal-stars">${stars}</span>
-                            <span class="cal-event-status">${status}</span>
-                        </div>
-                        <div class="cal-event-title">${eventName}</div>
-                        ${isEarn && timingLabel ? `<div class="cal-earn-timing">${timingLabel}</div>` : ''}
-                        ${meta ? `<div class="cal-event-meta">${meta}</div>` : ''}
-                    </div>
-                    <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
-                            onclick="event.stopPropagation(); toggleCalendarAlarmByKey('${encodeURIComponent(alarmKey)}')"
-                            title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
-                            aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">
-                        <svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path>
-                            <path d="M10 21h4"></path>
-                        </svg>
-                    </button>
-                </div>
-            `;
-        }
-
-        function getCalendarDateInfo(offset) {
-            const now = new Date();
-            const kstString = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'Asia/Seoul',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).format(now);
-
-            const [yyyy, mm, dd] = kstString.split('-').map(Number);
-            const d = new Date(Date.UTC(yyyy, mm - 1, dd + Number(offset || 0)));
-            const daysMap = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
-
-            return {
-                dateKey: `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`,
-                display: `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')} (${daysMap[d.getUTCDay()].slice(0, 1)})`,
-                header: `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일 ${daysMap[d.getUTCDay()]}`
-            };
-        }
-
-        // 경제 캘린더 이벤트 판별을 한 곳에서 통일합니다.
-        // 이전 배포본에서 type 값이 eco/economic으로 달라져도 대응합니다.
-        function isEconomicCalendarEvent(ev) {
-            if (!ev || !ev.date_key) return false;
-            const t = String(ev.type || '').toLowerCase();
-            return t === 'eco' || t === 'economic';
-        }
-
-        function getTodayKstDateKey() {
-            const now = new Date();
-            const kstString = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'Asia/Seoul',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).format(now);
-            return kstString.replace(/-/g, '.');
-        }
-
-        function findNearestEconomicOffset() {
-            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-            const todayKey = getTodayKstDateKey();
-            const [yyyy, mm, dd] = todayKey.split('.').map(Number);
-            const today = new Date(Date.UTC(yyyy, mm - 1, dd));
-
-            const economicDates = [...new Set(
-                all
-                    .filter(isEconomicCalendarEvent)
-                    .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
-            )].sort();
-
-            if (!economicDates.length) return 0;
-
-            // 1. 오늘 경제 일정이 있으면 오늘을 그대로 유지합니다.
-            if (economicDates.includes(todayKey)) {
-                return 0;
-            }
-
-            // 2. 오늘 이후 가장 가까운 경제 일정 날짜를 먼저 찾습니다.
-            //    주말/공휴일처럼 오늘 일정이 없는 경우 예정된 다음 일정으로 이동합니다.
-            for (const key of economicDates) {
-                const parts = key.split('.').map(Number);
-                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
-
-                const candidate = new Date(
-                    Date.UTC(parts[0], parts[1] - 1, parts[2])
-                );
-
-                if (candidate >= today) {
-                    return Math.round((candidate - today) / 86400000);
-                }
-            }
-
-            // 3. 미래 일정도 없으면 오늘 이전의 가장 최근 일정으로 이동합니다.
-            let latestKey = null;
-            for (const key of economicDates) {
-                const parts = key.split('.').map(Number);
-                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
-
-                const candidate = new Date(
-                    Date.UTC(parts[0], parts[1] - 1, parts[2])
-                );
-
-                if (candidate < today) {
-                    latestKey = key;
-                }
-            }
-
-            if (!latestKey) return 0;
-
-            const [y, m, d] = latestKey.split('.').map(Number);
-            const latestDate = new Date(Date.UTC(y, m - 1, d));
-            return Math.round((latestDate - today) / 86400000);
-        }
-
+        // 경제 캘린더는 독립 위젯으로 분리되어 있습니다.
         function renderEconomicCalendarView() {
-            // 첫 화면에서 오늘 경제 일정이 없으면
-            // 오늘 이전의 가장 최근 발표일을 자동으로 보여줍니다.
-            if (!economicCalendarAutoJumped && economicCalOffset === 0) {
-                const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-                const hasEconomicData = all.some(ev => isEconomicCalendarEvent(ev));
-
-                // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
-                if (hasEconomicData) {
-                    const nearestOffset = findNearestEconomicOffset();
-                    if (nearestOffset !== 0) {
-                        economicCalOffset = nearestOffset;
-                    }
-                    economicCalendarAutoJumped = true;
-                }
-            }
-
-            const info = getCalendarDateInfo(economicCalOffset);
-            info.dateKey = String(info.dateKey || '').replace(/[\\/]/g, '.');
-            setTxt('ecoCalDisplayDate', info.display);
-
-            const container = document.getElementById('ecoCalEventList');
-            if (!container) return;
-
-            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => isEconomicCalendarEvent(ev)
-                    && String(ev.date_key).replace(/[\\/]/g, '.') === info.dateKey
-                    && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
-
-            setTxt(
-                'ecoCalDayHeader',
-                filtered.length && filtered[0].date_header
-                    ? filtered[0].date_header
-                    : `${info.header} · 주요 경제지표`
-            );
-
-            const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
-            economicCalPage = Math.max(1, Math.min(economicCalPage, totalPages));
-
-            const prev = document.getElementById('btnEcoCalPrev');
-            const next = document.getElementById('btnEcoCalNext');
-            if (prev) prev.disabled = economicCalPage <= 1;
-            if (next) next.disabled = economicCalPage >= totalPages;
-            setTxt('ecoCalPageIndicator', `${economicCalPage} / ${totalPages}`);
-
-            if (!filtered.length) {
-                container.innerHTML = `
-                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
-                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        이 날짜에 예정된 경제 일정이 없습니다.
-                    </div>
-                `;
-                scheduleCalendarHeightSync();
-                return;
-            }
-
-            const startIdx = (economicCalPage - 1) * calendarItemsPerPage;
-            container.innerHTML = filtered
-                .slice(startIdx, startIdx + calendarItemsPerPage)
-                .map(renderCalendarEventCard)
-                .join('');
-            scheduleCalendarHeightSync();
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.render() : undefined;
         }
-
-        function findNearestEarningsOffset() {
-            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-            const futureDates = [...new Set(all
-                .filter(ev => ev.type === 'earn' && ev.date_key)
-                .map(ev => ev.date_key))].sort();
-            if (!futureDates.length) return 0;
-
-            const now = new Date();
-            const kstString = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
-            }).format(now);
-            const [yyyy, mm, dd] = kstString.split('-').map(Number);
-            const today = new Date(Date.UTC(yyyy, mm - 1, dd));
-
-            for (const key of futureDates) {
-                const [y, m, d] = key.split('.').map(Number);
-                const candidate = new Date(Date.UTC(y, m - 1, d));
-                if (candidate >= today) {
-                    return Math.round((candidate - today) / 86400000);
-                }
-            }
-            return 0;
-        }
-
-        function renderEarningsCalendarView() {
-            // 첫 화면에서 오늘 실적이 비어 있으면 가장 가까운 예정 실적일을 보여줍니다.
-            // 날짜 이동 버튼과 [오늘] 버튼은 이후 정상적으로 하루 단위로 작동합니다.
-            if (!earningsCalendarAutoJumped && earningsCalOffset === 0) {
-                const nearestOffset = findNearestEarningsOffset();
-                if (nearestOffset > 0) {
-                    earningsCalOffset = nearestOffset;
-                }
-                earningsCalendarAutoJumped = true;
-            }
-
-            const info = getCalendarDateInfo(earningsCalOffset);
-            setTxt('earnCalDisplayDate', info.display);
-
-            const container = document.getElementById('earnCalEventList');
-            if (!container) return;
-
-            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => ev.type === 'earn' && ev.date_key === info.dateKey && (earningsCalStarFilter === 'all' || String(ev.stars) === earningsCalStarFilter));
-
-            setTxt(
-                'earnCalDayHeader',
-                filtered.length && filtered[0].date_header
-                    ? filtered[0].date_header
-                    : `${info.header} · 주요 기업 실적`
-            );
-
-            const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
-            earningsCalPage = Math.max(1, Math.min(earningsCalPage, totalPages));
-
-            const prev = document.getElementById('btnEarnCalPrev');
-            const next = document.getElementById('btnEarnCalNext');
-            if (prev) prev.disabled = earningsCalPage <= 1;
-            if (next) next.disabled = earningsCalPage >= totalPages;
-            setTxt('earnCalPageIndicator', `${earningsCalPage} / ${totalPages}`);
-
-            if (!filtered.length) {
-                container.innerHTML = `
-                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
-                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        이 날짜에 실적 일정이 없습니다.
-                    </div>
-                `;
-                scheduleCalendarHeightSync();
-                return;
-            }
-
-            const startIdx = (earningsCalPage - 1) * calendarItemsPerPage;
-            container.innerHTML = filtered
-                .slice(startIdx, startIdx + calendarItemsPerPage)
-                .map(renderCalendarEventCard)
-                .join('');
-            scheduleCalendarHeightSync();
-        }
-
         function setCalendarStarFilter(type, value, btn) {
-            if (type === 'eco') economicCalStarFilter = value;
-            else earningsCalStarFilter = value;
-            const root = type === 'eco' ? '#rowEconomicCalendar' : '#rowEarningsCalendar';
-            document.querySelectorAll(`${root} .calendar-star-btn`).forEach(b => b.classList.remove('active'));
-            if (btn) btn.classList.add('active');
-            if (type === 'eco') { economicCalPage = 1; renderEconomicCalendarView(); }
-            else { earningsCalPage = 1; renderEarningsCalendarView(); }
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.setStarFilter(value, btn) : undefined;
         }
-
         function shiftEconomicCalendarDate(delta) {
-            economicCalOffset += Number(delta || 0);
-            economicCalPage = 1;
-            renderEconomicCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.shiftDate(delta) : undefined;
         }
-
         function resetEconomicCalendarDate() {
-            // [오늘] 버튼은 실제 오늘 날짜가 아니라,
-            // 경제지표가 현재 표시되는 기준점(오늘 일정이 없으면 가장 가까운 예정 일정)으로 돌아갑니다.
-            economicCalOffset = findNearestEconomicOffset();
-            economicCalPage = 1;
-            economicCalendarAutoJumped = true;
-            renderEconomicCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.resetDate() : undefined;
+        }
+        function changeEconomicCalendarPage(delta) {
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.changePage(delta) : undefined;
         }
 
-        function changeEconomicCalendarPage(delta) {
-            economicCalPage += Number(delta || 0);
-            renderEconomicCalendarView();
+        // 실적 캘린더는 독립 위젯으로 분리되어 있습니다.
+        // 기존 호출부/버튼 호환성을 위해 얇은 브리지 함수만 유지합니다.
+        function renderEarningsCalendarView() {
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.render()
+                : undefined;
+        }
+
+        function setEarningsCalendarStarFilter(value, btn) {
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.setStarFilter(value, btn)
+                : undefined;
         }
 
         function shiftEarningsCalendarDate(delta) {
-            earningsCalOffset += Number(delta || 0);
-            earningsCalPage = 1;
-            renderEarningsCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.shiftDate(delta)
+                : undefined;
         }
 
         function resetEarningsCalendarDate() {
-            // [오늘]을 누르면 단순히 오늘 날짜(실적이 없을 수 있음)로 가지 않고
-            // 초기 화면과 동일하게 '오늘 이후 가장 가까운 실적 발표일'로 돌아갑니다.
-            // 예: 오늘 8/30이고 다음 실적이 9/2라면 [오늘] → 9/2
-            const nearestOffset = findNearestEarningsOffset();
-            earningsCalOffset = nearestOffset;
-            earningsCalPage = 1;
-            earningsCalendarAutoJumped = true;
-            renderEarningsCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.resetDate()
+                : undefined;
         }
 
         function changeEarningsCalendarPage(delta) {
-            earningsCalPage += Number(delta || 0);
-            renderEarningsCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.changePage(delta)
+                : undefined;
         }
 
         function renderMarketCalendarView() {
@@ -11698,97 +11546,9 @@ function renderSparklineSVG(points, isUp) {
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;
             const targetName = displayName || symbol;
-const voteKey = 'vote_' + symbol;
-            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
-            let vData = JSON.parse(rawVote);
-            updateVoteUI(vData);
+if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
 
-            const cKey = 'comments_' + symbol;
-            const rawComm = localStorage.getItem(cKey) || JSON.stringify([]);
-            renderComments(JSON.parse(rawComm));
-        }
-
-        function updateVoteUI(vData) {
-            const total = vData.long + vData.short;
-            const lPct = total > 0 ? Math.round((vData.long / total) * 100) : 50;
-            const sPct = 100 - lPct;
-
-            setTxt('voteLongPct', `상승 ${lPct}%`);
-            setTxt('voteShortPct', `하락 ${sPct}%`);
-            
-            const lb = document.getElementById('voteLongBar');
-            if (lb) lb.style.width = lPct + '%';
-            const sb = document.getElementById('voteShortBar');
-            if (sb) sb.style.width = sPct + '%';
-
-            const btnL = document.getElementById('btnVoteLong');
-            const btnS = document.getElementById('btnVoteShort');
-            if (btnL && btnS) {
-                btnL.classList.remove('active-long');
-                btnS.classList.remove('active-short');
-                if (vData.myVote === 'long') btnL.classList.add('active-long');
-                if (vData.myVote === 'short') btnS.classList.add('active-short');
-            }
-        }
-
-        async function castVote(type) {
-            if (!currentSymbol) return;
-            const voteKey = 'vote_' + currentSymbol;
-            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
-            const vData = JSON.parse(rawVote);
-
-            if (vData.myVote === type) return;
-
-            if (vData.myVote === 'long') vData.long = Math.max(0, vData.long - 1);
-            if (vData.myVote === 'short') vData.short = Math.max(0, vData.short - 1);
-
-            if (type === 'long') vData.long += 1;
-            if (type === 'short') vData.short += 1;
-
-            vData.myVote = type;
-            localStorage.setItem(voteKey, JSON.stringify(vData));
-            updateVoteUI(vData);
-        }
-
-        function renderComments(list) {
-            const wrap = document.getElementById('commentList');
-            if (!wrap) return;
-            setTxt('commentCountTag', `${list.length}개의 의견`);
-            wrap.innerHTML = '';
-            if (list.length === 0) {
-                wrap.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; padding:10px 0; text-align:center;">첫 번째 한마디를 남겨보세요!</div>';
-                return;
-            }
-            list.slice(0, 8).forEach(c => {
-                wrap.innerHTML += `
-                    <div class="comment-item">
-                        <div class="comment-head">
-                            <span class="comment-nick">${c.nick}</span>
-                            <span>${c.time}</span>
-                        </div>
-                        <div class="comment-body">${c.text}</div>
-                    </div>
-                `;
-            });
-        }
-
-        async function postComment() {
-            const input = document.getElementById('commentInput');
-            if (!input) return;
-            const txt = input.value.trim();
-            if (!txt || !currentSymbol) return;
-
-            const nicks = ["익명개미", "불꽃슈퍼개미", "성투개미", "황금손개미", "존버대장", "퀀트장인"];
-            const randomNick = nicks[Math.floor(Math.random() * nicks.length)] + "#" + Math.floor(100 + Math.random() * 900);
-
-            const cKey = 'comments_' + currentSymbol;
-            const rawComm = localStorage.getItem(cKey) || '[]';
-            const comments = JSON.parse(rawComm);
-
-            comments.unshift({ nick: randomNick, text: txt, time: "방금 전" });
-            localStorage.setItem(cKey, JSON.stringify(comments));
-            renderComments(comments);
-            input.value = '';
+            if (window.GaemiWidgets?.comment) window.GaemiWidgets.comment.load(symbol);
         }
 
         // STEP 48: 프론트 공통 수급 파싱 함수
@@ -11814,11 +11574,15 @@ const voteKey = 'vote_' + symbol;
         }
 
         // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP54';
+        window.__GAEMIGTP_BUILD__ = 'STEP51-US-SIDEBAR-FIX';
 
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
         let activeSearchToken = 0;
+        let activeSearchController = null;
+        let activeDetailsController = null;
+        let rightMarketController = null;
+        let rightMarketRequestToken = 0;
         const FAST_CHART_CACHE = new Map();
         const FAST_CHART_CACHE_TTL = 30 * 1000;
 
@@ -11828,8 +11592,20 @@ const voteKey = 'vote_' + symbol;
 
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
 
-            const cleanQ = query.trim();
+            const cleanQ = String(query || '').trim();
             if (!cleanQ) return;
+
+            // 새 종목을 클릭하면 이전 분석/상세 폴링 요청을 즉시 중단한다.
+            // activeSearchToken은 화면 적용 방지용이고, AbortController는 실제 HTTP 요청을 중단한다.
+            if (activeSearchController) {
+                try { activeSearchController.abort(); } catch (e) {}
+            }
+            if (activeDetailsController) {
+                try { activeDetailsController.abort(); } catch (e) {}
+            }
+            activeSearchController = new AbortController();
+            const searchSignal = activeSearchController.signal;
+
             // STEP 37: 우측 실시간 시장에서 종목코드로 진입하더라도
             // 목록에서 이미 확보한 한글 종목명을 상세 화면 제목에 유지한다.
             const displayNameHint = String(displayNameOverride || '').trim();
@@ -11875,8 +11651,8 @@ const voteKey = 'vote_' + symbol;
             const fastPrice = document.getElementById('rPrice');
             const fastMeta = document.getElementById('rMeta');
             if (fastTitle) fastTitle.textContent = displayNameHint || cleanQ.toUpperCase();
-            if (fastPrice) fastPrice.textContent = '불러오는 중…';
-            if (fastMeta) fastMeta.textContent = '실시간 데이터를 불러오고 있어요';
+            if (fastPrice) fastPrice.textContent = '차트 준비 중…';
+            if (fastMeta) fastMeta.textContent = '차트 먼저 표시 · 실시간 가격 확인 중';
 
             if (window.innerWidth <= 900) {
                 const side = document.getElementById('sidebar-wrapper');
@@ -11884,6 +11660,8 @@ const voteKey = 'vote_' + symbol;
             }
 
             const searchToken = ++activeSearchToken;
+
+            // 🚀 첫 화면 차트 전용 요청: 전체 분석을 기다리지 않고 즉시 시작
             const fastChartKey = cleanQ.toUpperCase();
             const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
             const fastChartStartedAt = performance.now();
@@ -11891,12 +11669,18 @@ const voteKey = 'vote_' + symbol;
                 fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
             )
                 ? Promise.resolve(fastChartCached.data)
-                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ))
+                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ), {
+                    signal: searchSignal,
+                    cache: 'no-store'
+                })
                     .then(r => r.ok ? r.json() : null)
                     .then(chartData => {
                         console.log(`[gaemiGTP 초고속차트] ${cleanQ} | ${(performance.now() - fastChartStartedAt).toFixed(0)}ms`);
                         if (chartData) {
-                            FAST_CHART_CACHE.set(fastChartKey, {time: Date.now(), data: chartData});
+                            FAST_CHART_CACHE.set(fastChartKey, {
+                                time: Date.now(),
+                                data: chartData
+                            });
                         }
                         return chartData;
                     })
@@ -11912,9 +11696,7 @@ const voteKey = 'vote_' + symbol;
                     data = cached.data;
                 } else {
                     const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=core';
-                    const analyzeStartedAt = performance.now();
-                    response = await fetch(url);
-                    console.log(`[gaemiGTP 초기분석] ${cleanQ} | ${(performance.now() - analyzeStartedAt).toFixed(0)}ms`);
+                    response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
 
                     const contentType = response.headers.get("content-type") || "";
                     if (contentType.includes("application/json")) {
@@ -11945,24 +11727,40 @@ const voteKey = 'vote_' + symbol;
                     console.table(data._perf.slowest_http || []);
                 }
 
-                // 차트는 전체 분석 완료를 기다리지 않는다.
-                if (cached && Array.isArray(cached.data?.candles) && cached.data.candles.length) {
+                // 🚀 차트는 core 분석 완료를 기다리지 않는다.
+                if (fastChartCached && Array.isArray(fastChartCached.data?.candles) && fastChartCached.data.candles.length) {
                     setTimeout(() => {
-                        if (searchToken === activeSearchToken) {
-                            initTvChart(cached.data.candles);
+                        if (searchToken !== activeSearchToken) return;
+                        initTvChart(fastChartCached.data.candles);
+                        const last = fastChartCached.data.candles[fastChartCached.data.candles.length - 1];
+                        if (last && Number.isFinite(Number(last.close))) {
+                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
+                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
                         }
                     }, 0);
                 } else {
                     fastChartPromise.then(chartData => {
+                        if (searchToken !== activeSearchToken || !chartData) return;
                         if (chartData?._perf) {
                             console.log(
                                 `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
                             );
                             console.table(chartData._perf.slowest_http || []);
                         }
-                        if (searchToken !== activeSearchToken || !chartData || !Array.isArray(chartData.candles) || !chartData.candles.length) return;
+                        if (!Array.isArray(chartData.candles) || !chartData.candles.length) return;
                         initTvChart(chartData.candles);
+                        const last = chartData.candles[chartData.candles.length - 1];
+                        if (last && Number.isFinite(Number(last.close))) {
+                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
+                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
+                        }
                     });
+                }
+
+                // /api/chart를 별도로 호출하지 않는다. /api/analyze가 반환한
+                // 동일 candles를 바로 사용해 한 종목 클릭당 Yahoo 차트 중복 요청을 제거한다.
+                if (searchToken === activeSearchToken && Array.isArray(data.candles) && data.candles.length) {
+                    initTvChart(data.candles);
                 }
 
 if ((response && !response.ok) || data.error) {
@@ -11985,35 +11783,11 @@ if ((response && !response.ok) || data.error) {
 
                 loadCommunityData(data.symbol, displayName);
 
-                // 1. 글로벌 보드 렌더링
-                const wBoardGrid = document.getElementById('worldBoardGrid');
-                if (wBoardGrid) {
-                    if (Array.isArray(data.world_board) && data.world_board.length) {
-                        // STEP 6: innerHTML += 반복을 제거해 DOM 파싱/리플로우를 한 번으로 줄인다.
-                        wBoardGrid.innerHTML = data.world_board.map(w => {
-                            const cls = w.up ? 'val-up' : 'val-down';
-                            const sparkSvg = renderSparklineSVG(w.sparkline, w.up);
-                            const clickName = String(w.name || '').replace(/'/g, "\\'");
-                            return `
-                                <div class="mini-index-card" onclick="doSearch('${clickName === 'USD/KRW' ? '환율' : clickName}')">
-                                    <div class="mini-top">
-                                        <span class="mini-name">${String(w.name || '')}</span>
-                                        <span class="mini-tag">${String(w.tag || '')}</span>
-                                    </div>
-                                    <div class="mini-mid-row">
-                                        <div>
-                                            <div class="mini-price">${String(w.price || '')}</div>
-                                            <div class="mini-rate ${cls}">${String(w.rate || '')}</div>
-                                        </div>
-                                        ${sparkSvg}
-                                    </div>
-                                </div>
-                            `;
-                        }).join('');
-                    } else {
-                        wBoardGrid.innerHTML = '';
-                    }
+                // 1. 증시는 지금 위젯 렌더링 (독립 위젯으로 분리)
+                if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+                    window.GaemiWidgets.worldBoard.render(data.world_board || []);
                 }
+
 
                 // 2. 캘린더 데이터 저장 및 렌더링
                 if (data.market_calendar) {
@@ -12023,674 +11797,64 @@ if ((response && !response.ok) || data.error) {
                     // 최초 화면 렌더링 시에는 API 데이터가 아직 도착하지 않아
                     // 경제 캘린더 자동 이동 플래그가 먼저 켜질 수 있습니다.
                     // 실제 데이터가 도착한 뒤 다시 한 번 자동 이동을 판단합니다.
-                    economicCalendarAutoJumped = false;
-                    economicCalOffset = 0;
-                    economicCalPage = 1;
-
+                    window.globalMarketCalendar = globalMarketCalendar;
+                    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                        window.GaemiWidgets.economicCalendar.resetState();
+                    }
                     renderMarketCalendarView();
                 }
 
-                // 3. 퀀트 분석 데이터 렌더링
-                const q = data.quant;
-                if (q) {
-                    setTxt('qScoreVal', q.quant_score);
-                    setTxt('qScoreBadge', q.score_badge);
-                    setHtml('qScoreDots', q.score_dots);
-
-                    setTxt('qZScoreVal', q.z_score);
-                    setTxt('qVolVal', `${q.ann_vol} (${q.vol_risk_state ? q.vol_risk_state.split(' ')[0] : ''})`);
-
-                    const qSignalChart = document.getElementById('qSignalChart');
-                    const qSignalNow = document.getElementById('qMomentumValTxt');
-                    if (qSignalChart && Array.isArray(q.momentum_history) && q.momentum_history.length > 1) {
-                        const scores = q.momentum_history.map(x => Number(x.score));
-                        const w = 600;
-                        const h = 120;
-                        const coords = scores.map((score, i) => {
-                            const x = (i / Math.max(1, scores.length - 1)) * w;
-                            const y = h - ((score / 100.0) * h);
-                            return `${x.toFixed(1)},${Math.max(6, Math.min(h-6, y)).toFixed(1)}`;
-                        });
-                        const linePath = 'M ' + coords.join(' L ');
-                        const areaPath = `M ${coords[0].split(',')[0]},${h} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${h} Z`;
-                        const lastScore = scores[scores.length - 1];
-
-                        qSignalChart.innerHTML = `
-                            <defs>
-                                <linearGradient id="qSigFill" x1="0" x2="0" y1="0" y2="1">
-                                    <stop offset="0%" stop-color="#10b981" stop-opacity="0.35"/>
-                                    <stop offset="100%" stop-color="#10b981" stop-opacity="0.02"/>
-                                </linearGradient>
-                            </defs>
-                            <line x1="0" y1="36" x2="600" y2="36" stroke="rgba(16,185,129,0.2)" stroke-width="1" stroke-dasharray="4 4"/>
-                            <line x1="0" y1="72" x2="600" y2="72" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
-                            <path d="${areaPath}" fill="url(#qSigFill)"/>
-                            <path d="${linePath}" fill="none" stroke="#10b981" stroke-width="3" vector-effect="non-scaling-stroke"/>
-                            <circle cx="${coords[coords.length-1].split(',')[0]}" cy="${coords[coords.length-1].split(',')[1]}" r="5" fill="#10b981" stroke="#ffffff" stroke-width="2" vector-effect="non-scaling-stroke"/>
-                        `;
-                        if (qSignalNow) qSignalNow.innerText = `현재 ${lastScore}점 (${q.score_badge})`;
-                    } else if (qSignalNow) {
-                        qSignalNow.innerText = `현재 ${q.quant_score}점`;
-                    }
-
-                    setTxt('qLow52w', `최저 ${q.low_52w}`);
-                    setTxt('qHigh52w', `최고 ${q.high_52w}`);
-                    const qFill = document.getElementById('qSliderFill');
-                    if (qFill) qFill.style.width = q.slider_fill_pct + '%';
-                    const qDot = document.getElementById('qDotMarker');
-                    if (qDot) qDot.style.left = q.slider_fill_pct + '%';
-
-                    const qList = document.getElementById('quantDetailList');
-                    if (qList) {
-                        qList.innerHTML = `
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">통계적 Z-Score</span>
-                                    <span class="quant-row-status status-pill-${q.z_color}">${q.z_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.z_score}</div>
-                                    <div class="quant-row-subval">20D 표준점수</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">20일 이동평균선</span>
-                                    <span class="quant-row-status status-pill-${q.ma20_color}">${q.ma20_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.ma20}</div>
-                                    <div class="quant-row-subval">중기 추세선</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">볼린저 밴드 (60, 2)</span>
-                                    <span class="quant-row-status status-pill-${q.bb_color}">${q.bb_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.bollinger}</div>
-                                    <div class="quant-row-subval">상단 / 하단</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">MACD (12, 26, 9)</span>
-                                    <span class="quant-row-status status-pill-${q.macd_color}">${q.macd_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.macd}</div>
-                                    <div class="quant-row-subval">모멘텀 지표</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">RSI (14)</span>
-                                    <span class="quant-row-status status-pill-${q.rsi_color}">${q.rsi_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.rsi} pt</div>
-                                    <div class="quant-row-subval">상대강도지수</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">거래량 / 5일평균</span>
-                                    <span class="quant-row-status status-pill-${q.vol_color}">${q.vol_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.vol_ratio}</div>
-                                    <div class="quant-row-subval">유동성 비율</div>
-                                </div>
-                            </div>
-                        `;
-                    }
-
-                    setTxt('rWinRateGauge', q.win_rate_num);
-                    setTxt('rBt1yTag', q.bt_1y);
-                    setTxt('rBt2yTag', q.bt_2y);
-                    setTxt('rRrTag', q.rr_str);
-
-                    setTxt('rSliderStop', q.stop_p);
-                    setTxt('rSliderEntry', `기준 ${q.entry1}`);
-                    setTxt('rSliderTarget', q.target2);
-
-                    const sFill = document.getElementById('rSigBarFill');
-                    if (sFill) sFill.style.width = q.sig_fill_pct + '%';
-                    const sDot = document.getElementById('rSigDotMarker');
-                    if (sDot) sDot.style.left = q.sig_fill_pct + '%';
-
-                    setTxt('rEntry1', q.entry1);
-                    setTxt('rEntry2', q.entry2);
-                    setTxt('rTarget1', q.target1);
-                    setTxt('rTarget2', q.target2);
-                    setTxt('rStop', q.stop_p);
-                    setTxt('rGuideText', q.guide_text);
+                // 3. 퀀트 분석 데이터 렌더링 (독립 위젯)
+                if (window.GaemiWidgets && window.GaemiWidgets.quant) {
+                    window.GaemiWidgets.quant.render(data.quant);
                 }
-                // 3.5 "왜 움직였을까?" 코멘트 + "트랙 분석" 근거 렌더링
-                const mr = data.movement_reason;
-                const mrCard = document.getElementById('movementReasonCard');
-                if (mrCard && mr) {
-                    const confidenceStyle =
-                        mr.confidence === '높음'
-                            ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
-                            : mr.confidence === '중간'
-                                ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
-                                : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+                if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
+                    window.GaemiWidgets.maliciousZone.render(data);
+                }
+                // 3.5 왜 움직였을까? — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
+                    window.GaemiWidgets.whyMovement.render(data);
+                }
 
-                    const evidenceReasons = (mr.reasons || []).slice().sort((a,b) => {
+                // 3.6 트랙 분석 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.track) {
+                    const mr = data && data.movement_reason;
+                    const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
                         const a5 = a.key === 'market_5d' ? 1 : 0;
                         const b5 = b.key === 'market_5d' ? 1 : 0;
                         if (a5 !== b5) return a5 - b5;
                         return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
                     });
                     const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
-
-
-                    // 기존에 확정한 "왜 움직였을까?" 고정 코멘트 생성 로직을
-                    // 트랙 분석 디자인 변경과 분리해 그대로 유지한다.
-                    const scoreOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? Number(x.score||0) : 0; };
-                    const detailOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? String(x.detail||'') : ''; };
-                    const materialReason = evidenceReasons.find(r => r.key === 'material') || null;
-
-                    const priceText = data.price || data.price_str || '-';
-                    const pct = Number(data.current_change_pct);
-                    const topicParticle = (() => {
-                        const text = String(displayName || '').trim();
-                        const last = text.charCodeAt(text.length - 1);
-                        if (last >= 0xAC00 && last <= 0xD7A3) {
-                            return ((last - 0xAC00) % 28) === 0 ? '는' : '은';
-                        }
-                        return '은';
-                    })();
-
-                    const directionText =
-                        Number.isFinite(pct)
-                            ? (pct > 0 ? '상승' : pct < 0 ? '하락' : '보합')
-                            : (mr.direction === '하락' ? '하락' : mr.direction === '상승' ? '상승' : '보합');
-
-                    const boardItems = Array.isArray(data.world_board) ? data.world_board : [];
-                    const findBoard = (...names) => boardItems.find(item =>
-                        names.some(name => String(item?.name || '').toLowerCase() === String(name).toLowerCase())
-                    );
-                    const rateNumber = item => {
-                        if (!item) return null;
-                        const n = Number(String(item.rate ?? '').replace('%','').replace('+',''));
-                        return Number.isFinite(n) ? n : null;
-                    };
-                    const upDown = n => n > 0 ? '상승' : n < 0 ? '하락' : '보합';
-
-                    const marketType = String(data.market || data.market_name || data.market_type || '').toLowerCase();
-                    const isUSMarket = marketType.includes('미국주식') || marketType.includes('미국') || marketType.includes('us');
-                    const isCryptoMarket = marketType.includes('암호화폐') || marketType.includes('암호') || marketType.includes('crypto') || marketType.includes('코인');
-                    const selectedMarketName = isUSMarket
-                        ? '나스닥'
-                        : (String(data.market_index_name || '').toUpperCase() === 'KOSDAQ' ? '코스닥' : '코스피');
-                    const marketItem = isUSMarket
-                        ? findBoard('QQQ')
-                        : findBoard(selectedMarketName, selectedMarketName === '코스피' ? 'KOSPI' : 'KOSDAQ');
-                    const marketRate = rateNumber(marketItem);
-
-                    const newsBlob = [
-                        displayName,
-                        ...(Array.isArray(mr.news_evidence) ? mr.news_evidence.map(x => x?.title || '') : []),
-                        ...(Array.isArray(materialReason?.news_clusters) ? materialReason.news_clusters.flatMap(c => c?.keywords || []) : [])
-                    ].join(' ').toLowerCase();
-                    const semiconductorKeywords = ['반도체','hbm','hbm4','dram','nand','메모리','gpu','semiconductor'];
-                    const isSemiconductor = semiconductorKeywords.some(k => newsBlob.includes(k));
-                    const soxxItem = findBoard('SOXX');
-                    const soxxRate = rateNumber(soxxItem);
-
-                    // STEP 43: "왜 움직였을까?"는 AI가 뉴스 본문을 재해석하지 않고
-                    // 이미 확보된 하단 데이터(movement_reason / DART / 시장지수)만으로
-                    // 고정 템플릿을 조립한다. 화면의 숫자와 문장이 서로 어긋나지 않도록
-                    // 근거가 없는 원인·수치·인과관계는 문장에 넣지 않는다.
-                    const parts = [];
-
-                    // 1) 첫 문장: 현재가/등락률은 화면의 실제 응답값 그대로 사용
-                    parts.push(
-                        Number.isFinite(pct)
-                            ? `🐜 개미들아! ${displayName}${topicParticle} 오늘 ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
-                            : `🐜 개미들아! ${displayName}${topicParticle} 현재 흐름을 확인하고 있어.`
-                    );
-
-                    // STEP 48: 전역 공통 함수만 사용한다.
-                    // 이 블록 안에서 const domesticFlowValue를 다시 선언하지 않는다.
-                    // 2) 수급 근거: 실제 5거래일 순매수/순매도 수치가 있는 경우에만 출력
-                    const flowCandidates = [
-                        { key: 'foreign', label: '외국인', value: getDomesticFlowValue(mr, 'foreign') },
-                        { key: 'institution', label: '기관', value: getDomesticFlowValue(mr, 'institution') }
-                    ].filter(x => x.value !== null && Number.isFinite(x.value));
-
-                    const selectedFlow = flowCandidates.length
-                        ? flowCandidates.slice().sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0]
-                        : null;
-
-                    // 3) 공시/기업 재료와 거시 이벤트를 분리한다.
-                    // STEP 44: 종목 뉴스에 FOMC/연준이 단순 언급된 것만으로
-                    // 거시 원인을 선택하지 않는다. 거시 이벤트는 global_news + 일정에서
-                    // 독립 출처가 2개 이상 확인되거나 실제 일정 이벤트가 있을 때만 채택한다.
-                    const disclosureItems = Array.isArray(data.dart_disclosures) ? data.dart_disclosures : [];
-                    const disclosurePositive = disclosureItems.filter(x => String(x?.tag_type || '') === 'positive').length;
-                    const disclosureNegative = disclosureItems.filter(x => String(x?.tag_type || '') === 'negative').length;
-                    const hasDisclosure = disclosureItems.length > 0;
-                    const hasMaterialCluster = !!(
-                        materialReason &&
-                        Array.isArray(materialReason.news_clusters) &&
-                        materialReason.news_clusters.length
-                    );
-
-                    // 종목 재료에서 거시 키워드는 제거한다.
-                    if (hasMaterialCluster) {
-                        const cluster = materialReason.news_clusters[0] || null;
-                        const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
-                        const map = {
-                            'hbm4':'HBM4','hbm':'HBM','ai':'AI 수요','인공지능':'AI 수요','gpu':'GPU 수요',
-                            '수요':'수요 확대','공급':'공급 확대','공급망':'공급망 확대','증설':'증설',
-                            '실적':'실적','earnings':'실적','매출':'매출 성장','영업이익':'영업이익',
-                            '수주':'수주','계약':'계약','관세':'관세','aws':'AWS'
-                        };
-                        const mapped = kws.map(k => map[String(k).toLowerCase()] || String(k)).filter(Boolean);
-                        const generic = new Set(['주가','시장','관련','소식','전망','기대','확대','증가','감소','하락','상승']);
-                        const macroOnly = new Set([
-                            'fomc','연준','fed','파월','금리','금리인하','금리인상','기준금리',
-                            'cpi','물가','소비자물가','인플레이션','고용','비농업','실업률','관세','무역'
-                        ]);
-                        const filtered = mapped.filter(x => !generic.has(x) && !macroOnly.has(String(x).toLowerCase()));
-                        const uniq = [...new Set(filtered)];
-                        if (uniq.length) materialText = uniq.slice(0, 2).join(' ');
-                    }
-
-                    // STEP 45: 거시 이벤트는 '현재 영향이 있는 자료'만 사용한다.
-                    // 과거 7월 FOMC처럼 오래된 뉴스/일정을 9월 현재 원인으로 재사용하지 않는다.
-                    // 뉴스는 pubDate 기준 최근 72시간만 인정하고, 캘린더는 오늘 기준
-                    // 과거 2일 이내 또는 향후 7일 이내의 이벤트만 인정한다.
-                    const nowMs = Date.now();
-                    const newsFreshMs = 72 * 60 * 60 * 1000;
-                    const parseNewsDate = (x) => {
-                        const raw = x?.pubDate || x?.publishedAt || x?.date || x?.datetime || '';
-                        if (!raw) return null;
-                        const t = Date.parse(String(raw));
-                        return Number.isFinite(t) ? t : null;
-                    };
-                    const globalMacroItems = Array.isArray(data.global_news) ? data.global_news.filter(x => {
-                        const title = String(x?.title || '').toLowerCase();
-                        const t = parseNewsDate(x);
-                        const fresh = t !== null && Math.abs(nowMs - t) <= newsFreshMs;
-                        return fresh && /\bfomc\b|연준|fed|파월|기준금리|금리인하|금리인상|cpi|소비자물가|인플레이션|고용|비농업|실업률/.test(title);
-                    }) : [];
-                    const macroSources = new Set(
-                        globalMacroItems.map(x => String(x?.media || x?.source || '').trim().toLowerCase()).filter(Boolean)
-                    );
-                    const calendarFomcItems = Array.isArray(data.market_calendar) ? data.market_calendar.filter(x => {
-                        const text = JSON.stringify(x).toLowerCase();
-                        if (!/\bfomc\b|fomc statement|fomc press conference|연준/.test(text)) return false;
-                        const rawDate = x?.date_key || x?.date || x?.event_date || '';
-                        if (!rawDate) return false;
-                        const t = Date.parse(String(rawDate).slice(0, 10) + 'T00:00:00');
-                        if (!Number.isFinite(t)) return false;
-                        const days = (t - nowMs) / 86400000;
-                        return days >= -2 && days <= 7;
-                    }) : [];
-                    const calendarHasFomc = calendarFomcItems.length > 0;
-                    const validatedMacro = macroSources.size >= 2 || calendarHasFomc;
-
-                    let macroEventText = '';
-                    if (validatedMacro && globalMacroItems.length) {
-                        const macroBlob = globalMacroItems.map(x => String(x?.title || '')).join(' ').toLowerCase();
-                        if (/\bfomc\b|연준|fed|파월/.test(macroBlob)) {
-                            if (/금리인하|인하 기대|기대 약화|기대 후퇴|금리인상|매파|긴축/.test(macroBlob)) {
-                                macroEventText = 'FOMC·연준의 금리 경계';
-                            } else if (/기자회견|발언|성명/.test(macroBlob)) {
-                                macroEventText = 'FOMC·연준 발언';
-                            } else {
-                                macroEventText = 'FOMC·연준 관련 이슈';
-                            }
-                        } else if (/cpi|소비자물가|인플레이션|물가/.test(macroBlob)) {
-                            macroEventText = '미국 물가 관련 이슈';
-                        } else if (/고용|비농업|실업률/.test(macroBlob)) {
-                            macroEventText = '미국 고용 관련 이슈';
-                        }
-                    }
-
-                    // 4) 우선순위: 실제 수급 → 실제 공시/기업재료 → 검증된 거시 이벤트 → 시장 연동
-                    if (selectedFlow) {
-                        const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
-                        parts.push(
-                            `최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어. 하단 수급 차트와 퀀트 지표를 함께 확인해봐!`
-                        );
-                    } else if (hasDisclosure || (hasMaterialCluster && materialText)) {
-                        const materialLabel = materialText || '기업 관련 재료';
-                        if (hasDisclosure) {
-                            parts.push(`최근 ${materialLabel} 관련 공시·재료가 확인됐어. 세부 공시 원문은 아래 DART 위젯에서 확인할 수 있어.`);
-                        } else {
-                            parts.push(`최근 ${materialLabel} 관련 재료가 확인됐어. 아래 뉴스와 하단 데이터를 함께 확인해봐.`);
-                        }
-                    } else if (macroEventText && !isCryptoMarket) {
-                        parts.push(`${macroEventText}가 여러 독립 출처에서 확인됐어. 시장 흐름과 하단 데이터를 함께 확인해봐.`);
-                    } else if (marketRate !== null && !isCryptoMarket) {
-                        parts.push(
-                            `특이한 개별 수급 근거가 확인되지 않는 가운데 ${selectedMarketName} 지수는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이야. 시장 흐름과 하단 수급 데이터를 함께 확인해봐.`
-                        );
-                    } else {
-                        parts.push('현재 확인된 데이터만으로는 특정 원인을 단정하기 어려워. 하단 수급·퀀트 지표를 함께 확인해봐.');
-                    }
-
-                    parts.push('🐜 오늘도 개미들 힘내자! 💪');
-                    const gaemiComment = parts.join('\n\n');
-
-                    mrCard.innerHTML = `
-                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;">
-                            ${gaemiComment}
-                        </div>
-                    `;
-
-                    // 트랙 분석: 퀀트 분석과 동일한 카드형 레이아웃을 사용한다.
-                    const trackPriceVal = document.getElementById('tPriceVal');
-                    const trackChangeVal = document.getElementById('tChangeVal');
-                    const trackEvidenceVal = document.getElementById('tEvidenceCountVal');
-                    const trackStatusBadge = document.getElementById('tStatusBadge');
-                    const trackStatusDots = document.getElementById('tStatusDots');
-                    const trackPriceTrendTxt = document.getElementById('tPriceTrendTxt');
-
-                    if (trackPriceVal) trackPriceVal.innerText = data.price_str || '-';
-
-                    const cp = Number(data.current_change_pct);
-                    if (trackChangeVal) {
-                        trackChangeVal.innerText = Number.isFinite(cp) ? `${cp >= 0 ? '+' : ''}${cp.toFixed(2)}%` : '-';
-                        trackChangeVal.style.color =
-                            Number.isFinite(cp) && cp > 0 ? '#10b981' :
-                            (Number.isFinite(cp) && cp < 0 ? '#ef4444' : 'var(--text-title)');
-                    }
-
-                    if (trackEvidenceVal) {
-                        trackEvidenceVal.innerText = `${evidenceCount}/8`;
-                    }
-                    if (trackStatusBadge) {
-                        trackStatusBadge.innerText = mr.confidence || '-';
-                        trackStatusBadge.style.cssText = confidenceStyle;
-                    }
-                    if (trackStatusDots) {
-                        trackStatusDots.innerText =
-                            evidenceCount > 0
-                                ? `확인된 근거 ${evidenceCount}개 · 실제 데이터 기준`
-                                : '확인된 근거 부족 · 추가 확인 필요';
-                    }
-
-                    // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
-                    const tPriceChart = document.getElementById('tPriceChart');
-                    const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
-
-                    // 서버가 보내는 candles 필드는 open/high/low/close 형식이다.
-                    // 기존 코드가 x.c를 읽고 있어 차트 값이 전부 비어 있던 문제를 수정한다.
-                    // close를 우선 사용하고, 혹시 다른 응답 형식이 들어와도 c를 보조로 사용한다.
-                    const trackVals = candleRows
-                        .map(x => {
-                            const close = Number(x && x.close);
-                            if (Number.isFinite(close)) return close;
-                            const legacyClose = Number(x && x.c);
-                            return Number.isFinite(legacyClose) ? legacyClose : NaN;
-                        })
-                        .filter(Number.isFinite);
-
-                    if (tPriceChart && trackVals.length > 1) {
-                        const first = trackVals[0];
-                        const normalized = first !== 0 ? trackVals.map(v => ((v / first) - 1) * 100) : [];
-                        if (normalized.length > 1 && normalized.every(Number.isFinite)) {
-                            const W = 600, H = 120, pad = 8;
-                            const minV = Math.min(...normalized), maxV = Math.max(...normalized);
-                            const span = Math.max(0.01, maxV - minV);
-                            const x = i => pad + i * ((W - pad * 2) / Math.max(1, normalized.length - 1));
-                            const y = v => pad + ((maxV - v) / span) * (H - pad * 2);
-                            const coords = normalized.map((v,i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
-                            const linePath = 'M ' + coords.join(' L ');
-                            const baseY = y(0);
-                            const areaPath = `M ${coords[0].split(',')[0]},${baseY.toFixed(1)} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${baseY.toFixed(1)} Z`;
-                            const last = normalized[normalized.length - 1];
-                            const stroke = last >= 0 ? '#10b981' : '#ef4444';
-
-                            tPriceChart.innerHTML = `
-                                <defs>
-                                    <linearGradient id="tPriceFill" x1="0" x2="0" y1="0" y2="1">
-                                        <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"/>
-                                        <stop offset="100%" stop-color="${stroke}" stop-opacity="0.02"/>
-                                    </linearGradient>
-                                </defs>
-                                <line x1="0" y1="${baseY.toFixed(1)}" x2="600" y2="${baseY.toFixed(1)}"
-                                      stroke="rgba(148,163,184,0.20)" stroke-width="1" stroke-dasharray="4 4"/>
-                                <path d="${areaPath}" fill="url(#tPriceFill)"/>
-                                <path d="${linePath}" fill="none" stroke="${stroke}" stroke-width="3"
-                                      vector-effect="non-scaling-stroke"/>
-                                <circle cx="${coords[coords.length-1].split(',')[0]}"
-                                        cy="${coords[coords.length-1].split(',')[1]}"
-                                        r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2"
-                                        vector-effect="non-scaling-stroke"/>
-                            `;
-
-                            if (trackPriceTrendTxt) {
-                                const p = normalized[normalized.length - 1];
-                                trackPriceTrendTxt.innerText =
-                                    `최근 60D ${p >= 0 ? '+' : ''}${p.toFixed(2)}%`;
-                            }
-                        }
-                    } else if (trackPriceTrendTxt) {
-                        trackPriceTrendTxt.innerText =
-                            trackVals.length === 0 ? '데이터 부족' : '주가 흐름 데이터 부족';
-                    }
-
-                    // 근거 확인: 확인된 실제 근거 데이터를 최대 8칸의 색상 막대로 표시한다.
-                    const evidenceBar = document.getElementById('tEvidenceBar');
-                    const evidenceBarLabel = document.getElementById('tEvidenceBarLabel');
-                    if (evidenceBar) {
-                        const evidenceItems = Array.isArray(evidenceReasons) ? evidenceReasons.slice(0, 8) : [];
-                        const confirmedCount = evidenceItems.filter(r => {
-                            const score = Number(r && r.score);
-                            return Number.isFinite(score) && score !== 0;
-                        }).length;
-
-                        evidenceBar.innerHTML = Array.from({length: 8}, (_, idx) => {
-                            const r = evidenceItems[idx];
-                            const score = Number(r && r.score);
-                            let bg = 'var(--bg-subcard)';
-                            let border = '1px solid var(--border-line)';
-                            if (Number.isFinite(score) && score > 0) {
-                                bg = '#10b981';
-                                border = '1px solid #10b981';
-                            } else if (Number.isFinite(score) && score < 0) {
-                                bg = '#ef4444';
-                                border = '1px solid #ef4444';
-                            } else if (r) {
-                                bg = '#9ca3af';
-                                border = '1px solid #9ca3af';
-                            }
-                            return `<div title="${r ? (r.label || '근거') : '확인된 근거 없음'}"
-                                         style="height:100%; background:${bg}; border:${border}; border-radius:3px; min-width:0;"></div>`;
-                        }).join('');
-
-                        if (evidenceBarLabel) {
-                            evidenceBarLabel.innerText = `${confirmedCount} / 8`;
-                        }
-                    }
-
-                    // 상세 근거: 표시 순서만 고정한다. 분석 데이터/점수 계산은 변경하지 않는다.
-                    const trackDisplayOrder = [
-                        'market',
-                        'theme',
-                        'foreign',
-                        'institution',
-                        'program',
-                        'short_borrow',
-                        'material',
-                        'trading_value'
-                    ];
-                    const orderedEvidenceReasons = [...evidenceReasons].sort((a, b) => {
-                        const ai = trackDisplayOrder.indexOf(a.key);
-                        const bi = trackDisplayOrder.indexOf(b.key);
-                        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+                    const confidenceStyle = mr && mr.confidence === '높음'
+                        ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+                        : mr && mr.confidence === '중간'
+                            ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+                            : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+                    window.GaemiWidgets.track.render(data, mr, evidenceReasons, evidenceCount, confidenceStyle);
+                }
+                // 4. 종목 뉴스 렌더링 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
+                    window.GaemiWidgets.stockNews.load({
+                        symbol: data.symbol, market: data.market,
+                        name: data.name || data.formal_name, initial: data.stock_news
                     });
-
-                    const trackDetailList = document.getElementById('trackDetailList');
-                    if (trackDetailList) {
-                        trackDetailList.innerHTML = orderedEvidenceReasons.map(r => {
-                            const score = Number(r.score || 0);
-                            const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
-                            const statusClass =
-                                score > 0 ? 'status-pill-positive' :
-                                score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
-
-                            return `<div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">${r.label || '-'}</span>
-                                    <span class="quant-row-status ${statusClass}">${status}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
-                                </div>
-                            </div>`;
-                        }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
-                    }
                 }
 
-                // 4. 종목 뉴스 & 해외 뉴스 렌더링 (각 10개 수집/분석, 화면 6개 표시)
-                const sNews = document.getElementById('stockNewsList');
-                if (sNews) {
-                    if (Array.isArray(data.stock_news) && data.stock_news.length > 0) {
-                        sNews.innerHTML = data.stock_news.slice(0, 6).map(n => `
-                            <a href="${n.link}" target="_blank" class="news-item">
-                                <div class="news-title">${n.title}</div>
-                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                            </a>
-                        `).join('');
-                    } else {
-                        sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
-                    }
+                // 5. 경제뉴스 위젯 — 독립 API에서 직접 갱신
+                if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
+                    window.GaemiWidgets.globalNews.load({
+                        market: data.market, initial: data.global_news
+                    });
                 }
 
-                const gNews = document.getElementById('globalNewsList');
-                if (gNews) {
-                    if (Array.isArray(data.global_news) && data.global_news.length > 0) {
-                        gNews.innerHTML = data.global_news.slice(0, 6).map(n => `
-                            <a href="${n.link}" target="_blank" class="news-item">
-                                <div class="news-title">${n.title}</div>
-                                <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                            </a>
-                        `).join('');
-                    } else {
-                        gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">해외 증시 뉴스를 불러오는 중입니다.</div>';
-                    }
+                // 5. 애널리스트 컨센서스 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
+                    window.GaemiWidgets.consensus.render(data.consensus);
                 }
 
-                // 5. 컨센서스 & 공시
-                const c = data.consensus;
-                const uCard = document.getElementById('rowConsensus');
-                if (c && uCard) {
-                    setTxt('uTitle', c.title);
-                    setTxt('uGaugeVal', c.gauge_val);
-                    setTxt('uGaugeLabel', c.gauge_label);
-                    setTxt('uStatusLabel', c.status_label);
-                    setTxt('uBadge', c.badge_text);
-                    setHtml('uDots', c.dots);
-
-                    setTxt('uPrimaryLabel', c.primary_label);
-                    setTxt('uPrimaryVal', c.primary_val);
-                    setTxt('uSecondaryLabel', c.secondary_label);
-                    setTxt('uSecondaryVal', c.secondary_val);
-
-                    setTxt('uSliderLeft', c.slider_left);
-                    setTxt('uSliderMid', c.slider_mid);
-                    setTxt('uSliderRight', c.slider_right);
-
-                    const uFill = document.getElementById('uBarFill');
-                    if (uFill) uFill.style.width = c.fill_pct + '%';
-                    const uDot = document.getElementById('uDotMarker');
-                    if (uDot) uDot.style.left = c.fill_pct + '%';
-
-                    setTxt('uListTitle', c.list_title);
-                    setTxt('uSourceTag', c.source_tag);
-
-                    const iList = document.getElementById('uItemList');
-                    if (iList) {
-                        let consensusExpanded = false;
-
-                        const renderConsensusItems = (items, expanded = false) => {
-                            // 국내주식 리포트와 BTC 기관 전망은 기본 2개만 표시해
-                            // 미국주식 Buy/Hold/Sell 영역과 기본 높이를 맞춘다.
-                            const isTwoItemConsensus =
-                                c.list_title === '실제 증권사 리포트' ||
-                                c.list_title === '실제 기관 전망';
-                            const defaultVisibleCount = isTwoItemConsensus ? 2 : 3;
-                            const visibleItems = expanded ? items : items.slice(0, defaultVisibleCount);
-                            let html = '';
-
-                            visibleItems.forEach((it, idx) => {
-                                const isLast = idx === visibleItems.length - 1;
-                                html += `
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${isLast ? '' : 'border-bottom:1px solid var(--border-line);'} font-size:0.82rem;">
-                                        <div>
-                                            <div style="color:var(--text-title); font-weight:700;">${it.main}</div>
-                                            <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">${it.sub}</div>
-                                        </div>
-                                        <div style="text-align:right;">
-                                            <div style="color:var(--text-title); font-weight:700;">${it.val}</div>
-                                            <div style="color:#10b981; font-size:0.72rem; font-weight:700;">${it.sub_val}</div>
-                                        </div>
-                                    </div>
-                                `;
-                            });
-
-                            if (isTwoItemConsensus && items.length > defaultVisibleCount) {
-                                if (expanded) {
-                                    html += `
-                                        <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
-                                            접기
-                                        </button>
-                                    `;
-                                } else {
-                                    html += `
-                                        <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
-                                            더보기 <span>(${items.length - defaultVisibleCount}건)</span>
-                                        </button>
-                                    `;
-                                }
-                            }
-
-                            return html;
-                        };
-
-                        // 버튼을 다시 만들어도 클릭 이벤트가 유지되도록
-                        // 목록 자체에 이벤트 위임을 한 번만 연결한다.
-                        iList.onclick = (event) => {
-                            const btn = event.target.closest('.consensus-more-btn');
-                            if (!btn) return;
-
-                            consensusExpanded = !consensusExpanded;
-                            iList.innerHTML = renderConsensusItems(c.items || [], consensusExpanded);
-                        };
-
-                        if (c.items && c.items.length > 0) {
-                            iList.innerHTML = renderConsensusItems(c.items, false);
-                        }
-                    }
-                    uCard.style.display = 'block';
-                } else if (uCard) {
-                    uCard.style.display = 'none';
-                }
-
-                const dCard = document.getElementById('rowDart');
-                const dList = document.getElementById('dartList');
-                if (dCard && dList) {
-                    if (Array.isArray(data.dart_disclosures) && data.dart_disclosures.length > 0) {
-                        dList.innerHTML = data.dart_disclosures.map(d => `
-                            <a href="${d.link}" target="_blank" class="dart-item">
-                                <span class="dart-tag tag-${d.tag_type}">${d.tag_name}</span>
-                                <span class="dart-title">${d.title}</span>
-                                <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${d.date}</span>
-                            </a>
-                        `).join('');
-                        dCard.style.display = 'block';
-                    } else {
-                        dCard.style.display = 'none';
-                    }
+                if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
+                    window.GaemiWidgets.renderDartDisclosure(data.dart_disclosures);
                 }
 
                 document.getElementById('loading').style.display = 'none';
@@ -12706,10 +11870,13 @@ if ((response && !response.ok) || data.error) {
                 window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
+                if (err && err.name === 'AbortError') return;
                 console.error("Analysis Error:", err);
                 const msg = err && err.message ? err.message : '알 수 없는 오류';
-                alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
-                document.getElementById('loading').style.display = 'none';
+                if (searchToken === activeSearchToken) {
+                    alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
+                    document.getElementById('loading').style.display = 'none';
+                }
             }
         }
 
@@ -12718,8 +11885,13 @@ if ((response && !response.ok) || data.error) {
             // 기존 4.5초보다 충분히 확보한다. 준비되면 full 재분석을 다시 돌리지 않고
             // 서버의 완성 캐시를 그대로 한 번 렌더링한다.
             if (searchToken !== activeSearchToken || attempt >= 40) return;
+            if (activeDetailsController) {
+                try { activeDetailsController.abort(); } catch (e) {}
+            }
+            activeDetailsController = new AbortController();
+            const detailsSignal = activeDetailsController.signal;
             try {
-                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store'});
+                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store', signal: detailsSignal});
                 if (r.status === 200) {
                     const payload = await r.json();
                     if (payload && payload.ready && payload.data) {
@@ -12731,53 +11903,13 @@ if ((response && !response.ok) || data.error) {
                         return;
                     }
                 }
-            } catch (e) {}
-            setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
+            } catch (e) {
+                if (e && e.name === 'AbortError') return;
+            }
+            if (searchToken === activeSearchToken) {
+                setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
+            }
         }
-
-        function initTvChart(candles) {
-            const container = document.getElementById('tvChart');
-            if (!container) return;
-            container.innerHTML = '';
-
-            const isLight = document.body.classList.contains('light-theme');
-
-            chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 700,
-                height: 300,
-                layout: {
-                    background: { color: isLight ? '#ffffff' : '#1e1f20' },
-                    textColor: isLight ? '#5f6368' : '#8e918f'
-                },
-                grid: {
-                    vertLines: { color: 'rgba(0,0,0,0)' },
-                    horzLines: { color: 'rgba(0,0,0,0)' }
-                },
-                crosshair: {
-                    vertLine: { visible: false },
-                    horzLine: { visible: false }
-                },
-                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
-                rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
-            });
-
-            const candleSeries = chart.addCandlestickSeries({
-                upColor: '#ef4444',
-                downColor: '#38bdf8',
-                borderDownColor: '#38bdf8',
-                borderUpColor: '#ef4444',
-                wickDownColor: '#38bdf8',
-                wickUpColor: '#ef4444',
-                priceLineVisible: false,
-                lastValueVisible: true
-            });
-            candleSeries.setData(candles || []);
-
-            chart.timeScale().fitContent();
-            // resize 리스너는 전역에서 한 번만 등록한다.
-        }
-
-
 
         function formatUsStockPrice(value) {
             const n = Number(value);
@@ -12894,7 +12026,7 @@ if ((response && !response.ok) || data.error) {
             const meta = document.getElementById('rMeta');
 
             if (title) title.textContent = name || symbol;
-            if (price) price.textContent = '업종 차트 불러오는 중…';
+            if (price) price.textContent = '업종 흐름';
             if (meta) meta.textContent = '미국 주도업종 · 실제 Yahoo 일봉 데이터';
 
             try {
@@ -12920,90 +12052,13 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
+        // 미국 주도종목 위젯은 widgets/us_leading_stocks.js에서 담당한다.
+        // 기존 전역 함수명은 호환성을 위해 유지한다.
         async function loadUsLeadingStocks(sectorSymbol, sectorName) {
-            const list = document.getElementById('usLeadingStockList');
-            const title = document.getElementById('usLeadingStockTitle');
-            if (!list || !sectorSymbol) return;
-
-            const cleanName = String(sectorName || '').trim();
-            if (title) title.textContent = `미국 ${cleanName} 주도종목`;
-            list.innerHTML = '<div class="us-leading-sector-loading">실제 주도종목 데이터를 불러오는 중…</div>';
-
-            try {
-                const response = await fetch('/api/us-leading-stocks?sector=' + encodeURIComponent(sectorSymbol));
-                const data = await response.json();
-                if (!response.ok || data.error) throw new Error(data.error || '데이터 오류');
-
-                const rows = Array.isArray(data.data) ? data.data : [];
-                if (!rows.length) {
-                    list.innerHTML = '<div class="us-leading-sector-loading">현재 주도종목 데이터를 불러오지 못했습니다.</div>';
-                    return;
-                }
-
-                const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
-                const cls = value => Number(value) >= 0 ? 'up' : 'down';
-                list.innerHTML = rows.map(row => `
-                    <div class="us-leading-stock-item" role="button" tabindex="0"
-                         onclick="openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')"
-                         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')}">
-                        <div class="us-leading-stock-name">
-                            <div class="us-leading-stock-ticker">${String(row.symbol || '')}</div>
-                            <div class="us-leading-stock-company">${String(row.name || '')}</div>
-                        </div>
-                        <div class="us-leading-stock-price">
-                            <div class="us-leading-stock-value">${formatUsStockPrice(row.price)}</div>
-                            <div class="us-leading-stock-change ${cls(row.current)}">${pct(row.current)}</div>
-                        </div>
-                        ${buildUsStockSparkline(row.sparkline)}
-                    </div>
-                `).join('');
-            } catch (error) {
-                console.error('US leading stocks:', error);
-                list.innerHTML = '<div class="us-leading-sector-loading">주도종목 데이터를 잠시 후 다시 불러옵니다.</div>';
+            if (window.GaemiWidgets && window.GaemiWidgets.usLeadingStocks) {
+                return window.GaemiWidgets.usLeadingStocks.load(sectorSymbol, sectorName);
             }
-        }
-
-        function renderWorldBoard(rows) {
-            const wBoardGrid = document.getElementById('worldBoardGrid');
-            if (!wBoardGrid) return;
-            const items = Array.isArray(rows) ? rows : [];
-            if (!items.length) {
-                wBoardGrid.innerHTML = '<div class="us-leading-sector-loading">세계시장 데이터를 불러오지 못했습니다.</div>';
-                return;
-            }
-            wBoardGrid.innerHTML = items.map(w => {
-                const cls = w.up ? 'val-up' : 'val-down';
-                const sparkSvg = renderSparklineSVG(w.sparkline, w.up);
-                const clickName = w.name === 'USD/KRW' ? '환율' : w.name;
-                const safeClick = String(clickName || '').replace(/'/g, "\\'");
-                return `
-                    <div class="mini-index-card" onclick="doSearch('${safeClick}')">
-                        <div class="mini-top">
-                            <span class="mini-name">${String(w.name || '')}</span>
-                            <span class="mini-tag">${String(w.tag || '')}</span>
-                        </div>
-                        <div class="mini-mid-row">
-                            <div>
-                                <div class="mini-price">${String(w.price || '')}</div>
-                                <div class="mini-rate ${cls}">${String(w.rate || '')}</div>
-                            </div>
-                            ${sparkSvg}
-                        </div>
-                    </div>`;
-            }).join('');
-        }
-
-        async function loadWorldBoard() {
-            try {
-                const response = await fetch('/api/world-board');
-                const data = await response.json().catch(() => null);
-                if (!response.ok || !data || data.error) throw new Error((data && data.error) || '세계시장 데이터 오류');
-                renderWorldBoard(data.data);
-            } catch (error) {
-                console.error('World board:', error);
-                const box = document.getElementById('worldBoardGrid');
-                if (box) box.innerHTML = '<div class="us-leading-sector-loading">세계시장 데이터를 잠시 후 다시 불러옵니다.</div>';
-            }
+            return null;
         }
 
         async function loadMarketCalendar() {
@@ -13013,9 +12068,10 @@ if ((response && !response.ok) || data.error) {
                 if (!response.ok || !data || data.error) throw new Error((data && data.error) || '시장 캘린더 데이터 오류');
                 if (Array.isArray(data.data)) {
                     globalMarketCalendar = data.data;
-                    economicCalendarAutoJumped = false;
-                    economicCalOffset = 0;
-                    economicCalPage = 1;
+                    window.globalMarketCalendar = globalMarketCalendar;
+                    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                        window.GaemiWidgets.economicCalendar.resetState();
+                    }
                     renderMarketCalendarView();
                 }
             } catch (error) {
@@ -13023,231 +12079,17 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
-        async function loadUsLeadingSectors() {
-            const box = document.getElementById('usLeadingSectorList');
-            if (!box) return;
-            try {
-                const response = await fetch('/api/us-leading-sectors');
-                const data = await response.json();
-                if (!response.ok || data.error) throw new Error(data.error || '데이터 오류');
-
-                const rows = Array.isArray(data.data) ? data.data : [];
-                if (!rows.length) {
-                    box.innerHTML = '<div class="us-leading-sector-loading">현재 업종 데이터를 불러오지 못했습니다.</div>';
-                    return;
-                }
-
-                const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(1)}%`;
-                const cls = value => Number(value) >= 0 ? 'us-leading-up' : 'us-leading-down';
-
-                let html = '<table class="us-leading-sector-table">' +
-                    '<thead><tr><th>업종</th><th>현재</th><th>1W</th><th>1M</th><th>3M</th></tr></thead><tbody>';
-
-                rows.forEach(row => {
-                    const safeName = String(row.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    const safeSym = String(row.sym || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    html += `<tr class="us-leading-sector-row" title="${safeName} 업종 차트 보기" data-sector-symbol="${safeSym}" data-sector-name="${safeName}">` +
-                        `<td class="us-leading-name">${safeName}</td>` +
-                        `<td class="${cls(row.current)}">${pct(row.current)}</td>` +
-                        `<td class="${cls(row.week1)}">${pct(row.week1)}</td>` +
-                        `<td class="${cls(row.month1)}">${pct(row.month1)}</td>` +
-                        `<td class="${cls(row.month3)}">${pct(row.month3)}</td>` +
-                        `</tr>`;
-                });
-                html += '</tbody></table>';
-                box.innerHTML = html;
-
-                // 인라인 onclick에 의존하지 않고 명시적인 이벤트 리스너로 연결한다.
-                // CSP가 적용된 배포 환경에서도 업종 클릭이 동작하도록 한다.
-                box.querySelectorAll('.us-leading-sector-row').forEach(rowEl => {
-                    rowEl.addEventListener('click', () => {
-                        const sectorSymbol = rowEl.dataset.sectorSymbol || '';
-                        const sectorName = rowEl.dataset.sectorName || '';
-                        loadSectorChart(sectorSymbol, sectorName);
-                        loadUsLeadingStocks(sectorSymbol, sectorName);
-                    });
-                });
-
-                // 업종을 클릭하지 않아도 현재 주도업종 1위의 TOP 5가
-                // 처음부터 자동으로 표시되도록 한다.
-                const strongestRow = box.querySelector('.us-leading-sector-row');
-                if (strongestRow) {
-                    const sectorSymbol = strongestRow.dataset.sectorSymbol || '';
-                    const sectorName = strongestRow.dataset.sectorName || '';
-                    loadUsLeadingStocks(sectorSymbol, sectorName);
-                }
-            } catch (error) {
-                console.error('US leading sectors:', error);
-                box.innerHTML = '<div class="us-leading-sector-loading">업종 데이터를 잠시 후 다시 불러옵니다.</div>';
-            }
-        }
-
-
-
-        // ===== STEP 21: 우측 실시간 시장 사이드바 =====
-        let rightMarketKey = 'kr';
-        let rightMarketMenu = 'live';
-        const rightMarketCache = {};
-
-        function escapeRightMarketText(value) {
-            return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-        }
-
-        function formatRightMarketPrice(row) {
-            const p = Number(row.price);
-            if (!Number.isFinite(p)) return '-';
-            if (row.currency === 'KRW') return `${Math.round(p).toLocaleString('ko-KR')}원`;
-            return `$${p.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-        }
-
-        function renderRightMarketRows(rows) {
-            const list = document.getElementById('rightMarketList');
-            if (!list) return;
-            if (!Array.isArray(rows) || !rows.length) {
-                list.innerHTML = '<div class="right-market-empty">현재 실시간 데이터를 가져오지 못했습니다.<br>잠시 후 다시 시도합니다.</div>';
-                return;
-            }
-            list.innerHTML = rows.map((row, idx) => {
-                const pct = Number(row.change_pct);
-                const change = Number(row.change);
-                const cls = Number.isFinite(pct) && pct >= 0 ? 'up' : 'down';
-                const pctText = Number.isFinite(pct) ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '-';
-                let changeText = '';
-                if (Number.isFinite(change)) {
-                    changeText = row.currency === 'KRW'
-                        ? `${change >= 0 ? '+' : ''}${Math.round(change).toLocaleString('ko-KR')}원`
-                        : `${change >= 0 ? '+' : ''}${change.toFixed(2)}`;
-                }
-                const krName = (rightMarketKey === 'us' && typeof getUsShortKrName === 'function')
-                    ? getUsShortKrName(row.symbol, row.name)
-                    : (row.name || row.symbol || '-');
-                const badge = escapeRightMarketText((krName || row.symbol || '?').slice(0, 2));
-                const name = escapeRightMarketText(krName || row.symbol || '-');
-                const symbol = escapeRightMarketText(row.symbol || '');
-                const clickSymbol = escapeRightMarketText(row.symbol || row.name || '');
-                const clickName = escapeRightMarketText(krName || row.name || row.symbol || '');
-                return `<div class="right-market-row" onclick="doSearch('${clickSymbol}', false, '${clickName}')">
-                    <div class="right-market-rank">${row.rank || idx + 1}</div>
-                    <div class="right-market-logo">${badge}</div>
-                    <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>
-                    <div class="right-market-values"><div class="right-market-price">${formatRightMarketPrice(row)}</div><div class="right-market-change ${cls}">${changeText} ${pctText}</div></div>
-                </div>`;
-            }).join('');
-        }
-
-        async function loadRightMarketBoard(force=false) {
-            const list = document.getElementById('rightMarketList');
-            if (!list) return;
-            const cacheKey = rightMarketKey;
-            if (!force && rightMarketCache[cacheKey]) {
-                renderRightMarketRows(rightMarketCache[cacheKey]);
-                return;
-            }
-            try {
-                const r = await fetch(`/api/right-market-board?market=${encodeURIComponent(cacheKey)}${force ? '&force=1' : ''}`, {cache:'no-store'});
-                const payload = await r.json();
-                if (payload && payload.ok && Array.isArray(payload.data)) {
-                    rightMarketCache[cacheKey] = payload.data;
-                    renderRightMarketRows(payload.data);
-                } else {
-                    renderRightMarketRows([]);
-                }
-            } catch (e) {
-                renderRightMarketRows([]);
-            }
-            const t = document.getElementById('rightMarketTime');
-            if (t) t.textContent = `오늘 ${new Date().toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'})} 기준`;
-        }
-
-        function switchRightMarket(key) {
-            rightMarketKey = key;
-            document.querySelectorAll('.right-market-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.market === key));
-            loadRightMarketBoard(false);
-        }
-
-        function selectRightMenu(menu) {
-            rightMarketMenu = menu;
-            document.querySelectorAll('[data-right-menu]').forEach(btn => btn.classList.toggle('active', btn.dataset.rightMenu === menu));
-            const list = document.getElementById('rightMarketList');
-            if (menu === 'live') {
-                loadRightMarketBoard(false);
-                return;
-            }
-            if (menu === 'recent') {
-                const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
-                // STEP 40: 과거 버전에서 코드만 저장된 이력은 현재 국내 실시간
-                // 목록에 같은 종목이 있으면 그 한글명을 복원한다.
-                const krRows = Array.isArray(rightMarketCache.kr) ? rightMarketCache.kr : [];
-                const krNameMap = {};
-                krRows.forEach(row => {
-                    const sym = String(row?.symbol || '').toUpperCase();
-                    const nm = String(row?.name || '').trim();
-                    if (sym && nm && sym !== nm) krNameMap[sym] = nm;
-                });
-                const normalizedRecent = recent.slice(0, 15).map((x,i) => {
-                    const symbol = String(x?.symbol || '').toUpperCase();
-                    const name = String(x?.name || '').trim();
-                    const resolvedName = (name && name.toUpperCase() !== symbol)
-                        ? name
-                        : (krNameMap[symbol] || name || symbol);
-                    return {...x, name: resolvedName, symbol, rank:i+1};
-                });
-                renderRightMarketRows(normalizedRecent);
-                if (!recent.length && list) list.innerHTML = '<div class="right-market-empty">최근 검색 종목이 없습니다.</div>';
-                return;
-            }
-            if (menu === 'favorite') {
-                const fav = JSON.parse(localStorage.getItem('gaemiGTP_favorites') || '[]');
-                renderRightMarketRows(fav.slice(0, 15).map((x,i) => ({...x, rank:i+1})));
-                if (!fav.length && list) list.innerHTML = '<div class="right-market-empty">관심 종목이 없습니다.</div>';
-                return;
-            }
-            if (menu === 'leaders') {
-                loadRightMarketBoard(false).then(() => {
-                    const rows = rightMarketCache[rightMarketKey] || [];
-                    renderRightMarketRows([...rows].sort((a,b) => (Number(b.change_pct)||0) - (Number(a.change_pct)||0)));
-                });
-            }
-        }
-
-        function setRightMarketOpen(isOpen) {
-            const rail = document.getElementById('right-market-rail');
-            if (!rail) return;
-            // STEP 24: 모바일에서도 닫힌 상태는 아이콘 레일만 남기고,
-            // 열린 상태에서만 데이터 패널을 화면 위에 겹쳐 표시한다.
-            rail.classList.toggle('collapsed', !isOpen);
-            // STEP 23: 오른쪽 사이드바 상태가 가운데 콘텐츠 레이아웃에 영향을 주지 않도록 한다.
-            document.body.classList.remove('right-market-collapsed');
-            const btn = rail.querySelector('.right-market-close');
-            if (btn) {
-                btn.textContent = isOpen ? '«' : '»';
-                btn.title = isOpen ? '닫기' : '열기';
-            }
-        }
-
-        function toggleRightMarket() {
-            const rail = document.getElementById('right-market-rail');
-            if (!rail) return;
-            setRightMarketOpen(rail.classList.contains('collapsed'));
-        }
-
-        window.addEventListener('DOMContentLoaded', () => {
-            // 모바일에서는 패널은 닫아두되 열기/닫기 버튼은 유지한다.
-            // 패널을 열기 전까지 시장 데이터 요청은 실행하지 않는다.
-            const isMobileRightMarket = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
-
-            // 데스크톱/모바일 모두 오른쪽 사이드바가 처음에는 닫힌 상태로 시작한다.
-            // 왼쪽 사이드바와 완전히 독립적으로 열리고 닫힌다.
-            setRightMarketOpen(false);
-            if (isMobileRightMarket) return;
-            loadRightMarketBoard(false);
-            setInterval(() => loadRightMarketBoard(true), 60000);
-        });
 
         // STEP 4: 무거운 세계시장/캘린더 데이터는 분석 요청과 분리해서 병렬 로딩한다.
         window.addEventListener('DOMContentLoaded', () => {
-            loadWorldBoard();
-            loadMarketCalendar();
+            if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+                window.GaemiWidgets.worldBoard.load(false);
+            }
+            if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                window.GaemiWidgets.economicCalendar.load(false);
+            } else {
+                loadMarketCalendar();
+            }
             loadUsLeadingSectors();
         });
         window.addEventListener('DOMContentLoaded', () => {
@@ -13291,6 +12133,7 @@ if ((response && !response.ok) || data.error) {
 </html>
 """
 
+# right_market.js는 widgets/ 폴더의 실제 파일을 직접 서빙한다.
 # ----------------------------------------------------
 FAST_CHART_PAYLOAD_CACHE = {}
 FAST_CHART_PAYLOAD_TTL = 30
@@ -13480,6 +12323,170 @@ class WebHandler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "telegram_configured": bool(TELEGRAM_TOKEN)})
             return
 
+        if parsed.path == "/widgets/dart_disclosure.js":
+            body = DART_DISCLOSURE_WIDGET_JS.encode("utf-8")
+            self._write_bytes_response(200, body, "application/javascript; charset=utf-8", compress=False, cache_control="no-cache")
+            return
+
+        # 독립 위젯 정적 리소스
+        if parsed.path == "/widgets/world_board.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "world_board.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/us_leading_sectors.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "us_leading_sectors.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/us_leading_stocks.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "us_leading_stocks.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/why_movement.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "why_movement.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/track.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "track.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/earnings_calendar.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "earnings_calendar.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/quant.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "quant.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/right_market.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "right_market.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+        if parsed.path == "/widgets/stock_news.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "stock_news.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/global_news.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "global_news.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/economic_calendar.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "economic_calendar.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/malicious_zone.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "malicious_zone.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/chart.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "chart.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/analyst_consensus.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "analyst_consensus.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+        if parsed.path == "/widgets/comment.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "comment.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/vote.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "vote.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
         # PostgreSQL 연결 상태 확인
         if parsed.path == "/api/db/health":
             self._json(200, get_db_health())
@@ -13546,6 +12553,34 @@ class WebHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"API ERROR /api/world-board: {type(exc).__name__}: {exc}")
                 self._json(500, {"ok": False, "error": "세계시장 데이터를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/stock-news":
+            try:
+                symbol = str(params.get("symbol", [""])[0]).strip().upper()
+                market_name = str(params.get("market", [""])[0]).strip()
+                formal_name = str(params.get("name", [""])[0]).strip()
+                limit = int(params.get("limit", ["10"])[0])
+                rows = fetch_finlight_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
+                if market_name == "미국주식":
+                    rows = translate_news_titles_to_korean(rows, market_name)
+                self._json(200, {"ok": True, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/stock-news: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "종목 뉴스를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/global-news":
+            try:
+                market_name = str(params.get("market", ["국내주식"])[0]).strip() or "국내주식"
+                limit = int(params.get("limit", ["10"])[0])
+                rows = fetch_finlight_economic_news(market_name, max(1, min(limit, 20)))
+                if market_name == "미국주식":
+                    rows = translate_news_titles_to_korean(rows, market_name)
+                self._json(200, {"ok": True, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/global-news: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "경제뉴스를 가져오지 못했습니다."})
             return
 
         if parsed.path == "/api/market-calendar":

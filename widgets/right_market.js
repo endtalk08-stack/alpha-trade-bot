@@ -19,23 +19,6 @@
             return `$${p.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
         }
 
-        // 거래대금은 API에서 이미 받은 숫자값을 화면용 단위로만 변환한다.
-        // 기존 데이터/API/정렬 로직은 변경하지 않는다.
-        function formatRightMarketTradingValue(row) {
-            const v = Number(row?.trading_value);
-            if (!Number.isFinite(v) || v < 0) return '-';
-            if (row.currency === 'KRW') {
-                if (v >= 1e12) return `${(v / 1e12).toFixed(1)}조`;
-                if (v >= 1e8) return `${Math.round(v / 1e8).toLocaleString('ko-KR')}억`;
-                if (v >= 1e4) return `${Math.round(v / 1e4).toLocaleString('ko-KR')}만`;
-                return `${Math.round(v).toLocaleString('ko-KR')}원`;
-            }
-            if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
-            if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
-            if (v >= 1e3) return `$${(v / 1e3).toFixed(1)}K`;
-            return `$${v.toFixed(0)}`;
-        }
-
         function renderRightMarketRows(rows) {
             const list = document.getElementById('rightMarketList');
             if (!list) return;
@@ -66,7 +49,7 @@
                     <div class="right-market-rank">${row.rank || idx + 1}</div>
                     <div class="right-market-logo">${badge}</div>
                     <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>
-                    <div class="right-market-values"><div class="right-market-price">${formatRightMarketPrice(row)}</div><div class="right-market-change ${cls}">${changeText} ${pctText}</div><div class="right-market-trading-value">거래대금 ${formatRightMarketTradingValue(row)}</div></div>
+                    <div class="right-market-values"><div class="right-market-price">${formatRightMarketPrice(row)}</div><div class="right-market-change ${cls}">${changeText} ${pctText}</div></div>
                 </div>`;
             }).join('');
         }

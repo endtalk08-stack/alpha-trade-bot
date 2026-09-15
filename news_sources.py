@@ -280,7 +280,7 @@ def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", lim
 
 
 def _translate_news_title_en_to_ko(title):
-    """영문 뉴스 제목을 한국어로 번역한다. 실패하면 원문을 그대로 반환한다."""
+    """영문 뉴스 제목을 한국어로 번역한다. 일시적 실패는 1회 재시도한다."""
     raw = html.unescape(str(title or "")).strip()
     if not raw:
         return raw
@@ -288,33 +288,50 @@ def _translate_news_title_en_to_ko(title):
     alpha_count = len(re.findall(r"[A-Za-z]", raw))
     if ko_count >= 2 or alpha_count < 4:
         return raw
+
     cache_key = f"en>ko:{raw}"
     cached = _cache_get(NEWS_TRANSLATION_CACHE, cache_key, NEWS_TRANSLATION_CACHE_TTL)
     if cached:
         return str(cached)
-    try:
-        response = HTTP_SESSION.get(
-            "https://translate.googleapis.com/translate_a/single",
-            params=[
-                ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
-                ("dt", "t"), ("q", raw),
-            ],
-            timeout=3.0,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        if response.status_code != 200:
-            return raw
-        payload = response.json()
-        translated = "".join(
-            str(part[0]) for part in (payload[0] or [])
-            if isinstance(part, list) and part and part[0]
-        ).strip()
-        if not translated:
-            return raw
-        return _cache_set(NEWS_TRANSLATION_CACHE, cache_key, translated)
-    except Exception as exc:
-        print(f"[NEWS TRANSLATION] failed: {type(exc).__name__}: {exc}")
-        return raw
+
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = HTTP_SESSION.get(
+                "https://translate.googleapis.com/translate_a/single",
+                params=[
+                    ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
+                    ("dt", "t"), ("q", raw),
+                ],
+                timeout=5.0,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            if response.status_code != 200:
+                last_error = f"HTTP {response.status_code}"
+                continue
+
+            payload = response.json()
+            translated = "".join(
+                str(part[0]) for part in (payload[0] or [])
+                if isinstance(part, list) and part and part[0]
+            ).strip()
+
+            # 번역 응답이 실제 한국어인지 확인한다.
+            if translated and (
+                re.search(r"[가-힣]", translated)
+                or not re.search(r"[A-Za-z]", raw)
+            ):
+                return _cache_set(
+                    NEWS_TRANSLATION_CACHE, cache_key, translated
+                )
+
+            last_error = "empty/non-korean translation"
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+
+    if last_error:
+        print(f"[NEWS TRANSLATION] failed: {last_error}")
+    return raw
 
 
 def translate_news_titles_to_korean(items, market_name=""):
@@ -324,6 +341,7 @@ def translate_news_titles_to_korean(items, market_name=""):
     news_items = [dict(x) for x in items if isinstance(x, dict)]
     if not news_items:
         return []
+
     futures = {}
     for idx, item in enumerate(news_items):
         title = str(item.get("title") or "").strip()
@@ -331,14 +349,19 @@ def translate_news_titles_to_korean(items, market_name=""):
             futures[idx] = NEWS_TRANSLATION_EXECUTOR.submit(
                 _translate_news_title_en_to_ko, title
             )
+
     for idx, future in futures.items():
         try:
-            translated = future.result(timeout=3.5)
+            translated = future.result(timeout=6.5)
             if translated and translated != news_items[idx].get("title"):
                 news_items[idx]["title"] = translated
-                news_items[idx]["title_original"] = str(news_items[idx].get("title_original") or "") or str(items[idx].get("title") or "")
+                news_items[idx]["title_original"] = (
+                    str(news_items[idx].get("title_original") or "")
+                    or str(items[idx].get("title") or "")
+                )
         except Exception as exc:
             print(f"[NEWS TRANSLATION] result failed: {type(exc).__name__}: {exc}")
+
     return news_items
 
 

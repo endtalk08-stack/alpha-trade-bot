@@ -8,6 +8,8 @@
     let page = 1;
     let starFilter = 'all';
     let autoJumped = false;
+    let loadToken = 0;
+    let loadController = null;
     const ITEMS_PER_PAGE = 4;
 
     function data() {
@@ -166,7 +168,27 @@
     function changePage(delta) { page += Number(delta || 0); render(); }
     function resetState() { offset = 0; page = 1; autoJumped = false; render(); }
 
-    window.GaemiWidgets.economicCalendar = { render, shiftDate, resetDate, setStarFilter, changePage, resetState };
+    async function load(force = false) {
+        const token = ++loadToken;
+        if (loadController) { try { loadController.abort(); } catch (_) {} }
+        loadController = new AbortController();
+        try {
+            const url = '/api/market-calendar' + (force ? '?force=1' : '');
+            const response = await fetch(url, { cache: 'no-store', signal: loadController.signal });
+            const payload = await response.json().catch(() => null);
+            if (token !== loadToken) return;
+            if (!response.ok || !payload || payload.ok === false) throw new Error((payload && payload.error) || '시장 캘린더 데이터 오류');
+            window.globalMarketCalendar = Array.isArray(payload.data) ? payload.data : [];
+            offset = 0; page = 1; autoJumped = false;
+            render();
+        } catch (error) {
+            if (error && error.name === 'AbortError') return;
+            console.warn('[ECONOMIC CALENDAR] load failed:', error);
+            render();
+        }
+    }
+
+    window.GaemiWidgets.economicCalendar = { render, load, shiftDate, resetDate, setStarFilter, changePage, resetState };
 
     // 기존 inline onclick/호출부와의 호환 브리지
     window.renderEconomicCalendarView = render;

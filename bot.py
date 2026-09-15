@@ -3069,6 +3069,154 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 # ----------------------------------------------------
 # 4. 크롤러 및 유틸리티 함수
 # ----------------------------------------------------
+def fetch_naver_news(query_keyword, limit=5):
+    """Google News RSS 실패/빈 결과 시 사용하는 Naver News API fallback."""
+    headlines = []
+    client_id = os.environ.get("NAVER_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("NAVER_CLIENT_SECRET", "").strip()
+
+    if not client_id or not client_secret:
+        print("[NAVER NEWS] API credentials not configured; fallback skipped")
+        return headlines
+
+    clean_k = re.sub(r'\(.*?\)', '', str(query_keyword or "")).replace("USDT", "").strip()
+    if not clean_k:
+        return headlines
+
+    try:
+        r = HTTP_SESSION.get(
+            "https://openapi.naver.com/v1/search/news.json",
+            params={
+                "query": clean_k,
+                "display": max(1, min(int(limit), 100)),
+                "start": 1,
+                "sort": "date",
+            },
+            headers={
+                "X-Naver-Client-Id": client_id,
+                "X-Naver-Client-Secret": client_secret,
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0",
+            },
+            timeout=3.0,
+        )
+        print(f"[NAVER NEWS] query={clean_k} HTTP {r.status_code}")
+        if r.status_code != 200:
+            return headlines
+
+        data = r.json()
+        for item in (data.get("items") or [])[:limit]:
+            title = html.unescape(
+                re.sub(r"<[^>]+>", "", str(item.get("title") or ""))
+            ).strip()
+            description = html.unescape(
+                re.sub(r"<[^>]+>", "", str(item.get("description") or ""))
+            ).strip()
+
+            if not title:
+                continue
+
+            parts = title.rsplit(" - ", 1)
+            if len(parts) > 1 and len(parts[1]) <= 80:
+                title_text = parts[0].strip()
+                media_name = parts[1].strip()
+            else:
+                title_text = title
+                media_name = "Naver 뉴스"
+
+            headlines.append({
+                "title": title_text,
+                "media": media_name,
+                "pubDate": str(item.get("pubDate") or "").strip(),
+                "link": str(item.get("originallink") or item.get("link") or "#").strip(),
+                "description": description,
+                "source": "Naver",
+            })
+    except Exception as exc:
+        print(f"[NAVER NEWS] fallback failed: {type(exc).__name__}: {exc}")
+
+    return headlines
+
+
+def _format_finlight_pubdate(value):
+    """Finlight ISO 시간을 기존 뉴스 UI용 한국시간 문자열로 변환한다."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if ZoneInfo is not None:
+            dt = dt.astimezone(ZoneInfo("Asia/Seoul"))
+        else:
+            dt = dt.astimezone(timezone(timedelta(hours=9)))
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return raw
+
+
+def _finlight_relevance_score(item, target_name=""):
+    """
+    감성(호재/악재)이 아니라 '투자에 쓸모 있는가'를 기준으로 순위를 매긴다.
+
+    핵심 원칙:
+    1) 종목명이 제목에 직접 등장하는 뉴스는 강하게 우선한다.
+    2) 실적/수주/투자/규제/정책/업황처럼 주가에 영향을 줄 가능성이 높은 단어를 가산한다.
+    3) 셰프/연예/행사/제품 체험처럼 주가 영향이 약한 일반 뉴스는 감점한다.
+    4) 호재/악재 자체를 판단하지 않는다. 중요한 '재료'를 위로 올리는 용도다.
+    """
+    categories = {str(x).lower() for x in (item.get("categories") or [])}
+    title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip().lower()
+    summary = re.sub(r"\s+", " ", str(item.get("summary") or "")).strip().lower()
+    text = f"{title} {summary}"
+
+    score = 0
+
+    # Finlight의 구조화 카테고리: 시장/경제/정책성 뉴스에 높은 기본점수.
+    high_value = {"markets", "economy", "regulation", "geopolitics", "commodities", "energy"}
+    medium_value = {"technology", "business", "crypto", "politics", "security"}
+    score += 3 * len(categories & high_value)
+    score += 2 * len(categories & medium_value)
+
+    # 선택 종목과 직접 관련된 제목을 가장 강하게 우선한다.
+    target = str(target_name or "").strip().lower()
+    target_terms = {target} if target else set()
+    # 국내 주요 종목의 실제 기사 표기 약칭도 함께 본다.
+    if "삼성전자" in target:
+        target_terms.update({"삼성전자", "삼성", "삼전", "삼전우"})
+    if "sk하이닉스" in target or "하이닉스" in target:
+        target_terms.update({"sk하이닉스", "하이닉스", "sk하닉"})
+
+    if any(term and term in title for term in target_terms):
+        score += 8
+    elif any(term and term in summary for term in target_terms):
+        score += 3
+
+    # 국내/미국 주식에서 실제 가격 재료가 되기 쉬운 핵심 키워드.
+    market_keywords = [
+        "실적", "영업익", "영업이익", "순이익", "매출", "가이던스", "전망", "컨센서스",
+        "수주", "계약", "공급", "납품", "투자", "증설", "생산", "공장", "capex",
+        "hbм", "hbm", "메모리", "반도체", "ai", "인공지능", "데이터센터",
+        "인수", "합병", "지분", "자사주", "배당", "목표주가", "투자의견",
+        "외국인", "기관", "순매수", "순매도", "관세", "수출규제", "수입규제",
+        "제재", "규제", "정책", "금리", "연준", "fed", "cpi", "pce", "고용",
+        "환율", "달러", "유가", "원유", "전력", "전력기기", "업황", "가격",
+        "공급망", "특허", "기술", "협력", "파트너십", "mou", "ceo", "경영진",
+    ]
+    score += sum(2 for kw in market_keywords if kw in text)
+
+    # 투자 가치가 낮은 일반 기사/홍보성 제목은 감점한다.
+    low_value_keywords = [
+        "셰프", "맛집", "먹방", "연예", "배우", "가수", "축제", "전시",
+        "캠페인", "봉사", "사회공헌", "팝업", "체험", "콘서트", "팬미팅",
+        "갤러리", "화보", "패션", "브랜드 행사", "신제품 출시", "출시 행사",
+        "광고", "모델", "홍보대사", "이벤트", "사은품", "프로모션",
+        "쿠킹쇼", "셰프와", "클래스 열린다", "클래스", "요리", "배워요",
+    ]
+    score -= sum(5 for kw in low_value_keywords if kw in title)
+
+    return score
+
+
 def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", limit=10,
                         language="en", countries=None, categories=None, cache_tag=""):
     """Finlight REST API를 기존 gaemiGTP 뉴스 포맷으로 변환한다.
@@ -3176,51 +3324,46 @@ def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", lim
 
 
 def _translate_news_title_en_to_ko(title):
-    """Finlight 영문 뉴스 제목을 한국어로 번역한다. 실패하면 원문을 반환한다."""
+    """영문 뉴스 제목을 한국어로 번역한다. 일시적 실패는 1회 재시도한다."""
     raw = html.unescape(str(title or "")).strip()
     if not raw:
         return raw
     ko_count = len(re.findall(r"[가-힣]", raw))
     alpha_count = len(re.findall(r"[A-Za-z]", raw))
-    # 영어가 충분하지 않거나 한국어가 주된 제목은 그대로 둔다.
-    if alpha_count < 4 or (ko_count > 0 and ko_count >= alpha_count):
+    if ko_count >= 2 or alpha_count < 4:
         return raw
-
     cache_key = f"en>ko:{raw}"
     cached = _cache_get(NEWS_TRANSLATION_CACHE, cache_key, NEWS_TRANSLATION_CACHE_TTL)
     if cached:
         return str(cached)
-
-    endpoints = [
-        "https://translate.googleapis.com/translate_a/single",
-        "https://translate.google.com/translate_a/single",
-    ]
-    for endpoint in endpoints:
+    last_error = None
+    for attempt in range(2):
         try:
             response = HTTP_SESSION.get(
-                endpoint,
+                "https://translate.googleapis.com/translate_a/single",
                 params=[
                     ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
                     ("dt", "t"), ("q", raw),
                 ],
-                timeout=3.5,
-                headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-                },
+                timeout=5.0,
+                headers={"User-Agent": "Mozilla/5.0"},
             )
             if response.status_code != 200:
+                last_error = f"HTTP {response.status_code}"
                 continue
             payload = response.json()
             translated = "".join(
                 str(part[0]) for part in (payload[0] or [])
                 if isinstance(part, list) and part and part[0]
             ).strip()
-            if translated and translated != raw:
+            # 번역 응답이 실제 한국어인지 확인한다.
+            if translated and (re.search(r"[가-힣]", translated) or not re.search(r"[A-Za-z]", raw)):
                 return _cache_set(NEWS_TRANSLATION_CACHE, cache_key, translated)
+            last_error = "empty/non-korean translation"
         except Exception as exc:
-            print(f"[NEWS TRANSLATION] {endpoint} failed: {type(exc).__name__}: {exc}")
-            continue
+            last_error = f"{type(exc).__name__}: {exc}"
+    if last_error:
+        print(f"[NEWS TRANSLATION] failed: {last_error}")
     return raw
 
 
@@ -3240,11 +3383,10 @@ def translate_news_titles_to_korean(items, market_name=""):
             )
     for idx, future in futures.items():
         try:
-            translated = future.result(timeout=3.5)
+            translated = future.result(timeout=6.5)
             if translated and translated != news_items[idx].get("title"):
-                original = str(news_items[idx].get("title") or "")
                 news_items[idx]["title"] = translated
-                news_items[idx]["title_original"] = str(news_items[idx].get("title_original") or original)
+                news_items[idx]["title_original"] = str(news_items[idx].get("title_original") or "") or str(items[idx].get("title") or "")
         except Exception as exc:
             print(f"[NEWS TRANSLATION] result failed: {type(exc).__name__}: {exc}")
     return news_items
@@ -3287,8 +3429,8 @@ def fetch_finlight_stock_news(symbol="", market_name="", formal_name="", limit=2
     if result:
         return result
 
-    # 뉴스 원천은 Finlight만 사용한다.
-    return []
+    # Finlight 장애/일시적 빈 결과에도 기존 뉴스 기능은 유지한다.
+    return fetch_rss_news(formal_name or symbol, limit)
 
 
 def _economic_news_priority(item, market_name=""):
@@ -3440,9 +3582,61 @@ def fetch_finlight_economic_news(market_name="", limit=10):
     if merged:
         return merged
 
-    # 경제뉴스 원천도 Finlight만 사용한다.
-    return []
+    return fetch_rss_news("뉴욕증시 OR 미국증시 OR 나스닥", limit)
 
+
+def _fetch_rss_news_uncached(query_keyword, limit=5):
+    """Google News RSS 우선. 실패/빈 결과이면 Naver News API로 fallback."""
+    headlines = []
+    clean_k = re.sub(r'\(.*?\)', '', query_keyword).replace("USDT", "").strip()
+    url = f"https://news.google.com/rss/search?q={urllib.parse.quote(clean_k)}&hl=ko&gl=KR&ceid=KR:ko"
+
+    try:
+        r = HTTP_SESSION.get(url, timeout=2.5)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for it in root.findall('.//item')[:limit]:
+                t = it.find('title')
+                pub = it.find('pubDate')
+                link = it.find('link')
+                if t is not None and t.text:
+                    title_clean = html.unescape(t.text).strip()
+                    parts = title_clean.rsplit(' - ', 1)
+                    title_text = parts[0]
+                    media_name = parts[1] if len(parts) > 1 else "언론사"
+                    pub_text = pub.text if pub is not None else ""
+                    link_text = link.text if link is not None else "#"
+                    headlines.append({
+                        "title": title_text,
+                        "media": media_name,
+                        "pubDate": pub_text,
+                        "link": link_text
+                    })
+    except Exception as exc:
+        print(f"[GOOGLE NEWS] RSS failed: {type(exc).__name__}: {exc}")
+
+    if not headlines:
+        print(f"[NEWS FALLBACK] Google News empty -> Naver News: {clean_k}")
+        headlines = fetch_naver_news(clean_k, limit)
+
+    return headlines
+
+
+def fetch_rss_news(query_keyword, limit=5):
+    """뉴스 공용 캐시를 사용한다. 빈 결과도 짧게 캐시해 반복 실패를 막는다."""
+    clean_k = re.sub(r'\(.*?\)', '', str(query_keyword or '')).replace('USDT', '').strip()
+    if not clean_k:
+        return []
+    try:
+        lim = max(1, min(int(limit), 20))
+    except Exception:
+        lim = 5
+    key = f"{clean_k.lower()}|{lim}"
+    cached = _cache_get(NEWS_CACHE, key, NEWS_CACHE_TTL)
+    if cached is not None:
+        return list(cached) if isinstance(cached, list) else cached
+    result = _fetch_rss_news_uncached(clean_k, lim)
+    return _cache_set(NEWS_CACHE, key, list(result or []))
 
 def fetch_dart_disclosures(stock_code, is_krw=True, limit=5):
     if not is_krw or not stock_code or not stock_code.isdigit():
@@ -3641,8 +3835,10 @@ def fetch_naver_domestic_flow_metrics(code):
     """국내주식 실데이터: 당일 거래대금 + 최근 5거래일 외국인/기관 순매수.
 
     STEP 17:
-    - 거래대금은 오른쪽 실시간 사이드바에서 검증된 Naver polling realtime의 aa 필드를 우선 사용한다.
-    - polling에서 거래대금을 못 가져오는 경우 기존 Naver integration 필드 탐색을 fallback으로 사용한다.
+    - STEP 16에서 거래대금 필드 탐색 범위를 넓혔지만, 현재 사이트의 안정적인
+      국내 일봉 경로와 분리된 상태에서만 적용한다.
+    - Naver integration 응답의 여러 위치/필드명을 재귀 탐색한다.
+    - 거래대금은 구체적인 필드명을 우선하고, generic amount는 최후 fallback으로만 사용한다.
     - 외국인/기관 수급 로직은 기존 구조를 유지한다.
     """
     result={"trading_value":None,"foreigner_latest":None,"institution_latest":None,
@@ -3686,77 +3882,40 @@ def fetch_naver_domestic_flow_metrics(code):
             return result
         data=r.json()
 
-        # 1) 거래대금: 오른쪽 실시간 사이드바에서 실제 검증된
-        # Naver polling realtime API의 aa(누적 거래대금)를 우선 사용한다.
-        # integration 응답은 구조/필드가 종목별로 달라 거래대금이 누락될 수 있어
-        # aa를 1순위로 두고, 기존 integration 탐색은 fallback으로 유지한다.
-        tv=None
-        try:
-            query = "SERVICE_ITEM:" + str(code).strip()
-            realtime_url = "https://polling.finance.naver.com/api/realtime?query=" + urllib.parse.quote(query, safe=":,")
-            realtime_res = HTTP_SESSION.get(realtime_url, timeout=2.5, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                "Accept": "application/json,text/plain,*/*",
-                "Referer": "https://stock.naver.com/",
-            })
-            realtime_res.raise_for_status()
-            realtime_payload = realtime_res.json()
-            realtime_datas=[]
-            areas = realtime_payload.get("result", {}).get("areas", []) if isinstance(realtime_payload, dict) else []
-            for area in areas:
-                if isinstance(area,dict):
-                    realtime_datas.extend(area.get("datas") or [])
-            if not realtime_datas and isinstance(realtime_payload,dict):
-                for area in realtime_payload.get("areas",[]) or []:
-                    if isinstance(area,dict):
-                        realtime_datas.extend(area.get("datas") or [])
-            for item in realtime_datas:
-                if not isinstance(item,dict):
-                    continue
-                item_code=str(item.get("cd") or item.get("itemCode") or "").strip()
-                if item_code and item_code != str(code).strip():
-                    continue
-                candidate=num(item.get("aa") or item.get("accumulatedTradingValue"))
-                if candidate is not None and candidate >= 0:
-                    tv=candidate
-                    break
-        except Exception as realtime_exc:
-            print(f"[NAVER FLOW] {code}: realtime 거래대금 조회 실패: {type(realtime_exc).__name__}: {realtime_exc}")
+        # 1) 거래대금: 구체적인 필드명을 우선 탐색한다.
+        # generic 'amount'는 다른 금액 데이터일 가능성이 있어 마지막 fallback으로만 사용한다.
+        priority_groups = [
+            {
+                'accumulatedtradingvalue','accumulatedtradingamount',
+                'accumulatedtradingamountvalue','accumulatedamountvalue',
+                '누적거래대금','누적거래대금액'
+            },
+            {
+                'tradingvalue','tradingvalueamount','tradingamount',
+                '거래대금','거래대금액'
+            },
+            {
+                'amount','accumulatedamount'
+            },
+        ]
+        candidates_by_group=[[] for _ in priority_groups]
+        for obj in walk_dicts(data):
+            for raw_k,v in obj.items():
+                k=norm_key(raw_k)
+                for idx,keys in enumerate(priority_groups):
+                    if k in keys:
+                        n=num(v)
+                        if n is not None and n >= 0:
+                            candidates_by_group[idx].append(n)
+                        break
 
-        # realtime aa를 가져오지 못한 경우에만 기존 integration 필드 탐색을 fallback으로 사용한다.
-        if tv is None:
-            priority_groups = [
-                {
-                    'accumulatedtradingvalue','accumulatedtradingamount',
-                    'accumulatedtradingamountvalue','accumulatedamountvalue',
-                    '누적거래대금','누적거래대금액'
-                },
-                {
-                    'tradingvalue','tradingvalueamount','tradingamount',
-                    '거래대금','거래대금액'
-                },
-                {
-                    'amount','accumulatedamount'
-                },
-            ]
-            candidates_by_group=[[] for _ in priority_groups]
-            for obj in walk_dicts(data):
-                for raw_k,v in obj.items():
-                    k=norm_key(raw_k)
-                    for idx,keys in enumerate(priority_groups):
-                        if k in keys:
-                            n=num(v)
-                            if n is not None and n >= 0:
-                                candidates_by_group[idx].append(n)
-                            break
+        for candidates in candidates_by_group:
+            if candidates:
+                # 동일 응답 안에서 같은 필드가 여러 번 나타날 수 있으므로 최대값을 사용한다.
+                result['trading_value']=max(candidates)
+                break
 
-            for candidates in candidates_by_group:
-                if candidates:
-                    # 동일 응답 안에서 같은 필드가 여러 번 나타날 수 있으므로 최대값을 사용한다.
-                    tv=max(candidates)
-                    break
-
-        result['trading_value']=tv
+        tv=result['trading_value']
         if tv is not None:
             if tv >= 10**12:
                 result['trading_value_detail']=f"당일 거래대금 {tv/10**12:.2f}조원"
@@ -6246,7 +6405,7 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     return {
         "quant_score": str(quant_score),
         "score_badge": score_badge,
-        "score_dots": f"<span style='color:#10b981; font-weight:700;'>상승 근거 {bullish_count}</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>중립 {6 - bullish_count}</span>",
+        "score_dots": f"<span style='color:#10b981; font-weight:700;'>상승 시그널 {bullish_count}</span> &nbsp; <span style='color:#38bdf8; font-weight:700;'>중립 {6 - bullish_count}</span>",
         "trend": trend,
         "momentum_history": momentum_history,
         "z_score": f"{z_score:+.2f} σ", "z_state": z_state, "z_color": z_color,
@@ -6481,8 +6640,8 @@ def _detect_theme(formal_name, stock_news):
 def analyze_global_impact(formal_name, market_name, world_board, stock_news,
                           global_news=None, dart_disclosures=None, df=None,
                           domestic_flow=None, market_index_name=None,
-                          consensus=None, macro_snapshot=None, market_calendar=None,
-                          symbol="", alpha_earnings=None):
+                          consensus=None, macro_snapshot=None, market_calendar=None, symbol="",
+                          alpha_earnings=None):
     """
     글로벌/거시 → 미국 → 국내 → 업종 → 종목 전파 경로를 계산한다.
     숫자 비교가 가능한 실제 데이터만 강한 근거로 사용한다.
@@ -11463,8 +11622,8 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             const fastPrice = document.getElementById('rPrice');
             const fastMeta = document.getElementById('rMeta');
             if (fastTitle) fastTitle.textContent = displayNameHint || cleanQ.toUpperCase();
-            if (fastPrice) fastPrice.textContent = '';
-            if (fastMeta) fastMeta.textContent = '';
+            if (fastPrice) fastPrice.textContent = '불러오는 중…';
+            if (fastMeta) fastMeta.textContent = '실시간 데이터를 불러오고 있어요';
 
             if (window.innerWidth <= 900) {
                 const side = document.getElementById('sidebar-wrapper');
@@ -11472,31 +11631,6 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             }
 
             const searchToken = ++activeSearchToken;
-
-            // 🚀 첫 화면 차트 전용 요청: 전체 분석을 기다리지 않고 즉시 시작
-            const fastChartKey = cleanQ.toUpperCase();
-            const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
-            const fastChartStartedAt = performance.now();
-            const fastChartPromise = (
-                fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
-            )
-                ? Promise.resolve(fastChartCached.data)
-                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ), {
-                    signal: searchSignal,
-                    cache: 'no-store'
-                })
-                    .then(r => r.ok ? r.json() : null)
-                    .then(chartData => {
-                        console.log(`[gaemiGTP 초고속차트] ${cleanQ} | ${(performance.now() - fastChartStartedAt).toFixed(0)}ms`);
-                        if (chartData) {
-                            FAST_CHART_CACHE.set(fastChartKey, {
-                                time: Date.now(),
-                                data: chartData
-                            });
-                        }
-                        return chartData;
-                    })
-                    .catch(() => null);
 
             try {
                 const cacheKey = cleanQ.toUpperCase();
@@ -11507,7 +11641,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                 if (!forceServer && cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
                     data = cached.data;
                 } else {
-                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=core';
+                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=full';
                     response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
 
                     const contentType = response.headers.get("content-type") || "";
@@ -11537,36 +11671,6 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                         `[gaemiGTP 성능] ${cleanQ} | 전체 ${data._perf.total_ms}ms | HTTP ${data._perf.http_call_count}회`
                     );
                     console.table(data._perf.slowest_http || []);
-                }
-
-                // 🚀 차트는 core 분석 완료를 기다리지 않는다.
-                if (fastChartCached && Array.isArray(fastChartCached.data?.candles) && fastChartCached.data.candles.length) {
-                    setTimeout(() => {
-                        if (searchToken !== activeSearchToken) return;
-                        initTvChart(fastChartCached.data.candles);
-                        const last = fastChartCached.data.candles[fastChartCached.data.candles.length - 1];
-                        if (last && Number.isFinite(Number(last.close))) {
-                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
-                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
-                        }
-                    }, 0);
-                } else {
-                    fastChartPromise.then(chartData => {
-                        if (searchToken !== activeSearchToken || !chartData) return;
-                        if (chartData?._perf) {
-                            console.log(
-                                `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
-                            );
-                            console.table(chartData._perf.slowest_http || []);
-                        }
-                        if (!Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                        initTvChart(chartData.candles);
-                        const last = chartData.candles[chartData.candles.length - 1];
-                        if (last && Number.isFinite(Number(last.close))) {
-                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
-                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
-                        }
-                    });
                 }
 
                 // /api/chart를 별도로 호출하지 않는다. /api/analyze가 반환한
@@ -11664,11 +11768,6 @@ if ((response && !response.ok) || data.error) {
                 if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
                     window.GaemiWidgets.consensus.render(data.consensus);
                 }
-                // 미국주식은 컨센서스를 분석 완료를 기다리지 않고 별도 조회한다.
-                // 오른쪽 해외종목 클릭도 동일한 doSearch 경로를 타므로 즉시 연결된다.
-                if (data.market === '미국주식' && data.symbol) {
-                    loadUsConsensus(data.symbol, data.current_price, searchToken);
-                }
 
                 if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
                     window.GaemiWidgets.renderDartDisclosure(data.dart_disclosures);
@@ -11682,8 +11781,9 @@ if ((response && !response.ok) || data.error) {
                     pollAnalysisDetails(cleanQ, searchToken);
                 }
 
-                // 오른쪽 사이드바 종목 클릭 시 사용자가 보고 있던 스크롤 위치를 유지한다.
-                // 자동으로 페이지 맨 위로 이동시키지 않는다.
+                // 차트는 위의 fastChartPromise에서 먼저 그려진다.
+                // 서버 전체 분석의 candles는 기존 호환성을 위해 그대로 유지한다.
+                window.scrollTo({top: 0, behavior: 'smooth'});
 
             } catch (err) {
                 if (err && err.name === 'AbortError') return;
@@ -11693,25 +11793,6 @@ if ((response && !response.ok) || data.error) {
                     alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
                     document.getElementById('loading').style.display = 'none';
                 }
-            }
-        }
-
-        async function loadUsConsensus(symbol, currentPrice, searchToken) {
-            const cleanSymbol = String(symbol || '').trim().toUpperCase();
-            if (!cleanSymbol || searchToken !== activeSearchToken) return;
-            try {
-                const price = Number(currentPrice);
-                const priceParam = Number.isFinite(price) ? '&price=' + encodeURIComponent(price) : '';
-                const response = await fetch('/api/consensus?q=' + encodeURIComponent(cleanSymbol) + priceParam, {
-                    cache: 'no-store'
-                });
-                const payload = await response.json().catch(() => null);
-                if (searchToken !== activeSearchToken) return;
-                if (response.ok && payload && payload.ok && payload.data && window.GaemiWidgets?.consensus) {
-                    window.GaemiWidgets.consensus.render(payload.data);
-                }
-            } catch (error) {
-                console.warn('[CONSENSUS UI] failed:', error);
             }
         }
 
@@ -11861,7 +11942,7 @@ if ((response && !response.ok) || data.error) {
             const meta = document.getElementById('rMeta');
 
             if (title) title.textContent = name || symbol;
-            if (price) price.textContent = '업종 흐름';
+            if (price) price.textContent = '업종 차트 불러오는 중…';
             if (meta) meta.textContent = '미국 주도업종 · 실제 Yahoo 일봉 데이터';
 
             try {
@@ -12511,35 +12592,6 @@ class WebHandler(BaseHTTPRequestHandler):
                     break
                 time.sleep(0.2)
             self._json(202, {"ok": True, "ready": False})
-            return
-
-        if parsed.path == "/api/consensus":
-            q = str(params.get("q", [""])[0]).strip()
-            if not q:
-                self._json(400, {"ok": False, "error": "종목을 입력해주세요."})
-                return
-            clean_q = q.replace(" ", "").upper()
-            if clean_q in US_STOCK_MAP:
-                consensus_symbol = US_STOCK_MAP[clean_q]
-            elif US_TICKER_PATTERN.fullmatch(clean_q or ""):
-                consensus_symbol = clean_q
-            else:
-                self._json(400, {"ok": False, "error": "미국주식 티커를 확인해주세요."})
-                return
-            try:
-                price_raw = str(params.get("price", [""])[0]).strip()
-                raw_price = _safe_float(price_raw) if price_raw else None
-                if raw_price is None:
-                    quote = fetch_overseas_quote_snapshot(consensus_symbol)
-                    if isinstance(quote, dict):
-                        raw_price = _safe_float(quote.get("price"))
-                result = fetch_market_consensus_unified(
-                    consensus_symbol, "미국주식", raw_price, consensus_symbol
-                )
-                self._json(200, {"ok": True, "data": result})
-            except Exception as exc:
-                print(f"API ERROR /api/consensus: {type(exc).__name__}: {exc}")
-                self._json(500, {"ok": False, "error": "컨센서스 데이터를 가져오지 못했습니다."})
             return
 
         if parsed.path == "/api/analyze":

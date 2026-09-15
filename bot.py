@@ -3069,6 +3069,187 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 # ----------------------------------------------------
 # 4. 크롤러 및 유틸리티 함수
 # ----------------------------------------------------
+def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", limit=10,
+                        language="en", countries=None, categories=None, cache_tag=""):
+    """Finlight REST API를 기존 gaemiGTP 뉴스 포맷으로 변환한다.
+
+    API Key는 Render 환경변수 FINLIGHT_API_KEY에서만 읽는다.
+    실패/빈 결과는 호출부에서 기존 뉴스 소스로 fallback할 수 있도록 []을 반환한다.
+    """
+    if not FINLIGHT_API_KEY:
+        print("[FINLIGHT NEWS] FINLIGHT_API_KEY not configured")
+        return []
+
+    try:
+        lim = max(1, min(int(limit), 20))
+    except Exception:
+        lim = 10
+
+    payload = {
+        "query": str(query or "").strip(),
+        "language": language or "en",
+        "pageSize": lim,
+        "orderBy": "publishDate",
+        "order": "DESC",
+    }
+    if countries:
+        payload["countries"] = list(countries)
+    if categories:
+        payload["categories"] = list(categories)
+
+    # 빈 query 키는 보내지 않는다.
+    if not payload["query"]:
+        payload.pop("query", None)
+
+    cache_key = "finlight|{}|{}|{}|{}|{}|{}".format(
+        cache_tag or "news",
+        symbol or "",
+        market_name or "",
+        language or "en",
+        json.dumps(countries or [], ensure_ascii=False, sort_keys=True),
+        json.dumps(categories or [], ensure_ascii=False, sort_keys=True),
+    )
+    cache_key += "|" + (query or "") + f"|{lim}"
+    cached = _cache_get(NEWS_CACHE, cache_key, NEWS_CACHE_TTL)
+    if cached is not None:
+        return list(cached) if isinstance(cached, list) else []
+
+    try:
+        res = HTTP_SESSION.post(
+            "https://api.finlight.me/v2/articles",
+            headers={
+                "accept": "application/json",
+                "Content-Type": "application/json",
+                "X-API-KEY": FINLIGHT_API_KEY,
+            },
+            json=payload,
+            timeout=4.5,
+        )
+        if res.status_code != 200:
+            print(f"[FINLIGHT NEWS] HTTP {res.status_code} query={query!r}")
+            return []
+
+        data = res.json() if res.content else {}
+        articles = data.get("articles") or []
+        out = []
+        seen = set()
+        target = str(formal_name or "").strip()
+
+        for item in articles:
+            if not isinstance(item, dict):
+                continue
+            title = html.unescape(str(item.get("title") or "")).strip()
+            link = str(item.get("link") or "").strip()
+            if not title or not link:
+                continue
+            key = re.sub(r"\s+", " ", title).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            source = str(item.get("source") or "Finlight").strip()
+            pub = _format_finlight_pubdate(item.get("publishDate"))
+            categories_item = item.get("categories") or []
+            summary = html.unescape(str(item.get("summary") or "")).strip()
+
+            out.append({
+                "title": title,
+                "media": source,
+                "pubDate": pub,
+                "link": link,
+                "description": summary,
+                "source": "Finlight",
+                "categories": categories_item,
+                "countries": item.get("countries") or [],
+                "language": item.get("language") or language,
+                "relevance_score": _finlight_relevance_score(item, target),
+            })
+
+        # 감성은 사용하지 않는다. 투자 관련 카테고리와 최신성을 우선한다.
+        out.sort(key=lambda x: (int(x.get("relevance_score") or 0), x.get("pubDate") or ""), reverse=True)
+        out = out[:lim]
+        print(f"[FINLIGHT NEWS] query={query!r} lang={language} 결과={len(out)}건")
+        return _cache_set(NEWS_CACHE, cache_key, out)
+    except Exception as exc:
+        print(f"[FINLIGHT NEWS] fetch failed: {type(exc).__name__}: {exc}")
+        return []
+
+
+def _translate_news_title_en_to_ko(title):
+    """Finlight 영문 뉴스 제목을 한국어로 번역한다. 실패하면 원문을 반환한다."""
+    raw = html.unescape(str(title or "")).strip()
+    if not raw:
+        return raw
+    ko_count = len(re.findall(r"[가-힣]", raw))
+    alpha_count = len(re.findall(r"[A-Za-z]", raw))
+    # 영어가 충분하지 않거나 한국어가 주된 제목은 그대로 둔다.
+    if alpha_count < 4 or (ko_count > 0 and ko_count >= alpha_count):
+        return raw
+
+    cache_key = f"en>ko:{raw}"
+    cached = _cache_get(NEWS_TRANSLATION_CACHE, cache_key, NEWS_TRANSLATION_CACHE_TTL)
+    if cached:
+        return str(cached)
+
+    endpoints = [
+        "https://translate.googleapis.com/translate_a/single",
+        "https://translate.google.com/translate_a/single",
+    ]
+    for endpoint in endpoints:
+        try:
+            response = HTTP_SESSION.get(
+                endpoint,
+                params=[
+                    ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
+                    ("dt", "t"), ("q", raw),
+                ],
+                timeout=3.5,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                },
+            )
+            if response.status_code != 200:
+                continue
+            payload = response.json()
+            translated = "".join(
+                str(part[0]) for part in (payload[0] or [])
+                if isinstance(part, list) and part and part[0]
+            ).strip()
+            if translated and translated != raw:
+                return _cache_set(NEWS_TRANSLATION_CACHE, cache_key, translated)
+        except Exception as exc:
+            print(f"[NEWS TRANSLATION] {endpoint} failed: {type(exc).__name__}: {exc}")
+            continue
+    return raw
+
+
+def translate_news_titles_to_korean(items, market_name=""):
+    """미국주식 화면의 영문 기사 제목을 병렬 번역한다. 원문 링크/출처는 유지한다."""
+    if market_name != "미국주식" or not items:
+        return items or []
+    news_items = [dict(x) for x in items if isinstance(x, dict)]
+    if not news_items:
+        return []
+    futures = {}
+    for idx, item in enumerate(news_items):
+        title = str(item.get("title") or "").strip()
+        if title:
+            futures[idx] = NEWS_TRANSLATION_EXECUTOR.submit(
+                _translate_news_title_en_to_ko, title
+            )
+    for idx, future in futures.items():
+        try:
+            translated = future.result(timeout=3.5)
+            if translated and translated != news_items[idx].get("title"):
+                original = str(news_items[idx].get("title") or "")
+                news_items[idx]["title"] = translated
+                news_items[idx]["title_original"] = str(news_items[idx].get("title_original") or original)
+        except Exception as exc:
+            print(f"[NEWS TRANSLATION] result failed: {type(exc).__name__}: {exc}")
+    return news_items
+
+
 def fetch_finlight_stock_news(symbol="", market_name="", formal_name="", limit=20):
     """선택 종목의 직접 관련 금융뉴스. Finlight 우선, 기존 RSS를 fallback으로 사용한다."""
     if market_name == "국내주식":

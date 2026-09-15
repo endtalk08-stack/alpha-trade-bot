@@ -6425,6 +6425,39 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
         "win_rate_num": f"{int(win_2y)}%", "rr_str": f"실측 손익비 1:{rr_actual}"
     }
 
+def _build_malicious_zones(df, raw_price):
+    """최근 가격대별 거래량 집중을 이용해 잠재적 악성 매물대 후보를 계산한다."""
+    try:
+        if df is None or len(df) < 20 or raw_price is None or 'Volume' not in df.columns:
+            return []
+        work = df.copy().tail(120)
+        work = work[['High','Low','Close','Volume']].apply(pd.to_numeric, errors='coerce').dropna()
+        work = work[(work['Volume'] > 0) & (work['High'] >= work['Low'])]
+        if len(work) < 15: return []
+        lo, hi = float(work['Low'].min()), float(work['High'].max())
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo: return []
+        bins = min(24, max(12, int(np.sqrt(len(work)) * 3)))
+        edges = np.linspace(lo, hi, bins + 1); profile = np.zeros(bins, dtype=float)
+        for _, r in work.iterrows():
+            l, h, v = float(r['Low']), float(r['High']), float(r['Volume'])
+            a = max(0, min(bins-1, int(np.searchsorted(edges, l, side='right')-1)))
+            b = max(0, min(bins-1, int(np.searchsorted(edges, h, side='left'))))
+            profile[a:b+1] += v / max(1, b-a+1)
+        zones=[]; current=float(raw_price); peak=float(profile.max())
+        if peak <= 0: return []
+        total=float(profile.sum()) or 1.0
+        for i in range(1, bins-1):
+            if profile[i] < peak*0.48 or profile[i] < profile[i-1] or profile[i] < profile[i+1]: continue
+            zlo,zhi=float(edges[i]),float(edges[i+1])
+            if zhi <= current*0.995: continue
+            intensity=min(99,max(50,round(profile[i]/peak*100)))
+            dist=(zlo-current)/current*100 if current else 0
+            zones.append({'low':round(zlo,2),'high':round(zhi,2),'intensity':int(intensity),'distance_pct':round(dist,1),'share_pct':round(profile[i]/total*100,1)})
+        zones.sort(key=lambda z:(z['distance_pct']))
+        return zones[:3]
+    except Exception:
+        return []
+
 def _movement_rate_to_float(value):
     try:
         if value is None:
@@ -7776,7 +7809,8 @@ def run_full_pipeline(query, lightweight=False):
         "ma20_line": ma20_line,
         "ma60_line": ma60_line,
         "bb_up_line": bb_up_line,
-        "bb_dn_line": bb_dn_line
+        "bb_dn_line": bb_dn_line,
+        "malicious_zones": _build_malicious_zones(df, raw_price)
     }
 
     result_data["_details_ready"] = not lightweight
@@ -8261,6 +8295,48 @@ def fetch_right_market_board(market="kr", force=False):
             RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows, "version": RIGHT_MARKET_BOARD_CACHE_VERSION}
     return rows
 
+DART_DISCLOSURE_WIDGET_JS = r"""
+(function () {
+    window.GaemiWidgets = window.GaemiWidgets || {};
+
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    window.GaemiWidgets.renderDartDisclosure = function (items) {
+        const card = document.getElementById('rowDart');
+        const list = document.getElementById('dartList');
+        if (!card || !list) return;
+
+        if (!Array.isArray(items) || items.length === 0) {
+            list.innerHTML = '';
+            card.style.display = 'none';
+            return;
+        }
+
+        list.innerHTML = items.map(function (d) {
+            const link = escapeHtml(d && d.link ? d.link : '#');
+            const tagType = escapeHtml(d && d.tag_type ? d.tag_type : 'neutral');
+            const tagName = escapeHtml(d && d.tag_name ? d.tag_name : '공시');
+            const title = escapeHtml(d && d.title ? d.title : '');
+            const date = escapeHtml(d && d.date ? d.date : '');
+            return '<a href="' + link + '" target="_blank" rel="noopener noreferrer" class="dart-item">' +
+                '<span class="dart-tag tag-' + tagType + '">' + tagName + '</span>' +
+                '<span class="dart-title">' + title + '</span>' +
+                '<span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">' + date + '</span>' +
+                '</a>';
+        }).join('');
+
+        card.style.display = 'block';
+    };
+})();
+"""
+
 HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -8272,6 +8348,22 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="/widgets/dart_disclosure.js"></script>
+    <script src="/widgets/chart.js"></script>
+    <script src="/widgets/stock_news.js"></script>
+    <script src="/widgets/global_news.js"></script>
+    <script src="/widgets/world_board.js"></script>
+    <script src="/widgets/us_leading_sectors.js"></script>
+    <script src="/widgets/us_leading_stocks.js"></script>
+    <script src="/widgets/quant.js"></script>
+    <script src="/widgets/track.js"></script>
+    <script src="/widgets/why_movement.js"></script>
+    <script src="/widgets/earnings_calendar.js"></script>
+    <script src="/widgets/economic_calendar.js"></script>
+    <script src="/widgets/analyst_consensus.js"></script>
+    <script src="/widgets/vote.js"></script>
+    <script src="/widgets/comment.js"></script>
+    <script src="/widgets/malicious_zone.js"></script>
     <style>
         :root {
             --bg-body: #131314;
@@ -10784,10 +10876,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
 
                                 <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
-                                    <button class="calendar-star-btn active" data-cal-type="earn" data-stars="all" onclick="setCalendarStarFilter('earn','all',this)">전체</button>
-                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="3" onclick="setCalendarStarFilter('earn','3',this)">★★★</button>
-                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="2" onclick="setCalendarStarFilter('earn','2',this)">★★☆</button>
-                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="1" onclick="setCalendarStarFilter('earn','1',this)">★☆☆</button>
+                                    <button class="calendar-star-btn active" data-cal-type="earn" data-stars="all" onclick="setEarningsCalendarStarFilter('all',this)">전체</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="3" onclick="setEarningsCalendarStarFilter('3',this)">★★★</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="2" onclick="setEarningsCalendarStarFilter('2',this)">★★☆</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="1" onclick="setEarningsCalendarStarFilter('1',this)">★☆☆</button>
                                 </div>
                                 <div class="calendar-widget-subtitle" id="earnCalDayHeader">주요 기업 실적</div>
                                 <div class="cal-event-list-wrap calendar-widget-list" id="earnCalEventList"></div>
@@ -10939,71 +11031,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="dartList"></div>
                         </div>
 
-                        <!-- 8행: gaemiGTP 시그널 박스 (832px) -->
-                        <div class="signal-premium-card" id="rowSignal">
-                            <div class="signal-card-header">
-                                <span class="signal-card-title">gaemiGTP 시그널</span>
+                        <!-- 8행: 악성 매물대 위젯 -->
+                        <div class="card" id="rowSignal">
+                            <div class="board-header">
+                                <span class="board-header-title">악성 매물대</span>
+                                <span style="font-size:0.72rem; color:var(--text-muted);">과거 거래가 집중된 저항 구간</span>
                             </div>
-                            
-                            <div id="signalBody" style="display:block; margin-top:16px;">
-                                <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid rgba(16,185,129,0.2);">
-                                    <div class="gauge-inner-box">
-                                        <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="rWinRateGauge"></span>
-                                        <span style="font-size:0.6rem; color:var(--text-muted); margin-top:3px; font-weight:700;">승률</span>
-                                    </div>
-                                    <div style="min-width:0;">
-                                        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                                            <span style="font-size:0.82rem; color:var(--text-muted);">시그널 종합</span>
-                                            <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.75rem; font-weight:800; padding:3px 8px; border-radius:10px;">분할 대응 유효</span>
-                                        </div>
-                                        <div style="font-size:0.78rem; color:var(--text-muted); margin-top:5px; word-break:keep-all;">
-                                            <span style="color:#10b981; font-weight:800;" id="rBt1yTag"></span> &nbsp; 
-                                            <span style="color:#10b981; font-weight:800;" id="rBt2yTag"></span> &nbsp; 
-                                            <span style="color:#38bdf8; font-weight:800;" id="rRrTag"></span>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div style="margin:20px 0 14px; position:relative;">
-                                    <div style="display:flex; justify-content:space-between; font-size:0.75rem; margin-bottom:6px; white-space:nowrap;">
-                                        <span style="color:#38bdf8; font-weight:800;" id="rSliderStop"></span>
-                                        <span style="color:var(--text-title); font-weight:800;" id="rSliderEntry"></span>
-                                        <span style="color:#10b981; font-weight:800;" id="rSliderTarget"></span>
-                                    </div>
-                                    <div style="width:100%; height:7px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
-                                        <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="rSigBarFill"></div>
-                                        <div class="dot-marker-style" id="rSigDotMarker"></div>
-                                    </div>
-                                </div>
-
-                                <div style="margin-top:16px; border-top:1px solid rgba(16,185,129,0.2); padding-top:10px;">
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                        <div><span style="color:var(--text-title); font-weight:700;">1차 진입 기준가</span></div>
-                                        <div style="color:var(--text-title); font-weight:800;" id="rEntry1"></div>
-                                    </div>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                        <div><span style="color:var(--text-title); font-weight:700;">2차 분할 기준가</span></div>
-                                        <div style="color:var(--text-title); font-weight:800;" id="rEntry2"></div>
-                                    </div>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                        <div><span style="color:#10b981; font-weight:700;">1차 목표가</span></div>
-                                        <div style="color:#10b981; font-weight:800;" id="rTarget1"></div>
-                                    </div>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid rgba(16,185,129,0.15); font-size:0.86rem;">
-                                        <div><span style="color:#10b981; font-weight:700;">2차 목표가</span></div>
-                                        <div style="color:#10b981; font-weight:800;" id="rTarget2"></div>
-                                    </div>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; font-size:0.86rem;">
-                                        <div><span style="color:#38bdf8; font-weight:700;">리스크 방어선</span></div>
-                                        <div style="color:#38bdf8; font-weight:800;" id="rStop"></div>
-                                    </div>
-                                </div>
-
-                                <div class="guide-box">
-                                    <div class="guide-title">gaemiGTP 시그널 가이드</div>
-                                    <div id="rGuideText" style="margin-top:4px; color:var(--text-sub); word-break:keep-all;"></div>
-                                </div>
-                            </div>
+                            <div id="maliciousZoneBody" style="margin-top:10px;"></div>
                         </div>
 </div>
 
@@ -11047,6 +11081,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
     </div>
 
+    <script src="/widgets/right_market.js"></script>
+
     <script>
         let chart = null;
         let selectedMode = 'gaemi';
@@ -11085,6 +11121,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             localStorage.setItem('gaemi_theme', isLight ? 'light' : 'dark');
             updateThemeIcon(isLight);
 
+            chart = window.gaemiChart || chart;
             if (chart) {
                 chart.applyOptions({
                     layout: {
@@ -11107,6 +11144,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function resizeChart() {
             const container = document.getElementById('tvChart');
+            chart = window.gaemiChart || chart;
             if (chart && container && container.clientWidth > 0) {
                 chart.applyOptions({ width: container.clientWidth });
             }
@@ -11380,392 +11418,58 @@ function renderSparklineSVG(points, isUp) {
         // - 같은 globalMarketCalendar 데이터를 사용하지만
         //   날짜 이동/페이지 상태/렌더링은 서로 완전히 분리
         // ============================================================
-        let economicCalOffset = 0;
-        let earningsCalOffset = 0;
-        let economicCalPage = 1;
-        let earningsCalPage = 1;
-        // 실적 캘린더는 오늘 실적이 없을 때 최초 1회만 '가장 가까운 예정 실적일'로 이동합니다.
-        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
-        let earningsCalendarAutoJumped = false;
-
-        // 경제 캘린더는 오늘 발표가 없을 때 최초 1회만
-        // '오늘 이후 가장 가까운 예정 일정'으로 이동합니다.
-        // 앞으로 일정이 없으면 오늘 이전 가장 최근 일정으로 이동합니다.
-        // 사용자가 [오늘]을 누르면 다시 오늘 날짜를 정확히 보여줍니다.
-        let economicCalendarAutoJumped = false;
-
-        let economicCalStarFilter = 'all';
-        let earningsCalStarFilter = 'all';
-        const calendarItemsPerPage = 4;
-
-        function renderCalendarEventCard(ev) {
-            const isEarn = ev.type === 'earn';
-            const clickAttr = isEarn && ev.ticker
-                ? `onclick="doSearch('${String(ev.ticker).replace(/'/g, "\\'")}')"`
-                : '';
-            const alarmKey = getCalendarEventKey(ev);
-            const alarmActive = !!getCalendarAlarms()[alarmKey];
-            const stars = ev.star_str || (ev.stars === 3 ? '★★★' : ev.stars === 2 ? '★★☆' : '★☆☆');
-            const timeLabel = ev.time || '--:--';
-            const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료') ? '발표완료' : '발표대기';
-            const metaParts = [];
-            if (ev.exp && ev.exp !== '-') {
-                const expText = String(ev.exp).trim();
-                metaParts.push(
-                    expText.startsWith('예상')
-                        ? expText
-                        : `예상 ${expText}`
-                );
-            }
-
-            // 실적 캘린더의 두 번째 값은 '이전'이 아니라 '예상 매출'입니다.
-            // 경제 캘린더에서만 ev.prev를 '이전'으로 표시합니다.
-            if (isEarn) {
-                const revenueText = String(
-                    ev.expected_revenue_str || ''
-                ).trim();
-                if (revenueText && revenueText !== '-') {
-                    metaParts.push(
-                        revenueText.startsWith('예상')
-                            ? revenueText
-                            : `예상 매출 ${revenueText}`
-                    );
-                }
-            } else if (ev.prev && ev.prev !== '-') {
-                metaParts.push(`이전 ${ev.prev}`);
-            }
-
-            const meta = metaParts.join('  ·  ');
-
-            // 실적 캘린더에서는 티커(NVDA 등)와 기업 마크를 표시하지 않습니다.
-            const rawEventName = ev.name || (isEarn ? '실적 발표' : '경제지표');
-            let eventName = isEarn
-                ? String(rawEventName).replace(/\s*\([A-Za-z0-9.\-]+\)/g, '').trim()
-                : String(rawEventName);
-
-            // 이전 데이터 형식에서 이름에 발표시점이 붙어 있어도 화면에서는 분리합니다.
-            let timingLabel = isEarn ? String(ev.timing_label || '').trim() : '';
-            if (isEarn && !timingLabel) {
-                const timingMatch = eventName.match(/\s*(\((?:미국 )?장 (?:마감 후|시작 전)\))\s*$/);
-                if (timingMatch) {
-                    timingLabel = timingMatch[1];
-                    eventName = eventName.slice(0, timingMatch.index).trim();
-                }
-            }
-
-            return `
-                <div class="cal-card-item ${isEarn ? 'cal-earn-item' : 'cal-eco-item'}" ${clickAttr}>
-                    <div class="cal-time-col">${timeLabel}</div>
-                    <div class="cal-detail-col">
-                        <div class="cal-event-topline">
-                            <span class="cal-stars">${stars}</span>
-                            <span class="cal-event-status">${status}</span>
-                        </div>
-                        <div class="cal-event-title">${eventName}</div>
-                        ${isEarn && timingLabel ? `<div class="cal-earn-timing">${timingLabel}</div>` : ''}
-                        ${meta ? `<div class="cal-event-meta">${meta}</div>` : ''}
-                    </div>
-                    <button class="cal-alarm-btn ${alarmActive ? 'active' : ''}"
-                            onclick="event.stopPropagation(); toggleCalendarAlarmByKey('${encodeURIComponent(alarmKey)}')"
-                            title="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}"
-                            aria-label="${alarmActive ? '알람 해제' : '10분 전 알람 설정'}">
-                        <svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path>
-                            <path d="M10 21h4"></path>
-                        </svg>
-                    </button>
-                </div>
-            `;
-        }
-
-        function getCalendarDateInfo(offset) {
-            const now = new Date();
-            const kstString = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'Asia/Seoul',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).format(now);
-
-            const [yyyy, mm, dd] = kstString.split('-').map(Number);
-            const d = new Date(Date.UTC(yyyy, mm - 1, dd + Number(offset || 0)));
-            const daysMap = ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"];
-
-            return {
-                dateKey: `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`,
-                display: `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')} (${daysMap[d.getUTCDay()].slice(0, 1)})`,
-                header: `${d.getUTCMonth() + 1}월 ${d.getUTCDate()}일 ${daysMap[d.getUTCDay()]}`
-            };
-        }
-
-        // 경제 캘린더 이벤트 판별을 한 곳에서 통일합니다.
-        // 이전 배포본에서 type 값이 eco/economic으로 달라져도 대응합니다.
-        function isEconomicCalendarEvent(ev) {
-            if (!ev || !ev.date_key) return false;
-            const t = String(ev.type || '').toLowerCase();
-            return t === 'eco' || t === 'economic';
-        }
-
-        function getTodayKstDateKey() {
-            const now = new Date();
-            const kstString = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'Asia/Seoul',
-                year: 'numeric',
-                month: '2-digit',
-                day: '2-digit'
-            }).format(now);
-            return kstString.replace(/-/g, '.');
-        }
-
-        function findNearestEconomicOffset() {
-            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-            const todayKey = getTodayKstDateKey();
-            const [yyyy, mm, dd] = todayKey.split('.').map(Number);
-            const today = new Date(Date.UTC(yyyy, mm - 1, dd));
-
-            const economicDates = [...new Set(
-                all
-                    .filter(isEconomicCalendarEvent)
-                    .map(ev => String(ev.date_key).replace(/[\/]/g, '.'))
-            )].sort();
-
-            if (!economicDates.length) return 0;
-
-            // 1. 오늘 경제 일정이 있으면 오늘을 그대로 유지합니다.
-            if (economicDates.includes(todayKey)) {
-                return 0;
-            }
-
-            // 2. 오늘 이후 가장 가까운 경제 일정 날짜를 먼저 찾습니다.
-            //    주말/공휴일처럼 오늘 일정이 없는 경우 예정된 다음 일정으로 이동합니다.
-            for (const key of economicDates) {
-                const parts = key.split('.').map(Number);
-                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
-
-                const candidate = new Date(
-                    Date.UTC(parts[0], parts[1] - 1, parts[2])
-                );
-
-                if (candidate >= today) {
-                    return Math.round((candidate - today) / 86400000);
-                }
-            }
-
-            // 3. 미래 일정도 없으면 오늘 이전의 가장 최근 일정으로 이동합니다.
-            let latestKey = null;
-            for (const key of economicDates) {
-                const parts = key.split('.').map(Number);
-                if (parts.length !== 3 || parts.some(Number.isNaN)) continue;
-
-                const candidate = new Date(
-                    Date.UTC(parts[0], parts[1] - 1, parts[2])
-                );
-
-                if (candidate < today) {
-                    latestKey = key;
-                }
-            }
-
-            if (!latestKey) return 0;
-
-            const [y, m, d] = latestKey.split('.').map(Number);
-            const latestDate = new Date(Date.UTC(y, m - 1, d));
-            return Math.round((latestDate - today) / 86400000);
-        }
-
+        // 경제 캘린더는 독립 위젯으로 분리되어 있습니다.
         function renderEconomicCalendarView() {
-            // 첫 화면에서 오늘 경제 일정이 없으면
-            // 오늘 이전의 가장 최근 발표일을 자동으로 보여줍니다.
-            if (!economicCalendarAutoJumped && economicCalOffset === 0) {
-                const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-                const hasEconomicData = all.some(ev => isEconomicCalendarEvent(ev));
-
-                // API 데이터가 실제로 들어온 뒤에만 자동 이동을 확정합니다.
-                if (hasEconomicData) {
-                    const nearestOffset = findNearestEconomicOffset();
-                    if (nearestOffset !== 0) {
-                        economicCalOffset = nearestOffset;
-                    }
-                    economicCalendarAutoJumped = true;
-                }
-            }
-
-            const info = getCalendarDateInfo(economicCalOffset);
-            info.dateKey = String(info.dateKey || '').replace(/[\\/]/g, '.');
-            setTxt('ecoCalDisplayDate', info.display);
-
-            const container = document.getElementById('ecoCalEventList');
-            if (!container) return;
-
-            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => isEconomicCalendarEvent(ev)
-                    && String(ev.date_key).replace(/[\\/]/g, '.') === info.dateKey
-                    && (economicCalStarFilter === 'all' || String(ev.stars) === economicCalStarFilter));
-
-            setTxt(
-                'ecoCalDayHeader',
-                filtered.length && filtered[0].date_header
-                    ? filtered[0].date_header
-                    : `${info.header} · 주요 경제지표`
-            );
-
-            const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
-            economicCalPage = Math.max(1, Math.min(economicCalPage, totalPages));
-
-            const prev = document.getElementById('btnEcoCalPrev');
-            const next = document.getElementById('btnEcoCalNext');
-            if (prev) prev.disabled = economicCalPage <= 1;
-            if (next) next.disabled = economicCalPage >= totalPages;
-            setTxt('ecoCalPageIndicator', `${economicCalPage} / ${totalPages}`);
-
-            if (!filtered.length) {
-                container.innerHTML = `
-                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
-                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        이 날짜에 예정된 경제 일정이 없습니다.
-                    </div>
-                `;
-                scheduleCalendarHeightSync();
-                return;
-            }
-
-            const startIdx = (economicCalPage - 1) * calendarItemsPerPage;
-            container.innerHTML = filtered
-                .slice(startIdx, startIdx + calendarItemsPerPage)
-                .map(renderCalendarEventCard)
-                .join('');
-            scheduleCalendarHeightSync();
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.render() : undefined;
         }
-
-        function findNearestEarningsOffset() {
-            const all = Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [];
-            const futureDates = [...new Set(all
-                .filter(ev => ev.type === 'earn' && ev.date_key)
-                .map(ev => ev.date_key))].sort();
-            if (!futureDates.length) return 0;
-
-            const now = new Date();
-            const kstString = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit'
-            }).format(now);
-            const [yyyy, mm, dd] = kstString.split('-').map(Number);
-            const today = new Date(Date.UTC(yyyy, mm - 1, dd));
-
-            for (const key of futureDates) {
-                const [y, m, d] = key.split('.').map(Number);
-                const candidate = new Date(Date.UTC(y, m - 1, d));
-                if (candidate >= today) {
-                    return Math.round((candidate - today) / 86400000);
-                }
-            }
-            return 0;
-        }
-
-        function renderEarningsCalendarView() {
-            // 첫 화면에서 오늘 실적이 비어 있으면 가장 가까운 예정 실적일을 보여줍니다.
-            // 날짜 이동 버튼과 [오늘] 버튼은 이후 정상적으로 하루 단위로 작동합니다.
-            if (!earningsCalendarAutoJumped && earningsCalOffset === 0) {
-                const nearestOffset = findNearestEarningsOffset();
-                if (nearestOffset > 0) {
-                    earningsCalOffset = nearestOffset;
-                }
-                earningsCalendarAutoJumped = true;
-            }
-
-            const info = getCalendarDateInfo(earningsCalOffset);
-            setTxt('earnCalDisplayDate', info.display);
-
-            const container = document.getElementById('earnCalEventList');
-            if (!container) return;
-
-            let filtered = (Array.isArray(globalMarketCalendar) ? globalMarketCalendar : [])
-                .filter(ev => ev.type === 'earn' && ev.date_key === info.dateKey && (earningsCalStarFilter === 'all' || String(ev.stars) === earningsCalStarFilter));
-
-            setTxt(
-                'earnCalDayHeader',
-                filtered.length && filtered[0].date_header
-                    ? filtered[0].date_header
-                    : `${info.header} · 주요 기업 실적`
-            );
-
-            const totalPages = Math.ceil(filtered.length / calendarItemsPerPage) || 1;
-            earningsCalPage = Math.max(1, Math.min(earningsCalPage, totalPages));
-
-            const prev = document.getElementById('btnEarnCalPrev');
-            const next = document.getElementById('btnEarnCalNext');
-            if (prev) prev.disabled = earningsCalPage <= 1;
-            if (next) next.disabled = earningsCalPage >= totalPages;
-            setTxt('earnCalPageIndicator', `${earningsCalPage} / ${totalPages}`);
-
-            if (!filtered.length) {
-                container.innerHTML = `
-                    <div style="display:flex;align-items:center;justify-content:center;height:100%;
-                                color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">
-                        이 날짜에 실적 일정이 없습니다.
-                    </div>
-                `;
-                scheduleCalendarHeightSync();
-                return;
-            }
-
-            const startIdx = (earningsCalPage - 1) * calendarItemsPerPage;
-            container.innerHTML = filtered
-                .slice(startIdx, startIdx + calendarItemsPerPage)
-                .map(renderCalendarEventCard)
-                .join('');
-            scheduleCalendarHeightSync();
-        }
-
         function setCalendarStarFilter(type, value, btn) {
-            if (type === 'eco') economicCalStarFilter = value;
-            else earningsCalStarFilter = value;
-            const root = type === 'eco' ? '#rowEconomicCalendar' : '#rowEarningsCalendar';
-            document.querySelectorAll(`${root} .calendar-star-btn`).forEach(b => b.classList.remove('active'));
-            if (btn) btn.classList.add('active');
-            if (type === 'eco') { economicCalPage = 1; renderEconomicCalendarView(); }
-            else { earningsCalPage = 1; renderEarningsCalendarView(); }
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.setStarFilter(value, btn) : undefined;
         }
-
         function shiftEconomicCalendarDate(delta) {
-            economicCalOffset += Number(delta || 0);
-            economicCalPage = 1;
-            renderEconomicCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.shiftDate(delta) : undefined;
         }
-
         function resetEconomicCalendarDate() {
-            // [오늘] 버튼은 실제 오늘 날짜가 아니라,
-            // 경제지표가 현재 표시되는 기준점(오늘 일정이 없으면 가장 가까운 예정 일정)으로 돌아갑니다.
-            economicCalOffset = findNearestEconomicOffset();
-            economicCalPage = 1;
-            economicCalendarAutoJumped = true;
-            renderEconomicCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.resetDate() : undefined;
+        }
+        function changeEconomicCalendarPage(delta) {
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.changePage(delta) : undefined;
         }
 
-        function changeEconomicCalendarPage(delta) {
-            economicCalPage += Number(delta || 0);
-            renderEconomicCalendarView();
+        // 실적 캘린더는 독립 위젯으로 분리되어 있습니다.
+        // 기존 호출부/버튼 호환성을 위해 얇은 브리지 함수만 유지합니다.
+        function renderEarningsCalendarView() {
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.render()
+                : undefined;
+        }
+
+        function setEarningsCalendarStarFilter(value, btn) {
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.setStarFilter(value, btn)
+                : undefined;
         }
 
         function shiftEarningsCalendarDate(delta) {
-            earningsCalOffset += Number(delta || 0);
-            earningsCalPage = 1;
-            renderEarningsCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.shiftDate(delta)
+                : undefined;
         }
 
         function resetEarningsCalendarDate() {
-            // [오늘]을 누르면 단순히 오늘 날짜(실적이 없을 수 있음)로 가지 않고
-            // 초기 화면과 동일하게 '오늘 이후 가장 가까운 실적 발표일'로 돌아갑니다.
-            // 예: 오늘 8/30이고 다음 실적이 9/2라면 [오늘] → 9/2
-            const nearestOffset = findNearestEarningsOffset();
-            earningsCalOffset = nearestOffset;
-            earningsCalPage = 1;
-            earningsCalendarAutoJumped = true;
-            renderEarningsCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.resetDate()
+                : undefined;
         }
 
         function changeEarningsCalendarPage(delta) {
-            earningsCalPage += Number(delta || 0);
-            renderEarningsCalendarView();
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.changePage(delta)
+                : undefined;
         }
 
         function renderMarketCalendarView() {
@@ -11805,97 +11509,9 @@ function renderSparklineSVG(points, isUp) {
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;
             const targetName = displayName || symbol;
-const voteKey = 'vote_' + symbol;
-            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
-            let vData = JSON.parse(rawVote);
-            updateVoteUI(vData);
+if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
 
-            const cKey = 'comments_' + symbol;
-            const rawComm = localStorage.getItem(cKey) || JSON.stringify([]);
-            renderComments(JSON.parse(rawComm));
-        }
-
-        function updateVoteUI(vData) {
-            const total = vData.long + vData.short;
-            const lPct = total > 0 ? Math.round((vData.long / total) * 100) : 50;
-            const sPct = 100 - lPct;
-
-            setTxt('voteLongPct', `상승 ${lPct}%`);
-            setTxt('voteShortPct', `하락 ${sPct}%`);
-            
-            const lb = document.getElementById('voteLongBar');
-            if (lb) lb.style.width = lPct + '%';
-            const sb = document.getElementById('voteShortBar');
-            if (sb) sb.style.width = sPct + '%';
-
-            const btnL = document.getElementById('btnVoteLong');
-            const btnS = document.getElementById('btnVoteShort');
-            if (btnL && btnS) {
-                btnL.classList.remove('active-long');
-                btnS.classList.remove('active-short');
-                if (vData.myVote === 'long') btnL.classList.add('active-long');
-                if (vData.myVote === 'short') btnS.classList.add('active-short');
-            }
-        }
-
-        async function castVote(type) {
-            if (!currentSymbol) return;
-            const voteKey = 'vote_' + currentSymbol;
-            const rawVote = localStorage.getItem(voteKey) || JSON.stringify({ long: 15, short: 8, myVote: null });
-            const vData = JSON.parse(rawVote);
-
-            if (vData.myVote === type) return;
-
-            if (vData.myVote === 'long') vData.long = Math.max(0, vData.long - 1);
-            if (vData.myVote === 'short') vData.short = Math.max(0, vData.short - 1);
-
-            if (type === 'long') vData.long += 1;
-            if (type === 'short') vData.short += 1;
-
-            vData.myVote = type;
-            localStorage.setItem(voteKey, JSON.stringify(vData));
-            updateVoteUI(vData);
-        }
-
-        function renderComments(list) {
-            const wrap = document.getElementById('commentList');
-            if (!wrap) return;
-            setTxt('commentCountTag', `${list.length}개의 의견`);
-            wrap.innerHTML = '';
-            if (list.length === 0) {
-                wrap.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; padding:10px 0; text-align:center;">첫 번째 한마디를 남겨보세요!</div>';
-                return;
-            }
-            list.slice(0, 8).forEach(c => {
-                wrap.innerHTML += `
-                    <div class="comment-item">
-                        <div class="comment-head">
-                            <span class="comment-nick">${c.nick}</span>
-                            <span>${c.time}</span>
-                        </div>
-                        <div class="comment-body">${c.text}</div>
-                    </div>
-                `;
-            });
-        }
-
-        async function postComment() {
-            const input = document.getElementById('commentInput');
-            if (!input) return;
-            const txt = input.value.trim();
-            if (!txt || !currentSymbol) return;
-
-            const nicks = ["익명개미", "불꽃슈퍼개미", "성투개미", "황금손개미", "존버대장", "퀀트장인"];
-            const randomNick = nicks[Math.floor(Math.random() * nicks.length)] + "#" + Math.floor(100 + Math.random() * 900);
-
-            const cKey = 'comments_' + currentSymbol;
-            const rawComm = localStorage.getItem(cKey) || '[]';
-            const comments = JSON.parse(rawComm);
-
-            comments.unshift({ nick: randomNick, text: txt, time: "방금 전" });
-            localStorage.setItem(cKey, JSON.stringify(comments));
-            renderComments(comments);
-            input.value = '';
+            if (window.GaemiWidgets?.comment) window.GaemiWidgets.comment.load(symbol);
         }
 
         // STEP 48: 프론트 공통 수급 파싱 함수
@@ -12075,35 +11691,11 @@ if ((response && !response.ok) || data.error) {
 
                 loadCommunityData(data.symbol, displayName);
 
-                // 1. 글로벌 보드 렌더링
-                const wBoardGrid = document.getElementById('worldBoardGrid');
-                if (wBoardGrid) {
-                    if (Array.isArray(data.world_board) && data.world_board.length) {
-                        // STEP 6: innerHTML += 반복을 제거해 DOM 파싱/리플로우를 한 번으로 줄인다.
-                        wBoardGrid.innerHTML = data.world_board.map(w => {
-                            const cls = w.up ? 'val-up' : 'val-down';
-                            const sparkSvg = renderSparklineSVG(w.sparkline, w.up);
-                            const clickName = String(w.name || '').replace(/'/g, "\\'");
-                            return `
-                                <div class="mini-index-card" onclick="doSearch('${clickName === 'USD/KRW' ? '환율' : clickName}')">
-                                    <div class="mini-top">
-                                        <span class="mini-name">${String(w.name || '')}</span>
-                                        <span class="mini-tag">${String(w.tag || '')}</span>
-                                    </div>
-                                    <div class="mini-mid-row">
-                                        <div>
-                                            <div class="mini-price">${String(w.price || '')}</div>
-                                            <div class="mini-rate ${cls}">${String(w.rate || '')}</div>
-                                        </div>
-                                        ${sparkSvg}
-                                    </div>
-                                </div>
-                            `;
-                        }).join('');
-                    } else {
-                        wBoardGrid.innerHTML = '';
-                    }
+                // 1. 증시는 지금 위젯 렌더링 (독립 위젯으로 분리)
+                if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+                    window.GaemiWidgets.worldBoard.render(data.world_board || []);
                 }
+
 
                 // 2. 캘린더 데이터 저장 및 렌더링
                 if (data.market_calendar) {
@@ -12113,738 +11705,59 @@ if ((response && !response.ok) || data.error) {
                     // 최초 화면 렌더링 시에는 API 데이터가 아직 도착하지 않아
                     // 경제 캘린더 자동 이동 플래그가 먼저 켜질 수 있습니다.
                     // 실제 데이터가 도착한 뒤 다시 한 번 자동 이동을 판단합니다.
-                    economicCalendarAutoJumped = false;
-                    economicCalOffset = 0;
-                    economicCalPage = 1;
-
+                    window.globalMarketCalendar = globalMarketCalendar;
+                    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                        window.GaemiWidgets.economicCalendar.resetState();
+                    }
                     renderMarketCalendarView();
                 }
 
-                // 3. 퀀트 분석 데이터 렌더링
-                const q = data.quant;
-                if (q) {
-                    setTxt('qScoreVal', q.quant_score);
-                    setTxt('qScoreBadge', q.score_badge);
-                    setHtml('qScoreDots', q.score_dots);
-
-                    setTxt('qZScoreVal', q.z_score);
-                    setTxt('qVolVal', `${q.ann_vol} (${q.vol_risk_state ? q.vol_risk_state.split(' ')[0] : ''})`);
-
-                    const qSignalChart = document.getElementById('qSignalChart');
-                    const qSignalNow = document.getElementById('qMomentumValTxt');
-                    if (qSignalChart && Array.isArray(q.momentum_history) && q.momentum_history.length > 1) {
-                        const scores = q.momentum_history.map(x => Number(x.score));
-                        const w = 600;
-                        const h = 120;
-                        const coords = scores.map((score, i) => {
-                            const x = (i / Math.max(1, scores.length - 1)) * w;
-                            const y = h - ((score / 100.0) * h);
-                            return `${x.toFixed(1)},${Math.max(6, Math.min(h-6, y)).toFixed(1)}`;
-                        });
-                        const linePath = 'M ' + coords.join(' L ');
-                        const areaPath = `M ${coords[0].split(',')[0]},${h} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${h} Z`;
-                        const lastScore = scores[scores.length - 1];
-
-                        qSignalChart.innerHTML = `
-                            <defs>
-                                <linearGradient id="qSigFill" x1="0" x2="0" y1="0" y2="1">
-                                    <stop offset="0%" stop-color="#10b981" stop-opacity="0.35"/>
-                                    <stop offset="100%" stop-color="#10b981" stop-opacity="0.02"/>
-                                </linearGradient>
-                            </defs>
-                            <line x1="0" y1="36" x2="600" y2="36" stroke="rgba(16,185,129,0.2)" stroke-width="1" stroke-dasharray="4 4"/>
-                            <line x1="0" y1="72" x2="600" y2="72" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
-                            <path d="${areaPath}" fill="url(#qSigFill)"/>
-                            <path d="${linePath}" fill="none" stroke="#10b981" stroke-width="3" vector-effect="non-scaling-stroke"/>
-                            <circle cx="${coords[coords.length-1].split(',')[0]}" cy="${coords[coords.length-1].split(',')[1]}" r="5" fill="#10b981" stroke="#ffffff" stroke-width="2" vector-effect="non-scaling-stroke"/>
-                        `;
-                        if (qSignalNow) qSignalNow.innerText = `현재 ${lastScore}점 (${q.score_badge})`;
-                    } else if (qSignalNow) {
-                        qSignalNow.innerText = `현재 ${q.quant_score}점`;
-                    }
-
-                    setTxt('qLow52w', `최저 ${q.low_52w}`);
-                    setTxt('qHigh52w', `최고 ${q.high_52w}`);
-                    const qFill = document.getElementById('qSliderFill');
-                    if (qFill) qFill.style.width = q.slider_fill_pct + '%';
-                    const qDot = document.getElementById('qDotMarker');
-                    if (qDot) qDot.style.left = q.slider_fill_pct + '%';
-
-                    const qList = document.getElementById('quantDetailList');
-                    if (qList) {
-                        qList.innerHTML = `
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">통계적 Z-Score</span>
-                                    <span class="quant-row-status status-pill-${q.z_color}">${q.z_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.z_score}</div>
-                                    <div class="quant-row-subval">20D 표준점수</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">20일 이동평균선</span>
-                                    <span class="quant-row-status status-pill-${q.ma20_color}">${q.ma20_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.ma20}</div>
-                                    <div class="quant-row-subval">중기 추세선</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">볼린저 밴드 (60, 2)</span>
-                                    <span class="quant-row-status status-pill-${q.bb_color}">${q.bb_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.bollinger}</div>
-                                    <div class="quant-row-subval">상단 / 하단</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">MACD (12, 26, 9)</span>
-                                    <span class="quant-row-status status-pill-${q.macd_color}">${q.macd_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.macd}</div>
-                                    <div class="quant-row-subval">모멘텀 지표</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">RSI (14)</span>
-                                    <span class="quant-row-status status-pill-${q.rsi_color}">${q.rsi_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.rsi} pt</div>
-                                    <div class="quant-row-subval">상대강도지수</div>
-                                </div>
-                            </div>
-                            <div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">거래량 / 5일평균</span>
-                                    <span class="quant-row-status status-pill-${q.vol_color}">${q.vol_state}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${q.vol_ratio}</div>
-                                    <div class="quant-row-subval">유동성 비율</div>
-                                </div>
-                            </div>
-                        `;
-                    }
-
-                    setTxt('rWinRateGauge', q.win_rate_num);
-                    setTxt('rBt1yTag', q.bt_1y);
-                    setTxt('rBt2yTag', q.bt_2y);
-                    setTxt('rRrTag', q.rr_str);
-
-                    setTxt('rSliderStop', q.stop_p);
-                    setTxt('rSliderEntry', `기준 ${q.entry1}`);
-                    setTxt('rSliderTarget', q.target2);
-
-                    const sFill = document.getElementById('rSigBarFill');
-                    if (sFill) sFill.style.width = q.sig_fill_pct + '%';
-                    const sDot = document.getElementById('rSigDotMarker');
-                    if (sDot) sDot.style.left = q.sig_fill_pct + '%';
-
-                    setTxt('rEntry1', q.entry1);
-                    setTxt('rEntry2', q.entry2);
-                    setTxt('rTarget1', q.target1);
-                    setTxt('rTarget2', q.target2);
-                    setTxt('rStop', q.stop_p);
-                    setTxt('rGuideText', q.guide_text);
+                // 3. 퀀트 분석 데이터 렌더링 (독립 위젯)
+                if (window.GaemiWidgets && window.GaemiWidgets.quant) {
+                    window.GaemiWidgets.quant.render(data.quant);
                 }
-                // 3.5 "왜 움직였을까?" 코멘트 + "트랙 분석" 근거 렌더링
-                const mr = data.movement_reason;
-                const mrCard = document.getElementById('movementReasonCard');
-                if (mrCard && mr) {
-                    const confidenceStyle =
-                        mr.confidence === '높음'
-                            ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
-                            : mr.confidence === '중간'
-                                ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
-                                : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+                if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
+                    window.GaemiWidgets.maliciousZone.render(data);
+                }
+                // 3.5 왜 움직였을까? — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
+                    window.GaemiWidgets.whyMovement.render(data);
+                }
 
-                    const evidenceReasons = (mr.reasons || []).slice().sort((a,b) => {
+                // 3.6 트랙 분석 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.track) {
+                    const mr = data && data.movement_reason;
+                    const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
                         const a5 = a.key === 'market_5d' ? 1 : 0;
                         const b5 = b.key === 'market_5d' ? 1 : 0;
                         if (a5 !== b5) return a5 - b5;
                         return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
                     });
                     const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
-
-
-                    // 기존에 확정한 "왜 움직였을까?" 고정 코멘트 생성 로직을
-                    // 트랙 분석 디자인 변경과 분리해 그대로 유지한다.
-                    const scoreOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? Number(x.score||0) : 0; };
-                    const detailOf = key => { const x=evidenceReasons.find(r=>r.key===key); return x ? String(x.detail||'') : ''; };
-                    const materialReason = evidenceReasons.find(r => r.key === 'material') || null;
-
-                    const priceText = data.price || data.price_str || '-';
-                    const pct = Number(data.current_change_pct);
-                    const topicParticle = (() => {
-                        const text = String(displayName || '').trim();
-                        const last = text.charCodeAt(text.length - 1);
-                        if (last >= 0xAC00 && last <= 0xD7A3) {
-                            return ((last - 0xAC00) % 28) === 0 ? '는' : '은';
-                        }
-                        return '은';
-                    })();
-
-                    const directionText =
-                        Number.isFinite(pct)
-                            ? (pct > 0 ? '상승' : pct < 0 ? '하락' : '보합')
-                            : (mr.direction === '하락' ? '하락' : mr.direction === '상승' ? '상승' : '보합');
-
-                    const boardItems = Array.isArray(data.world_board) ? data.world_board : [];
-                    const findBoard = (...names) => boardItems.find(item =>
-                        names.some(name => String(item?.name || '').toLowerCase() === String(name).toLowerCase())
-                    );
-                    const rateNumber = item => {
-                        if (!item) return null;
-                        const n = Number(String(item.rate ?? '').replace('%','').replace('+',''));
-                        return Number.isFinite(n) ? n : null;
-                    };
-                    const upDown = n => n > 0 ? '상승' : n < 0 ? '하락' : '보합';
-
-                    const marketType = String(data.market || data.market_name || data.market_type || '').toLowerCase();
-                    const isUSMarket = marketType.includes('미국주식') || marketType.includes('미국') || marketType.includes('us');
-                    const isCryptoMarket = marketType.includes('암호화폐') || marketType.includes('암호') || marketType.includes('crypto') || marketType.includes('코인');
-                    const selectedMarketName = isUSMarket
-                        ? '나스닥'
-                        : (String(data.market_index_name || '').toUpperCase() === 'KOSDAQ' ? '코스닥' : '코스피');
-                    const marketItem = isUSMarket
-                        ? findBoard('QQQ')
-                        : findBoard(selectedMarketName, selectedMarketName === '코스피' ? 'KOSPI' : 'KOSDAQ');
-                    const marketRate = rateNumber(marketItem);
-
-                    const newsBlob = [
-                        displayName,
-                        ...(Array.isArray(mr.news_evidence) ? mr.news_evidence.map(x => x?.title || '') : []),
-                        ...(Array.isArray(materialReason?.news_clusters) ? materialReason.news_clusters.flatMap(c => c?.keywords || []) : [])
-                    ].join(' ').toLowerCase();
-                    const semiconductorKeywords = ['반도체','hbm','hbm4','dram','nand','메모리','gpu','semiconductor'];
-                    const isSemiconductor = semiconductorKeywords.some(k => newsBlob.includes(k));
-                    const soxxItem = findBoard('SOXX');
-                    const soxxRate = rateNumber(soxxItem);
-
-                    // STEP 43: "왜 움직였을까?"는 AI가 뉴스 본문을 재해석하지 않고
-                    // 이미 확보된 하단 데이터(movement_reason / DART / 시장지수)만으로
-                    // 고정 템플릿을 조립한다. 화면의 숫자와 문장이 서로 어긋나지 않도록
-                    // 근거가 없는 원인·수치·인과관계는 문장에 넣지 않는다.
-                    const parts = [];
-
-                    // 1) 첫 문장: 현재가/등락률은 화면의 실제 응답값 그대로 사용
-                    parts.push(
-                        Number.isFinite(pct)
-                            ? `🐜 개미들아! ${displayName}${topicParticle} 오늘 ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% ${directionText} 중이야.`
-                            : `🐜 개미들아! ${displayName}${topicParticle} 현재 흐름을 확인하고 있어.`
-                    );
-
-                    // STEP 48: 전역 공통 함수만 사용한다.
-                    // 이 블록 안에서 const domesticFlowValue를 다시 선언하지 않는다.
-                    // 2) 수급 근거: 실제 5거래일 순매수/순매도 수치가 있는 경우에만 출력
-                    const flowCandidates = [
-                        { key: 'foreign', label: '외국인', value: getDomesticFlowValue(mr, 'foreign') },
-                        { key: 'institution', label: '기관', value: getDomesticFlowValue(mr, 'institution') }
-                    ].filter(x => x.value !== null && Number.isFinite(x.value));
-
-                    const selectedFlow = flowCandidates.length
-                        ? flowCandidates.slice().sort((a,b) => Math.abs(b.value) - Math.abs(a.value))[0]
-                        : null;
-
-                    // 3) 공시/기업 재료와 거시 이벤트를 분리한다.
-                    // STEP 44: 종목 뉴스에 FOMC/연준이 단순 언급된 것만으로
-                    // 거시 원인을 선택하지 않는다. 거시 이벤트는 global_news + 일정에서
-                    // 독립 출처가 2개 이상 확인되거나 실제 일정 이벤트가 있을 때만 채택한다.
-                    const disclosureItems = Array.isArray(data.dart_disclosures) ? data.dart_disclosures : [];
-                    const disclosurePositive = disclosureItems.filter(x => String(x?.tag_type || '') === 'positive').length;
-                    const disclosureNegative = disclosureItems.filter(x => String(x?.tag_type || '') === 'negative').length;
-                    const hasDisclosure = disclosureItems.length > 0;
-                    const hasMaterialCluster = !!(
-                        materialReason &&
-                        Array.isArray(materialReason.news_clusters) &&
-                        materialReason.news_clusters.length
-                    );
-
-                    // 종목 재료에서 거시 키워드는 제거한다.
-                    if (hasMaterialCluster) {
-                        const cluster = materialReason.news_clusters[0] || null;
-                        const kws = cluster && Array.isArray(cluster.keywords) ? cluster.keywords : [];
-                        const map = {
-                            'hbm4':'HBM4','hbm':'HBM','ai':'AI 수요','인공지능':'AI 수요','gpu':'GPU 수요',
-                            '수요':'수요 확대','공급':'공급 확대','공급망':'공급망 확대','증설':'증설',
-                            '실적':'실적','earnings':'실적','매출':'매출 성장','영업이익':'영업이익',
-                            '수주':'수주','계약':'계약','관세':'관세','aws':'AWS'
-                        };
-                        const mapped = kws.map(k => map[String(k).toLowerCase()] || String(k)).filter(Boolean);
-                        const generic = new Set(['주가','시장','관련','소식','전망','기대','확대','증가','감소','하락','상승']);
-                        const macroOnly = new Set([
-                            'fomc','연준','fed','파월','금리','금리인하','금리인상','기준금리',
-                            'cpi','물가','소비자물가','인플레이션','고용','비농업','실업률','관세','무역'
-                        ]);
-                        const filtered = mapped.filter(x => !generic.has(x) && !macroOnly.has(String(x).toLowerCase()));
-                        const uniq = [...new Set(filtered)];
-                        if (uniq.length) materialText = uniq.slice(0, 2).join(' ');
-                    }
-
-                    // STEP 45: 거시 이벤트는 '현재 영향이 있는 자료'만 사용한다.
-                    // 과거 7월 FOMC처럼 오래된 뉴스/일정을 9월 현재 원인으로 재사용하지 않는다.
-                    // 뉴스는 pubDate 기준 최근 72시간만 인정하고, 캘린더는 오늘 기준
-                    // 과거 2일 이내 또는 향후 7일 이내의 이벤트만 인정한다.
-                    const nowMs = Date.now();
-                    const newsFreshMs = 72 * 60 * 60 * 1000;
-                    const parseNewsDate = (x) => {
-                        const raw = x?.pubDate || x?.publishedAt || x?.date || x?.datetime || '';
-                        if (!raw) return null;
-                        const t = Date.parse(String(raw));
-                        return Number.isFinite(t) ? t : null;
-                    };
-                    const globalMacroItems = Array.isArray(data.global_news) ? data.global_news.filter(x => {
-                        const title = String(x?.title || '').toLowerCase();
-                        const t = parseNewsDate(x);
-                        const fresh = t !== null && Math.abs(nowMs - t) <= newsFreshMs;
-                        return fresh && /\bfomc\b|연준|fed|파월|기준금리|금리인하|금리인상|cpi|소비자물가|인플레이션|고용|비농업|실업률/.test(title);
-                    }) : [];
-                    const macroSources = new Set(
-                        globalMacroItems.map(x => String(x?.media || x?.source || '').trim().toLowerCase()).filter(Boolean)
-                    );
-                    const calendarFomcItems = Array.isArray(data.market_calendar) ? data.market_calendar.filter(x => {
-                        const text = JSON.stringify(x).toLowerCase();
-                        if (!/\bfomc\b|fomc statement|fomc press conference|연준/.test(text)) return false;
-                        const rawDate = x?.date_key || x?.date || x?.event_date || '';
-                        if (!rawDate) return false;
-                        const t = Date.parse(String(rawDate).slice(0, 10) + 'T00:00:00');
-                        if (!Number.isFinite(t)) return false;
-                        const days = (t - nowMs) / 86400000;
-                        return days >= -2 && days <= 7;
-                    }) : [];
-                    const calendarHasFomc = calendarFomcItems.length > 0;
-                    const validatedMacro = macroSources.size >= 2 || calendarHasFomc;
-
-                    let macroEventText = '';
-                    if (validatedMacro && globalMacroItems.length) {
-                        const macroBlob = globalMacroItems.map(x => String(x?.title || '')).join(' ').toLowerCase();
-                        if (/\bfomc\b|연준|fed|파월/.test(macroBlob)) {
-                            if (/금리인하|인하 기대|기대 약화|기대 후퇴|금리인상|매파|긴축/.test(macroBlob)) {
-                                macroEventText = 'FOMC·연준의 금리 경계';
-                            } else if (/기자회견|발언|성명/.test(macroBlob)) {
-                                macroEventText = 'FOMC·연준 발언';
-                            } else {
-                                macroEventText = 'FOMC·연준 관련 이슈';
-                            }
-                        } else if (/cpi|소비자물가|인플레이션|물가/.test(macroBlob)) {
-                            macroEventText = '미국 물가 관련 이슈';
-                        } else if (/고용|비농업|실업률/.test(macroBlob)) {
-                            macroEventText = '미국 고용 관련 이슈';
-                        }
-                    }
-
-                    // 4) 우선순위: 실제 수급 → 실제 공시/기업재료 → 검증된 거시 이벤트 → 시장 연동
-                    if (selectedFlow) {
-                        const flowWord = selectedFlow.value >= 0 ? '순매수' : '순매도';
-                        parts.push(
-                            `최근 5거래일 동안 ${selectedFlow.label}이(가) ${Math.abs(selectedFlow.value).toLocaleString('ko-KR')}주 ${flowWord}를 기록했어. 하단 수급 차트와 퀀트 지표를 함께 확인해봐!`
-                        );
-                    } else if (hasDisclosure || (hasMaterialCluster && materialText)) {
-                        const materialLabel = materialText || '기업 관련 재료';
-                        if (hasDisclosure) {
-                            parts.push(`최근 ${materialLabel} 관련 공시·재료가 확인됐어. 세부 공시 원문은 아래 DART 위젯에서 확인할 수 있어.`);
-                        } else {
-                            parts.push(`최근 ${materialLabel} 관련 재료가 확인됐어. 아래 뉴스와 하단 데이터를 함께 확인해봐.`);
-                        }
-                    } else if (macroEventText && !isCryptoMarket) {
-                        parts.push(`${macroEventText}가 여러 독립 출처에서 확인됐어. 시장 흐름과 하단 데이터를 함께 확인해봐.`);
-                    } else if (marketRate !== null && !isCryptoMarket) {
-                        parts.push(
-                            `특이한 개별 수급 근거가 확인되지 않는 가운데 ${selectedMarketName} 지수는 ${marketRate >= 0 ? '+' : ''}${marketRate.toFixed(2)}% ${upDown(marketRate)} 중이야. 시장 흐름과 하단 수급 데이터를 함께 확인해봐.`
-                        );
-                    } else {
-                        parts.push('현재 확인된 데이터만으로는 특정 원인을 단정하기 어려워. 하단 수급·퀀트 지표를 함께 확인해봐.');
-                    }
-
-                    parts.push('🐜 오늘도 개미들 힘내자! 💪');
-                    const gaemiComment = parts.join('\n\n');
-
-                    mrCard.innerHTML = `
-                        <div style="font-size:0.86rem;color:var(--text-sub);line-height:1.72;white-space:pre-line;word-break:keep-all;">
-                            ${gaemiComment}
-                        </div>
-                    `;
-
-                    // 트랙 분석: 퀀트 분석과 동일한 카드형 레이아웃을 사용한다.
-                    const trackPriceVal = document.getElementById('tPriceVal');
-                    const trackChangeVal = document.getElementById('tChangeVal');
-                    const trackEvidenceVal = document.getElementById('tEvidenceCountVal');
-                    const trackStatusBadge = document.getElementById('tStatusBadge');
-                    const trackStatusDots = document.getElementById('tStatusDots');
-                    const trackPriceTrendTxt = document.getElementById('tPriceTrendTxt');
-
-                    if (trackPriceVal) trackPriceVal.innerText = data.price_str || '-';
-
-                    const cp = Number(data.current_change_pct);
-                    if (trackChangeVal) {
-                        trackChangeVal.innerText = Number.isFinite(cp) ? `${cp >= 0 ? '+' : ''}${cp.toFixed(2)}%` : '-';
-                        trackChangeVal.style.color =
-                            Number.isFinite(cp) && cp > 0 ? '#10b981' :
-                            (Number.isFinite(cp) && cp < 0 ? '#ef4444' : 'var(--text-title)');
-                    }
-
-                    if (trackEvidenceVal) {
-                        trackEvidenceVal.innerText = `${evidenceCount}/8`;
-                    }
-                    if (trackStatusBadge) {
-                        trackStatusBadge.innerText = mr.confidence || '-';
-                        trackStatusBadge.style.cssText = confidenceStyle;
-                    }
-                    if (trackStatusDots) {
-                        trackStatusDots.innerText =
-                            evidenceCount > 0
-                                ? `확인된 근거 ${evidenceCount}개 · 실제 데이터 기준`
-                                : '확인된 근거 부족 · 추가 확인 필요';
-                    }
-
-                    // 최근 60거래일: 현재 응답의 실제 candles를 사용한다.
-                    const tPriceChart = document.getElementById('tPriceChart');
-                    const candleRows = Array.isArray(data.candles) ? data.candles.slice(-60) : [];
-
-                    // 서버가 보내는 candles 필드는 open/high/low/close 형식이다.
-                    // 기존 코드가 x.c를 읽고 있어 차트 값이 전부 비어 있던 문제를 수정한다.
-                    // close를 우선 사용하고, 혹시 다른 응답 형식이 들어와도 c를 보조로 사용한다.
-                    const trackVals = candleRows
-                        .map(x => {
-                            const close = Number(x && x.close);
-                            if (Number.isFinite(close)) return close;
-                            const legacyClose = Number(x && x.c);
-                            return Number.isFinite(legacyClose) ? legacyClose : NaN;
-                        })
-                        .filter(Number.isFinite);
-
-                    if (tPriceChart && trackVals.length > 1) {
-                        const first = trackVals[0];
-                        const normalized = first !== 0 ? trackVals.map(v => ((v / first) - 1) * 100) : [];
-                        if (normalized.length > 1 && normalized.every(Number.isFinite)) {
-                            const W = 600, H = 120, pad = 8;
-                            const minV = Math.min(...normalized), maxV = Math.max(...normalized);
-                            const span = Math.max(0.01, maxV - minV);
-                            const x = i => pad + i * ((W - pad * 2) / Math.max(1, normalized.length - 1));
-                            const y = v => pad + ((maxV - v) / span) * (H - pad * 2);
-                            const coords = normalized.map((v,i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
-                            const linePath = 'M ' + coords.join(' L ');
-                            const baseY = y(0);
-                            const areaPath = `M ${coords[0].split(',')[0]},${baseY.toFixed(1)} L ${coords.join(' L ')} L ${coords[coords.length-1].split(',')[0]},${baseY.toFixed(1)} Z`;
-                            const last = normalized[normalized.length - 1];
-                            const stroke = last >= 0 ? '#10b981' : '#ef4444';
-
-                            tPriceChart.innerHTML = `
-                                <defs>
-                                    <linearGradient id="tPriceFill" x1="0" x2="0" y1="0" y2="1">
-                                        <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"/>
-                                        <stop offset="100%" stop-color="${stroke}" stop-opacity="0.02"/>
-                                    </linearGradient>
-                                </defs>
-                                <line x1="0" y1="${baseY.toFixed(1)}" x2="600" y2="${baseY.toFixed(1)}"
-                                      stroke="rgba(148,163,184,0.20)" stroke-width="1" stroke-dasharray="4 4"/>
-                                <path d="${areaPath}" fill="url(#tPriceFill)"/>
-                                <path d="${linePath}" fill="none" stroke="${stroke}" stroke-width="3"
-                                      vector-effect="non-scaling-stroke"/>
-                                <circle cx="${coords[coords.length-1].split(',')[0]}"
-                                        cy="${coords[coords.length-1].split(',')[1]}"
-                                        r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2"
-                                        vector-effect="non-scaling-stroke"/>
-                            `;
-
-                            if (trackPriceTrendTxt) {
-                                const p = normalized[normalized.length - 1];
-                                trackPriceTrendTxt.innerText =
-                                    `최근 60D ${p >= 0 ? '+' : ''}${p.toFixed(2)}%`;
-                            }
-                        }
-                    } else if (trackPriceTrendTxt) {
-                        trackPriceTrendTxt.innerText =
-                            trackVals.length === 0 ? '데이터 부족' : '주가 흐름 데이터 부족';
-                    }
-
-                    // 근거 확인: 확인된 실제 근거 데이터를 최대 8칸의 색상 막대로 표시한다.
-                    const evidenceBar = document.getElementById('tEvidenceBar');
-                    const evidenceBarLabel = document.getElementById('tEvidenceBarLabel');
-                    if (evidenceBar) {
-                        const evidenceItems = Array.isArray(evidenceReasons) ? evidenceReasons.slice(0, 8) : [];
-                        const confirmedCount = evidenceItems.filter(r => {
-                            const score = Number(r && r.score);
-                            return Number.isFinite(score) && score !== 0;
-                        }).length;
-
-                        evidenceBar.innerHTML = Array.from({length: 8}, (_, idx) => {
-                            const r = evidenceItems[idx];
-                            const score = Number(r && r.score);
-                            let bg = 'var(--bg-subcard)';
-                            let border = '1px solid var(--border-line)';
-                            if (Number.isFinite(score) && score > 0) {
-                                bg = '#10b981';
-                                border = '1px solid #10b981';
-                            } else if (Number.isFinite(score) && score < 0) {
-                                bg = '#ef4444';
-                                border = '1px solid #ef4444';
-                            } else if (r) {
-                                bg = '#9ca3af';
-                                border = '1px solid #9ca3af';
-                            }
-                            return `<div title="${r ? (r.label || '근거') : '확인된 근거 없음'}"
-                                         style="height:100%; background:${bg}; border:${border}; border-radius:3px; min-width:0;"></div>`;
-                        }).join('');
-
-                        if (evidenceBarLabel) {
-                            evidenceBarLabel.innerText = `${confirmedCount} / 8`;
-                        }
-                    }
-
-                    // 상세 근거: 표시 순서만 고정한다. 분석 데이터/점수 계산은 변경하지 않는다.
-                    const trackDisplayOrder = [
-                        'market_5d',
-                        'market',
-                        'theme',
-                        'foreign',
-                        'institution',
-                        'material',
-                        'volume',
-                        'trading_value'
-                    ];
-                    const orderedEvidenceReasons = [...evidenceReasons].sort((a, b) => {
-                        const ai = trackDisplayOrder.indexOf(a.key);
-                        const bi = trackDisplayOrder.indexOf(b.key);
-                        return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-                    });
-
-                    const trackDetailList = document.getElementById('trackDetailList');
-                    if (trackDetailList) {
-                        trackDetailList.innerHTML = orderedEvidenceReasons.map(r => {
-                            const score = Number(r.score || 0);
-                            const status = score > 0 ? '우호적' : score < 0 ? '부정적' : '중립';
-                            const statusClass =
-                                score > 0 ? 'status-pill-positive' :
-                                score < 0 ? 'status-pill-negative' : 'status-pill-neutral';
-
-                            return `<div class="quant-row-item">
-                                <div class="quant-row-left">
-                                    <span class="quant-row-name">${r.label || '-'}</span>
-                                    <span class="quant-row-status ${statusClass}">${status}</span>
-                                </div>
-                                <div class="quant-row-right">
-                                    <div class="quant-row-val">${String(r.detail || '-')}</div>
-                                </div>
-                            </div>`;
-                        }).join('') || `<div style="padding:12px 0;color:var(--text-muted);font-size:0.78rem;">확인된 데이터가 없습니다.</div>`;
-                    }
+                    const confidenceStyle = mr && mr.confidence === '높음'
+                        ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+                        : mr && mr.confidence === '중간'
+                            ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+                            : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+                    window.GaemiWidgets.track.render(data, mr, evidenceReasons, evidenceCount, confidenceStyle);
+                }
+                // 4. 종목 뉴스 렌더링 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
+                    window.GaemiWidgets.stockNews.render(data.stock_news);
                 }
 
-                // 4. 종목 뉴스 & 경제뉴스 렌더링 (둘 다 최대 10개 / 6개 시작 / 4개 더보기)
-                const sNews = document.getElementById('stockNewsList');
-                if (sNews) {
-                    if (Array.isArray(data.stock_news) && data.stock_news.length > 0) {
-                        const allStockNews = data.stock_news.slice(0, 10);
-                        const firstCount = 6;
-                        const moreCount = 4;
-                        let visibleStockCount = Math.min(firstCount, allStockNews.length);
-
-                        const renderStockNews = () => {
-                            sNews.innerHTML = allStockNews.slice(0, visibleStockCount).map(n => `
-                                <a href="${n.link}" target="_blank" class="news-item">
-                                    <div class="news-title">${n.title}</div>
-                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                                </a>
-                            `).join('');
-
-                            if (visibleStockCount < allStockNews.length || visibleStockCount > firstCount) {
-                                const moreBtn = document.createElement('button');
-                                moreBtn.type = 'button';
-                                moreBtn.textContent = visibleStockCount < allStockNews.length
-                                    ? `더보기 (${Math.min(moreCount, allStockNews.length - visibleStockCount)}개)`
-                                    : '접기';
-                                moreBtn.style.cssText = `
-                                    width:100%; margin-top:10px; padding:9px 0;
-                                    border:1px solid var(--border-line); border-radius:8px;
-                                    background:var(--bg-card); color:var(--text-sub);
-                                    font-size:0.82rem; font-weight:700; cursor:pointer;
-                                `;
-                                moreBtn.addEventListener('click', () => {
-                                    if (visibleStockCount < allStockNews.length) {
-                                        visibleStockCount = Math.min(visibleStockCount + moreCount, allStockNews.length);
-                                    } else {
-                                        visibleStockCount = firstCount;
-                                    }
-                                    renderStockNews();
-                                });
-                                sNews.appendChild(moreBtn);
-                            }
-                        };
-
-                        renderStockNews();
-                    } else {
-                        sNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">관련 뉴스가 없습니다.</div>';
-                    }
+                // 5. 경제뉴스 위젯 렌더링 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
+                    window.GaemiWidgets.globalNews.render(data.global_news);
                 }
 
-                const gNews = document.getElementById('globalNewsList');
-                if (gNews) {
-                    if (Array.isArray(data.global_news) && data.global_news.length > 0) {
-                        const allGlobalNews = data.global_news.slice(0, 10);
-                        const firstCount = 6;
-                        const moreCount = 4;
-                        let visibleGlobalCount = Math.min(firstCount, allGlobalNews.length);
-
-                        const renderGlobalNews = () => {
-                            gNews.innerHTML = allGlobalNews.slice(0, visibleGlobalCount).map(n => `
-                                <a href="${n.link}" target="_blank" class="news-item">
-                                    <div class="news-title">${n.title}</div>
-                                    <div class="news-meta">${n.media} · ${n.pubDate}</div>
-                                </a>
-                            `).join('');
-
-                            if (visibleGlobalCount < allGlobalNews.length || visibleGlobalCount > firstCount) {
-                                const moreBtn = document.createElement('button');
-                                moreBtn.type = 'button';
-                                moreBtn.textContent = visibleGlobalCount < allGlobalNews.length
-                                    ? `더보기 (${Math.min(moreCount, allGlobalNews.length - visibleGlobalCount)}개)`
-                                    : '접기';
-                                moreBtn.style.cssText = `
-                                    width:100%; margin-top:10px; padding:9px 0;
-                                    border:1px solid var(--border-line); border-radius:8px;
-                                    background:var(--bg-card); color:var(--text-sub);
-                                    font-size:0.82rem; font-weight:700; cursor:pointer;
-                                `;
-                                moreBtn.addEventListener('click', () => {
-                                    if (visibleGlobalCount < allGlobalNews.length) {
-                                        visibleGlobalCount = Math.min(visibleGlobalCount + moreCount, allGlobalNews.length);
-                                    } else {
-                                        visibleGlobalCount = firstCount;
-                                    }
-                                    renderGlobalNews();
-                                });
-                                gNews.appendChild(moreBtn);
-                            }
-                        };
-
-                        renderGlobalNews();
-                    } else {
-                        gNews.innerHTML = '<div style="color:var(--text-muted); font-size:0.85rem;">경제뉴스를 불러오는 중입니다.</div>';
-                    }
+                // 5. 애널리스트 컨센서스 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
+                    window.GaemiWidgets.consensus.render(data.consensus);
                 }
 
-                // 5. 컨센서스 & 공시
-                const c = data.consensus;
-                const uCard = document.getElementById('rowConsensus');
-                if (c && uCard) {
-                    setTxt('uTitle', c.title);
-                    setTxt('uGaugeVal', c.gauge_val);
-                    setTxt('uGaugeLabel', c.gauge_label);
-                    setTxt('uStatusLabel', c.status_label);
-                    setTxt('uBadge', c.badge_text);
-                    setHtml('uDots', c.dots);
-
-                    setTxt('uPrimaryLabel', c.primary_label);
-                    setTxt('uPrimaryVal', c.primary_val);
-                    setTxt('uSecondaryLabel', c.secondary_label);
-                    setTxt('uSecondaryVal', c.secondary_val);
-
-                    setTxt('uSliderLeft', c.slider_left);
-                    setTxt('uSliderMid', c.slider_mid);
-                    setTxt('uSliderRight', c.slider_right);
-
-                    const uFill = document.getElementById('uBarFill');
-                    if (uFill) uFill.style.width = c.fill_pct + '%';
-                    const uDot = document.getElementById('uDotMarker');
-                    if (uDot) uDot.style.left = c.fill_pct + '%';
-
-                    setTxt('uListTitle', c.list_title);
-                    setTxt('uSourceTag', c.source_tag);
-
-                    const iList = document.getElementById('uItemList');
-                    if (iList) {
-                        let consensusExpanded = false;
-
-                        const renderConsensusItems = (items, expanded = false) => {
-                            // 국내주식 리포트와 BTC 기관 전망은 기본 2개만 표시해
-                            // 미국주식 Buy/Hold/Sell 영역과 기본 높이를 맞춘다.
-                            const isTwoItemConsensus =
-                                c.list_title === '실제 증권사 리포트' ||
-                                c.list_title === '실제 기관 전망';
-                            const defaultVisibleCount = isTwoItemConsensus ? 2 : 3;
-                            const visibleItems = expanded ? items : items.slice(0, defaultVisibleCount);
-                            let html = '';
-
-                            visibleItems.forEach((it, idx) => {
-                                const isLast = idx === visibleItems.length - 1;
-                                html += `
-                                    <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; ${isLast ? '' : 'border-bottom:1px solid var(--border-line);'} font-size:0.82rem;">
-                                        <div>
-                                            <div style="color:var(--text-title); font-weight:700;">${it.main}</div>
-                                            <div style="font-size:0.7rem; color:var(--text-muted); margin-top:2px;">${it.sub}</div>
-                                        </div>
-                                        <div style="text-align:right;">
-                                            <div style="color:var(--text-title); font-weight:700;">${it.val}</div>
-                                            <div style="color:#10b981; font-size:0.72rem; font-weight:700;">${it.sub_val}</div>
-                                        </div>
-                                    </div>
-                                `;
-                            });
-
-                            if (isTwoItemConsensus && items.length > defaultVisibleCount) {
-                                if (expanded) {
-                                    html += `
-                                        <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
-                                            접기
-                                        </button>
-                                    `;
-                                } else {
-                                    html += `
-                                        <button type="button" class="consensus-more-btn" id="consensusMoreBtn">
-                                            더보기 <span>(${items.length - defaultVisibleCount}건)</span>
-                                        </button>
-                                    `;
-                                }
-                            }
-
-                            return html;
-                        };
-
-                        // 버튼을 다시 만들어도 클릭 이벤트가 유지되도록
-                        // 목록 자체에 이벤트 위임을 한 번만 연결한다.
-                        iList.onclick = (event) => {
-                            const btn = event.target.closest('.consensus-more-btn');
-                            if (!btn) return;
-
-                            consensusExpanded = !consensusExpanded;
-                            iList.innerHTML = renderConsensusItems(c.items || [], consensusExpanded);
-                        };
-
-                        if (c.items && c.items.length > 0) {
-                            iList.innerHTML = renderConsensusItems(c.items, false);
-                        }
-                    }
-                    uCard.style.display = 'block';
-                } else if (uCard) {
-                    uCard.style.display = 'none';
-                }
-
-                const dCard = document.getElementById('rowDart');
-                const dList = document.getElementById('dartList');
-                if (dCard && dList) {
-                    if (Array.isArray(data.dart_disclosures) && data.dart_disclosures.length > 0) {
-                        dList.innerHTML = data.dart_disclosures.map(d => `
-                            <a href="${d.link}" target="_blank" class="dart-item">
-                                <span class="dart-tag tag-${d.tag_type}">${d.tag_name}</span>
-                                <span class="dart-title">${d.title}</span>
-                                <span style="color:var(--text-muted); font-size:0.72rem; flex-shrink:0;">${d.date}</span>
-                            </a>
-                        `).join('');
-                        dCard.style.display = 'block';
-                    } else {
-                        dCard.style.display = 'none';
-                    }
+                if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
+                    window.GaemiWidgets.renderDartDisclosure(data.dart_disclosures);
                 }
 
                 document.getElementById('loading').style.display = 'none';
@@ -12900,50 +11813,6 @@ if ((response && !response.ok) || data.error) {
                 setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
             }
         }
-
-        function initTvChart(candles) {
-            const container = document.getElementById('tvChart');
-            if (!container) return;
-            container.innerHTML = '';
-
-            const isLight = document.body.classList.contains('light-theme');
-
-            chart = LightweightCharts.createChart(container, {
-                width: container.clientWidth || 700,
-                height: 300,
-                layout: {
-                    background: { color: isLight ? '#ffffff' : '#1e1f20' },
-                    textColor: isLight ? '#5f6368' : '#8e918f'
-                },
-                grid: {
-                    vertLines: { color: 'rgba(0,0,0,0)' },
-                    horzLines: { color: 'rgba(0,0,0,0)' }
-                },
-                crosshair: {
-                    vertLine: { visible: false },
-                    horzLine: { visible: false }
-                },
-                timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
-                rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
-            });
-
-            const candleSeries = chart.addCandlestickSeries({
-                upColor: '#ef4444',
-                downColor: '#38bdf8',
-                borderDownColor: '#38bdf8',
-                borderUpColor: '#ef4444',
-                wickDownColor: '#38bdf8',
-                wickUpColor: '#ef4444',
-                priceLineVisible: false,
-                lastValueVisible: true
-            });
-            candleSeries.setData(candles || []);
-
-            chart.timeScale().fitContent();
-            // resize 리스너는 전역에서 한 번만 등록한다.
-        }
-
-
 
         function formatUsStockPrice(value) {
             const n = Number(value);
@@ -13086,90 +11955,13 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
+        // 미국 주도종목 위젯은 widgets/us_leading_stocks.js에서 담당한다.
+        // 기존 전역 함수명은 호환성을 위해 유지한다.
         async function loadUsLeadingStocks(sectorSymbol, sectorName) {
-            const list = document.getElementById('usLeadingStockList');
-            const title = document.getElementById('usLeadingStockTitle');
-            if (!list || !sectorSymbol) return;
-
-            const cleanName = String(sectorName || '').trim();
-            if (title) title.textContent = `미국 ${cleanName} 주도종목`;
-            list.innerHTML = '<div class="us-leading-sector-loading">실제 주도종목 데이터를 불러오는 중…</div>';
-
-            try {
-                const response = await fetch('/api/us-leading-stocks?sector=' + encodeURIComponent(sectorSymbol));
-                const data = await response.json();
-                if (!response.ok || data.error) throw new Error(data.error || '데이터 오류');
-
-                const rows = Array.isArray(data.data) ? data.data : [];
-                if (!rows.length) {
-                    list.innerHTML = '<div class="us-leading-sector-loading">현재 주도종목 데이터를 불러오지 못했습니다.</div>';
-                    return;
-                }
-
-                const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(2)}%`;
-                const cls = value => Number(value) >= 0 ? 'up' : 'down';
-                list.innerHTML = rows.map(row => `
-                    <div class="us-leading-stock-item" role="button" tabindex="0"
-                         onclick="openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')"
-                         onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openUsLeadingStock('${String(row.symbol || '').replace(/'/g, "\\'")}', '${String(row.name || '').replace(/'/g, "\\'")}')}">
-                        <div class="us-leading-stock-name">
-                            <div class="us-leading-stock-ticker">${String(row.symbol || '')}</div>
-                            <div class="us-leading-stock-company">${String(row.name || '')}</div>
-                        </div>
-                        <div class="us-leading-stock-price">
-                            <div class="us-leading-stock-value">${formatUsStockPrice(row.price)}</div>
-                            <div class="us-leading-stock-change ${cls(row.current)}">${pct(row.current)}</div>
-                        </div>
-                        ${buildUsStockSparkline(row.sparkline)}
-                    </div>
-                `).join('');
-            } catch (error) {
-                console.error('US leading stocks:', error);
-                list.innerHTML = '<div class="us-leading-sector-loading">주도종목 데이터를 잠시 후 다시 불러옵니다.</div>';
+            if (window.GaemiWidgets && window.GaemiWidgets.usLeadingStocks) {
+                return window.GaemiWidgets.usLeadingStocks.load(sectorSymbol, sectorName);
             }
-        }
-
-        function renderWorldBoard(rows) {
-            const wBoardGrid = document.getElementById('worldBoardGrid');
-            if (!wBoardGrid) return;
-            const items = Array.isArray(rows) ? rows : [];
-            if (!items.length) {
-                wBoardGrid.innerHTML = '<div class="us-leading-sector-loading">세계시장 데이터를 불러오지 못했습니다.</div>';
-                return;
-            }
-            wBoardGrid.innerHTML = items.map(w => {
-                const cls = w.up ? 'val-up' : 'val-down';
-                const sparkSvg = renderSparklineSVG(w.sparkline, w.up);
-                const clickName = w.name === 'USD/KRW' ? '환율' : w.name;
-                const safeClick = String(clickName || '').replace(/'/g, "\\'");
-                return `
-                    <div class="mini-index-card" onclick="doSearch('${safeClick}')">
-                        <div class="mini-top">
-                            <span class="mini-name">${String(w.name || '')}</span>
-                            <span class="mini-tag">${String(w.tag || '')}</span>
-                        </div>
-                        <div class="mini-mid-row">
-                            <div>
-                                <div class="mini-price">${String(w.price || '')}</div>
-                                <div class="mini-rate ${cls}">${String(w.rate || '')}</div>
-                            </div>
-                            ${sparkSvg}
-                        </div>
-                    </div>`;
-            }).join('');
-        }
-
-        async function loadWorldBoard() {
-            try {
-                const response = await fetch('/api/world-board');
-                const data = await response.json().catch(() => null);
-                if (!response.ok || !data || data.error) throw new Error((data && data.error) || '세계시장 데이터 오류');
-                renderWorldBoard(data.data);
-            } catch (error) {
-                console.error('World board:', error);
-                const box = document.getElementById('worldBoardGrid');
-                if (box) box.innerHTML = '<div class="us-leading-sector-loading">세계시장 데이터를 잠시 후 다시 불러옵니다.</div>';
-            }
+            return null;
         }
 
         async function loadMarketCalendar() {
@@ -13179,9 +11971,10 @@ if ((response && !response.ok) || data.error) {
                 if (!response.ok || !data || data.error) throw new Error((data && data.error) || '시장 캘린더 데이터 오류');
                 if (Array.isArray(data.data)) {
                     globalMarketCalendar = data.data;
-                    economicCalendarAutoJumped = false;
-                    economicCalOffset = 0;
-                    economicCalPage = 1;
+                    window.globalMarketCalendar = globalMarketCalendar;
+                    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                        window.GaemiWidgets.economicCalendar.resetState();
+                    }
                     renderMarketCalendarView();
                 }
             } catch (error) {
@@ -13189,268 +11982,12 @@ if ((response && !response.ok) || data.error) {
             }
         }
 
-        async function loadUsLeadingSectors() {
-            const box = document.getElementById('usLeadingSectorList');
-            if (!box) return;
-            try {
-                const response = await fetch('/api/us-leading-sectors');
-                const data = await response.json();
-                if (!response.ok || data.error) throw new Error(data.error || '데이터 오류');
-
-                const rows = Array.isArray(data.data) ? data.data : [];
-                if (!rows.length) {
-                    box.innerHTML = '<div class="us-leading-sector-loading">현재 업종 데이터를 불러오지 못했습니다.</div>';
-                    return;
-                }
-
-                const pct = value => `${Number(value) >= 0 ? '+' : ''}${Number(value).toFixed(1)}%`;
-                const cls = value => Number(value) >= 0 ? 'us-leading-up' : 'us-leading-down';
-
-                let html = '<table class="us-leading-sector-table">' +
-                    '<thead><tr><th>업종</th><th>현재</th><th>1W</th><th>1M</th><th>3M</th></tr></thead><tbody>';
-
-                rows.forEach(row => {
-                    const safeName = String(row.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    const safeSym = String(row.sym || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    html += `<tr class="us-leading-sector-row" title="${safeName} 업종 차트 보기" data-sector-symbol="${safeSym}" data-sector-name="${safeName}">` +
-                        `<td class="us-leading-name">${safeName}</td>` +
-                        `<td class="${cls(row.current)}">${pct(row.current)}</td>` +
-                        `<td class="${cls(row.week1)}">${pct(row.week1)}</td>` +
-                        `<td class="${cls(row.month1)}">${pct(row.month1)}</td>` +
-                        `<td class="${cls(row.month3)}">${pct(row.month3)}</td>` +
-                        `</tr>`;
-                });
-                html += '</tbody></table>';
-                box.innerHTML = html;
-
-                // 인라인 onclick에 의존하지 않고 명시적인 이벤트 리스너로 연결한다.
-                // CSP가 적용된 배포 환경에서도 업종 클릭이 동작하도록 한다.
-                box.querySelectorAll('.us-leading-sector-row').forEach(rowEl => {
-                    rowEl.addEventListener('click', () => {
-                        const sectorSymbol = rowEl.dataset.sectorSymbol || '';
-                        const sectorName = rowEl.dataset.sectorName || '';
-                        loadSectorChart(sectorSymbol, sectorName);
-                        loadUsLeadingStocks(sectorSymbol, sectorName);
-                    });
-                });
-
-                // 업종을 클릭하지 않아도 현재 주도업종 1위의 TOP 5가
-                // 처음부터 자동으로 표시되도록 한다.
-                const strongestRow = box.querySelector('.us-leading-sector-row');
-                if (strongestRow) {
-                    const sectorSymbol = strongestRow.dataset.sectorSymbol || '';
-                    const sectorName = strongestRow.dataset.sectorName || '';
-                    loadUsLeadingStocks(sectorSymbol, sectorName);
-                }
-            } catch (error) {
-                console.error('US leading sectors:', error);
-                box.innerHTML = '<div class="us-leading-sector-loading">업종 데이터를 잠시 후 다시 불러옵니다.</div>';
-            }
-        }
-
-
-
-        // ===== STEP 21: 우측 실시간 시장 사이드바 =====
-        let rightMarketKey = 'kr';
-        let rightMarketMenu = 'live';
-        const rightMarketCache = {};
-
-        function escapeRightMarketText(value) {
-            return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-        }
-
-        function formatRightMarketPrice(row) {
-            const p = Number(row.price);
-            if (!Number.isFinite(p)) return '-';
-            if (row.currency === 'KRW') return `${Math.round(p).toLocaleString('ko-KR')}원`;
-            return `$${p.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
-        }
-
-        function renderRightMarketRows(rows) {
-            const list = document.getElementById('rightMarketList');
-            if (!list) return;
-            if (!Array.isArray(rows) || !rows.length) {
-                list.innerHTML = '<div class="right-market-empty">현재 실시간 데이터를 가져오지 못했습니다.<br>잠시 후 다시 시도합니다.</div>';
-                return;
-            }
-            list.innerHTML = rows.map((row, idx) => {
-                const pct = Number(row.change_pct);
-                const change = Number(row.change);
-                const cls = Number.isFinite(pct) && pct >= 0 ? 'up' : 'down';
-                const pctText = Number.isFinite(pct) ? `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%` : '-';
-                let changeText = '';
-                if (Number.isFinite(change)) {
-                    changeText = row.currency === 'KRW'
-                        ? `${change >= 0 ? '+' : ''}${Math.round(change).toLocaleString('ko-KR')}원`
-                        : `${change >= 0 ? '+' : ''}${change.toFixed(2)}`;
-                }
-                const krName = (rightMarketKey === 'us' && typeof getUsShortKrName === 'function')
-                    ? getUsShortKrName(row.symbol, row.name)
-                    : (row.name || row.symbol || '-');
-                const badge = escapeRightMarketText((krName || row.symbol || '?').slice(0, 2));
-                const name = escapeRightMarketText(krName || row.symbol || '-');
-                const symbol = escapeRightMarketText(row.symbol || '');
-                const clickSymbol = escapeRightMarketText(row.symbol || row.name || '');
-                const clickName = escapeRightMarketText(krName || row.name || row.symbol || '');
-                return `<div class="right-market-row" role="button" tabindex="0" data-right-symbol="${clickSymbol}" data-right-name="${clickName}">
-                    <div class="right-market-rank">${row.rank || idx + 1}</div>
-                    <div class="right-market-logo">${badge}</div>
-                    <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>
-                    <div class="right-market-values"><div class="right-market-price">${formatRightMarketPrice(row)}</div><div class="right-market-change ${cls}">${changeText} ${pctText}</div></div>
-                </div>`;
-            }).join('');
-        }
-
-        async function loadRightMarketBoard(force=false) {
-            const list = document.getElementById('rightMarketList');
-            if (!list) return;
-            const cacheKey = rightMarketKey;
-            const requestToken = ++rightMarketRequestToken;
-            if (rightMarketController) {
-                try { rightMarketController.abort(); } catch (e) {}
-            }
-            rightMarketController = new AbortController();
-            const boardSignal = rightMarketController.signal;
-            if (!force && rightMarketCache[cacheKey]) {
-                renderRightMarketRows(rightMarketCache[cacheKey]);
-                return;
-            }
-            try {
-                const r = await fetch(`/api/right-market-board?market=${encodeURIComponent(cacheKey)}${force ? '&force=1' : ''}`, {cache:'no-store', signal: boardSignal});
-                const payload = await r.json();
-                if (requestToken !== rightMarketRequestToken || cacheKey !== rightMarketKey) return;
-                if (payload && payload.ok && Array.isArray(payload.data)) {
-                    rightMarketCache[cacheKey] = payload.data;
-                    renderRightMarketRows(payload.data);
-                } else {
-                    renderRightMarketRows([]);
-                }
-            } catch (e) {
-                if (e && e.name === 'AbortError') return;
-                if (requestToken === rightMarketRequestToken && cacheKey === rightMarketKey) {
-                    renderRightMarketRows([]);
-                }
-            }
-            const t = document.getElementById('rightMarketTime');
-            if (t) t.textContent = `오늘 ${new Date().toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'})} 기준`;
-        }
-
-        function switchRightMarket(key) {
-            rightMarketKey = key;
-            document.querySelectorAll('.right-market-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.market === key));
-            loadRightMarketBoard(false);
-        }
-
-        // 오른쪽 종목 행은 inline onclick 대신 이벤트 위임을 사용한다.
-        // HTML/JavaScript escape가 섞여 발생할 수 있는 클릭 오류를 제거하고
-        // 동적으로 다시 그려진 행에도 동일하게 동작한다.
-        function initRightMarketRowEvents() {
-            const list = document.getElementById('rightMarketList');
-            if (!list || list.dataset.eventsBound === '1') return;
-            list.dataset.eventsBound = '1';
-            const openRow = (row) => {
-                if (!row) return;
-                const symbol = row.getAttribute('data-right-symbol') || '';
-                const name = row.getAttribute('data-right-name') || '';
-                if (!symbol) return;
-                doSearch(symbol, false, name);
-            };
-            list.addEventListener('click', (event) => {
-                const row = event.target.closest('.right-market-row');
-                if (row && list.contains(row)) openRow(row);
-            });
-            list.addEventListener('keydown', (event) => {
-                if (event.key !== 'Enter' && event.key !== ' ') return;
-                const row = event.target.closest('.right-market-row');
-                if (!row || !list.contains(row)) return;
-                event.preventDefault();
-                openRow(row);
-            });
-        }
-
-        function selectRightMenu(menu) {
-            rightMarketMenu = menu;
-            document.querySelectorAll('[data-right-menu]').forEach(btn => btn.classList.toggle('active', btn.dataset.rightMenu === menu));
-            const list = document.getElementById('rightMarketList');
-            if (menu === 'live') {
-                loadRightMarketBoard(false);
-                return;
-            }
-            if (menu === 'recent') {
-                const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
-                // STEP 40: 과거 버전에서 코드만 저장된 이력은 현재 국내 실시간
-                // 목록에 같은 종목이 있으면 그 한글명을 복원한다.
-                const krRows = Array.isArray(rightMarketCache.kr) ? rightMarketCache.kr : [];
-                const krNameMap = {};
-                krRows.forEach(row => {
-                    const sym = String(row?.symbol || '').toUpperCase();
-                    const nm = String(row?.name || '').trim();
-                    if (sym && nm && sym !== nm) krNameMap[sym] = nm;
-                });
-                const normalizedRecent = recent.slice(0, 15).map((x,i) => {
-                    const symbol = String(x?.symbol || '').toUpperCase();
-                    const name = String(x?.name || '').trim();
-                    const resolvedName = (name && name.toUpperCase() !== symbol)
-                        ? name
-                        : (krNameMap[symbol] || name || symbol);
-                    return {...x, name: resolvedName, symbol, rank:i+1};
-                });
-                renderRightMarketRows(normalizedRecent);
-                if (!recent.length && list) list.innerHTML = '<div class="right-market-empty">최근 검색 종목이 없습니다.</div>';
-                return;
-            }
-            if (menu === 'favorite') {
-                const fav = JSON.parse(localStorage.getItem('gaemiGTP_favorites') || '[]');
-                renderRightMarketRows(fav.slice(0, 15).map((x,i) => ({...x, rank:i+1})));
-                if (!fav.length && list) list.innerHTML = '<div class="right-market-empty">관심 종목이 없습니다.</div>';
-                return;
-            }
-            if (menu === 'leaders') {
-                loadRightMarketBoard(false).then(() => {
-                    const rows = rightMarketCache[rightMarketKey] || [];
-                    renderRightMarketRows([...rows].sort((a,b) => (Number(b.change_pct)||0) - (Number(a.change_pct)||0)));
-                });
-            }
-        }
-
-        function setRightMarketOpen(isOpen) {
-            const rail = document.getElementById('right-market-rail');
-            if (!rail) return;
-            // STEP 24: 모바일에서도 닫힌 상태는 아이콘 레일만 남기고,
-            // 열린 상태에서만 데이터 패널을 화면 위에 겹쳐 표시한다.
-            rail.classList.toggle('collapsed', !isOpen);
-            // STEP 23: 오른쪽 사이드바 상태가 가운데 콘텐츠 레이아웃에 영향을 주지 않도록 한다.
-            document.body.classList.remove('right-market-collapsed');
-            const btn = rail.querySelector('.right-market-close');
-            if (btn) {
-                btn.textContent = isOpen ? '«' : '»';
-                btn.title = isOpen ? '닫기' : '열기';
-            }
-        }
-
-        function toggleRightMarket() {
-            const rail = document.getElementById('right-market-rail');
-            if (!rail) return;
-            setRightMarketOpen(rail.classList.contains('collapsed'));
-        }
-
-        window.addEventListener('DOMContentLoaded', () => {
-            // 모바일에서는 패널은 닫아두되 열기/닫기 버튼은 유지한다.
-            // 패널을 열기 전까지 시장 데이터 요청은 실행하지 않는다.
-            const isMobileRightMarket = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
-
-            // 데스크톱/모바일 모두 오른쪽 사이드바가 처음에는 닫힌 상태로 시작한다.
-            // 왼쪽 사이드바와 완전히 독립적으로 열리고 닫힌다.
-            setRightMarketOpen(false);
-            initRightMarketRowEvents();
-            if (isMobileRightMarket) return;
-            loadRightMarketBoard(false);
-            setInterval(() => loadRightMarketBoard(true), 60000);
-        });
 
         // STEP 4: 무거운 세계시장/캘린더 데이터는 분석 요청과 분리해서 병렬 로딩한다.
         window.addEventListener('DOMContentLoaded', () => {
-            loadWorldBoard();
+            if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+                window.GaemiWidgets.worldBoard.load(false);
+            }
             loadMarketCalendar();
             loadUsLeadingSectors();
         });
@@ -13494,6 +12031,8 @@ if ((response && !response.ok) || data.error) {
 </body>
 </html>
 """
+
+RIGHT_MARKET_WIDGET_JS = r'(function(){\n    const GaemiWidgets = window.GaemiWidgets = window.GaemiWidgets || {};\n    const rightMarket = {};\n// ===== STEP 21: 우측 실시간 시장 사이드바 =====\n        let rightMarketKey = \'kr\';\n        let rightMarketMenu = \'live\';\n        const rightMarketCache = {};\n\n        function escapeRightMarketText(value) {\n            return String(value ?? \'\').replace(/[&<>"\']/g, ch => ({\'&\':\'&amp;\',\'<\':\'&lt;\',\'>\':\'&gt;\',\'"\':\'&quot;\',"\'":\'&#39;\'}[ch]));\n        }\n\n        function formatRightMarketPrice(row) {\n            const p = Number(row.price);\n            if (!Number.isFinite(p)) return \'-\';\n            if (row.currency === \'KRW\') return `${Math.round(p).toLocaleString(\'ko-KR\')}원`;\n            return `$${p.toLocaleString(\'en-US\', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;\n        }\n\n        function renderRightMarketRows(rows) {\n            const list = document.getElementById(\'rightMarketList\');\n            if (!list) return;\n            if (!Array.isArray(rows) || !rows.length) {\n                list.innerHTML = \'<div class="right-market-empty">현재 실시간 데이터를 가져오지 못했습니다.<br>잠시 후 다시 시도합니다.</div>\';\n                return;\n            }\n            list.innerHTML = rows.map((row, idx) => {\n                const pct = Number(row.change_pct);\n                const change = Number(row.change);\n                const cls = Number.isFinite(pct) && pct >= 0 ? \'up\' : \'down\';\n                const pctText = Number.isFinite(pct) ? `${pct >= 0 ? \'+\' : \'\'}${pct.toFixed(2)}%` : \'-\';\n                let changeText = \'\';\n                if (Number.isFinite(change)) {\n                    changeText = row.currency === \'KRW\'\n                        ? `${change >= 0 ? \'+\' : \'\'}${Math.round(change).toLocaleString(\'ko-KR\')}원`\n                        : `${change >= 0 ? \'+\' : \'\'}${change.toFixed(2)}`;\n                }\n                const krName = (rightMarketKey === \'us\' && typeof getUsShortKrName === \'function\')\n                    ? getUsShortKrName(row.symbol, row.name)\n                    : (row.name || row.symbol || \'-\');\n                const badge = escapeRightMarketText((krName || row.symbol || \'?\').slice(0, 2));\n                const name = escapeRightMarketText(krName || row.symbol || \'-\');\n                const symbol = escapeRightMarketText(row.symbol || \'\');\n                const clickSymbol = escapeRightMarketText(row.symbol || row.name || \'\');\n                const clickName = escapeRightMarketText(krName || row.name || row.symbol || \'\');\n                return `<div class="right-market-row" role="button" tabindex="0" data-right-symbol="${clickSymbol}" data-right-name="${clickName}">\n                    <div class="right-market-rank">${row.rank || idx + 1}</div>\n                    <div class="right-market-logo">${badge}</div>\n                    <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>\n                    <div class="right-market-values"><div class="right-market-price">${formatRightMarketPrice(row)}</div><div class="right-market-change ${cls}">${changeText} ${pctText}</div></div>\n                </div>`;\n            }).join(\'\');\n        }\n\n        async function loadRightMarketBoard(force=false) {\n            const list = document.getElementById(\'rightMarketList\');\n            if (!list) return;\n            const cacheKey = rightMarketKey;\n            const requestToken = ++rightMarketRequestToken;\n            if (rightMarketController) {\n                try { rightMarketController.abort(); } catch (e) {}\n            }\n            rightMarketController = new AbortController();\n            const boardSignal = rightMarketController.signal;\n            if (!force && rightMarketCache[cacheKey]) {\n                renderRightMarketRows(rightMarketCache[cacheKey]);\n                return;\n            }\n            try {\n                const r = await fetch(`/api/right-market-board?market=${encodeURIComponent(cacheKey)}${force ? \'&force=1\' : \'\'}`, {cache:\'no-store\', signal: boardSignal});\n                const payload = await r.json();\n                if (requestToken !== rightMarketRequestToken || cacheKey !== rightMarketKey) return;\n                if (payload && payload.ok && Array.isArray(payload.data)) {\n                    rightMarketCache[cacheKey] = payload.data;\n                    renderRightMarketRows(payload.data);\n                } else {\n                    renderRightMarketRows([]);\n                }\n            } catch (e) {\n                if (e && e.name === \'AbortError\') return;\n                if (requestToken === rightMarketRequestToken && cacheKey === rightMarketKey) {\n                    renderRightMarketRows([]);\n                }\n            }\n            const t = document.getElementById(\'rightMarketTime\');\n            if (t) t.textContent = `오늘 ${new Date().toLocaleTimeString(\'ko-KR\', {hour:\'2-digit\', minute:\'2-digit\'})} 기준`;\n        }\n\n        function switchRightMarket(key) {\n            rightMarketKey = key;\n            document.querySelectorAll(\'.right-market-tab\').forEach(btn => btn.classList.toggle(\'active\', btn.dataset.market === key));\n            loadRightMarketBoard(false);\n        }\n\n        // 오른쪽 종목 행은 inline onclick 대신 이벤트 위임을 사용한다.\n        // HTML/JavaScript escape가 섞여 발생할 수 있는 클릭 오류를 제거하고\n        // 동적으로 다시 그려진 행에도 동일하게 동작한다.\n        function initRightMarketRowEvents() {\n            const list = document.getElementById(\'rightMarketList\');\n            if (!list || list.dataset.eventsBound === \'1\') return;\n            list.dataset.eventsBound = \'1\';\n            const openRow = (row) => {\n                if (!row) return;\n                const symbol = row.getAttribute(\'data-right-symbol\') || \'\';\n                const name = row.getAttribute(\'data-right-name\') || \'\';\n                if (!symbol) return;\n                doSearch(symbol, false, name);\n            };\n            list.addEventListener(\'click\', (event) => {\n                const row = event.target.closest(\'.right-market-row\');\n                if (row && list.contains(row)) openRow(row);\n            });\n            list.addEventListener(\'keydown\', (event) => {\n                if (event.key !== \'Enter\' && event.key !== \' \') return;\n                const row = event.target.closest(\'.right-market-row\');\n                if (!row || !list.contains(row)) return;\n                event.preventDefault();\n                openRow(row);\n            });\n        }\n\n        function selectRightMenu(menu) {\n            rightMarketMenu = menu;\n            document.querySelectorAll(\'[data-right-menu]\').forEach(btn => btn.classList.toggle(\'active\', btn.dataset.rightMenu === menu));\n            const list = document.getElementById(\'rightMarketList\');\n            if (menu === \'live\') {\n                loadRightMarketBoard(false);\n                return;\n            }\n            if (menu === \'recent\') {\n                const recent = JSON.parse(localStorage.getItem(\'gaemiGTP_recent_searches\') || \'[]\');\n                // STEP 40: 과거 버전에서 코드만 저장된 이력은 현재 국내 실시간\n                // 목록에 같은 종목이 있으면 그 한글명을 복원한다.\n                const krRows = Array.isArray(rightMarketCache.kr) ? rightMarketCache.kr : [];\n                const krNameMap = {};\n                krRows.forEach(row => {\n                    const sym = String(row?.symbol || \'\').toUpperCase();\n                    const nm = String(row?.name || \'\').trim();\n                    if (sym && nm && sym !== nm) krNameMap[sym] = nm;\n                });\n                const normalizedRecent = recent.slice(0, 15).map((x,i) => {\n                    const symbol = String(x?.symbol || \'\').toUpperCase();\n                    const name = String(x?.name || \'\').trim();\n                    const resolvedName = (name && name.toUpperCase() !== symbol)\n                        ? name\n                        : (krNameMap[symbol] || name || symbol);\n                    return {...x, name: resolvedName, symbol, rank:i+1};\n                });\n                renderRightMarketRows(normalizedRecent);\n                if (!recent.length && list) list.innerHTML = \'<div class="right-market-empty">최근 검색 종목이 없습니다.</div>\';\n                return;\n            }\n            if (menu === \'favorite\') {\n                const fav = JSON.parse(localStorage.getItem(\'gaemiGTP_favorites\') || \'[]\');\n                renderRightMarketRows(fav.slice(0, 15).map((x,i) => ({...x, rank:i+1})));\n                if (!fav.length && list) list.innerHTML = \'<div class="right-market-empty">관심 종목이 없습니다.</div>\';\n                return;\n            }\n            if (menu === \'leaders\') {\n                loadRightMarketBoard(false).then(() => {\n                    const rows = rightMarketCache[rightMarketKey] || [];\n                    renderRightMarketRows([...rows].sort((a,b) => (Number(b.change_pct)||0) - (Number(a.change_pct)||0)));\n                });\n            }\n        }\n\n        function setRightMarketOpen(isOpen) {\n            const rail = document.getElementById(\'right-market-rail\');\n            if (!rail) return;\n            // STEP 24: 모바일에서도 닫힌 상태는 아이콘 레일만 남기고,\n            // 열린 상태에서만 데이터 패널을 화면 위에 겹쳐 표시한다.\n            rail.classList.toggle(\'collapsed\', !isOpen);\n            // STEP 23: 오른쪽 사이드바 상태가 가운데 콘텐츠 레이아웃에 영향을 주지 않도록 한다.\n            document.body.classList.remove(\'right-market-collapsed\');\n            const btn = rail.querySelector(\'.right-market-close\');\n            if (btn) {\n                btn.textContent = isOpen ? \'«\' : \'»\';\n                btn.title = isOpen ? \'닫기\' : \'열기\';\n            }\n        }\n\n        function toggleRightMarket() {\n            const rail = document.getElementById(\'right-market-rail\');\n            if (!rail) return;\n            setRightMarketOpen(rail.classList.contains(\'collapsed\'));\n        }\n\n\n    rightMarket.switchRightMarket = switchRightMarket;\n    rightMarket.selectRightMenu = selectRightMenu;\n    rightMarket.toggleRightMarket = toggleRightMarket;\n    rightMarket.setRightMarketOpen = setRightMarketOpen;\n    window.switchRightMarket = switchRightMarket;\n    window.selectRightMenu = selectRightMenu;\n    window.toggleRightMarket = toggleRightMarket;\n    GaemiWidgets.rightMarket = rightMarket;\n})();\n'
 
 # ----------------------------------------------------
 FAST_CHART_PAYLOAD_CACHE = {}
@@ -13682,6 +12221,125 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/health":
             self._json(200, {"ok": True, "telegram_configured": bool(TELEGRAM_TOKEN)})
+            return
+
+        if parsed.path == "/widgets/dart_disclosure.js":
+            body = DART_DISCLOSURE_WIDGET_JS.encode("utf-8")
+            self._write_bytes_response(200, body, "application/javascript; charset=utf-8", compress=False, cache_control="no-cache")
+            return
+
+        # 독립 위젯 정적 리소스
+        if parsed.path == "/widgets/world_board.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "world_board.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/us_leading_sectors.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "us_leading_sectors.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/us_leading_stocks.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "us_leading_stocks.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/why_movement.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "why_movement.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/track.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "track.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/earnings_calendar.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "earnings_calendar.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/quant.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "quant.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/right_market.js":
+            payload = RIGHT_MARKET_WIDGET_JS.encode("utf-8")
+            self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            return
+        if parsed.path == "/widgets/chart.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "chart.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/analyst_consensus.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "analyst_consensus.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+        if parsed.path == "/widgets/comment.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "comment.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/widgets/vote.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "vote.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
             return
 
         # PostgreSQL 연결 상태 확인

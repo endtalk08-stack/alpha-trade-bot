@@ -32,7 +32,7 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:
     ZoneInfo = None
-from concurrent.futures import ThreadPoolExecutor, wait, Future
+from concurrent.futures import ThreadPoolExecutor, wait, Future, FIRST_COMPLETED
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 import requests
@@ -60,6 +60,7 @@ from quant import (
     _cached_quant_backtest,
     calculate_quant_factors,
 )
+from numeric_utils import _safe_float
 
 
 from economic_calendar import (
@@ -85,6 +86,7 @@ TRADING_ECONOMICS_API_KEY = os.environ.get("TRADING_ECONOMICS_API_KEY", "").stri
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
 FINLIGHT_API_KEY = os.environ.get("FINLIGHT_API_KEY", "").strip()
 import consensus as _consensus
+from consensus import fetch_market_consensus_unified
 _consensus.FINNHUB_API_KEY = FINNHUB_API_KEY
 _consensus.ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEY
 

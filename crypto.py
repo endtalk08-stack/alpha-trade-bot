@@ -1,3 +1,4 @@
+import time
 import pandas as pd
 from performance import HTTP_SESSION
 

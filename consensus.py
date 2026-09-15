@@ -5,6 +5,10 @@ import threading
 import re
 import json
 import requests
+import urllib.parse
+
+from performance import HTTP_SESSION
+from cache import _cache_get, _cache_set
 
 FINNHUB_API_KEY = ""
 ALPHA_VANTAGE_API_KEY = ""

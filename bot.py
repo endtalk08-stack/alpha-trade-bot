@@ -3324,7 +3324,7 @@ def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", lim
 
 
 def _translate_news_title_en_to_ko(title):
-    """영문 뉴스 제목을 한국어로 번역한다. 실패하면 원문을 그대로 반환한다."""
+    """영문 뉴스 제목을 한국어로 번역한다. 일시적 실패는 1회 재시도한다."""
     raw = html.unescape(str(title or "")).strip()
     if not raw:
         return raw
@@ -3336,29 +3336,35 @@ def _translate_news_title_en_to_ko(title):
     cached = _cache_get(NEWS_TRANSLATION_CACHE, cache_key, NEWS_TRANSLATION_CACHE_TTL)
     if cached:
         return str(cached)
-    try:
-        response = HTTP_SESSION.get(
-            "https://translate.googleapis.com/translate_a/single",
-            params=[
-                ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
-                ("dt", "t"), ("q", raw),
-            ],
-            timeout=3.0,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        if response.status_code != 200:
-            return raw
-        payload = response.json()
-        translated = "".join(
-            str(part[0]) for part in (payload[0] or [])
-            if isinstance(part, list) and part and part[0]
-        ).strip()
-        if not translated:
-            return raw
-        return _cache_set(NEWS_TRANSLATION_CACHE, cache_key, translated)
-    except Exception as exc:
-        print(f"[NEWS TRANSLATION] failed: {type(exc).__name__}: {exc}")
-        return raw
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = HTTP_SESSION.get(
+                "https://translate.googleapis.com/translate_a/single",
+                params=[
+                    ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
+                    ("dt", "t"), ("q", raw),
+                ],
+                timeout=5.0,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            if response.status_code != 200:
+                last_error = f"HTTP {response.status_code}"
+                continue
+            payload = response.json()
+            translated = "".join(
+                str(part[0]) for part in (payload[0] or [])
+                if isinstance(part, list) and part and part[0]
+            ).strip()
+            # 번역 응답이 실제 한국어인지 확인한다.
+            if translated and (re.search(r"[가-힣]", translated) or not re.search(r"[A-Za-z]", raw)):
+                return _cache_set(NEWS_TRANSLATION_CACHE, cache_key, translated)
+            last_error = "empty/non-korean translation"
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+    if last_error:
+        print(f"[NEWS TRANSLATION] failed: {last_error}")
+    return raw
 
 
 def translate_news_titles_to_korean(items, market_name=""):
@@ -3377,7 +3383,7 @@ def translate_news_titles_to_korean(items, market_name=""):
             )
     for idx, future in futures.items():
         try:
-            translated = future.result(timeout=3.5)
+            translated = future.result(timeout=6.5)
             if translated and translated != news_items[idx].get("title"):
                 news_items[idx]["title"] = translated
                 news_items[idx]["title_original"] = str(news_items[idx].get("title_original") or "") or str(items[idx].get("title") or "")
@@ -3829,8 +3835,10 @@ def fetch_naver_domestic_flow_metrics(code):
     """국내주식 실데이터: 당일 거래대금 + 최근 5거래일 외국인/기관 순매수.
 
     STEP 17:
-    - 거래대금은 오른쪽 실시간 사이드바에서 검증된 Naver polling realtime의 aa 필드를 우선 사용한다.
-    - polling에서 거래대금을 못 가져오는 경우 기존 Naver integration 필드 탐색을 fallback으로 사용한다.
+    - STEP 16에서 거래대금 필드 탐색 범위를 넓혔지만, 현재 사이트의 안정적인
+      국내 일봉 경로와 분리된 상태에서만 적용한다.
+    - Naver integration 응답의 여러 위치/필드명을 재귀 탐색한다.
+    - 거래대금은 구체적인 필드명을 우선하고, generic amount는 최후 fallback으로만 사용한다.
     - 외국인/기관 수급 로직은 기존 구조를 유지한다.
     """
     result={"trading_value":None,"foreigner_latest":None,"institution_latest":None,
@@ -3874,77 +3882,40 @@ def fetch_naver_domestic_flow_metrics(code):
             return result
         data=r.json()
 
-        # 1) 거래대금: 오른쪽 실시간 사이드바에서 실제 검증된
-        # Naver polling realtime API의 aa(누적 거래대금)를 우선 사용한다.
-        # integration 응답은 구조/필드가 종목별로 달라 거래대금이 누락될 수 있어
-        # aa를 1순위로 두고, 기존 integration 탐색은 fallback으로 유지한다.
-        tv=None
-        try:
-            query = "SERVICE_ITEM:" + str(code).strip()
-            realtime_url = "https://polling.finance.naver.com/api/realtime?query=" + urllib.parse.quote(query, safe=":,")
-            realtime_res = HTTP_SESSION.get(realtime_url, timeout=2.5, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                "Accept": "application/json,text/plain,*/*",
-                "Referer": "https://stock.naver.com/",
-            })
-            realtime_res.raise_for_status()
-            realtime_payload = realtime_res.json()
-            realtime_datas=[]
-            areas = realtime_payload.get("result", {}).get("areas", []) if isinstance(realtime_payload, dict) else []
-            for area in areas:
-                if isinstance(area,dict):
-                    realtime_datas.extend(area.get("datas") or [])
-            if not realtime_datas and isinstance(realtime_payload,dict):
-                for area in realtime_payload.get("areas",[]) or []:
-                    if isinstance(area,dict):
-                        realtime_datas.extend(area.get("datas") or [])
-            for item in realtime_datas:
-                if not isinstance(item,dict):
-                    continue
-                item_code=str(item.get("cd") or item.get("itemCode") or "").strip()
-                if item_code and item_code != str(code).strip():
-                    continue
-                candidate=num(item.get("aa") or item.get("accumulatedTradingValue"))
-                if candidate is not None and candidate >= 0:
-                    tv=candidate
-                    break
-        except Exception as realtime_exc:
-            print(f"[NAVER FLOW] {code}: realtime 거래대금 조회 실패: {type(realtime_exc).__name__}: {realtime_exc}")
+        # 1) 거래대금: 구체적인 필드명을 우선 탐색한다.
+        # generic 'amount'는 다른 금액 데이터일 가능성이 있어 마지막 fallback으로만 사용한다.
+        priority_groups = [
+            {
+                'accumulatedtradingvalue','accumulatedtradingamount',
+                'accumulatedtradingamountvalue','accumulatedamountvalue',
+                '누적거래대금','누적거래대금액'
+            },
+            {
+                'tradingvalue','tradingvalueamount','tradingamount',
+                '거래대금','거래대금액'
+            },
+            {
+                'amount','accumulatedamount'
+            },
+        ]
+        candidates_by_group=[[] for _ in priority_groups]
+        for obj in walk_dicts(data):
+            for raw_k,v in obj.items():
+                k=norm_key(raw_k)
+                for idx,keys in enumerate(priority_groups):
+                    if k in keys:
+                        n=num(v)
+                        if n is not None and n >= 0:
+                            candidates_by_group[idx].append(n)
+                        break
 
-        # realtime aa를 가져오지 못한 경우에만 기존 integration 필드 탐색을 fallback으로 사용한다.
-        if tv is None:
-            priority_groups = [
-                {
-                    'accumulatedtradingvalue','accumulatedtradingamount',
-                    'accumulatedtradingamountvalue','accumulatedamountvalue',
-                    '누적거래대금','누적거래대금액'
-                },
-                {
-                    'tradingvalue','tradingvalueamount','tradingamount',
-                    '거래대금','거래대금액'
-                },
-                {
-                    'amount','accumulatedamount'
-                },
-            ]
-            candidates_by_group=[[] for _ in priority_groups]
-            for obj in walk_dicts(data):
-                for raw_k,v in obj.items():
-                    k=norm_key(raw_k)
-                    for idx,keys in enumerate(priority_groups):
-                        if k in keys:
-                            n=num(v)
-                            if n is not None and n >= 0:
-                                candidates_by_group[idx].append(n)
-                            break
+        for candidates in candidates_by_group:
+            if candidates:
+                # 동일 응답 안에서 같은 필드가 여러 번 나타날 수 있으므로 최대값을 사용한다.
+                result['trading_value']=max(candidates)
+                break
 
-            for candidates in candidates_by_group:
-                if candidates:
-                    # 동일 응답 안에서 같은 필드가 여러 번 나타날 수 있으므로 최대값을 사용한다.
-                    tv=max(candidates)
-                    break
-
-        result['trading_value']=tv
+        tv=result['trading_value']
         if tv is not None:
             if tv >= 10**12:
                 result['trading_value_detail']=f"당일 거래대금 {tv/10**12:.2f}조원"
@@ -6669,7 +6640,8 @@ def _detect_theme(formal_name, stock_news):
 def analyze_global_impact(formal_name, market_name, world_board, stock_news,
                           global_news=None, dart_disclosures=None, df=None,
                           domestic_flow=None, market_index_name=None,
-                          consensus=None, macro_snapshot=None, market_calendar=None, symbol=""):
+                          consensus=None, macro_snapshot=None, market_calendar=None, symbol="",
+                          alpha_earnings=None):
     """
     글로벌/거시 → 미국 → 국내 → 업종 → 종목 전파 경로를 계산한다.
     숫자 비교가 가능한 실제 데이터만 강한 근거로 사용한다.
@@ -7189,7 +7161,8 @@ def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board
         consensus=consensus,
         macro_snapshot=macro_snapshot,
         market_calendar=market_calendar,
-        symbol=symbol
+        symbol=symbol,
+        alpha_earnings=alpha_earnings
     )
 
     # 직접 공시/재료가 없고 글로벌 전파가 충분히 강할 때만 글로벌 원인을 보조 주원인으로 선택.

@@ -11651,8 +11651,8 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             const fastPrice = document.getElementById('rPrice');
             const fastMeta = document.getElementById('rMeta');
             if (fastTitle) fastTitle.textContent = displayNameHint || cleanQ.toUpperCase();
-            if (fastPrice) fastPrice.textContent = '차트 준비 중…';
-            if (fastMeta) fastMeta.textContent = '차트 먼저 표시 · 실시간 가격 확인 중';
+            if (fastPrice) fastPrice.textContent = '';
+            if (fastMeta) fastMeta.textContent = '';
 
             if (window.innerWidth <= 900) {
                 const side = document.getElementById('sidebar-wrapper');

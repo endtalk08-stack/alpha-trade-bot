@@ -125,7 +125,7 @@ US_STOCK_MAP = {
     "DIA": "DIA", "SOXX": "SOXX"
 }
 from us_leading_stocks import US_SECTOR_STOCK_UNIVERSE, US_TICKER_PATTERN, fetch_us_leading_stocks
-from news_sources import (fetch_naver_news, fetch_finlight_news, translate_news_titles_to_korean, fetch_finlight_stock_news, fetch_finlight_economic_news, fetch_rss_news)
+from news_sources import (fetch_naver_news, fetch_finlight_news, fetch_finlight_stock_news, fetch_finlight_economic_news, fetch_rss_news)
 try:
     from .right_market_us import _right_sidebar_us_rows
 except ImportError:
@@ -2982,11 +2982,7 @@ def run_full_pipeline(query, lightweight=False):
     stock_news = merge_news_sources(stock_news_rss, ticker_news)
     global_news = merge_news_sources(global_news_rss, api_news)
 
-    # 미국주식은 영어 원문 제목 대신 한국어 제목을 표시한다.
-    # 원문 링크/언론사/발행일은 그대로 유지한다.
-    if market_name == "미국주식":
-        stock_news = translate_news_titles_to_korean(stock_news[:20], market_name)
-        global_news = translate_news_titles_to_korean(global_news[:20], market_name)
+    # 뉴스는 Naver News API에서 한국어로 직접 수집하므로 번역 API를 사용하지 않는다.
 
     if not lightweight:
         consensus = optional_results.get("consensus")
@@ -7724,8 +7720,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 formal_name = str(params.get("name", [""])[0]).strip()
                 limit = int(params.get("limit", ["10"])[0])
                 rows = fetch_finlight_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
-                if market_name == "미국주식":
-                    rows = translate_news_titles_to_korean(rows, market_name)
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
                 print(f"API ERROR /api/stock-news: {type(exc).__name__}: {exc}")
@@ -7737,8 +7731,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 market_name = str(params.get("market", ["국내주식"])[0]).strip() or "국내주식"
                 limit = int(params.get("limit", ["10"])[0])
                 rows = fetch_finlight_economic_news(market_name, max(1, min(limit, 20)))
-                if market_name == "미국주식":
-                    rows = translate_news_titles_to_korean(rows, market_name)
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
                 print(f"API ERROR /api/global-news: {type(exc).__name__}: {exc}")

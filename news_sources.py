@@ -280,7 +280,7 @@ def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", lim
 
 
 def _translate_news_title_en_to_ko(title):
-    """영문 뉴스 제목을 한국어로 번역한다. 일시적 실패는 1회 재시도한다."""
+    """영문 뉴스 제목을 한국어로 번역한다. 429/일시 오류는 짧게 재시도한다."""
     raw = html.unescape(str(title or "")).strip()
     if not raw:
         return raw
@@ -300,8 +300,14 @@ def _translate_news_title_en_to_ko(title):
         return str(cached)
 
     last_error = None
+
+    # 번역 서버의 429를 피하기 위해 직렬 요청으로 2회까지만 시도한다.
+    # 짧은 간격을 두고 재시도하며, 실패하면 원문을 안전하게 반환한다.
     for attempt in range(2):
         try:
+            if attempt:
+                time.sleep(0.8)
+
             response = HTTP_SESSION.get(
                 "https://translate.googleapis.com/translate_a/single",
                 params=[
@@ -315,6 +321,10 @@ def _translate_news_title_en_to_ko(title):
                 headers={"User-Agent": "Mozilla/5.0"},
             )
 
+            if response.status_code == 429:
+                last_error = "HTTP 429"
+                continue
+
             if response.status_code != 200:
                 last_error = f"HTTP {response.status_code}"
                 continue
@@ -327,10 +337,7 @@ def _translate_news_title_en_to_ko(title):
             ).strip()
 
             # 번역 결과가 실제 한국어인지 확인한다.
-            if translated and (
-                re.search(r"[가-힣]", translated)
-                or not re.search(r"[A-Za-z]", raw)
-            ):
+            if translated and re.search(r"[가-힣]", translated):
                 return _cache_set(
                     NEWS_TRANSLATION_CACHE,
                     cache_key,
@@ -348,7 +355,7 @@ def _translate_news_title_en_to_ko(title):
 
 
 def translate_news_titles_to_korean(items, market_name=""):
-    """미국주식 화면의 영문 기사 제목을 병렬 번역한다. 원문 링크/출처는 유지한다."""
+    """미국주식 화면의 영문 기사 제목을 순차 번역한다. 원문 링크/출처는 유지한다."""
     if market_name != "미국주식" or not items:
         return items or []
 
@@ -356,28 +363,19 @@ def translate_news_titles_to_korean(items, market_name=""):
     if not news_items:
         return []
 
-    futures = {}
+    # Google Translate endpoint에 동시 요청을 몰아넣지 않는다.
+    # 이미 캐시된 제목은 즉시 사용되고, 미번역 제목만 순차적으로 요청한다.
     for idx, item in enumerate(news_items):
         title = str(item.get("title") or "").strip()
-        if title:
-            futures[idx] = NEWS_TRANSLATION_EXECUTOR.submit(
-                _translate_news_title_en_to_ko,
-                title,
-            )
+        if not title:
+            continue
 
-    for idx, future in futures.items():
-        try:
-            translated = future.result(timeout=6.5)
-            if translated and translated != news_items[idx].get("title"):
-                news_items[idx]["title"] = translated
-                news_items[idx]["title_original"] = (
-                    str(news_items[idx].get("title_original") or "")
-                    or str(items[idx].get("title") or "")
-                )
-        except Exception as exc:
-            print(
-                f"[NEWS TRANSLATION] result failed: "
-                f"{type(exc).__name__}: {exc}"
+        translated = _translate_news_title_en_to_ko(title)
+        if translated and translated != item.get("title"):
+            news_items[idx]["title"] = translated
+            news_items[idx]["title_original"] = (
+                str(news_items[idx].get("title_original") or "")
+                or str(item.get("title") or "")
             )
 
     return news_items

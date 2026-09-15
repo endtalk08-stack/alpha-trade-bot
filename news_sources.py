@@ -284,13 +284,18 @@ def _translate_news_title_en_to_ko(title):
     raw = html.unescape(str(title or "")).strip()
     if not raw:
         return raw
+
     ko_count = len(re.findall(r"[가-힣]", raw))
     alpha_count = len(re.findall(r"[A-Za-z]", raw))
     if ko_count >= 2 or alpha_count < 4:
         return raw
 
     cache_key = f"en>ko:{raw}"
-    cached = _cache_get(NEWS_TRANSLATION_CACHE, cache_key, NEWS_TRANSLATION_CACHE_TTL)
+    cached = _cache_get(
+        NEWS_TRANSLATION_CACHE,
+        cache_key,
+        NEWS_TRANSLATION_CACHE_TTL,
+    )
     if cached:
         return str(cached)
 
@@ -300,32 +305,40 @@ def _translate_news_title_en_to_ko(title):
             response = HTTP_SESSION.get(
                 "https://translate.googleapis.com/translate_a/single",
                 params=[
-                    ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
-                    ("dt", "t"), ("q", raw),
+                    ("client", "gtx"),
+                    ("sl", "en"),
+                    ("tl", "ko"),
+                    ("dt", "t"),
+                    ("q", raw),
                 ],
                 timeout=5.0,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
+
             if response.status_code != 200:
                 last_error = f"HTTP {response.status_code}"
                 continue
 
             payload = response.json()
             translated = "".join(
-                str(part[0]) for part in (payload[0] or [])
+                str(part[0])
+                for part in (payload[0] or [])
                 if isinstance(part, list) and part and part[0]
             ).strip()
 
-            # 번역 응답이 실제 한국어인지 확인한다.
+            # 번역 결과가 실제 한국어인지 확인한다.
             if translated and (
                 re.search(r"[가-힣]", translated)
                 or not re.search(r"[A-Za-z]", raw)
             ):
                 return _cache_set(
-                    NEWS_TRANSLATION_CACHE, cache_key, translated
+                    NEWS_TRANSLATION_CACHE,
+                    cache_key,
+                    translated,
                 )
 
             last_error = "empty/non-korean translation"
+
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
 
@@ -338,6 +351,7 @@ def translate_news_titles_to_korean(items, market_name=""):
     """미국주식 화면의 영문 기사 제목을 병렬 번역한다. 원문 링크/출처는 유지한다."""
     if market_name != "미국주식" or not items:
         return items or []
+
     news_items = [dict(x) for x in items if isinstance(x, dict)]
     if not news_items:
         return []
@@ -347,7 +361,8 @@ def translate_news_titles_to_korean(items, market_name=""):
         title = str(item.get("title") or "").strip()
         if title:
             futures[idx] = NEWS_TRANSLATION_EXECUTOR.submit(
-                _translate_news_title_en_to_ko, title
+                _translate_news_title_en_to_ko,
+                title,
             )
 
     for idx, future in futures.items():
@@ -360,7 +375,10 @@ def translate_news_titles_to_korean(items, market_name=""):
                     or str(items[idx].get("title") or "")
                 )
         except Exception as exc:
-            print(f"[NEWS TRANSLATION] result failed: {type(exc).__name__}: {exc}")
+            print(
+                f"[NEWS TRANSLATION] result failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     return news_items
 

@@ -5,6 +5,7 @@ import html
 import urllib.parse
 import time
 import xml.etree.ElementTree as ET
+import threading
 from datetime import datetime, timedelta, timezone
 try:
     from zoneinfo import ZoneInfo
@@ -279,8 +280,13 @@ def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", lim
         return []
 
 
+NEWS_TRANSLATION_BATCH_LOCK = threading.Lock()
+NEWS_TRANSLATION_LAST_REQUEST_TS = 0.0
+NEWS_TRANSLATION_MIN_INTERVAL = 0.6
+
+
 def _translate_news_title_en_to_ko(title):
-    """영문 뉴스 제목을 한국어로 번역한다. 429/일시 오류는 짧게 재시도한다."""
+    """영문 뉴스 제목 1건을 한국어로 번역한다. 단건 fallback용."""
     raw = html.unescape(str(title or "")).strip()
     if not raw:
         return raw
@@ -300,13 +306,15 @@ def _translate_news_title_en_to_ko(title):
         return str(cached)
 
     last_error = None
-
-    # 번역 서버의 429를 피하기 위해 직렬 요청으로 2회까지만 시도한다.
-    # 짧은 간격을 두고 재시도하며, 실패하면 원문을 안전하게 반환한다.
     for attempt in range(2):
         try:
-            if attempt:
-                time.sleep(0.8)
+            global NEWS_TRANSLATION_LAST_REQUEST_TS
+            now = time.time()
+            wait_sec = NEWS_TRANSLATION_MIN_INTERVAL - (
+                now - NEWS_TRANSLATION_LAST_REQUEST_TS
+            )
+            if wait_sec > 0:
+                time.sleep(wait_sec)
 
             response = HTTP_SESSION.get(
                 "https://translate.googleapis.com/translate_a/single",
@@ -320,9 +328,12 @@ def _translate_news_title_en_to_ko(title):
                 timeout=5.0,
                 headers={"User-Agent": "Mozilla/5.0"},
             )
+            NEWS_TRANSLATION_LAST_REQUEST_TS = time.time()
 
             if response.status_code == 429:
                 last_error = "HTTP 429"
+                if attempt == 0:
+                    time.sleep(1.2)
                 continue
 
             if response.status_code != 200:
@@ -336,7 +347,6 @@ def _translate_news_title_en_to_ko(title):
                 if isinstance(part, list) and part and part[0]
             ).strip()
 
-            # 번역 결과가 실제 한국어인지 확인한다.
             if translated and re.search(r"[가-힣]", translated):
                 return _cache_set(
                     NEWS_TRANSLATION_CACHE,
@@ -354,8 +364,155 @@ def _translate_news_title_en_to_ko(title):
     return raw
 
 
+def _translate_news_titles_batch_to_korean(titles):
+    """여러 영문 뉴스 제목을 한 번의 번역 API 호출로 한국어로 변환한다."""
+    if not titles:
+        return {}
+
+    result = {}
+    pending = []
+
+    for idx, title in enumerate(titles):
+        raw = html.unescape(str(title or "")).strip()
+        if not raw:
+            result[idx] = raw
+            continue
+
+        ko_count = len(re.findall(r"[가-힣]", raw))
+        alpha_count = len(re.findall(r"[A-Za-z]", raw))
+        if ko_count >= 2 or alpha_count < 4:
+            result[idx] = raw
+            continue
+
+        cache_key = f"en>ko:{raw}"
+        cached = _cache_get(
+            NEWS_TRANSLATION_CACHE,
+            cache_key,
+            NEWS_TRANSLATION_CACHE_TTL,
+        )
+        if cached:
+            result[idx] = str(cached)
+        else:
+            pending.append((idx, raw, cache_key))
+
+    if not pending:
+        return result
+
+    with NEWS_TRANSLATION_BATCH_LOCK:
+        still_pending = []
+        for idx, raw, cache_key in pending:
+            cached = _cache_get(
+                NEWS_TRANSLATION_CACHE,
+                cache_key,
+                NEWS_TRANSLATION_CACHE_TTL,
+            )
+            if cached:
+                result[idx] = str(cached)
+            else:
+                still_pending.append((idx, raw, cache_key))
+
+        if not still_pending:
+            return result
+
+        global NEWS_TRANSLATION_LAST_REQUEST_TS
+
+        lines = [
+            f"{pos}|||{raw}"
+            for pos, (_, raw, _) in enumerate(still_pending, start=1)
+        ]
+        batch_text = "\n".join(lines)
+
+        last_error = None
+        for attempt in range(2):
+            try:
+                now = time.time()
+                wait_sec = NEWS_TRANSLATION_MIN_INTERVAL - (
+                    now - NEWS_TRANSLATION_LAST_REQUEST_TS
+                )
+                if wait_sec > 0:
+                    time.sleep(wait_sec)
+
+                response = HTTP_SESSION.get(
+                    "https://translate.googleapis.com/translate_a/single",
+                    params=[
+                        ("client", "gtx"),
+                        ("sl", "en"),
+                        ("tl", "ko"),
+                        ("dt", "t"),
+                        ("q", batch_text),
+                    ],
+                    timeout=8.0,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                )
+                NEWS_TRANSLATION_LAST_REQUEST_TS = time.time()
+
+                if response.status_code == 429:
+                    last_error = "HTTP 429"
+                    if attempt == 0:
+                        time.sleep(1.5)
+                    continue
+
+                if response.status_code != 200:
+                    last_error = f"HTTP {response.status_code}"
+                    continue
+
+                payload = response.json()
+                translated_text = "".join(
+                    str(part[0])
+                    for part in (payload[0] or [])
+                    if isinstance(part, list) and part and part[0]
+                ).strip()
+
+                if not translated_text:
+                    last_error = "empty translation"
+                    continue
+
+                parsed = {}
+                for line in translated_text.splitlines():
+                    match = re.match(
+                        r"^\s*(\d+)\s*\|\|\|\s*(.+?)\s*$",
+                        line,
+                    )
+                    if not match:
+                        continue
+                    pos = int(match.group(1))
+                    value = match.group(2).strip()
+                    if value and re.search(r"[가-힣]", value):
+                        parsed[pos] = value
+
+                if len(parsed) == len(still_pending):
+                    for pos, (idx, raw, cache_key) in enumerate(
+                        still_pending,
+                        start=1,
+                    ):
+                        translated = parsed.get(pos)
+                        if translated:
+                            result[idx] = _cache_set(
+                                NEWS_TRANSLATION_CACHE,
+                                cache_key,
+                                translated,
+                            )
+                    return result
+
+                last_error = (
+                    f"batch parse mismatch "
+                    f"{len(parsed)}/{len(still_pending)}"
+                )
+
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+
+        if last_error:
+            print(f"[NEWS TRANSLATION BATCH] failed: {last_error}")
+
+    for idx, raw, _ in pending:
+        result.setdefault(idx, raw)
+
+    return result
+
+
 def translate_news_titles_to_korean(items, market_name=""):
-    """미국주식 화면의 영문 기사 제목을 순차 번역한다. 원문 링크/출처는 유지한다."""
+    """미국주식 뉴스 제목을 묶어서 한국어로 번역한다. 원문 링크/출처는 유지한다."""
     if market_name != "미국주식" or not items:
         return items or []
 
@@ -363,19 +520,18 @@ def translate_news_titles_to_korean(items, market_name=""):
     if not news_items:
         return []
 
-    # Google Translate endpoint에 동시 요청을 몰아넣지 않는다.
-    # 이미 캐시된 제목은 즉시 사용되고, 미번역 제목만 순차적으로 요청한다.
-    for idx, item in enumerate(news_items):
-        title = str(item.get("title") or "").strip()
-        if not title:
-            continue
+    titles = [str(item.get("title") or "").strip() for item in news_items]
+    translated_map = _translate_news_titles_batch_to_korean(titles)
 
-        translated = _translate_news_title_en_to_ko(title)
-        if translated and translated != item.get("title"):
-            news_items[idx]["title"] = translated
-            news_items[idx]["title_original"] = (
-                str(news_items[idx].get("title_original") or "")
-                or str(item.get("title") or "")
+    for idx, item in enumerate(news_items):
+        original = str(item.get("title") or "").strip()
+        translated = translated_map.get(idx, original)
+
+        if translated and translated != original:
+            item["title"] = translated
+            item["title_original"] = (
+                str(item.get("title_original") or "")
+                or original
             )
 
     return news_items

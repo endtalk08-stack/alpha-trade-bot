@@ -1,8 +1,6 @@
 (function(){
     const GaemiWidgets = window.GaemiWidgets = window.GaemiWidgets || {};
     const rightMarket = {};
-    let rightMarketController = null;
-    let rightMarketRequestToken = 0;
 // ===== STEP 21: 우측 실시간 시장 사이드바 =====
         let rightMarketKey = 'kr';
         let rightMarketMenu = 'live';
@@ -188,15 +186,6 @@
         }
 
 
-    window.addEventListener('DOMContentLoaded', () => {
-        const isMobileRightMarket = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
-        setRightMarketOpen(false);
-        initRightMarketRowEvents();
-        if (isMobileRightMarket) return;
-        loadRightMarketBoard(false);
-        setInterval(() => loadRightMarketBoard(true), 60000);
-    });
-
     rightMarket.switchRightMarket = switchRightMarket;
     rightMarket.selectRightMenu = selectRightMenu;
     rightMarket.toggleRightMarket = toggleRightMarket;
@@ -205,4 +194,9 @@
     window.selectRightMenu = selectRightMenu;
     window.toggleRightMarket = toggleRightMarket;
     GaemiWidgets.rightMarket = rightMarket;
+
+    window.addEventListener('DOMContentLoaded', () => {
+        initRightMarketRowEvents();
+        loadRightMarketBoard(false);
+    });
 })();

@@ -5,7 +5,6 @@ import html
 import urllib.parse
 import time
 import xml.etree.ElementTree as ET
-import threading
 from datetime import datetime, timedelta, timezone
 try:
     from zoneinfo import ZoneInfo
@@ -280,449 +279,169 @@ def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", lim
         return []
 
 
-NEWS_TRANSLATION_BATCH_LOCK = threading.Lock()
-NEWS_TRANSLATION_LAST_REQUEST_TS = 0.0
-NEWS_TRANSLATION_MIN_INTERVAL = 0.6
-
-
-NEWS_TRANSLATION_BATCH_LOCK = threading.Lock()
-NEWS_TRANSLATION_LAST_REQUEST_TS = 0.0
-NEWS_TRANSLATION_MIN_INTERVAL = 1.0
-NEWS_TRANSLATION_BATCH_SIZE = 4
-NEWS_TRANSLATION_BACKOFF_UNTIL = 0.0
-
-
-def _translation_market_enabled(market_name):
-    normalized = str(market_name or "").strip()
-    return normalized in {"미국주식", "미국증시", "해외주식"}
-
-
 def _translate_news_title_en_to_ko(title):
-    """영문 뉴스 제목 1건을 한국어로 번역한다. 실패 시 원문을 유지한다."""
+    """영문 뉴스 제목을 한국어로 번역한다. 실패하면 원문을 그대로 반환한다."""
     raw = html.unescape(str(title or "")).strip()
     if not raw:
         return raw
-
     ko_count = len(re.findall(r"[가-힣]", raw))
     alpha_count = len(re.findall(r"[A-Za-z]", raw))
     if ko_count >= 2 or alpha_count < 4:
         return raw
-
     cache_key = f"en>ko:{raw}"
-    cached = _cache_get(
-        NEWS_TRANSLATION_CACHE,
-        cache_key,
-        NEWS_TRANSLATION_CACHE_TTL,
-    )
+    cached = _cache_get(NEWS_TRANSLATION_CACHE, cache_key, NEWS_TRANSLATION_CACHE_TTL)
     if cached:
         return str(cached)
-
-    result = _translate_news_titles_batch_to_korean([raw])
-    return str(result.get(0) or raw)
-
-
-def _translate_news_titles_batch_to_korean(titles):
-    """여러 영문 뉴스 제목을 작은 배치로 묶어 한국어로 번역한다."""
-    if not titles:
-        return {}
-
-    result = {}
-    pending = []
-
-    for idx, title in enumerate(titles):
-        raw = html.unescape(str(title or "")).strip()
-        if not raw:
-            result[idx] = raw
-            continue
-
-        ko_count = len(re.findall(r"[가-힣]", raw))
-        alpha_count = len(re.findall(r"[A-Za-z]", raw))
-        if ko_count >= 2 or alpha_count < 4:
-            result[idx] = raw
-            continue
-
-        cache_key = f"en>ko:{raw}"
-        cached = _cache_get(
-            NEWS_TRANSLATION_CACHE,
-            cache_key,
-            NEWS_TRANSLATION_CACHE_TTL,
+    try:
+        response = HTTP_SESSION.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params=[
+                ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
+                ("dt", "t"), ("q", raw),
+            ],
+            timeout=3.0,
+            headers={"User-Agent": "Mozilla/5.0"},
         )
-        if cached:
-            result[idx] = str(cached)
-        else:
-            pending.append((idx, raw, cache_key))
-
-    if not pending:
-        return result
-
-    with NEWS_TRANSLATION_BATCH_LOCK:
-        global NEWS_TRANSLATION_LAST_REQUEST_TS
-        global NEWS_TRANSLATION_BACKOFF_UNTIL
-
-        # 같은 요청이 연달아 들어오면 외부 번역 서버를 두드리지 않는다.
-        now = time.time()
-        if now < NEWS_TRANSLATION_BACKOFF_UNTIL:
-            for idx, raw, _ in pending:
-                result.setdefault(idx, raw)
-            return result
-
-        still_pending = []
-        for idx, raw, cache_key in pending:
-            cached = _cache_get(
-                NEWS_TRANSLATION_CACHE,
-                cache_key,
-                NEWS_TRANSLATION_CACHE_TTL,
-            )
-            if cached:
-                result[idx] = str(cached)
-            else:
-                still_pending.append((idx, raw, cache_key))
-
-        if not still_pending:
-            return result
-
-        # URL 길이와 배치 파싱 위험을 줄이기 위해 소량씩 처리한다.
-        for batch_start in range(0, len(still_pending), NEWS_TRANSLATION_BATCH_SIZE):
-            batch = still_pending[
-                batch_start:batch_start + NEWS_TRANSLATION_BATCH_SIZE
-            ]
-
-            lines = [
-                f"{pos}\t{raw}"
-                for pos, (_, raw, _) in enumerate(batch, start=1)
-            ]
-            batch_text = "\n".join(lines)
-
-            last_error = None
-            translated_ok = False
-
-            for attempt in range(2):
-                try:
-                    now = time.time()
-                    wait_sec = NEWS_TRANSLATION_MIN_INTERVAL - (
-                        now - NEWS_TRANSLATION_LAST_REQUEST_TS
-                    )
-                    if wait_sec > 0:
-                        time.sleep(wait_sec)
-
-                    # GET 대신 POST body로 q를 전달해 URL 길이 제한을 피한다.
-                    response = HTTP_SESSION.post(
-                        "https://translate.googleapis.com/translate_a/single",
-                        params=[
-                            ("client", "gtx"),
-                            ("sl", "en"),
-                            ("tl", "ko"),
-                            ("dt", "t"),
-                        ],
-                        data={"q": batch_text},
-                        timeout=8.0,
-                        headers={
-                            "User-Agent": "Mozilla/5.0",
-                            "Content-Type": "application/x-www-form-urlencoded",
-                        },
-                    )
-                    NEWS_TRANSLATION_LAST_REQUEST_TS = time.time()
-
-                    if response.status_code == 429:
-                        last_error = "HTTP 429"
-                        # 429가 반복되면 사이트를 계속 붙잡지 않고
-                        # 일정 시간 번역 요청을 쉬게 한다.
-                        if attempt == 0:
-                            time.sleep(2.0)
-                        else:
-                            NEWS_TRANSLATION_BACKOFF_UNTIL = time.time() + 30.0
-                        continue
-
-                    if response.status_code != 200:
-                        last_error = f"HTTP {response.status_code}"
-                        continue
-
-                    payload = response.json()
-                    translated_text = "".join(
-                        str(part[0])
-                        for part in (payload[0] or [])
-                        if isinstance(part, list) and part and part[0]
-                    ).strip()
-
-                    if not translated_text:
-                        last_error = "empty translation"
-                        continue
-
-                    # 번역기가 탭/번호/줄바꿈을 조금 바꿔도 최대한 복구한다.
-                    parsed = {}
-                    for line in translated_text.splitlines():
-                        match = re.match(
-                            r"^\s*(\d+)\s*(?:\t|\|\s*\|\s*\|)\s*(.+?)\s*$",
-                            line,
-                        )
-                        if not match:
-                            continue
-
-                        pos = int(match.group(1))
-                        value = match.group(2).strip()
-
-                        # 한글이 없는 결과도 버리지 않는다.
-                        # 예: FOMC/NVDA/Apple 같은 고유명사는 번역 결과가
-                        # 영어로 남을 수 있지만, 해당 뉴스는 정상 결과일 수 있다.
-                        if value:
-                            parsed[pos] = value
-
-                    # 부분 성공을 그대로 적용한다. 한 건 실패해도 다른 건 살린다.
-                    if parsed:
-                        for pos, (idx, raw, cache_key) in enumerate(
-                            batch,
-                            start=1,
-                        ):
-                            translated = str(parsed.get(pos) or "").strip()
-
-                            # 결과가 원문과 완전히 같으면 번역 실패로 간주하고
-                            # 캐시하지 않는다.
-                            if translated and translated != raw:
-                                result[idx] = _cache_set(
-                                    NEWS_TRANSLATION_CACHE,
-                                    cache_key,
-                                    translated,
-                                )
-                            else:
-                                result.setdefault(idx, raw)
-
-                        translated_ok = True
-                        break
-
-                    last_error = "batch parse failed"
-
-                except Exception as exc:
-                    last_error = f"{type(exc).__name__}: {exc}"
-
-            if not translated_ok:
-                if last_error:
-                    print(
-                        f"[NEWS TRANSLATION BATCH] failed: "
-                        f"{last_error}"
-                    )
-                for idx, raw, _ in batch:
-                    result.setdefault(idx, raw)
-
-    return result
+        if response.status_code != 200:
+            return raw
+        payload = response.json()
+        translated = "".join(
+            str(part[0]) for part in (payload[0] or [])
+            if isinstance(part, list) and part and part[0]
+        ).strip()
+        if not translated:
+            return raw
+        return _cache_set(NEWS_TRANSLATION_CACHE, cache_key, translated)
+    except Exception as exc:
+        print(f"[NEWS TRANSLATION] failed: {type(exc).__name__}: {exc}")
+        return raw
 
 
 def translate_news_titles_to_korean(items, market_name=""):
-    """미국주식/미국증시/해외주식 뉴스 제목을 한국어로 번역한다."""
-    if not _translation_market_enabled(market_name) or not items:
+    """미국주식 화면의 영문 기사 제목을 병렬 번역한다. 원문 링크/출처는 유지한다."""
+    if market_name != "미국주식" or not items:
         return items or []
-
     news_items = [dict(x) for x in items if isinstance(x, dict)]
     if not news_items:
         return []
-
-    titles = [str(item.get("title") or "").strip() for item in news_items]
-    translated_map = _translate_news_titles_batch_to_korean(titles)
-
+    futures = {}
     for idx, item in enumerate(news_items):
-        original = str(item.get("title") or "").strip()
-        translated = str(translated_map.get(idx) or original).strip()
-
-        if translated and translated != original:
-            item["title"] = translated
-            item["title_original"] = (
-                str(item.get("title_original") or "")
-                or original
+        title = str(item.get("title") or "").strip()
+        if title:
+            futures[idx] = NEWS_TRANSLATION_EXECUTOR.submit(
+                _translate_news_title_en_to_ko, title
             )
-
+    for idx, future in futures.items():
+        try:
+            translated = future.result(timeout=3.5)
+            if translated and translated != news_items[idx].get("title"):
+                news_items[idx]["title"] = translated
+                news_items[idx]["title_original"] = str(news_items[idx].get("title_original") or "") or str(items[idx].get("title") or "")
+        except Exception as exc:
+            print(f"[NEWS TRANSLATION] result failed: {type(exc).__name__}: {exc}")
     return news_items
 
 
 def fetch_finlight_stock_news(symbol="", market_name="", formal_name="", limit=20):
-    """선택 종목의 직접 관련 금융뉴스. Finlight 우선, 기존 RSS를 fallback으로 사용한다."""
-    if market_name == "국내주식":
-        language = "ko"
-        countries = ["KR"]
-        query = f"ticker:{symbol}" if symbol else formal_name
-        categories = ["markets", "economy", "business", "technology", "regulation", "geopolitics"]
-    elif market_name == "미국주식":
-        language = "en"
-        countries = ["US"]
-        query = f"ticker:{symbol}" if symbol else formal_name
-        categories = ["markets", "economy", "business", "technology", "regulation", "geopolitics"]
-    elif market_name == "암호화폐":
-        language = "en"
-        countries = None
-        query = formal_name or symbol
-        categories = ["crypto", "markets", "economy", "regulation", "technology"]
-    else:
-        language = "en"
-        countries = None
-        query = formal_name or symbol
-        categories = ["markets", "economy", "business", "technology", "regulation", "geopolitics", "energy", "commodities"]
+    """
+    종목 뉴스 공용 수집기.
+    기존 Finlight 자리를 유지하되 실제 뉴스 공급원은 Naver News API를 사용한다.
+    미국/국내 모두 한국어 뉴스로 받아 번역 API를 사용하지 않는다.
+    """
+    limit = max(1, min(int(limit), 20))
+    name = str(formal_name or "").strip()
+    ticker = str(symbol or "").strip().upper()
 
-    result = fetch_finlight_news(
-        query=query,
-        symbol=symbol,
-        market_name=market_name,
-        formal_name=formal_name,
-        limit=limit,
-        language=language,
-        countries=countries,
-        categories=categories,
-        cache_tag="stock",
-    )
-    if result:
-        return result
+    if not name and ticker:
+        name = ticker
 
-    # Finlight 장애/일시적 빈 결과에도 기존 뉴스 기능은 유지한다.
-    return fetch_rss_news(formal_name or symbol, limit)
-
-
-def _economic_news_priority(item, market_name=""):
-    """경제뉴스 안에서 미국 증시 마감 시황처럼 시장 방향 판단에 직접 쓰이는 기사를 우선한다."""
-    title = str(item.get("title") or "").lower()
-    score = int(item.get("relevance_score") or 0)
-
-    # 국내 종목의 "왜 움직였을까"에서 전일 미국 증시 흐름을 첫 번째 재료로
-    # 사용할 수 있도록 미국 증시 마감/지수/반도체 시황에 추가 가중치를 준다.
-    us_close_terms = [
-        "미국증시", "뉴욕증시", "뉴욕 증시", "미국 증시", "나스닥",
-        "s&p500", "s&p 500", "다우", "필라델피아반도체", "반도체지수",
-        "뉴욕증시 마감", "미국증시 마감", "마감 시황", "증시 마감",
-        "wall street", "nasdaq", "s&p 500", "dow", "phlx semiconductor",
-    ]
-    market_move_terms = [
-        "상승", "하락", "급등", "급락", "혼조", "마감", "지수",
-        "금리", "국채금리", "유가", "cpi", "ppi", "연준", "fomc",
-    ]
-
-    if any(term in title for term in us_close_terms):
-        score += 6
-    if any(term in title for term in market_move_terms):
-        score += 2
-    if "필라델피아반도체" in title or "반도체지수" in title or "phlx semiconductor" in title:
-        score += 3
-    if "마감" in title and any(term in title for term in ["미국", "뉴욕", "나스닥", "다우"]):
-        score += 3
-
-    # 미국 증시의 '왜 움직였는가'를 설명하는 원인 기사에 추가 가중치.
-    # 지정학 → 원유 → 물가 → 금리의 연결고리가 다음 단계 분석의 핵심 원재료다.
-    driver_terms = [
-        "이란", "이란전쟁", "중동", "호르무즈", "전쟁 장기화",
-        "유가", "원유", "wti", "브렌트", "국채금리", "미국채금리",
-        "인플레이션", "연준", "fomc", "금리인상", "공급차질",
-        "iran", "iran war", "middle east", "strait of hormuz", "oil",
-        "crude", "wti", "brent", "treasury yields", "inflation",
-        "federal reserve", "fomc", "rate hike", "supply disruption",
-    ]
-    driver_hits = sum(1 for term in driver_terms if term in title)
-    if driver_hits:
-        score += min(10, 4 + driver_hits * 2)
-    if any(term in title for term in ["유가", "원유", "wti", "브렌트", "oil", "crude"]):
-        score += 2
-    if any(term in title for term in ["국채금리", "미국채금리", "treasury yields"]):
-        score += 2
-    return score
-
-
-def fetch_finlight_economic_news(market_name="", limit=10):
-    """경제/시장/정책/산업 뉴스 + 미국 증시 마감 시황을 별도로 확보한다."""
-    if market_name == "국내주식" or market_name == "국내증시":
-        language = "ko"
-        query = "연준 OR 금리 OR 인플레이션 OR 관세 OR 반도체 OR AI OR 원유 OR 환율"
-        countries = None
-    elif market_name == "암호화폐":
-        language = "en"
-        query = "Federal Reserve OR interest rates OR inflation OR crypto OR Bitcoin OR tariffs OR stock market"
-        countries = None
-    else:
-        language = "en"
-        query = "Federal Reserve OR interest rates OR inflation OR tariffs OR semiconductor OR AI OR oil OR stock market"
-        # 경제뉴스는 미국에만 가두지 않는다. 한국/중국/유럽 등 글로벌 정책·산업 뉴스도 필요하다.
-        countries = None
-
-    categories = ["markets", "economy", "regulation", "geopolitics", "technology", "energy", "commodities", "business"]
-
-    # 1) 미국 증시 마감 시황을 별도 수집한다.
-    # 국내주식 화면에서는 한국어 기사로 받아 사용자가 바로 읽을 수 있게 한다.
-    us_close_limit = max(6, min(10, int(limit)))
-    us_close = fetch_finlight_news(
-        query=(
-            "미국증시 OR 뉴욕증시 OR 나스닥 OR 다우 OR S&P500 "
-            "OR 필라델피아반도체 OR 미국증시 마감 OR 뉴욕증시 마감"
-        ) if language == "ko" else (
-            "US stock market OR Wall Street OR Nasdaq OR Dow OR S&P 500 "
-            "OR Philadelphia Semiconductor OR market close"
-        ),
-        market_name=market_name,
-        limit=us_close_limit,
-        language=language,
-        countries=(None if language == "ko" else ["US"]),
-        categories=["markets", "economy", "technology"],
-        cache_tag="economic_us_close",
-    )
-
-    # 2) 미국 증시를 움직인 '원인'도 별도 수집한다.
-    # 예: 이란/중동 전쟁 → 유가 → 인플레이션 → 국채금리 → Fed → 주가
-    driver_limit = max(5, min(10, int(limit) // 2 if int(limit) > 1 else 5))
-    us_driver = fetch_finlight_news(
-        query=(
-            "이란 OR 이란전쟁 OR 중동 OR 호르무즈 OR 유가 OR 원유 OR WTI "
-            "OR 브렌트 OR 국채금리 OR 미국채금리 OR 인플레이션 OR 연준 "
-            "OR FOMC OR 금리인상 OR 공급차질"
-        ) if language == "ko" else (
-            "Iran OR Iran war OR Middle East OR Strait of Hormuz OR oil OR crude "
-            "OR WTI OR Brent OR Treasury yields OR inflation OR Federal Reserve "
-            "OR FOMC OR rate hike OR supply disruption"
-        ),
-        market_name=market_name,
-        limit=driver_limit,
-        language=language,
-        countries=(None if language == "ko" else ["US"]),
-        categories=["geopolitics", "commodities", "economy", "markets", "energy", "regulation"],
-        cache_tag="economic_us_driver",
-    )
-
-    # 3) 기존 경제/정책/산업 뉴스도 유지한다.
-    general_limit = max(10, int(limit))
-    general = fetch_finlight_news(
-        query=query,
-        market_name=market_name,
-        limit=general_limit,
-        language=language,
-        countries=countries,
-        categories=categories,
-        cache_tag="economic",
-    )
+    queries = []
+    if name:
+        queries.append(name)
+    if market_name == "미국주식" and ticker and ticker != name:
+        queries.append(f"{name} {ticker}")
 
     merged = []
     seen = set()
-    for item in (us_close or []) + (us_driver or []) + (general or []):
-        if not isinstance(item, dict):
-            continue
-        title_key = re.sub(r"\s+", " ", str(item.get("title") or "")).strip().lower()
-        if not title_key or title_key in seen:
-            continue
-        seen.add(title_key)
-        item = dict(item)
-        item["relevance_score"] = _economic_news_priority(item, market_name)
-        merged.append(item)
+    for query in queries or [ticker]:
+        rows = fetch_naver_news(query, min(limit, 10))
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            title_key = re.sub(r"\s+", " ", str(row.get("title") or "")).strip().lower()
+            if not title_key or title_key in seen:
+                continue
+            seen.add(title_key)
+            item = dict(row)
+            item["source"] = "Naver"
+            item["relevance_score"] = _finlight_relevance_score(
+                {
+                    "title": item.get("title", ""),
+                    "summary": item.get("description", ""),
+                    "categories": [],
+                },
+                name,
+            )
+            merged.append(item)
 
     merged.sort(
-        key=lambda x: (int(x.get("relevance_score") or 0), x.get("pubDate") or ""),
+        key=lambda x: (
+            int(x.get("relevance_score") or 0),
+            str(x.get("pubDate") or ""),
+        ),
         reverse=True,
     )
-    pre_limit_count = len(merged)
-    final_limit = max(1, int(limit))
-    merged = merged[:final_limit]
+    return merged[:limit]
 
-    print(
-        f"[FINLIGHT ECONOMIC SUMMARY] market={market_name!r} "
-        f"us_close={len(us_close or [])} "
-        f"us_driver={len(us_driver or [])} "
-        f"general={len(general or [])} "
-        f"deduped={pre_limit_count} final={len(merged)} limit={final_limit}"
+
+def fetch_finlight_economic_news(market_name="", limit=10):
+    """
+    경제/시장 뉴스 공용 수집기.
+    기존 Finlight 자리를 유지하되 실제 뉴스 공급원은 Naver News API를 사용한다.
+    미국주식도 한국어 뉴스로 받아 번역 API를 사용하지 않는다.
+    """
+    limit = max(1, min(int(limit), 20))
+
+    if market_name in {"국내주식", "국내증시"}:
+        queries = [
+            "미국증시 나스닥 연준 금리 반도체 AI 원유 환율",
+            "미국증시 마감 나스닥",
+        ]
+    else:
+        queries = [
+            "미국증시 나스닥 연준 금리 반도체 AI 원유",
+            "미국증시 마감",
+        ]
+
+    merged = []
+    seen = set()
+    for query in queries:
+        rows = fetch_naver_news(query, min(limit, 10))
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            title_key = re.sub(r"\s+", " ", str(row.get("title") or "")).strip().lower()
+            if not title_key or title_key in seen:
+                continue
+            seen.add(title_key)
+            item = dict(row)
+            item["source"] = "Naver"
+            item["relevance_score"] = _economic_news_priority(item, market_name)
+            merged.append(item)
+
+    merged.sort(
+        key=lambda x: (
+            int(x.get("relevance_score") or 0),
+            str(x.get("pubDate") or ""),
+        ),
+        reverse=True,
     )
 
-    if merged:
-        return merged
+    final = merged[:limit]
+    if final:
+        return final
 
-    return fetch_rss_news("뉴욕증시 OR 미국증시 OR 나스닥", limit)
+    return fetch_naver_news("미국증시 나스닥", limit)
 
 
 def _fetch_rss_news_uncached(query_keyword, limit=5):

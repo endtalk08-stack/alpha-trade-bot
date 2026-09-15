@@ -7097,9 +7097,25 @@ if ((response && !response.ok) || data.error) {
                     if (payload && payload.ready && payload.data) {
                         if (searchToken !== activeSearchToken) return;
                         ANALYZE_CACHE.delete(query.trim().toUpperCase());
-                        // forceServer=true를 사용하면 무거운 외부 API를 다시 호출하므로 금지.
-                        // 서버 ANALYSIS_CACHE의 완성 데이터를 core 요청으로 받아 즉시 렌더링한다.
-                        await doSearch(query, false);
+                        // forceServer=true 또는 doSearch() 재호출은 사용하지 않는다.
+                        // 완성된 서버 캐시 데이터를 현재 화면의 트랙 분석에 직접 반영한다.
+                        const detailData = payload.data;
+                        if (window.GaemiWidgets && window.GaemiWidgets.track) {
+                            const mr = detailData && detailData.movement_reason;
+                            const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
+                                const a5 = a.key === 'market_5d' ? 1 : 0;
+                                const b5 = b.key === 'market_5d' ? 1 : 0;
+                                if (a5 !== b5) return a5 - b5;
+                                return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
+                            });
+                            const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
+                            const confidenceStyle = mr && mr.confidence === '높음'
+                                ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+                                : mr && mr.confidence === '중간'
+                                    ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+                                    : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+                            window.GaemiWidgets.track.render(detailData, mr, evidenceReasons, evidenceCount, confidenceStyle);
+                        }
                         return;
                     }
                 }

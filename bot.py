@@ -41,17 +41,6 @@ import numpy as np
 
 
 
-# DB layer (kept behavior-equivalent; separated from the main server module)
-from db import (
-    init_database,
-    save_market_prices,
-    save_quant_result,
-    get_db_health,
-    get_db_price_summary,
-    get_db_recent_prices,
-    _submit_db_write,
-)
-
 # Quant/Trading-value module
 from market_index import fetch_naver_realtime_index, fetch_market_5day_returns_from_df, fetch_market_5day_returns_from_symbol, fetch_naver_index_5day_returns
 from quant import (
@@ -2023,10 +2012,6 @@ def fetch_all_world_board_parallel(force=False):
 
     return CACHED_WORLD_BOARD or results
 
-from malicious_zone import _build_malicious_zones
-
-
-
 # ===== WHY MOVED: multi-source news clustering engine =====
 from news_analysis import (NEWS_CLUSTER_STOPWORDS, NEWS_GENERIC_TOKENS, NEWS_POLARITY, _news_tokens, _news_cluster_key, _news_polarity, analyze_news_clusters, build_clustered_material_evidence)
 from dart_disclosure import fetch_dart_disclosures
@@ -2915,29 +2900,6 @@ def run_full_pipeline(query, lightweight=False):
         return None
 
     # ====================================================
-    # PostgreSQL 원천 OHLCV 저장
-    # STEP 2: 사용자 응답 경로에서 DB 저장을 기다리지 않는다.
-    # 분석에 사용할 df가 이후 계산 과정에서 변경될 수 있으므로
-    # 백그라운드 작업에 넘길 복사본을 만든다.
-    # ====================================================
-    try:
-        db_price_df = df.copy(deep=True)
-        if isinstance(df.attrs.get("_gaemi_raw_df"), pd.DataFrame):
-            db_price_df.attrs["_gaemi_raw_df"] = df.attrs["_gaemi_raw_df"].copy(deep=True)
-
-        _submit_db_write(
-            ("market_prices", market_name, str(symbol), "1d"),
-            save_market_prices,
-            df=db_price_df,
-            market_name=market_name,
-            symbol=symbol,
-            timeframe="1d",
-            source="alpha-trade-bot",
-        )
-    except Exception as exc:
-        print(f"[DB ASYNC] 원천 OHLCV 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
-
-    # ====================================================
     # STEP 8: /api/analyze 경량화
     # core 모드에서는 선택 외부 데이터를 기다리지 않는다. 완료 작업은 백그라운드에서
     # 캐시를 채우고, /api/analyze-details가 준비 여부를 알려준다.
@@ -3032,24 +2994,6 @@ def run_full_pipeline(query, lightweight=False):
 
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
     _perf_stage("quant")
-
-    try:
-        # 퀀트 결과도 응답을 막지 않도록 백그라운드 저장한다.
-        db_quant_df = df.copy(deep=True)
-        db_quant_payload = dict(quant) if isinstance(quant, dict) else quant
-
-        _submit_db_write(
-            ("quant_results", market_name, str(symbol), "1d"),
-            save_quant_result,
-            market_name=market_name,
-            symbol=symbol,
-            raw_price=raw_price,
-            df=db_quant_df,
-            quant=db_quant_payload,
-            timeframe="1d",
-        )
-    except Exception as exc:
-        print(f"[DB ASYNC] 퀀트 결과 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
     _perf_stage("movement_reason_start")
     try:
@@ -3183,7 +3127,6 @@ def run_full_pipeline(query, lightweight=False):
         "ma60_line": ma60_line,
         "bb_up_line": bb_up_line,
         "bb_dn_line": bb_dn_line,
-        "malicious_zones": _build_malicious_zones(df, raw_price)
     }
 
     result_data["_details_ready"] = not lightweight
@@ -3613,7 +3556,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="/widgets/dart_disclosure.js"></script>
     <script src="/widgets/chart.js"></script>
     <script src="/widgets/stock_news.js"></script>
@@ -3623,13 +3565,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <script src="/widgets/us_leading_stocks.js"></script>
     <script src="/widgets/quant.js"></script>
     <script src="/widgets/track.js"></script>
-    <script src="/widgets/why_movement.js"></script>
     <script src="/widgets/earnings_calendar.js"></script>
     <script src="/widgets/economic_calendar.js"></script>
     <script src="/widgets/analyst_consensus.js"></script>
     <script src="/widgets/vote.js"></script>
     <script src="/widgets/comment.js"></script>
-    <script src="/widgets/malicious_zone.js"></script>
     <style>
         :root {
             --bg-body: #131314;
@@ -3752,9 +3692,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             align-items: stretch;
             position: relative;
         }
-
-        /* 1행: 왜 움직였을까? — 코멘트 전용 */
-        #rowCause { grid-column: 1; grid-row: 1; }
 
         /* 4행: 트랙 분석 — 종목 뉴스 바로 아래 */
         #rowTrack { grid-column: 1; grid-row: 4; }
@@ -4543,7 +4480,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
             
             /* 모바일 위젯 표시 순서 — PC 그리드에는 영향 없음 */
-            #rowCause { order: 1; }
             #rowChart { order: 2; }
             #rowNews { order: 3; }
             #rowTrack { order: 4; }
@@ -5571,7 +5507,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             }
 
             /* 기존 모바일 순서를 명확하게 재지정 */
-            #rowCause { order: 1 !important; }
             #rowChart { order: 2 !important; }
             #rowNews { order: 3 !important; }
             #rowTrack { order: 4 !important; }
@@ -5630,7 +5565,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             #rowWorld,
             #rowGlobalNews,
             #rowChart,
-            #rowCause,
             #rowNews,
             #rowTrack,
             #rowQuant,
@@ -6057,14 +5991,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
                         </div>
 
-                        <!-- 1행 좌측: 왜 움직였을까? — 코멘트 전용 -->
-                        <div class="card" id="rowCause" style="justify-content:flex-start;">
-                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
-                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
-                            </div>
-                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
-                        </div>
-
                         <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
                         <div class="card" id="rowTrack" style="justify-content:flex-start;">
                             <div style="margin-bottom:14px;">
@@ -6297,14 +6223,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="dartList"></div>
                         </div>
 
-                        <!-- 8행: 악성 매물대 위젯 -->
-                        <div class="card" id="rowSignal">
-                            <div class="board-header">
-                                <span class="board-header-title">악성 매물대</span>
-                                <span style="font-size:0.72rem; color:var(--text-muted);">과거 거래가 집중된 저항 구간</span>
-                            </div>
-                            <div id="maliciousZoneBody" style="margin-top:10px;"></div>
-                        </div>
 </div>
 
                 </div>
@@ -6361,15 +6279,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
         function setHtml(id, val) { const el = document.getElementById(id); if (el) el.innerHTML = (val !== undefined && val !== null) ? String(val) : ''; }
-
-        const SUPABASE_URL = "https://uaqvmsubzgzvxbdcwcad.supabase.co";
-        const SUPABASE_KEY = "sb_publishable_bcxDofsnPXgBICDDgQ8Ijw_fNjPcsRW";
-        let supabaseClient = null;
-        try {
-            if (window.supabase) {
-                supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-            }
-        } catch(e) {}
 
         function initTheme() {
             const saved = localStorage.getItem('gaemi_theme') || 'dark';
@@ -7150,14 +7059,6 @@ if ((response && !response.ok) || data.error) {
                 if (window.GaemiWidgets && window.GaemiWidgets.quant) {
                     window.GaemiWidgets.quant.render(data.quant);
                 }
-                if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
-                    window.GaemiWidgets.maliciousZone.render(data);
-                }
-                // 3.5 왜 움직였을까? — 독립 위젯
-                if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
-                    window.GaemiWidgets.whyMovement.render(data);
-                }
-
                 // 3.6 트랙 분석 — 독립 위젯
                 if (window.GaemiWidgets && window.GaemiWidgets.track) {
                     const mr = data && data.movement_reason;
@@ -7259,12 +7160,6 @@ if ((response && !response.ok) || data.error) {
 
                         if (window.GaemiWidgets && window.GaemiWidgets.quant) {
                             window.GaemiWidgets.quant.render(detailData.quant);
-                        }
-                        if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
-                            window.GaemiWidgets.maliciousZone.render(detailData);
-                        }
-                        if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
-                            window.GaemiWidgets.whyMovement.render(detailData);
                         }
                         if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
                             window.GaemiWidgets.worldBoard.render(detailData.world_board || []);
@@ -7711,16 +7606,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
             return
 
-        if parsed.path == "/widgets/why_movement.js":
-            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "why_movement.js")
-            try:
-                with open(widget_path, "rb") as f:
-                    payload = f.read()
-                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
-            except OSError:
-                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
-            return
-
         if parsed.path == "/widgets/track.js":
             widget_path = os.path.join(os.path.dirname(__file__), "widgets", "track.js")
             try:
@@ -7790,16 +7675,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
             return
 
-        if parsed.path == "/widgets/malicious_zone.js":
-            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "malicious_zone.js")
-            try:
-                with open(widget_path, "rb") as f:
-                    payload = f.read()
-                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
-            except OSError:
-                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
-            return
-
         if parsed.path == "/widgets/chart.js":
             widget_path = os.path.join(os.path.dirname(__file__), "widgets", "chart.js")
             try:
@@ -7838,53 +7713,6 @@ class WebHandler(BaseHTTPRequestHandler):
             except OSError:
                 self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
             return
-
-        # PostgreSQL 연결 상태 확인
-        if parsed.path == "/api/db/health":
-            self._json(200, get_db_health())
-            return
-
-        # PostgreSQL 저장 데이터 확인
-        # /api/db/prices?market=Korea&symbol=000660&limit=10
-        if parsed.path == "/api/db/prices":
-            market = str(params.get("market", [""])[0]).strip()
-            symbol = str(params.get("symbol", [""])[0]).strip()
-
-            try:
-                limit = int(params.get("limit", ["10"])[0])
-            except Exception:
-                limit = 10
-
-            if not market or not symbol:
-                self._json(
-                    400,
-                    {"ok": False, "error": "market와 symbol이 필요합니다."}
-                )
-                return
-
-            summary = get_db_price_summary(
-                market=market,
-                symbol=symbol,
-                timeframe="1d",
-            )
-            recent = get_db_recent_prices(
-                market=market,
-                symbol=symbol,
-                timeframe="1d",
-                limit=limit,
-            )
-
-            self._json(
-                200,
-                {
-                    "ok": summary.get("ok", False),
-                    "summary": summary,
-                    "data": recent,
-                }
-            )
-            return
-
-
 
         if parsed.path == "/api/right-market-board":
             try:
@@ -8072,12 +7900,6 @@ class WebHandler(BaseHTTPRequestHandler):
         )
 
 def run_web_server():
-    # DB가 실패해도 기존 서버를 막지 않는다.
-    try:
-        init_database()
-    except Exception as exc:
-        print(f"[DB] 서버 시작 시 초기화 실패 - 기존 서버 계속 실행: {type(exc).__name__}: {exc}")
-
     port = int(os.environ.get("PORT", 10000))
     server = ThreadingHTTPServer(("0.0.0.0", port), WebHandler)
     print(f"gaemiGTP listening on :{port}")

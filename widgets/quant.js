@@ -122,22 +122,22 @@ if (qList) {
         </div>
         <div class="quant-row-item">
             <div class="quant-row-left">
+                <span class="quant-row-name">20일 평균 거래대금</span>
+                <span class="quant-row-status status-pill-neutral">실측</span>
+            </div>
+            <div class="quant-row-right">
+                <div class="quant-row-val">${q.tval_20d || '-'}</div>
+                <div class="quant-row-subval">최근 20거래일</div>
+            </div>
+        </div>
+        <div class="quant-row-item">
+            <div class="quant-row-left">
                 <span class="quant-row-name">거래량 / 5일평균</span>
                 <span class="quant-row-status status-pill-${q.vol_color}">${q.vol_state}</span>
             </div>
             <div class="quant-row-right">
                 <div class="quant-row-val">${q.vol_ratio}</div>
                 <div class="quant-row-subval">유동성 비율</div>
-            </div>
-        </div>
-        <div class="quant-row-item">
-            <div class="quant-row-left">
-                <span class="quant-row-name">최근 20일 평균 거래대금</span>
-                <span class="quant-row-status status-pill-neutral">실제 데이터</span>
-            </div>
-            <div class="quant-row-right">
-                <div class="quant-row-val">${q.tval_20d || '-'}</div>
-                <div class="quant-row-subval">거래대금 기준</div>
             </div>
         </div>
     `;

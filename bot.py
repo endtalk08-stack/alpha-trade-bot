@@ -6812,6 +6812,44 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
         let activeSearchToken = 0;
+
+        // 브라우저 캐시도 서버와 동일하게 '종목명/종목코드/티커'를
+        // 하나의 분석 데이터로 묶는다. 검색 입구가 달라도 같은 종목이면
+        // 같은 Core/Details 결과를 사용해야 한다.
+        function analyzeCacheKeys(query, data = null) {
+            const keys = [];
+            const add = (value) => {
+                const v = String(value ?? '').trim().replace(/\s+/g, '').toUpperCase();
+                if (v && !keys.includes(v)) keys.push(v);
+            };
+            add(query);
+            if (data && typeof data === 'object') {
+                add(data.symbol);
+                add(data.name);
+                add(data.formal_name);
+            }
+            return keys;
+        }
+
+        function setAnalyzeCache(query, data, timestamp = Date.now()) {
+            analyzeCacheKeys(query, data).forEach(key => {
+                ANALYZE_CACHE.set(key, { time: timestamp, data });
+            });
+        }
+
+        function getAnalyzeCache(query) {
+            const now = Date.now();
+            for (const key of analyzeCacheKeys(query)) {
+                const hit = ANALYZE_CACHE.get(key);
+                if (hit && (now - hit.time) < ANALYZE_CACHE_TTL) return hit;
+                if (hit) ANALYZE_CACHE.delete(key);
+            }
+            return null;
+        }
+
+        function deleteAnalyzeCache(query, data = null) {
+            analyzeCacheKeys(query, data).forEach(key => ANALYZE_CACHE.delete(key));
+        }
         let activeSearchController = null;
         let activeDetailsController = null;
         let rightMarketController = null;
@@ -6969,12 +7007,12 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                     .catch(() => null);
 
             try {
-                const cacheKey = cleanQ.toUpperCase();
-                const cached = ANALYZE_CACHE.get(cacheKey);
+                const cacheHit = getAnalyzeCache(cleanQ);
+                const cached = cacheHit;
                 let data;
                 let response = null;
 
-                if (!forceServer && cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
+                if (!forceServer && cached) {
                     data = cached.data;
                 } else {
                     const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=core';
@@ -6989,7 +7027,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                     }
 
                     if (response.ok && data && !data.error) {
-                        ANALYZE_CACHE.set(cacheKey, { time: Date.now(), data });
+                        setAnalyzeCache(cleanQ, data);
                     }
                 }
 
@@ -7199,14 +7237,25 @@ if ((response && !response.ok) || data.error) {
                     const payload = await r.json();
                     if (payload && payload.ready && payload.data) {
                         if (searchToken !== activeSearchToken) return;
-                        ANALYZE_CACHE.delete(query.trim().toUpperCase());
+                        deleteAnalyzeCache(query, payload.data);
                         // 완성된 서버 데이터를 현재 화면의 모든 분석 위젯에 반영한다.
                         // 기존에는 track만 갱신되어 퀀트/거래대금/뉴스/컨센서스 등이
                         // core 단계의 빈 데이터를 그대로 유지할 수 있었다.
                         const detailData = payload.data;
-                        ANALYZE_CACHE.set(String(detailData.symbol || query).trim().toUpperCase(), {
-                            time: Date.now(), data: detailData
-                        });
+                        setAnalyzeCache(query, detailData);
+
+                        // Details가 늦게 완성되어도 현재 화면의 종목 정보 자체도
+                        // 최종 서버 데이터로 맞춘다. 새로고침/재검색에서도 동일하다.
+                        if (detailData.symbol || detailData.name || detailData.formal_name) {
+                            const detailName = detailData.name || detailData.formal_name || query;
+                            const detailIsKrw = detailData.market === '국내주식' || detailData.market === '국내증시';
+                            const detailUsName = (detailIsKrw || !detailData.symbol)
+                                ? detailName
+                                : getUsShortKrName(detailData.symbol, detailName);
+                            setHtml('rTitle', `${detailUsName} <span>(${detailData.symbol || ''})</span>`);
+                            setTxt('rPrice', detailData.price || detailData.price_str || '');
+                            setHtml('rMeta', `시장: ${detailData.market || '-'} · 출처: ${detailIsKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${detailData.time || detailData.now_str || '-'}`);
+                        }
 
                         if (window.GaemiWidgets && window.GaemiWidgets.quant) {
                             window.GaemiWidgets.quant.render(detailData.quant);

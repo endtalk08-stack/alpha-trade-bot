@@ -82,6 +82,9 @@ _consensus.ALPHA_VANTAGE_API_KEY = ALPHA_VANTAGE_API_KEY
 GLOBAL_INDEX_MAP = {
     "코스피": "^KS11", "KOSPI": "^KS11",
     "코스닥": "^KQ11", "KOSDAQ": "^KQ11",
+    "나스닥": "^IXIC", "NASDAQ": "^IXIC",
+    "나스닥종합": "^IXIC", "NASDAQCOMPOSITE": "^IXIC",
+    "나스닥100": "^NDX", "NASDAQ100": "^NDX",
     "VIX": "^VIX", "빅스": "^VIX", "변동성": "^VIX",
     "WTI유가": "CL=F", "WTI": "CL=F", "유가": "CL=F", "원유": "CL=F",
     "금": "GC=F", "GOLD": "GC=F", "골드": "GC=F",
@@ -4557,24 +4560,25 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             const rawSymbol = String((isObject ? input.symbol : options.symbol) || '').trim();
             const rawMarket = isObject ? input.market : options.market;
             const source = String((isObject ? input.source : options.source) || 'unknown').trim();
-            // 모든 종목 진입점은 분석 전에 동일한 기준으로 표준화한다.
-            // KR: 화면 종목명으로 서버의 표준 6자리 종목코드를 다시 확인한다.
-            // US/CRYPTO: 표준 symbol/ticker를 사용한다.
-            // 사이드바 등에서 잘못된 symbol이 들어와도 KR 종목은 이름을 우선한다.
             const market = normalizeStockMarket(rawMarket, rawSymbol || rawQuery || rawName);
-            let query = rawQuery || rawName || rawSymbol;
+
+            // 화면에 보여줄 검색어와 실제 데이터 조회용 식별자를 분리한다.
+            // KR: 잘못된/오래된 symbol이 함께 들어와도 종목명이 있으면 이름으로 서버에서 표준 6자리 코드를 재확인한다.
+            // US/CRYPTO: symbol/ticker를 데이터 식별자로 사용한다.
+            const displayQuery = rawQuery || rawName || rawSymbol;
+            let dataQuery = rawQuery || rawName || rawSymbol;
             if (market === 'KR' && rawName) {
-                query = rawName;
-            } else if (market === 'US' && rawSymbol) {
-                query = rawSymbol;
-            } else if (market === 'CRYPTO' && rawSymbol) {
-                query = rawSymbol;
+                dataQuery = rawName;
+            } else if ((market === 'US' || market === 'CRYPTO') && rawSymbol) {
+                dataQuery = rawSymbol;
             }
+
             const name = rawName || ((rawSymbol && rawQuery && rawSymbol !== rawQuery) ? rawQuery : '');
             return {
-                query,
+                query: dataQuery,
+                displayQuery,
                 name,
-                symbol: rawSymbol || query,
+                symbol: rawSymbol || dataQuery,
                 market,
                 source: source || 'unknown'
             };
@@ -4584,11 +4588,12 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             const entry = buildStockEntry(input, options);
             if (!entry.query) return;
             try { window.__GAEMIGTP_LAST_STOCK_ENTRY__ = entry; } catch (e) {}
-            doSearch(entry.query, false, entry.name, entry.market, entry.source);
+            // query = API/분석용, displayQuery = 주소창/입력창 표시용
+            doSearch(entry.query, false, entry.name || entry.displayQuery, entry.market, entry.source, entry.displayQuery);
         }
         window.openStock = openStock;
 
-        async function doSearch(query, forceServer = false, displayNameOverride = '', marketOverride = '', sourceOverride = '') {
+        async function doSearch(query, forceServer = false, displayNameOverride = '', marketOverride = '', sourceOverride = '', displayQueryOverride = '') {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
             let materialText = '';
 
@@ -4640,13 +4645,15 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                 localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
             } catch (e) {}
 
-            // 현재 분석 종목을 URL에 저장하여 새로고침해도 같은 종목을 유지
+            // 현재 분석 종목을 URL에 저장하되, 주소창은 사용자가 선택한 이름/티커를 유지한다.
+            // 실제 API/분석 요청에는 cleanQ(표준화된 데이터 조회값)를 사용한다.
+            const displayQuery = String(displayQueryOverride || displayNameOverride || cleanQ).trim();
             const searchUrl = new URL(window.location.href);
-            searchUrl.searchParams.set('q', cleanQ);
+            searchUrl.searchParams.set('q', displayQuery);
             window.history.replaceState({}, '', searchUrl.toString());
 
-            document.getElementById('centerInput').value = cleanQ;
-            document.getElementById('bottomInput').value = cleanQ;
+            document.getElementById('centerInput').value = displayQuery;
+            document.getElementById('bottomInput').value = displayQuery;
 
             document.getElementById('main-view').style.display = 'none';
             document.getElementById('result-scroll-view').style.display = 'block';
@@ -4656,7 +4663,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             const fastTitle = document.getElementById('rTitle');
             const fastPrice = document.getElementById('rPrice');
             const fastMeta = document.getElementById('rMeta');
-            if (fastTitle) fastTitle.textContent = displayNameHint || cleanQ.toUpperCase();
+            if (fastTitle) fastTitle.textContent = displayQuery || displayNameHint || cleanQ.toUpperCase();
             if (fastPrice) fastPrice.textContent = '';
             if (fastMeta) fastMeta.textContent = '';
 

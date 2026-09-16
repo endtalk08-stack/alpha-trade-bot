@@ -45,7 +45,8 @@
                 const symbol = escapeRightMarketText(row.symbol || '');
                 const clickSymbol = escapeRightMarketText(row.symbol || row.name || '');
                 const clickName = escapeRightMarketText(krName || row.name || row.symbol || '');
-                return `<div class="right-market-row" role="button" tabindex="0" data-right-symbol="${clickSymbol}" data-right-name="${clickName}">
+                const clickMarket = escapeRightMarketText(row.market || (rightMarketKey === 'us' ? 'US' : rightMarketKey === 'crypto' ? 'CRYPTO' : 'KR'));
+                return `<div class="right-market-row" role="button" tabindex="0" data-right-symbol="${clickSymbol}" data-right-name="${clickName}" data-right-market="${clickMarket}">
                     <div class="right-market-rank">${row.rank || idx + 1}</div>
                     <div class="right-market-logo">${badge}</div>
                     <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>
@@ -105,8 +106,13 @@
                 if (!row) return;
                 const symbol = row.getAttribute('data-right-symbol') || '';
                 const name = row.getAttribute('data-right-name') || '';
+                const market = row.getAttribute('data-right-market') || '';
                 if (!symbol) return;
-                doSearch(symbol, false, name);
+                if (typeof openStock !== 'function') {
+                    console.error('[gaemiGTP] openStock() is not available.');
+                    return;
+                }
+                openStock({ symbol, name, market, source: `right-${rightMarketMenu}` });
             };
             list.addEventListener('click', (event) => {
                 const row = event.target.closest('.right-market-row');

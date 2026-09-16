@@ -6435,6 +6435,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
         });
 
         function resetToHome() {
+            // 홈으로 이동하면 진행 중인 분석/상세 요청을 무효화한다.
+            // HTTP 요청이 늦게 끝나더라도 이전 종목이 현재 화면을 덮지 못하게 한다.
+            activeSearchToken++;
+            if (activeSearchController) {
+                try { activeSearchController.abort(); } catch (e) {}
+            }
+            if (activeDetailsController) {
+                try { activeDetailsController.abort(); } catch (e) {}
+            }
+            activeSearchController = null;
+            activeDetailsController = null;
+
             document.getElementById('main-view').style.display = 'flex';
             document.getElementById('result-scroll-view').style.display = 'none';
             document.getElementById('bottom-bar').style.display = 'none';
@@ -6931,7 +6943,9 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                     .catch(() => null);
 
             try {
-                const cacheKey = cleanQ.toUpperCase();
+                // 서버와 동일한 방식으로 캐시 키를 정규화한다.
+                // 예: "삼성 전자"와 "삼성전자"가 서로 다른 캐시가 되지 않게 한다.
+                const cacheKey = cleanQ.replace(/\s+/g, '').toUpperCase();
                 const cached = ANALYZE_CACHE.get(cacheKey);
                 let data;
                 let response = null;
@@ -7158,11 +7172,32 @@ if ((response && !response.ok) || data.error) {
                     const payload = await r.json();
                     if (payload && payload.ready && payload.data) {
                         if (searchToken !== activeSearchToken) return;
-                        ANALYZE_CACHE.delete(query.trim().toUpperCase());
+                        // 완성된 상세 데이터를 아래에서 브라우저 캐시에 저장하고 전체 카드를 갱신한다.
                         // forceServer=true 또는 doSearch() 재호출은 사용하지 않는다.
                         // 완성된 서버 캐시 데이터를 현재 화면의 트랙 분석에 직접 반영한다.
                         const detailData = payload.data;
-                        if (window.GaemiWidgets && window.GaemiWidgets.track) {
+
+                        // 상세 데이터가 준비되면 서버의 완성본을 브라우저 캐시에도 저장한다.
+                        // 이후 사이드바 재진입/새로고침에서는 core를 다시 기다리지 않고
+                        // 같은 완성 데이터를 즉시 전체 카드에 표시할 수 있다.
+                        const detailCacheKey = String(query || '').replace(/\s+/g, '').toUpperCase();
+                        ANALYZE_CACHE.set(detailCacheKey, { time: Date.now(), data: detailData });
+
+                        // 중요: 기존에는 상세 단계에서 트랙 분석만 다시 그렸다.
+                        // 그래서 서버에는 퀀트/거래대금/컨센서스/공시/뉴스가 준비되어 있어도
+                        // 새로고침 또는 재진입 후 화면에는 core의 빈 값이 남을 수 있었다.
+                        // 상세 완성본으로 관련 카드 전체를 다시 렌더링한다.
+                        if (window.GaemiWidgets) {
+                            if (window.GaemiWidgets.quant && detailData.quant) {
+                                window.GaemiWidgets.quant.render(detailData.quant);
+                            }
+                            if (window.GaemiWidgets.maliciousZone) {
+                                window.GaemiWidgets.maliciousZone.render(detailData);
+                            }
+                            if (window.GaemiWidgets.whyMovement) {
+                                window.GaemiWidgets.whyMovement.render(detailData);
+                            }
+
                             const mr = detailData && detailData.movement_reason;
                             const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
                                 const a5 = a.key === 'market_5d' ? 1 : 0;
@@ -7176,7 +7211,22 @@ if ((response && !response.ok) || data.error) {
                                 : mr && mr.confidence === '중간'
                                     ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
                                     : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
-                            window.GaemiWidgets.track.render(detailData, mr, evidenceReasons, evidenceCount, confidenceStyle);
+
+                            if (window.GaemiWidgets.track) {
+                                window.GaemiWidgets.track.render(detailData, mr, evidenceReasons, evidenceCount, confidenceStyle);
+                            }
+                            if (window.GaemiWidgets.stockNews && Array.isArray(detailData.stock_news)) {
+                                window.GaemiWidgets.stockNews.render(detailData.stock_news);
+                            }
+                            if (window.GaemiWidgets.globalNews && Array.isArray(detailData.global_news)) {
+                                window.GaemiWidgets.globalNews.render(detailData.global_news);
+                            }
+                            if (window.GaemiWidgets.consensus) {
+                                window.GaemiWidgets.consensus.render(detailData.consensus);
+                            }
+                            if (typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
+                                window.GaemiWidgets.renderDartDisclosure(detailData.dart_disclosures);
+                            }
                         }
                         return;
                     }

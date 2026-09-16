@@ -179,13 +179,16 @@ ANALYSIS_CORE_TTL = 180  # core→details 전환에 충분한 시간 확보
 EARNINGS_RESULT_CACHE = {}
 EARNINGS_RESULT_CACHE_TTL = 1800  # 30분
 OPTIONAL_API_EXECUTOR = ThreadPoolExecutor(
-    max_workers=18,
+    max_workers=8,
     thread_name_prefix="gaemi-optional",
 )
+# 한 번에 여러 종목을 클릭해도 이전 종목의 부가 분석이 무더기로 실행되지 않도록 제한한다.
 ANALYSIS_ENRICH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=6,
+    max_workers=2,
     thread_name_prefix="gaemi-enrich",
 )
+LATEST_ANALYSIS_QUERY = ""
+LATEST_ANALYSIS_QUERY_LOCK = threading.Lock()
 OPTIONAL_API_SOFT_TIMEOUT = 6.0  # 첫 화면에서 뉴스/컨센서스 등 실제 데이터를 기다리는 최대 대기시간
 ANALYSIS_ENRICH_WAIT = 10.0  # 백그라운드 details 단계에서 외부 데이터가 준비될 최대 대기시간
 
@@ -2572,8 +2575,23 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             return
         ANALYSIS_ENRICHING.add(clean_q)
 
+    def _is_latest():
+        with LATEST_ANALYSIS_QUERY_LOCK:
+            return LATEST_ANALYSIS_QUERY == clean_q
+
+    def _cancel_pending(futures):
+        for future in futures.values():
+            if future is not None:
+                try:
+                    future.cancel()
+                except Exception:
+                    pass
+
     def worker():
         try:
+            # 사용자가 이미 다른 종목으로 이동했다면 부가 API를 시작하지 않는다.
+            if not _is_latest():
+                return
             market_name = context["market_name"]
             symbol = context["symbol"]
             formal_name = context["formal_name"]
@@ -2597,6 +2615,12 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
                 "ticker_news": None,
             }
+
+            # 외부 API를 제출하는 순간 다른 종목으로 이동했다면,
+            # 아직 실행되지 않은 작업은 즉시 취소해 요청이 쌓이지 않게 한다.
+            if not _is_latest():
+                _cancel_pending(optional_futures)
+                return
 
             # details 단계에서는 모든 외부 API를 무한정 기다리지 않는다.
             # 느린 API 하나 때문에 뉴스/컨센서스/트랙 전체가 영원히 '불러오는 중'으로
@@ -2663,6 +2687,11 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             except Exception as exc:
                 print("[ANALYSIS ENRICH][MOVEMENT] 오류:", repr(exc))
                 movement_reason = base_result.get("movement_reason")
+
+            # 결과를 만들 때도 현재 종목인지 확인한다. 이전 종목의 늦은 응답이
+            # 현재 화면/캐시에 섞이지 않도록 한다.
+            if not _is_latest():
+                return
 
             enriched = dict(base_result)
             enriched.update({
@@ -4674,31 +4703,9 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
 
             const searchToken = ++activeSearchToken;
 
-            // 🚀 첫 화면 차트 전용 요청: 전체 분석을 기다리지 않고 즉시 시작
-            const fastChartKey = cleanQ.toUpperCase();
-            const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
-            const fastChartStartedAt = performance.now();
-            const fastChartPromise = (
-                fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
-            )
-                ? Promise.resolve(fastChartCached.data)
-                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ), {
-                    signal: searchSignal,
-                    cache: 'no-store'
-                })
-                    .then(r => r.ok ? r.json() : null)
-                    .then(chartData => {
-                        console.log(`[gaemiGTP 초고속차트] ${cleanQ} | ${(performance.now() - fastChartStartedAt).toFixed(0)}ms`);
-                        if (chartData) {
-                            FAST_CHART_CACHE.set(fastChartKey, {
-                                time: Date.now(),
-                                data: chartData
-                            });
-                        }
-                        return chartData;
-                    })
-                    .catch(() => null);
-
+            // 차트는 /api/analyze(core)가 반환하는 동일 candles를 사용한다.
+            // 별도의 /api/chart 요청을 동시에 시작하지 않아 종목 클릭당 중복 HTTP 요청과
+            // 차트/분석 렌더링 경쟁을 줄인다.
             try {
                 const cacheHit = getAnalyzeCache(cleanQ);
                 const cached = cacheHit;
@@ -4743,38 +4750,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                     console.table(data._perf.slowest_http || []);
                 }
 
-                // 🚀 차트는 core 분석 완료를 기다리지 않는다.
-                if (fastChartCached && Array.isArray(fastChartCached.data?.candles) && fastChartCached.data.candles.length) {
-                    setTimeout(() => {
-                        if (searchToken !== activeSearchToken) return;
-                        initTvChart(fastChartCached.data.candles);
-                        const last = fastChartCached.data.candles[fastChartCached.data.candles.length - 1];
-                        if (last && Number.isFinite(Number(last.close))) {
-                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
-                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
-                        }
-                    }, 0);
-                } else {
-                    fastChartPromise.then(chartData => {
-                        if (searchToken !== activeSearchToken || !chartData) return;
-                        if (chartData?._perf) {
-                            console.log(
-                                `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
-                            );
-                            console.table(chartData._perf.slowest_http || []);
-                        }
-                        if (!Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                        initTvChart(chartData.candles);
-                        const last = chartData.candles[chartData.candles.length - 1];
-                        if (last && Number.isFinite(Number(last.close))) {
-                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
-                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
-                        }
-                    });
-                }
-
-                // /api/chart를 별도로 호출하지 않는다. /api/analyze가 반환한
-                // 동일 candles를 바로 사용해 한 종목 클릭당 Yahoo 차트 중복 요청을 제거한다.
+                // 차트는 core 분석에서 받은 동일 candles만 사용한다.
                 if (searchToken === activeSearchToken && Array.isArray(data.candles) && data.candles.length) {
                     initTvChart(data.candles);
                 }
@@ -5347,6 +5323,7 @@ class WebHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        global LATEST_ANALYSIS_QUERY
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
 
@@ -5664,6 +5641,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             mode = str(params.get("mode", ["full"])[0]).strip().lower()
             lightweight = mode == "core"
+            clean_latest_q = q.replace(" ", "").upper()
+            with LATEST_ANALYSIS_QUERY_LOCK:
+                LATEST_ANALYSIS_QUERY = clean_latest_q
             _perf_begin("analyze", q)
             try:
                 data = run_full_pipeline(q, lightweight=lightweight)

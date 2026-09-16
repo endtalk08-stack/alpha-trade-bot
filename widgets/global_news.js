@@ -43,7 +43,9 @@
 
     async function load(context) {
         const ctx = context || {};
-        if (Array.isArray(ctx.initial)) render(ctx.initial);
+        // /api/analyze가 이미 수집한 경제뉴스를 사용한다.
+        // 위젯에서 동일 API를 다시 호출하지 않는다.
+        if (Array.isArray(ctx.initial)) { render(ctx.initial); return; }
         const market = String(ctx.market || '국내주식').trim() || '국내주식';
         const token = ++requestToken;
         if (controller) { try { controller.abort(); } catch (_) {} }

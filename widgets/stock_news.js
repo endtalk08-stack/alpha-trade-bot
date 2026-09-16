@@ -43,7 +43,9 @@
 
     async function load(context) {
         const ctx = context || {};
-        if (Array.isArray(ctx.initial)) render(ctx.initial);
+        // /api/analyze가 이미 수집한 뉴스를 사용한다.
+        // 위젯에서 같은 뉴스를 다시 호출하지 않아 종목 클릭당 중복 요청을 막는다.
+        if (Array.isArray(ctx.initial)) { render(ctx.initial); return; }
         const symbol = String(ctx.symbol || '').trim();
         const market = String(ctx.market || '').trim();
         const name = String(ctx.name || '').trim();

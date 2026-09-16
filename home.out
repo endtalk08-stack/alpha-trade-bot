@@ -1,0 +1,1648 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>gaemiGTP</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="/widgets/dart_disclosure.js"></script>
+    <script src="/widgets/chart.js"></script>
+    <script src="/widgets/stock_news.js"></script>
+    <script src="/widgets/global_news.js"></script>
+    <script src="/widgets/world_board.js"></script>
+    <script src="/widgets/us_leading_sectors.js"></script>
+    <script src="/widgets/us_leading_stocks.js"></script>
+    <script src="/widgets/quant.js"></script>
+    <script src="/widgets/track.js"></script>
+    <script src="/widgets/earnings_calendar.js"></script>
+    <script src="/widgets/economic_calendar.js"></script>
+    <script src="/widgets/analyst_consensus.js"></script>
+    <script src="/widgets/vote.js"></script>
+    <script src="/widgets/comment.js"></script>
+    <link rel="stylesheet" href="/style.css?v=1">
+</head>
+<body>
+
+    <div id="sidebar-wrapper">
+        <div class="side-top-action">
+            <span style="font-weight:700; font-size:1.15rem; color:var(--text-title); cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
+            <button class="gemini-menu-icon" onclick="toggleSidebar()" title="사이드 패널 닫기">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M4 19V5C4 4.45 4.19583 3.97917 4.5875 3.5875C4.97917 3.19583 5.45 3 6 3H18C18.55 3 19.0208 3.19583 19.4125 3.5875C19.8042 3.97917 20 4.45 20 5V19C20 19.55 19.8042 20.0208 19.4125 20.4125C19.0208 20.8042 18.55 21 18 21H6C5.45 21 4.97917 20.8042 4.5875 20.4125C4.19583 20.0208 4 19.55 4 19ZM9 19H18V5H9V19ZM6 5V19V5Z"/></svg>
+            </button>
+        </div>
+
+        <button class="gemini-new-btn" onclick="resetToHome()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v16m8-8H4"/></svg>
+            <span>새 종목</span>
+        </button>
+
+        <div class="sidebar-scroll-area"></div>
+    </div>
+
+    <div id="content-wrapper">
+        <header>
+            <div class="header-left">
+                <button class="gemini-menu-icon" id="headerToggleBtn" onclick="toggleSidebar()" title="사이드 패널 열기">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+                </button>
+                <div class="logo-top" id="headerLogo" onclick="resetToHome()">gaemiGTP</div>
+            </div>
+
+            <button class="gemini-menu-icon" id="themeToggleBtn" onclick="toggleTheme()" title="화면 테마 변경">
+                <span id="themeIconArea"></span>
+            </button>
+        </header>
+
+        <div id="main-view">
+            <div class="hero-title">gaemiGTP</div>
+            <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
+            <div class="search-container">
+                <div class="search-box">
+                    <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) openStock(this.value, {source:'main-search'});" autocomplete="off">
+                    
+                    <div class="model-selector-wrap">
+                        <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
+                            <span class="model-pill-name" id="centerCurrentModel">gaemi</span>
+                            <span class="model-pill-arrow">▲</span>
+                        </div>
+                        <div class="model-dropdown-menu" id="centerDropdown">
+                            <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                                <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                                <div class="item-sub">도움을 받으세요</div>
+                            </div>
+                            <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                                <div class="item-title">info <span class="item-check">✓</span></div>
+                                <div class="item-sub">정보를 확인하세요</div>
+                            </div>
+                            <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                                <div class="item-title">pro <span class="item-check">✓</span></div>
+                                <div class="item-sub">실력을 키우세요</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button class="send-btn" onclick="openStock(document.getElementById('centerInput').value, {source:'main-search'})">
+                        <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="popular-tags">
+                <button class="tag-btn" onclick="openStock('SK하이닉스', {source:'example'})">SK하이닉스</button>
+                <button class="tag-btn" onclick="openStock('삼성전자', {source:'example'})">삼성전자</button>
+                <button class="tag-btn" onclick="openStock('알테오젠', {source:'example'})">알테오젠</button>
+                <button class="tag-btn" onclick="openStock('엔비디아', {source:'example'})">엔비디아</button>
+                <button class="tag-btn" onclick="openStock('비트코인', {source:'example'})">비트코인</button>
+            </div>
+        </div>
+
+        <div id="result-scroll-view">
+            <div class="result-inner">
+                <div class="loading" id="loading"></div>
+                <div id="result-card-wrap" style="display:none;">
+                    
+                    <!-- [마스터 그리드] PC: 832px + 348px 2열 / 모바일: 순차 1열 -->
+                    <div class="dashboard-master-grid">
+                        
+                        <!-- 1행 좌측: 메인 차트 (832px) -->
+                        <div class="card" id="rowChart">
+                            <div>
+                                <div class="price-title" id="rTitle"></div>
+                                <div class="price-val" id="rPrice"></div>
+                                <div class="price-meta" id="rMeta"></div>
+</div>
+                            <div class="chart-box-wrap" id="tvChart"></div>
+                        </div>
+
+                        <!-- 1행 우측: 증시는 지금 (348px, 차트와 높이 100% 일치) -->
+                        <div class="card" id="rowWorld">
+                            <div class="board-header">
+                                <span class="board-header-title">증시는 지금</span>
+                                <span class="board-header-sub">실시간 연동</span>
+                            </div>
+                            <div class="board-2col-grid" id="worldBoardGrid"></div>
+                        </div>
+
+
+                        <!-- 미국 주도업종: 기존 위젯과 독립된 카드 -->
+                        <div id="usLeadingRightStack">
+<div class="card us-leading-sector-card" id="rowUsLeadingSectors">
+                            <div class="us-leading-sector-head">
+                                <span class="us-leading-sector-title">미국 주도업종</span>
+                                <span class="us-leading-sector-sub">TOP 10</span>
+                            </div>
+                            <div id="usLeadingSectorList" class="us-leading-sector-loading">데이터 불러오는 중…</div>
+                        </div>
+<div class="card us-leading-stock-card" id="rowUsLeadingStocks">
+                            <div class="us-leading-stock-head">
+                                <span class="us-leading-stock-title" id="usLeadingStockTitle">미국 주도종목 TOP 5</span>
+                                <span class="us-leading-stock-sub">TOP 5</span>
+                            </div>
+                            <div id="usLeadingStockList" class="us-leading-stock-list">
+                                <div class="us-leading-sector-loading">업종을 선택하면 주도종목을 불러옵니다.</div>
+                            </div>
+                        </div>
+</div>
+
+                        <!-- 4행 좌측: 퀀트 분석 (832px) -->
+                        <div class="card" id="rowQuant">
+                            <div style="margin-bottom:14px;">
+                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">퀀트 분석</span>
+                            </div>
+
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--border-line);">
+                                <div class="gauge-inner-box">
+                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="qScoreVal"></span>
+                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">모멘텀</span>
+                                </div>
+                                <div style="min-width:0;">
+                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <span style="font-size:0.78rem; color:var(--text-muted);">계량 상태</span>
+                                        <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="qScoreBadge"></span>
+                                    </div>
+                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="qScoreDots"></div>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
+                                <div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">통계적 Z-Score (20D 표준편차)</div>
+                                    <div style="font-size:1.15rem; font-weight:800; color:#10b981;" id="qZScoreVal"></div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">연환산 변동성 (20D σ)</div>
+                                    <div style="font-size:1.1rem; font-weight:700; color:var(--text-title);" id="qVolVal"></div>
+                                </div>
+                            </div>
+
+                            <div style="margin:16px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                    <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 상승 모멘텀 흐름</span>
+                                    <span style="font-size:0.7rem; color:#10b981; font-weight:800;" id="qMomentumValTxt">현재 -</span>
+                                </div>
+                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
+                                    <svg id="qSignalChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
+                                </div>
+                            </div>
+
+                            <div style="margin:12px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);" id="qLow52w"></span>
+                                    <span style="color:#10b981; font-weight:700;" id="qPos52wLabel">52주 가격 위치</span>
+                                    <span style="color:var(--text-muted);" id="qHigh52w"></span>
+                                </div>
+                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
+                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="qSliderFill"></div>
+                                    <div class="dot-marker-style" id="qDotMarker"></div>
+                                </div>
+                            </div>
+
+                            <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
+                                <div id="quantDetailList"></div>
+                            </div>
+
+                        </div>
+
+                        <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
+                        <div class="card" id="rowTrack" style="justify-content:flex-start;">
+                            <div style="margin-bottom:14px;">
+                                <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
+                            </div>
+
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:14px; border-bottom:1px solid var(--border-line);">
+                                <div class="gauge-inner-box" style="border-color:#38bdf8;">
+                                    <span style="font-size:1.05rem; font-weight:800; color:var(--text-title); line-height:1;" id="tEvidenceCountVal">-</span>
+                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px; font-weight:700;">근거</span>
+                                </div>
+                                <div style="min-width:0;">
+                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <span style="font-size:0.78rem; color:var(--text-muted);">데이터 상태</span>
+                                        <span style="background:rgba(56,189,248,0.15); color:#38bdf8; font-size:0.72rem; font-weight:800; padding:2px 7px; border-radius:10px;" id="tStatusBadge">-</span>
+                                    </div>
+                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="tStatusDots">실제 확인된 데이터 기준</div>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:12px;">
+                                <div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재 주가</div>
+                                    <div style="font-size:1.15rem; font-weight:800; color:var(--text-title);" id="tPriceVal">-</div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">오늘 등락률</div>
+                                    <div style="font-size:1.1rem; font-weight:700; color:var(--text-title);" id="tChangeVal">-</div>
+                                </div>
+                            </div>
+
+                            <!-- 근거 확인: 8칸 근거 막대 -->
+                            <div style="margin:12px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);">근거 확인</span>
+                                    <span style="color:#38bdf8; font-weight:800;" id="tEvidenceBarLabel">- / 8</span>
+                                </div>
+                                <div id="tEvidenceBar"
+                                     style="display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:4px; width:100%; height:10px;">
+                                </div>
+                            </div>
+
+                            <!-- 상단 그래프: 실제 종목 최근 60거래일 주가 흐름 -->
+                            <div style="margin:16px 0 12px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                    <span style="font-size:0.72rem; color:var(--text-muted);">최근 60거래일 주가 흐름</span>
+                                    <span style="font-size:0.7rem; color:#38bdf8; font-weight:800;" id="tPriceTrendTxt">현재 -</span>
+                                </div>
+                                <div style="width:100%; height:52px; background:var(--bg-subcard); border-radius:8px; position:relative; border:1px solid var(--border-line); overflow:hidden;">
+                                    <svg id="tPriceChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100%; display:block;"></svg>
+                                </div>
+                            </div>
+
+                            <div style="margin-top:auto; border-top:1px solid var(--border-line); padding-top:10px;">
+                                <div id="trackDetailList"></div>
+                            </div>
+                        </div>
+
+                        
+
+                        <!-- 4행 우측: 실적 일정 (트랙 분석과 1:1 높이) -->
+                            <!-- 실적 일정 -->
+                            <div class="card calendar-widget" id="rowEarningsCalendar">
+                                <div class="calendar-widget-title">
+                                    <span>실적 캘린더</span>
+                                </div>
+
+                                <div class="calendar-widget-nav">
+                                    <div class="cal-date-ctrl">
+                                        <button class="cal-arrow-btn" onclick="shiftEarningsCalendarDate(-1)">&#10094;</button>
+                                        <span class="cal-current-date" id="earnCalDisplayDate">--</span>
+                                        <button class="cal-arrow-btn" onclick="shiftEarningsCalendarDate(1)">&#10095;</button>
+                                    </div>
+                                    <button class="cal-today-btn" onclick="resetEarningsCalendarDate()" aria-label="실적 캘린더 오늘" title="오늘로 이동">↻</button>
+                                </div>
+
+                                <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
+                                    <button class="calendar-star-btn active" data-cal-type="earn" data-stars="all" onclick="setEarningsCalendarStarFilter('all',this)">전체</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="3" onclick="setEarningsCalendarStarFilter('3',this)">★★★</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="2" onclick="setEarningsCalendarStarFilter('2',this)">★★☆</button>
+                                    <button class="calendar-star-btn" data-cal-type="earn" data-stars="1" onclick="setEarningsCalendarStarFilter('1',this)">★☆☆</button>
+                                </div>
+                                <div class="calendar-widget-subtitle" id="earnCalDayHeader">주요 기업 실적</div>
+                                <div class="cal-event-list-wrap calendar-widget-list" id="earnCalEventList"></div>
+
+                                <div class="cal-pagination-bar">
+                                    <button class="cal-page-btn" id="btnEarnCalPrev" onclick="changeEarningsCalendarPage(-1)">&#10094;</button>
+                                    <span class="cal-page-txt" id="earnCalPageIndicator">1 / 1</span>
+                                    <button class="cal-page-btn" id="btnEarnCalNext" onclick="changeEarningsCalendarPage(1)">&#10095;</button>
+                                </div>
+                            </div>
+
+                        <!-- 5행 우측: 경제 일정 (퀀트 분석과 1:1 높이) -->
+                            <!-- 경제 일정 -->
+                            <div class="card calendar-widget" id="rowEconomicCalendar">
+                                <div class="calendar-widget-title">
+                                    <span>경제 캘린더</span>
+                                </div>
+
+                                <div class="calendar-widget-nav">
+                                    <div class="cal-date-ctrl">
+                                        <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(-1)">&#10094;</button>
+                                        <span class="cal-current-date" id="ecoCalDisplayDate">--</span>
+                                        <button class="cal-arrow-btn" onclick="shiftEconomicCalendarDate(1)">&#10095;</button>
+                                    </div>
+                                    <button class="cal-today-btn" onclick="resetEconomicCalendarDate()" aria-label="경제 캘린더 오늘" title="오늘로 이동">↻</button>
+                                </div>
+
+                                <div class="calendar-star-filter" role="group" aria-label="중요도 필터">
+                                    <button class="calendar-star-btn active" data-cal-type="eco" data-stars="all" onclick="setCalendarStarFilter('eco','all',this)">전체</button>
+                                    <button class="calendar-star-btn" data-cal-type="eco" data-stars="3" onclick="setCalendarStarFilter('eco','3',this)">★★★</button>
+                                    <button class="calendar-star-btn" data-cal-type="eco" data-stars="2" onclick="setCalendarStarFilter('eco','2',this)">★★☆</button>
+                                    <button class="calendar-star-btn" data-cal-type="eco" data-stars="1" onclick="setCalendarStarFilter('eco','1',this)">★☆☆</button>
+                                </div>
+                                <div class="calendar-widget-subtitle" id="ecoCalDayHeader">주요 경제지표</div>
+                                <div class="cal-event-list-wrap calendar-widget-list" id="ecoCalEventList"></div>
+
+                                <div class="cal-pagination-bar">
+                                    <button class="cal-page-btn" id="btnEcoCalPrev" onclick="changeEconomicCalendarPage(-1)">&#10094;</button>
+                                    <span class="cal-page-txt" id="ecoCalPageIndicator">1 / 1</span>
+                                    <button class="cal-page-btn" id="btnEcoCalNext" onclick="changeEconomicCalendarPage(1)">&#10095;</button>
+                                </div>
+                            </div>
+
+                        <!-- 3행 좌측: 종목 뉴스 (832px) -->
+                        <div class="card" id="rowNews">
+                            <div class="board-header-title" style="margin-bottom:12px;">종목 뉴스</div>
+                            <div id="stockNewsList" style="flex:1;"></div>
+                        </div>
+
+                        <!-- 3행 우측: 해외 뉴스 (348px, 캘린더 바로 하단 & 종목 뉴스와 높이 100% 일치) -->
+                        <div class="card" id="rowGlobalNews">
+                            <div class="board-header-title" style="margin-bottom:12px;">경제뉴스</div>
+                            <div id="globalNewsList" style="flex:1;"></div>
+                        </div>
+
+                        <!-- 4행: 애널리스트 컨센서스 (832px) -->
+                        <div class="card" id="rowConsensus" style="display:none;">
+                            <div style="margin-bottom:16px;">
+                                <span style="font-size:1.05rem; font-weight:700; color:var(--text-title);" id="uTitle"></span>
+                            </div>
+
+                            <div style="display:flex; align-items:center; gap:14px; padding-bottom:16px; border-bottom:1px solid var(--border-line);">
+                                <div class="gauge-inner-box">
+                                    <span style="font-size:1.0rem; font-weight:800; color:var(--text-title); line-height:1;" id="uGaugeVal"></span>
+                                    <span style="font-size:0.55rem; color:var(--text-muted); margin-top:3px;" id="uGaugeLabel"></span>
+                                </div>
+                                <div style="min-width:0;">
+                                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                                        <span style="font-size:0.78rem; color:var(--text-muted);" id="uStatusLabel"></span>
+                                        <span style="background:rgba(16,185,129,0.15); color:#10b981; font-size:0.72rem; font-weight:700; padding:2px 7px; border-radius:10px;" id="uBadge"></span>
+                                    </div>
+                                    <div style="font-size:0.74rem; color:var(--text-muted); margin-top:4px; word-break:keep-all;" id="uDots"></div>
+                                </div>
+                            </div>
+
+                            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:14px;">
+                                <div>
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">평균 목표가</div>
+                                    <div style="font-size:1.25rem; font-weight:800; color:#10b981;" id="uPrimaryVal"></div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:2px;">현재가</div>
+                                    <div style="font-size:1.15rem; font-weight:700; color:var(--text-title);" id="uSecondaryVal"></div>
+                                </div>
+                            </div>
+
+                            <div style="margin:20px 0 14px; position:relative;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.7rem; margin-bottom:6px; white-space:nowrap;">
+                                    <span style="color:var(--text-muted);" id="uSliderLeft"></span>
+                                    <span style="color:#10b981; font-weight:700;" id="uSliderMid"></span>
+                                    <span style="color:var(--text-muted);" id="uSliderRight"></span>
+                                </div>
+                                <div style="width:100%; height:6px; background:var(--bg-subcard); border-radius:4px; position:relative; border:1px solid var(--border-line);">
+                                    <div style="height:100%; background:linear-gradient(90deg, #38bdf8, #10b981); border-radius:4px;" id="uBarFill"></div>
+                                    <div class="dot-marker-style" id="uDotMarker"></div>
+                                </div>
+                            </div>
+
+                            <div style="margin-top:16px; border-top:1px solid var(--border-line); padding-top:12px;">
+                                <div style="font-size:0.82rem; font-weight:700; color:var(--text-sub); margin-bottom:8px; display:flex; justify-content:space-between;">
+                                    <span id="uListTitle"></span>
+                                    <span style="font-size:0.68rem; color:var(--text-muted); font-weight:normal;" id="uSourceTag"></span>
+                                </div>
+                                <div id="uItemList"></div>
+                            </div>
+                        </div>
+
+                        <!-- 5행: 개미 투표 (832px) -->
+                        <div class="card" id="rowVote">
+                            <div class="board-header">
+                                <span class="board-header-title">개미 투표</span>
+                                <span style="font-size:0.72rem; color:var(--text-muted);">내일 주가 전망</span>
+                            </div>
+                            <div style="margin:8px 0;">
+                                <div style="display:flex; justify-content:space-between; font-size:0.75rem; font-weight:700; margin-bottom:6px;">
+                                    <span style="color:#10b981;" id="voteLongPct">상승 50%</span>
+                                    <span style="color:#38bdf8;" id="voteShortPct">하락 50%</span>
+                                </div>
+                                <div style="width:100%; height:8px; background:var(--bg-subcard); border-radius:4px; overflow:hidden; display:flex; border:1px solid var(--border-line);">
+                                    <div style="height:100%; background:#10b981; width:50%; transition:width 0.3s;" id="voteLongBar"></div>
+                                    <div style="height:100%; background:#38bdf8; width:50%; transition:width 0.3s;" id="voteShortBar"></div>
+                                </div>
+                            </div>
+                            <div class="vote-btn-wrap">
+                                <button class="vote-btn" id="btnVoteLong" onclick="castVote('long')">상승 전망</button>
+                                <button class="vote-btn" id="btnVoteShort" onclick="castVote('short')">하락 전망</button>
+                            </div>
+                        </div>
+
+                        <!-- 6행: 개미 토론 (832px) -->
+                        <div class="card" id="rowComment">
+                            <div class="board-header">
+                                <span class="board-header-title">개미 토론</span>
+                                <span style="font-size:0.72rem; color:var(--text-muted);" id="commentCountTag">0개의 의견</span>
+                            </div>
+                            <div id="commentList" style="margin-top:8px;"></div>
+                            <div class="comment-input-box">
+                                <input type="text" id="commentInput" placeholder="이 종목에 대한 생각을 자유롭게 적어주세요" onkeypress="if(event.keyCode==13) postComment();" autocomplete="off" maxlength="80">
+                                <button onclick="postComment()">등록</button>
+                            </div>
+                        </div>
+
+                        <!-- 7행: DART 전자공시 (832px) -->
+                        <div class="card" id="rowDart" style="display:none;">
+                            <div class="board-header">
+                                <span class="board-header-title">DART 전자공시</span>
+                                <span style="font-size:0.72rem; color:var(--text-muted);">최근 핵심 공시</span>
+                            </div>
+                            <div id="dartList"></div>
+                        </div>
+
+</div>
+
+                </div>
+            </div>
+        </div>
+
+        <div id="bottom-bar">
+            <div class="bottom-bar-grid-wrapper">
+                <div class="search-container">
+                    <div class="search-box">
+                        <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) openStock(this.value, {source:'bottom-search'});" autocomplete="off">
+                        
+                        <div class="model-selector-wrap">
+                            <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
+                                <span class="model-pill-name" id="bottomCurrentModel">gaemi</span>
+                                <span class="model-pill-arrow">▲</span>
+                            </div>
+                            <div class="model-dropdown-menu" id="bottomDropdown">
+                                <div class="model-dropdown-item active" onclick="selectModel('gaemi', 'gaemi')">
+                                    <div class="item-title">gaemi <span class="item-check">✓</span></div>
+                                    <div class="item-sub">도움을 받으세요</div>
+                                </div>
+                                <div class="model-dropdown-item" onclick="selectModel('info', 'info')">
+                                    <div class="item-title">info <span class="item-check">✓</span></div>
+                                    <div class="item-sub">정보를 확인하세요</div>
+                                </div>
+                                <div class="model-dropdown-item" onclick="selectModel('pro', 'pro')">
+                                    <div class="item-title">pro <span class="item-check">✓</span></div>
+                                    <div class="item-sub">실력을 키우세요</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <button class="send-btn" onclick="openStock(document.getElementById('bottomInput').value, {source:'bottom-search'})">
+                            <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/widgets/right_market.js"></script>
+
+    <script>
+        let chart = null;
+        let selectedMode = 'gaemi';
+        let currentSymbol = '';
+        let globalMarketCalendar = [];
+        let currentCalOffset = 0;
+        let currentCalFilter = 'all';
+        let currentCalPage = 1;
+        const calItemsPerPage = 4;
+
+        function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
+        function setHtml(id, val) { const el = document.getElementById(id); if (el) el.innerHTML = (val !== undefined && val !== null) ? String(val) : ''; }
+
+        function initTheme() {
+            const saved = localStorage.getItem('gaemi_theme') || 'dark';
+            if (saved === 'light') {
+                document.body.classList.add('light-theme');
+                updateThemeIcon(true);
+            } else {
+                document.body.classList.remove('light-theme');
+                updateThemeIcon(false);
+            }
+        }
+
+        function toggleTheme() {
+            const isLight = document.body.classList.toggle('light-theme');
+            localStorage.setItem('gaemi_theme', isLight ? 'light' : 'dark');
+            updateThemeIcon(isLight);
+
+            chart = window.gaemiChart || chart;
+            if (chart) {
+                chart.applyOptions({
+                    layout: {
+                        background: { color: isLight ? '#ffffff' : '#1e1f20' },
+                        textColor: isLight ? '#5f6368' : '#8e918f'
+                    },
+                    timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
+                    rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
+                });
+            }
+        }
+
+        function updateThemeIcon(isLight) {
+            const area = document.getElementById('themeIconArea');
+            if (!area) return;
+            area.innerHTML = isLight 
+                ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>`
+                : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>`;
+        }
+
+        function resizeChart() {
+            const container = document.getElementById('tvChart');
+            chart = window.gaemiChart || chart;
+            if (chart && container && container.clientWidth > 0) {
+                chart.applyOptions({ width: container.clientWidth });
+            }
+        }
+
+        window.addEventListener('resize', resizeChart);
+
+        function toggleSidebar() {
+            const side = document.getElementById('sidebar-wrapper');
+            if (side) side.classList.toggle('open');
+        }
+
+        function toggleModelDropdown(target) {
+            const centerD = document.getElementById('centerDropdown');
+            const bottomD = document.getElementById('bottomDropdown');
+            const targetD = target === 'center' ? centerD : bottomD;
+            const otherD = target === 'center' ? bottomD : centerD;
+            if (otherD) otherD.style.display = 'none';
+            if (targetD) targetD.style.display = targetD.style.display === 'block' ? 'none' : 'block';
+        }
+
+        function selectModel(modeKey, modeName) {
+            selectedMode = modeKey;
+            setTxt('centerCurrentModel', modeName);
+            setTxt('bottomCurrentModel', modeName);
+
+            ['centerDropdown', 'bottomDropdown'].forEach(id => {
+                const menu = document.getElementById(id);
+                if (menu) {
+                    const items = menu.querySelectorAll('.model-dropdown-item');
+                    items.forEach(it => {
+                        if (it.innerText.includes(modeName)) {
+                            it.classList.add('active');
+                        } else {
+                            it.classList.remove('active');
+                        }
+                    });
+                    menu.style.display = 'none';
+                }
+            });
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.model-selector-wrap')) {
+                const cd = document.getElementById('centerDropdown');
+                const bd = document.getElementById('bottomDropdown');
+                if (cd) cd.style.display = 'none';
+                if (bd) bd.style.display = 'none';
+            }
+            if (!e.target.closest('#sidebar-wrapper') && !e.target.closest('#headerToggleBtn')) {
+                const side = document.getElementById('sidebar-wrapper');
+                if (side && side.classList.contains('open')) {
+                    side.classList.remove('open');
+                }
+            }
+        });
+
+        function resetToHome() {
+            // 진행 중인 분석/상세 요청이 홈 화면으로 돌아온 뒤 결과를 덮어쓰지 못하게 한다.
+            activeSearchToken++;
+            if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
+            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
+            document.getElementById('main-view').style.display = 'flex';
+            document.getElementById('result-scroll-view').style.display = 'none';
+            document.getElementById('bottom-bar').style.display = 'none';
+            document.getElementById('result-card-wrap').style.display = 'none';
+            document.getElementById('loading').style.display = 'none';
+            
+            const uCard = document.getElementById('rowConsensus');
+            if (uCard) uCard.style.display = 'none';
+            const dCard = document.getElementById('rowDart');
+            if (dCard) dCard.style.display = 'none';
+            
+            document.getElementById('centerInput').value = '';
+            document.getElementById('bottomInput').value = '';
+            currentSymbol = '';
+
+            // 홈으로 돌아가면 저장된 종목 URL도 제거
+            const homeUrl = new URL(window.location.href);
+            homeUrl.searchParams.delete('q');
+            window.history.replaceState({}, '', homeUrl.toString());
+            const side = document.getElementById('sidebar-wrapper');
+            if (side) side.classList.remove('open');
+        }
+
+function renderSparklineSVG(points, isUp) {
+            if (!points || points.length < 2) return '';
+            const min = Math.min(...points);
+            const max = Math.max(...points);
+            const range = (max - min) === 0 ? 1 : (max - min);
+            const width = 44;
+            const height = 16;
+            const padY = 2;
+            
+            const coords = points.map((p, i) => {
+                const x = (i / (points.length - 1)) * width;
+                const y = height - padY - ((p - min) / range) * (height - padY * 2);
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+            });
+            
+            const pathD = 'M ' + coords.join(' L ');
+            const strokeColor = isUp ? '#ef4444' : '#38bdf8';
+            
+            return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" class="mini-spark">
+                <path d="${pathD}" fill="none" stroke="${strokeColor}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>`;
+        }
+
+        function getTargetDateStr(offset) {
+            const now = new Date();
+            const kstString = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'Asia/Seoul',
+                year: 'numeric', month: '2-digit', day: '2-digit'
+            }).format(now);
+            const [yyyy, mm, dd] = kstString.split('-').map(Number);
+            const d = new Date(Date.UTC(yyyy, mm - 1, dd + Number(offset || 0)));
+            return `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`;
+        }
+
+        function shiftCalendarDate(delta) {
+            currentCalOffset += delta;
+            currentCalPage = 1;
+            renderMarketCalendarView();
+        }
+
+        function resetCalendarDate() {
+            currentCalOffset = 0;
+            currentCalPage = 1;
+            renderMarketCalendarView();
+        }
+
+        function setCalendarFilter(filterKey) {
+            currentCalFilter = filterKey;
+            currentCalPage = 1;
+            document.querySelectorAll('.cal-filter-pill').forEach(btn => btn.classList.remove('active'));
+            if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
+            if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
+            if (filterKey === 'star2') document.getElementById('filterStar2').classList.add('active');
+            if (filterKey === 'star1') document.getElementById('filterStar1').classList.add('active');
+            if (filterKey === 'earn') document.getElementById('filterEarn').classList.add('active');
+            if (filterKey === 'eco') document.getElementById('filterEco').classList.add('active');
+            renderMarketCalendarView();
+        }
+
+        function changeCalPage(delta) {
+            currentCalPage += delta;
+            renderMarketCalendarView();
+        }
+
+
+        // 캘린더 알람: 브라우저 알림 권한 + localStorage 저장
+        const CAL_ALARM_STORAGE_KEY = 'calendar_alarm_events_v1';
+        const CAL_ALARM_MINUTES_BEFORE = 10;
+
+        function getCalendarAlarms() {
+            try {
+                return JSON.parse(localStorage.getItem(CAL_ALARM_STORAGE_KEY) || '{}');
+            } catch (e) {
+                return {};
+            }
+        }
+
+        function saveCalendarAlarms(data) {
+            localStorage.setItem(CAL_ALARM_STORAGE_KEY, JSON.stringify(data));
+        }
+
+        function getCalendarEventKey(ev) {
+            return [
+                ev.type || '',
+                ev.date_key || '',
+                ev.time || '',
+                ev.ticker || '',
+                ev.name || ''
+            ].join('|');
+        }
+
+        async function toggleCalendarAlarmByKey(encodedKey) {
+            let key;
+            try {
+                key = decodeURIComponent(encodedKey);
+            } catch (e) {
+                console.error('[calendar] invalid alarm key:', e);
+                return;
+            }
+            const alarms = getCalendarAlarms();
+            const entries = Object.values(alarms || {});
+            const target = entries.find(item => item && getCalendarEventKey(item.event) === key);
+            if (target && target.event) {
+                await toggleCalendarAlarm(target.event);
+            }
+        }
+
+        async function toggleCalendarAlarm(ev) {
+            const key = getCalendarEventKey(ev);
+            const alarms = getCalendarAlarms();
+
+            if (alarms[key]) {
+                delete alarms[key];
+                saveCalendarAlarms(alarms);
+                renderMarketCalendarView();
+                return;
+            }
+
+            if (!('Notification' in window)) {
+                alert('이 브라우저는 알림 기능을 지원하지 않습니다.');
+                return;
+            }
+
+            if (Notification.permission === 'default') {
+                const permission = await Notification.requestPermission();
+                if (permission !== 'granted') return;
+            } else if (Notification.permission !== 'granted') {
+                alert('브라우저 알림 권한이 꺼져 있습니다. 브라우저 설정에서 알림을 허용해주세요.');
+                return;
+            }
+
+            alarms[key] = {
+                event: ev,
+                createdAt: Date.now(),
+                notified: false
+            };
+            saveCalendarAlarms(alarms);
+            renderMarketCalendarView();
+        }
+
+        function parseCalendarEventTime(ev) {
+            if (!ev || !ev.date_key || !ev.time) return null;
+            const m = String(ev.date_key).match(/^(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})$/);
+            const t = String(ev.time).match(/^(\d{1,2}):(\d{2})$/);
+            if (!m || !t) return null;
+
+            // 캘린더의 날짜/시간은 기존 화면 기준 한국시간(KST)으로 처리합니다.
+            const utcMs = Date.UTC(
+                Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+                Number(t[1]), Number(t[2])
+            );
+            return utcMs - (9 * 60 * 60 * 1000);
+        }
+
+        function checkCalendarAlarms() {
+            const alarms = getCalendarAlarms();
+            const now = Date.now();
+            let changed = false;
+
+            Object.keys(alarms).forEach(key => {
+                const item = alarms[key];
+                if (!item || item.notified) return;
+
+                const eventMs = parseCalendarEventTime(item.event);
+                if (!eventMs) return;
+
+                const alarmMs = eventMs - (CAL_ALARM_MINUTES_BEFORE * 60 * 1000);
+
+                if (now >= alarmMs && now < eventMs + (60 * 60 * 1000)) {
+                    if ('Notification' in window && Notification.permission === 'granted') {
+                        new Notification('📅 일정 알림', {
+                            body: `${item.event.name || '일정'}\n10분 후 발표 예정 (${item.event.time})`,
+                            tag: 'calendar-' + key
+                        });
+                    }
+                    item.notified = true;
+                    changed = true;
+                }
+            });
+
+            if (changed) saveCalendarAlarms(alarms);
+        }
+
+        // 15초마다 확인하여 10분 전 알림을 놓치지 않도록 합니다.
+        setInterval(checkCalendarAlarms, 15000);
+        setTimeout(checkCalendarAlarms, 1000);
+
+        // ============================================================
+        // 경제 일정 / 실적 일정 독립 위젯
+        // - 같은 globalMarketCalendar 데이터를 사용하지만
+        //   날짜 이동/페이지 상태/렌더링은 서로 완전히 분리
+        // ============================================================
+        // 경제 캘린더는 독립 위젯으로 분리되어 있습니다.
+        function renderEconomicCalendarView() {
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.render() : undefined;
+        }
+        function setCalendarStarFilter(type, value, btn) {
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.setStarFilter(value, btn) : undefined;
+        }
+        function shiftEconomicCalendarDate(delta) {
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.shiftDate(delta) : undefined;
+        }
+        function resetEconomicCalendarDate() {
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.resetDate() : undefined;
+        }
+        function changeEconomicCalendarPage(delta) {
+            return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
+                ? window.GaemiWidgets.economicCalendar.changePage(delta) : undefined;
+        }
+
+        // 실적 캘린더는 독립 위젯으로 분리되어 있습니다.
+        // 기존 호출부/버튼 호환성을 위해 얇은 브리지 함수만 유지합니다.
+        function renderEarningsCalendarView() {
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.render()
+                : undefined;
+        }
+
+        function setEarningsCalendarStarFilter(value, btn) {
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.setStarFilter(value, btn)
+                : undefined;
+        }
+
+        function shiftEarningsCalendarDate(delta) {
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.shiftDate(delta)
+                : undefined;
+        }
+
+        function resetEarningsCalendarDate() {
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.resetDate()
+                : undefined;
+        }
+
+        function changeEarningsCalendarPage(delta) {
+            return window.GaemiWidgets && window.GaemiWidgets.earningsCalendar
+                ? window.GaemiWidgets.earningsCalendar.changePage(delta)
+                : undefined;
+        }
+
+        function renderMarketCalendarView() {
+            // 기존 호출부와의 호환성을 유지하되 두 위젯을 각각 렌더링합니다.
+            renderEconomicCalendarView();
+            renderEarningsCalendarView();
+        }
+
+
+        // PC에서 같은 행의 좌/우 패널 높이를 항상 1:1로 맞춘다.
+        function syncCalendarRowHeights() {
+            if (window.innerWidth <= 1200) return;
+            const pairs = [
+                ['rowTrack', 'rowEarningsCalendar'],
+                ['rowQuant', 'rowEconomicCalendar']
+            ];
+            pairs.forEach(([leftId, rightId]) => {
+                const left = document.getElementById(leftId);
+                const right = document.getElementById(rightId);
+                if (!left || !right) return;
+                left.style.height = '';
+                right.style.height = '';
+                const h = Math.max(left.getBoundingClientRect().height, right.getBoundingClientRect().height, 560);
+                left.style.height = `${Math.ceil(h)}px`;
+                right.style.height = `${Math.ceil(h)}px`;
+            });
+        }
+        let calendarHeightSyncTimer = null;
+        function scheduleCalendarHeightSync() {
+            if (calendarHeightSyncTimer) clearTimeout(calendarHeightSyncTimer);
+            calendarHeightSyncTimer = setTimeout(syncCalendarRowHeights, 60);
+        }
+        window.addEventListener('resize', scheduleCalendarHeightSync);
+        if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleCalendarHeightSync);
+        setTimeout(scheduleCalendarHeightSync, 300);
+
+        async function loadCommunityData(symbol, displayName) {
+            currentSymbol = symbol;
+            const targetName = displayName || symbol;
+if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
+
+            if (window.GaemiWidgets?.comment) window.GaemiWidgets.comment.load(symbol);
+        }
+
+        // STEP 48: 프론트 공통 수급 파싱 함수
+        // doSearch 내부 const로 선언하면 다른 렌더링 경로/구버전 스크립트와
+        // 충돌할 때 ReferenceError가 발생할 수 있으므로 전역 함수로 고정한다.
+        function getDomesticFlowValue(movementReason, key) {
+            try {
+                const reasons = movementReason && Array.isArray(movementReason.reasons)
+                    ? movementReason.reasons
+                    : [];
+                const r = reasons.find(x => x && x.key === key);
+                if (!r) return null;
+                const text = String(r.detail || '');
+                const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
+                if (!m) return null;
+                const n = Number(String(m[2]).replace(/,/g, ''));
+                if (!Number.isFinite(n)) return null;
+                return m[1] === '순매도' ? -n : n;
+            } catch (e) {
+                console.warn('[FLOW PARSER] failed:', e);
+                return null;
+            }
+        }
+
+        // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
+        window.__GAEMIGTP_BUILD__ = 'STEP52-GOOGLE-NEWS-OPENSTOCK';
+
+        const ANALYZE_CACHE = new Map();
+        const ANALYZE_CACHE_TTL = 30 * 1000;
+        let activeSearchToken = 0;
+
+        // 브라우저 캐시도 서버와 동일하게 '종목명/종목코드/티커'를
+        // 하나의 분석 데이터로 묶는다. 검색 입구가 달라도 같은 종목이면
+        // 같은 Core/Details 결과를 사용해야 한다.
+        function analyzeCacheKeys(query, data = null) {
+            const keys = [];
+            const add = (value) => {
+                const v = String(value ?? '').trim().replace(/\s+/g, '').toUpperCase();
+                if (v && !keys.includes(v)) keys.push(v);
+            };
+            add(query);
+            if (data && typeof data === 'object') {
+                add(data.symbol);
+                add(data.name);
+                add(data.formal_name);
+            }
+            return keys;
+        }
+
+        function setAnalyzeCache(query, data, timestamp = Date.now()) {
+            analyzeCacheKeys(query, data).forEach(key => {
+                ANALYZE_CACHE.set(key, { time: timestamp, data });
+            });
+        }
+
+        function getAnalyzeCache(query) {
+            const now = Date.now();
+            for (const key of analyzeCacheKeys(query)) {
+                const hit = ANALYZE_CACHE.get(key);
+                if (hit && (now - hit.time) < ANALYZE_CACHE_TTL) return hit;
+                if (hit) ANALYZE_CACHE.delete(key);
+            }
+            return null;
+        }
+
+        function deleteAnalyzeCache(query, data = null) {
+            analyzeCacheKeys(query, data).forEach(key => ANALYZE_CACHE.delete(key));
+        }
+        let activeSearchController = null;
+        let activeDetailsController = null;
+        let rightMarketController = null;
+        let rightMarketRequestToken = 0;
+        const FAST_CHART_CACHE = new Map();
+        const FAST_CHART_CACHE_TTL = 30 * 1000;
+
+        // =====================================================================
+        // 공통 종목 진입 계층
+        // 모든 종목 선택/검색 UI는 openStock() 하나를 거쳐 기존 doSearch()로 들어간다.
+        // 분석/뉴스/차트 엔진은 건드리지 않고 입력만 표준화한다.
+        // =====================================================================
+        function normalizeStockMarket(market, value = '') {
+            const rawMarket = String(market || '').trim().toUpperCase();
+            if (['KR', 'KOREA', 'DOMESTIC', '국내', '국내주식', '국내증시'].includes(rawMarket)) return 'KR';
+            if (['US', 'USA', 'OVERSEAS', '미국', '미국주식', '해외'].includes(rawMarket)) return 'US';
+            if (['CRYPTO', 'COIN', '암호화폐', '코인'].includes(rawMarket)) return 'CRYPTO';
+
+            const q = String(value || '').trim().replace(/\s+/g, '').toUpperCase();
+            if (/^\d{6}$/.test(q)) return 'KR';
+            if (q.endsWith('USDT') || /BTC|ETH/.test(q) || q.includes('코인') || q.includes('비트')) return 'CRYPTO';
+            if (/^[A-Z]{1,6}$/.test(q)) return 'US';
+            return '';
+        }
+
+        function buildStockEntry(input, options = {}) {
+            const isObject = input && typeof input === 'object' && !Array.isArray(input);
+            const rawQuery = String((isObject ? (input.query ?? input.symbol ?? input.name) : input) || '').trim();
+            const rawName = String((isObject ? input.name : options.name) || '').trim();
+            const rawSymbol = String((isObject ? input.symbol : options.symbol) || '').trim();
+            const rawMarket = isObject ? input.market : options.market;
+            const source = String((isObject ? input.source : options.source) || 'unknown').trim();
+            const query = rawSymbol || rawQuery || rawName;
+            const name = rawName || ((rawSymbol && rawQuery && rawSymbol !== rawQuery) ? rawQuery : '');
+            const market = normalizeStockMarket(rawMarket, rawSymbol || rawQuery || rawName);
+            return {
+                query,
+                name,
+                symbol: rawSymbol || query,
+                market,
+                source: source || 'unknown'
+            };
+        }
+
+        function openStock(input, options = {}) {
+            const entry = buildStockEntry(input, options);
+            if (!entry.query) return;
+            try { window.__GAEMIGTP_LAST_STOCK_ENTRY__ = entry; } catch (e) {}
+            doSearch(entry.query, false, entry.name, entry.market, entry.source);
+        }
+        window.openStock = openStock;
+
+        async function doSearch(query, forceServer = false, displayNameOverride = '', marketOverride = '', sourceOverride = '') {
+            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
+            let materialText = '';
+
+            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
+
+            const cleanQ = String(query || '').trim();
+            if (!cleanQ) return;
+
+            // 새 종목을 클릭하면 이전 분석/상세 폴링 요청을 즉시 중단한다.
+            // activeSearchToken은 화면 적용 방지용이고, AbortController는 실제 HTTP 요청을 중단한다.
+            if (activeSearchController) {
+                try { activeSearchController.abort(); } catch (e) {}
+            }
+            if (activeDetailsController) {
+                try { activeDetailsController.abort(); } catch (e) {}
+            }
+            activeSearchController = new AbortController();
+            const searchSignal = activeSearchController.signal;
+
+            // STEP 37: 우측 실시간 시장에서 종목코드로 진입하더라도
+            // 목록에서 이미 확보한 한글 종목명을 상세 화면 제목에 유지한다.
+            const displayNameHint = String(displayNameOverride || '').trim();
+
+            // STEP 21: 최근검색종목 메뉴에서 사용할 최소 검색 이력을 로컬에 저장한다.
+            try {
+                const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                // STEP 40: 최근검색종목은 검색에 사용한 코드가 아니라
+                // 화면에서 사용한 실제 표시명을 우선 저장한다.
+                // 우측 국내/해외/코인 목록에서 종목을 클릭한 경우에는
+                // displayNameOverride에 전달된 종목명을 그대로 보존한다.
+                const recentDisplayName = displayNameHint || cleanQ;
+                const recentSymbol = cleanQ.toUpperCase();
+                const recentMarket = normalizeStockMarket(marketOverride, cleanQ) || '';
+                const recentSource = String(sourceOverride || '').trim() || 'search';
+                const recentItem = {
+                    name: recentDisplayName,
+                    symbol: recentSymbol,
+                    market: recentMarket,
+                    source: recentSource,
+                    price: null,
+                    change_pct: null,
+                    currency: ''
+                };
+                const next = [recentItem, ...recent.filter(x => {
+                    const oldSymbol = String(x?.symbol || '').toUpperCase();
+                    const oldName = String(x?.name || '').toUpperCase();
+                    return oldSymbol !== recentSymbol && oldName !== recentSymbol;
+                })].slice(0, 15);
+                localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
+            } catch (e) {}
+
+            // 현재 분석 종목을 URL에 저장하여 새로고침해도 같은 종목을 유지
+            const searchUrl = new URL(window.location.href);
+            searchUrl.searchParams.set('q', cleanQ);
+            window.history.replaceState({}, '', searchUrl.toString());
+
+            document.getElementById('centerInput').value = cleanQ;
+            document.getElementById('bottomInput').value = cleanQ;
+
+            document.getElementById('main-view').style.display = 'none';
+            document.getElementById('result-scroll-view').style.display = 'block';
+            document.getElementById('bottom-bar').style.display = 'flex';
+            document.getElementById('loading').style.display = 'flex';
+            document.getElementById('result-card-wrap').style.display = 'block';
+            const fastTitle = document.getElementById('rTitle');
+            const fastPrice = document.getElementById('rPrice');
+            const fastMeta = document.getElementById('rMeta');
+            if (fastTitle) fastTitle.textContent = displayNameHint || cleanQ.toUpperCase();
+            if (fastPrice) fastPrice.textContent = '';
+            if (fastMeta) fastMeta.textContent = '';
+
+            if (window.innerWidth <= 900) {
+                const side = document.getElementById('sidebar-wrapper');
+                if (side) side.classList.remove('open');
+            }
+
+            const searchToken = ++activeSearchToken;
+
+            // 🚀 첫 화면 차트 전용 요청: 전체 분석을 기다리지 않고 즉시 시작
+            const fastChartKey = cleanQ.toUpperCase();
+            const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
+            const fastChartStartedAt = performance.now();
+            const fastChartPromise = (
+                fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
+            )
+                ? Promise.resolve(fastChartCached.data)
+                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ), {
+                    signal: searchSignal,
+                    cache: 'no-store'
+                })
+                    .then(r => r.ok ? r.json() : null)
+                    .then(chartData => {
+                        console.log(`[gaemiGTP 초고속차트] ${cleanQ} | ${(performance.now() - fastChartStartedAt).toFixed(0)}ms`);
+                        if (chartData) {
+                            FAST_CHART_CACHE.set(fastChartKey, {
+                                time: Date.now(),
+                                data: chartData
+                            });
+                        }
+                        return chartData;
+                    })
+                    .catch(() => null);
+
+            try {
+                const cacheHit = getAnalyzeCache(cleanQ);
+                const cached = cacheHit;
+                let data;
+                let response = null;
+
+                if (!forceServer && cached) {
+                    data = cached.data;
+                } else {
+                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=core';
+                    response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
+
+                    const contentType = response.headers.get("content-type") || "";
+                    if (contentType.includes("application/json")) {
+                        data = await response.json();
+                    } else {
+                        await response.text();
+                        throw new Error("서버 응답 오류 (" + response.status + ")");
+                    }
+
+                    if (response.ok && data && !data.error) {
+                        setAnalyzeCache(cleanQ, data);
+                    }
+                }
+
+                if (!data) {
+                    throw new Error("분석 데이터를 받지 못했습니다.");
+                }
+
+                if (data.error) {
+                    const detail = data.detail ? ` · ${data.detail}` : '';
+                    throw new Error(`${data.error}${detail}`);
+                }
+
+                // 홈 이동/다른 종목 재검색 후 도착한 오래된 응답은 화면에 적용하지 않는다.
+                if (searchToken !== activeSearchToken) return;
+
+                if (data._perf) {
+                    console.log(
+                        `[gaemiGTP 성능] ${cleanQ} | 전체 ${data._perf.total_ms}ms | HTTP ${data._perf.http_call_count}회`
+                    );
+                    console.table(data._perf.slowest_http || []);
+                }
+
+                // 🚀 차트는 core 분석 완료를 기다리지 않는다.
+                if (fastChartCached && Array.isArray(fastChartCached.data?.candles) && fastChartCached.data.candles.length) {
+                    setTimeout(() => {
+                        if (searchToken !== activeSearchToken) return;
+                        initTvChart(fastChartCached.data.candles);
+                        const last = fastChartCached.data.candles[fastChartCached.data.candles.length - 1];
+                        if (last && Number.isFinite(Number(last.close))) {
+                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
+                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
+                        }
+                    }, 0);
+                } else {
+                    fastChartPromise.then(chartData => {
+                        if (searchToken !== activeSearchToken || !chartData) return;
+                        if (chartData?._perf) {
+                            console.log(
+                                `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
+                            );
+                            console.table(chartData._perf.slowest_http || []);
+                        }
+                        if (!Array.isArray(chartData.candles) || !chartData.candles.length) return;
+                        initTvChart(chartData.candles);
+                        const last = chartData.candles[chartData.candles.length - 1];
+                        if (last && Number.isFinite(Number(last.close))) {
+                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
+                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
+                        }
+                    });
+                }
+
+                // /api/chart를 별도로 호출하지 않는다. /api/analyze가 반환한
+                // 동일 candles를 바로 사용해 한 종목 클릭당 Yahoo 차트 중복 요청을 제거한다.
+                if (searchToken === activeSearchToken && Array.isArray(data.candles) && data.candles.length) {
+                    initTvChart(data.candles);
+                }
+
+if ((response && !response.ok) || data.error) {
+                    alert(data.error || '종목을 찾을 수 없습니다.');
+                    document.getElementById('loading').style.display = 'none';
+                    return;
+                }
+
+                const isKrw = data.market === '국내주식' || data.market === '국내증시';
+                const displayName = displayNameHint || data.name || data.formal_name;
+                const displayPrice = data.price || data.price_str;
+                const displayTime = data.time || data.now_str;
+
+                // 서버가 확정한 실제 symbol/market으로 최근검색 정보를 보정한다.
+                try {
+                    const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                    const beforeSymbol = String(cleanQ || '').trim().toUpperCase();
+                    const resolvedSymbol = String(data.symbol || cleanQ).trim().toUpperCase();
+                    const resolvedMarket = normalizeStockMarket(data.market, resolvedSymbol || displayName);
+                    const idx = recent.findIndex(x => String(x?.symbol || '').trim().toUpperCase() === beforeSymbol);
+                    if (idx >= 0) {
+                        recent[idx] = {
+                            ...recent[idx],
+                            name: displayName || recent[idx].name || resolvedSymbol,
+                            symbol: resolvedSymbol || recent[idx].symbol,
+                            market: resolvedMarket || recent[idx].market || '',
+                            source: recent[idx].source || String(sourceOverride || 'search')
+                        };
+                        localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(recent));
+                    }
+                } catch (e) {}
+
+                const usShortName = (isKrw || !data.symbol)
+                    ? displayName
+                    : getUsShortKrName(data.symbol, displayName);
+                setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
+                setTxt('rPrice', displayPrice);
+                setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
+
+                loadCommunityData(data.symbol, displayName);
+
+                // 1. 증시는 지금 위젯 렌더링 (독립 위젯으로 분리)
+                if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+                    window.GaemiWidgets.worldBoard.render(data.world_board || []);
+                }
+
+
+                // 2. 캘린더 데이터 저장 및 렌더링
+                if (data.market_calendar) {
+                    globalMarketCalendar = data.market_calendar;
+
+                    // 중요:
+                    // 최초 화면 렌더링 시에는 API 데이터가 아직 도착하지 않아
+                    // 경제 캘린더 자동 이동 플래그가 먼저 켜질 수 있습니다.
+                    // 실제 데이터가 도착한 뒤 다시 한 번 자동 이동을 판단합니다.
+                    window.globalMarketCalendar = globalMarketCalendar;
+                    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                        window.GaemiWidgets.economicCalendar.resetState();
+                    }
+                    renderMarketCalendarView();
+                }
+
+                // 3. 퀀트 분석 데이터 렌더링 (독립 위젯)
+                if (window.GaemiWidgets && window.GaemiWidgets.quant) {
+                    window.GaemiWidgets.quant.render(data.quant);
+                }
+                // 3.6 트랙 분석 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.track) {
+                    const mr = data && data.movement_reason;
+                    const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
+                        const a5 = a.key === 'market_5d' ? 1 : 0;
+                        const b5 = b.key === 'market_5d' ? 1 : 0;
+                        if (a5 !== b5) return a5 - b5;
+                        return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
+                    });
+                    const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
+                    const confidenceStyle = mr && mr.confidence === '높음'
+                        ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+                        : mr && mr.confidence === '중간'
+                            ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+                            : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+                    window.GaemiWidgets.track.render(data, mr, evidenceReasons, evidenceCount, confidenceStyle);
+                }
+                // 4. 종목 뉴스 렌더링 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
+                    window.GaemiWidgets.stockNews.load({
+                        symbol: data.symbol, market: data.market,
+                        name: data.name || data.formal_name, initial: data.stock_news
+                    });
+                }
+
+                // 5. 경제뉴스 위젯 — 독립 API에서 직접 갱신
+                if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
+                    window.GaemiWidgets.globalNews.load({
+                        market: data.market, initial: data.global_news
+                    });
+                }
+
+                // 5. 애널리스트 컨센서스 — 독립 위젯
+                if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
+                    window.GaemiWidgets.consensus.render(data.consensus);
+                }
+
+                if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
+                    window.GaemiWidgets.renderDartDisclosure(data.dart_disclosures);
+                }
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('result-card-wrap').style.display = 'block';
+
+                // STEP 50: 첫 검색부터 전체 분석 데이터를 받아 뉴스/컨센서스/트랙 분석이 빈 상태로 남지 않게 한다.
+                if (data._details_ready === false) {
+                    pollAnalysisDetails(cleanQ, searchToken);
+                }
+
+                // 오른쪽 사이드바 종목 클릭 시 사용자가 보고 있던 스크롤 위치를 유지한다.
+                // 자동으로 페이지 맨 위로 이동시키지 않는다.
+
+            } catch (err) {
+                if (err && err.name === 'AbortError') return;
+                console.error("Analysis Error:", err);
+                const msg = err && err.message ? err.message : '알 수 없는 오류';
+                if (searchToken === activeSearchToken) {
+                    alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
+                    document.getElementById('loading').style.display = 'none';
+                }
+            }
+        }
+
+        async function pollAnalysisDetails(query, searchToken, attempt = 0) {
+            // optional 데이터(종목뉴스/해외뉴스/컨센서스/트랙 분석)가 준비될 시간을
+            // 기존 4.5초보다 충분히 확보한다. 준비되면 full 재분석을 다시 돌리지 않고
+            // 서버의 완성 캐시를 그대로 한 번 렌더링한다.
+            if (searchToken !== activeSearchToken || attempt >= 40) return;
+            if (activeDetailsController) {
+                try { activeDetailsController.abort(); } catch (e) {}
+            }
+            activeDetailsController = new AbortController();
+            const detailsSignal = activeDetailsController.signal;
+            try {
+                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store', signal: detailsSignal});
+                if (r.status === 200) {
+                    const payload = await r.json();
+                    if (payload && payload.ready && payload.data) {
+                        if (searchToken !== activeSearchToken) return;
+                        deleteAnalyzeCache(query, payload.data);
+                        // 완성된 서버 데이터를 현재 화면의 모든 분석 위젯에 반영한다.
+                        // 기존에는 track만 갱신되어 퀀트/거래대금/뉴스/컨센서스 등이
+                        // core 단계의 빈 데이터를 그대로 유지할 수 있었다.
+                        const detailData = payload.data;
+                        setAnalyzeCache(query, detailData);
+
+                        // Details가 늦게 완성되어도 현재 화면의 종목 정보 자체도
+                        // 최종 서버 데이터로 맞춘다. 새로고침/재검색에서도 동일하다.
+                        if (detailData.symbol || detailData.name || detailData.formal_name) {
+                            const detailName = detailData.name || detailData.formal_name || query;
+                            const detailIsKrw = detailData.market === '국내주식' || detailData.market === '국내증시';
+                            const detailUsName = (detailIsKrw || !detailData.symbol)
+                                ? detailName
+                                : getUsShortKrName(detailData.symbol, detailName);
+                            setHtml('rTitle', `${detailUsName} <span>(${detailData.symbol || ''})</span>`);
+                            setTxt('rPrice', detailData.price || detailData.price_str || '');
+                            setHtml('rMeta', `시장: ${detailData.market || '-'} · 출처: ${detailIsKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${detailData.time || detailData.now_str || '-'}`);
+                        }
+
+                        if (window.GaemiWidgets && window.GaemiWidgets.quant) {
+                            window.GaemiWidgets.quant.render(detailData.quant);
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+                            window.GaemiWidgets.worldBoard.render(detailData.world_board || []);
+                        }
+                        if (detailData.market_calendar) {
+                            globalMarketCalendar = detailData.market_calendar;
+                            window.globalMarketCalendar = globalMarketCalendar;
+                            if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                                window.GaemiWidgets.economicCalendar.resetState();
+                            }
+                            renderMarketCalendarView();
+                        }
+
+                        if (window.GaemiWidgets && window.GaemiWidgets.track) {
+                            const mr = detailData && detailData.movement_reason;
+                            const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
+                                const a5 = a.key === 'market_5d' ? 1 : 0;
+                                const b5 = b.key === 'market_5d' ? 1 : 0;
+                                if (a5 !== b5) return a5 - b5;
+                                return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
+                            });
+                            const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
+                            const confidenceStyle = mr && mr.confidence === '높음'
+                                ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+                                : mr && mr.confidence === '중간'
+                                    ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+                                    : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+                            window.GaemiWidgets.track.render(detailData, mr, evidenceReasons, evidenceCount, confidenceStyle);
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
+                            window.GaemiWidgets.stockNews.load({
+                                symbol: detailData.symbol, market: detailData.market,
+                                name: detailData.name || detailData.formal_name, initial: detailData.stock_news
+                            });
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
+                            window.GaemiWidgets.globalNews.load({
+                                market: detailData.market, initial: detailData.global_news
+                            });
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
+                            window.GaemiWidgets.consensus.render(detailData.consensus);
+                        }
+                        if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
+                            window.GaemiWidgets.renderDartDisclosure(detailData.dart_disclosures);
+                        }
+                        return;
+                    }
+                }
+            } catch (e) {
+                if (e && e.name === 'AbortError') return;
+            }
+            if (searchToken === activeSearchToken) {
+                setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
+            }
+        }
+
+        function formatUsStockPrice(value) {
+            const n = Number(value);
+            if (!Number.isFinite(n)) return '-';
+            if (n >= 1000) return '$' + n.toLocaleString('en-US', {maximumFractionDigits: 0});
+            if (n >= 100) return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            return '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+
+        function buildUsStockSparkline(values) {
+            if (!Array.isArray(values) || values.length < 2) return '';
+            const safe = values
+                .map(Number)
+                .filter(v => Number.isFinite(v));
+            if (safe.length < 2) return '';
+
+            const width = 120;
+            const height = 34;
+            const padX = 2;
+            const padY = 3;
+            const lo = Math.min(...safe);
+            const hi = Math.max(...safe);
+            const span = hi - lo || 1;
+            const step = (width - padX * 2) / Math.max(1, safe.length - 1);
+
+            const points = safe.map((value, i) => {
+                const x = padX + i * step;
+                const y = (height - padY) - ((value - lo) / span) * (height - padY * 2);
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+            }).join(' ');
+
+            return `<svg class="us-leading-stock-spark" viewBox="0 0 120 34" preserveAspectRatio="none" aria-label="최근 가격 흐름">
+                        <polyline points="${points}"></polyline>
+                    </svg>`;
+        }
+
+
+        // STEP 36: 해외 거래대금 상위 종목명을 한글로 표시한다.
+        const US_SHORT_KR_NAMES = {
+            // 반도체 / AI
+            NVDA: '엔비디아', AVGO: '브로드컴', AMD: 'AMD', MU: '마이크론',
+            MRVL: '마벨테크놀로지', QCOM: '퀄컴', TSM: 'TSMC', LRCX: '램리서치',
+            AMAT: '어플라이드머티어리얼즈', KLAC: 'KLA', ASML: 'ASML', ARM: 'ARM',
+            INTC: '인텔', TXN: '텍사스인스트루먼트', ON: '온세미',
+            MPWR: '모놀리식파워', ADI: '아날로그디바이스', NXPI: 'NXP반도체',
+            SMCI: '슈퍼마이크로컴퓨터', WDC: '웨스턴디지털', STX: '씨게이트',
+           
+            // 빅테크 / 플랫폼
+            TSLA: '테슬라', AAPL: '애플', MSFT: '마이크로소프트', AMZN: '아마존',
+            GOOGL: '구글', GOOG: '구글', META: '메타', NFLX: '넷플릭스',
+            ORCL: '오라클', CRM: '세일즈포스', ADBE: '어도비', NOW: '서비스나우',
+            PLTR: '팔란티어', UBER: '우버', ABNB: '에어비앤비', SHOP: '쇼피파이',
+           
+            // 금융 / 결제
+            JPM: 'JP모건', BAC: '뱅크오브아메리카', WFC: '웰스파고', C: '씨티그룹',
+            GS: '골드만삭스', MS: '모건스탠리', V: '비자', MA: '마스터카드',
+            COIN: '코인베이스', HOOD: '로빈후드', MSTR: '마이크로스트래티지',
+           
+            // 전기차 / 자동차
+            RIVN: '리비안', LCID: '루시드', NIO: '니오', F: '포드', GM: '제너럴모터스',
+           
+            // 에너지 / 산업
+            XOM: '엑손모빌', CVX: '셰브론', COP: '코노코필립스', SLB: '슐럼버거',
+            OXY: '옥시덴털페트롤리엄', CAT: '캐터필러', DE: '디어', GE: 'GE에어로스페이스',
+            BA: '보잉', RTX: 'RTX', LMT: '록히드마틴',
+           
+            // 헬스케어 / 바이오
+            LLY: '일라이릴리', NVO: '노보노디스크', UNH: '유나이티드헬스', JNJ: '존슨앤드존슨',
+            PFE: '화이자', MRK: '머크', ABBV: '애브비', MRNA: '모더나',
+           
+            // 소비 / 미디어
+            WMT: '월마트', COST: '코스트코', MCD: '맥도날드', NKE: '나이키',
+            SBUX: '스타벅스', DIS: '디즈니', KO: '코카콜라', PEP: '펩시코',
+           
+            // 주요 ETF
+            QQQ: '나스닥100 ETF', SPY: 'S&P500 ETF', SOXL: '반도체 3배 ETF',
+            TQQQ: '나스닥100 3배 ETF', DIA: '다우존스 ETF', SOXX: '반도체 ETF',
+           
+            // 기타 자주 조회되는 종목
+            TSMC: 'TSMC', PDD: '핀둬둬', BABA: '알리바바', JD: '징둥닷컴',
+            BIDU: '바이두', IONQ: '아이온큐', RKLB: '로켓랩', ASTS: 'AST스페이스모바일'
+        };
+
+        function getUsShortKrName(symbol, fallback) {
+            const key = String(symbol || '').trim().toUpperCase();
+            return US_SHORT_KR_NAMES[key] || String(fallback || key);
+        }
+
+        function openUsLeadingStock(symbol, name) {
+            const cleanSymbol = String(symbol || '').trim();
+            const cleanName = getUsShortKrName(cleanSymbol, name);
+            if (!cleanSymbol) return;
+
+            openStock({
+                symbol: cleanSymbol,
+                name: cleanName,
+                market: 'US',
+                source: 'us-leading'
+            });
+        }
+
+        async function loadSectorChart(sectorSymbol, sectorName) {
+            const symbol = String(sectorSymbol || '').trim().toUpperCase();
+            const name = String(sectorName || '').trim();
+            if (!symbol) return;
+
+            const title = document.getElementById('rTitle');
+            const price = document.getElementById('rPrice');
+            const meta = document.getElementById('rMeta');
+
+            if (title) title.textContent = name || symbol;
+            if (price) price.textContent = '업종 흐름';
+            if (meta) meta.textContent = '미국 주도업종 · 실제 Yahoo 일봉 데이터';
+
+            try {
+                const response = await fetch('/api/chart?q=' + encodeURIComponent(symbol), {
+                    cache: 'no-store'
+                });
+                const data = await response.json().catch(() => null);
+                if (!response.ok || !data || data.error) {
+                    throw new Error((data && data.error) || ('차트 데이터 오류 (' + response.status + ')'));
+                }
+
+                if (!Array.isArray(data.candles) || !data.candles.length) {
+                    throw new Error('업종 차트 데이터가 없습니다.');
+                }
+
+                initTvChart(data.candles);
+                if (price) price.textContent = '업종 흐름';
+                if (meta) meta.textContent = `${name || symbol} · 최근 65거래일`;
+            } catch (error) {
+                console.error('US sector chart:', error);
+                if (price) price.textContent = '업종 차트를 불러오지 못했습니다.';
+                if (meta) meta.textContent = error && error.message ? error.message : '잠시 후 다시 시도해주세요.';
+            }
+        }
+
+        // 미국 주도종목 위젯은 widgets/us_leading_stocks.js에서 담당한다.
+        // 기존 전역 함수명은 호환성을 위해 유지한다.
+        async function loadUsLeadingStocks(sectorSymbol, sectorName) {
+            if (window.GaemiWidgets && window.GaemiWidgets.usLeadingStocks) {
+                return window.GaemiWidgets.usLeadingStocks.load(sectorSymbol, sectorName);
+            }
+            return null;
+        }
+
+        async function loadMarketCalendar() {
+            try {
+                const response = await fetch('/api/market-calendar');
+                const data = await response.json().catch(() => null);
+                if (!response.ok || !data || data.error) throw new Error((data && data.error) || '시장 캘린더 데이터 오류');
+                if (Array.isArray(data.data)) {
+                    globalMarketCalendar = data.data;
+                    window.globalMarketCalendar = globalMarketCalendar;
+                    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                        window.GaemiWidgets.economicCalendar.resetState();
+                    }
+                    renderMarketCalendarView();
+                }
+            } catch (error) {
+                console.error('Market calendar:', error);
+            }
+        }
+
+
+        // STEP 4: 무거운 세계시장/캘린더 데이터는 분석 요청과 분리해서 병렬 로딩한다.
+        window.addEventListener('DOMContentLoaded', () => {
+            if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+                window.GaemiWidgets.worldBoard.load(false);
+            }
+            if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                window.GaemiWidgets.economicCalendar.load(false);
+            } else {
+                loadMarketCalendar();
+            }
+            loadUsLeadingSectors();
+        });
+        window.addEventListener('DOMContentLoaded', () => {
+            initTheme();
+
+            // 새로고침 시 URL에 저장된 종목을 자동 복원
+            const params = new URLSearchParams(window.location.search);
+            const savedQuery = params.get('q');
+
+            if (savedQuery && savedQuery.trim()) {
+                openStock({ query: savedQuery.trim(), source: 'url-restore' });
+            }
+        });
+    </script>
+
+
+    <!-- STEP 27: 우측 실시간 시장 사이드바 -->
+    <aside id="right-market-rail" class="collapsed" aria-label="실시간 시장 사이드바">
+        <section id="right-market-panel">
+            <div class="right-market-head">
+                <div><span class="right-market-title">실시간</span><span class="right-market-time" id="rightMarketTime">오늘 --:-- 기준</span></div>
+            </div>
+            <div class="right-market-tabs">
+                <button class="right-market-tab active" data-market="kr" onclick="switchRightMarket('kr')">국내</button>
+                <button class="right-market-tab" data-market="us" onclick="switchRightMarket('us')">해외</button>
+                <button class="right-market-tab" data-market="crypto" onclick="switchRightMarket('crypto')">코인</button>
+            </div>
+            <div class="right-market-sort"><span id="rightMarketSortLabel">거래대금 상위⌄</span><span>실시간⌄</span></div>
+            <div class="right-market-list" id="rightMarketList"><div class="right-market-empty">실시간 시장 데이터를 불러오는 중입니다.</div></div>
+        </section>
+        <nav id="right-market-icons" aria-label="시장 메뉴">
+            <button class="right-market-icon-btn right-market-close" onclick="toggleRightMarket()" title="오른쪽 사이드바 열기/닫기">»</button>
+            <button class="right-market-icon-btn active" data-right-menu="live" onclick="selectRightMenu('live')" title="실시간">◉</button>
+            <button class="right-market-icon-btn" data-right-menu="favorite" onclick="selectRightMenu('favorite')" title="관심">♡</button>
+            <button class="right-market-icon-btn" data-right-menu="recent" onclick="selectRightMenu('recent')" title="최근검색종목">◷</button>
+            <button class="right-market-icon-btn" data-right-menu="leaders" onclick="selectRightMenu('leaders')" title="실시간 상단">▥</button>
+        </nav>
+    </aside>
+
+</body>
+</html>

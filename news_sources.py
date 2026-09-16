@@ -518,7 +518,7 @@ def _economic_news_priority(item, market_name=""):
     title = str(item.get("title") or "").lower()
     score = int(item.get("relevance_score") or 0)
 
-    # 국내 종목의 "왜 움직였을까"에서 전일 미국 증시 흐름을 첫 번째 재료로
+    # 국내 종목 트랙분석에서 전일 미국 증시 흐름을 재료로
     # 사용할 수 있도록 미국 증시 마감/지수/반도체 시황에 추가 가중치를 준다.
     us_close_terms = [
         "미국증시", "뉴욕증시", "뉴욕 증시", "미국 증시", "나스닥",

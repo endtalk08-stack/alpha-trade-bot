@@ -2680,7 +2680,7 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "movement_reason": movement_reason, "world_board": world_board, "market_calendar": market_calendar,
                 "_details_ready": True,
             })
-            ANALYSIS_CACHE[clean_q] = (time.time(), enriched)
+            _set_analysis_cache(clean_q, enriched, time.time())
             with ANALYSIS_ENRICH_LOCK:
                 ANALYSIS_ENRICH_CONTEXT.pop(clean_q, None)
             print(f"[ANALYSIS ENRICH] {clean_q} details ready")
@@ -2697,6 +2697,25 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
     ANALYSIS_ENRICH_EXECUTOR.submit(worker)
 
 
+def _analysis_cache_keys(query, data=None):
+    """같은 종목의 이름/코드/티커가 하나의 분석 캐시를 공유하도록 키를 만든다."""
+    keys = []
+    def add(value):
+        v = str(value or "").strip().replace(" ", "").upper()
+        if v and v not in keys:
+            keys.append(v)
+    add(query)
+    if isinstance(data, dict):
+        add(data.get("symbol"))
+        add(data.get("name"))
+        add(data.get("formal_name"))
+    return keys
+
+def _set_analysis_cache(query, data, timestamp=None):
+    ts = time.time() if timestamp is None else timestamp
+    for key in _analysis_cache_keys(query, data):
+        ANALYSIS_CACHE[key] = (ts, data)
+
 def run_full_pipeline(query, lightweight=False):
     global ANALYSIS_CACHE, CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR
     clean_q = query.strip().replace(" ", "").upper()
@@ -2704,28 +2723,42 @@ def run_full_pipeline(query, lightweight=False):
 
     _perf_stage("cache_check")
 
-    if clean_q in ANALYSIS_CACHE:
-        cached_time, cached_data = ANALYSIS_CACHE[clean_q]
-        if now_ts - cached_time < ANALYSIS_CORE_TTL:
-            # STEP 4: 세계시장 보드/시장 캘린더는 별도 API가 담당한다.
-            # 분석 캐시 응답에 현재 서버 캐시가 있으면 화면 호환성을 위해
-            # 붙여주되, 캐시가 없다고 해서 외부 API를 호출하지 않는다.
-            if CACHED_WORLD_BOARD:
-                cached_data["world_board"] = CACHED_WORLD_BOARD
-            if CACHED_MARKET_CALENDAR:
-                cached_data["market_calendar"] = CACHED_MARKET_CALENDAR
+    # 이름/코드/티커 중 어느 것으로 다시 들어와도 동일한 분석 캐시를 찾는다.
+    cached_key = None
+    cached_time = None
+    cached_data = None
+    for candidate in _analysis_cache_keys(clean_q):
+        hit = ANALYSIS_CACHE.get(candidate)
+        if hit:
+            hit_time, hit_data = hit
+            if now_ts - hit_time < ANALYSIS_CORE_TTL:
+                cached_key, cached_time, cached_data = candidate, hit_time, hit_data
+                break
 
-            # core 캐시가 아직 enrichment 전이라면 기존 작업이 끝날 때까지
-            # 기다릴 수 있도록 context가 보관되어 있는지 확인한다.
-            # 새로고침/사이드바 재진입 때 core 결과를 다시 만들면서
-            # 뉴스·컨센서스·트랙 분석이 비어 있는 상태가 반복되는 것을 막는다.
-            if lightweight and not cached_data.get("_details_ready"):
+    if cached_data is not None:
+        # STEP 4: 세계시장 보드/시장 캘린더는 별도 API가 담당한다.
+        if CACHED_WORLD_BOARD:
+            cached_data["world_board"] = CACHED_WORLD_BOARD
+        if CACHED_MARKET_CALENDAR:
+            cached_data["market_calendar"] = CACHED_MARKET_CALENDAR
+
+        # core 캐시가 아직 enrichment 전이면 실제 작업 컨텍스트를 어떤 별칭으로도 찾는다.
+        if lightweight and not cached_data.get("_details_ready"):
+            enrich_context = None
+            enriching = False
+            for candidate in _analysis_cache_keys(clean_q, cached_data):
                 with ANALYSIS_ENRICH_LOCK:
-                    enriching = clean_q in ANALYSIS_ENRICHING
-                    enrich_context = ANALYSIS_ENRICH_CONTEXT.get(clean_q)
-                if (not enriching) and enrich_context:
-                    _schedule_analysis_enrichment(clean_q, cached_data, enrich_context)
-            return cached_data
+                    if candidate in ANALYSIS_ENRICHING:
+                        enriching = True
+                    if enrich_context is None:
+                        enrich_context = ANALYSIS_ENRICH_CONTEXT.get(candidate)
+                if enriching or enrich_context:
+                    break
+            if (not enriching) and enrich_context:
+                _schedule_analysis_enrichment(cached_key or clean_q, cached_data, enrich_context)
+        # 캐시를 찾은 별칭과 실제 symbol/name 모두 같은 객체를 가리키게 한다.
+        _set_analysis_cache(clean_q, cached_data, cached_time)
+        return cached_data
 
     market_name = "국내주식"
     market_index_name = None
@@ -3154,7 +3187,8 @@ def run_full_pipeline(query, lightweight=False):
     }
 
     result_data["_details_ready"] = not lightweight
-    ANALYSIS_CACHE[clean_q] = (now_ts, result_data)
+    # 입력한 이름/코드와 서버가 확정한 실제 symbol을 같은 캐시로 묶는다.
+    _set_analysis_cache(clean_q, result_data, now_ts)
 
     if lightweight:
         try:
@@ -6435,18 +6469,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
         });
 
         function resetToHome() {
-            // 홈으로 이동하면 진행 중인 분석/상세 요청을 무효화한다.
-            // HTTP 요청이 늦게 끝나더라도 이전 종목이 현재 화면을 덮지 못하게 한다.
+            // 진행 중인 분석/상세 요청이 홈 화면으로 돌아온 뒤 결과를 덮어쓰지 못하게 한다.
             activeSearchToken++;
-            if (activeSearchController) {
-                try { activeSearchController.abort(); } catch (e) {}
-            }
-            if (activeDetailsController) {
-                try { activeDetailsController.abort(); } catch (e) {}
-            }
-            activeSearchController = null;
-            activeDetailsController = null;
-
+            if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
+            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
             document.getElementById('main-view').style.display = 'flex';
             document.getElementById('result-scroll-view').style.display = 'none';
             document.getElementById('bottom-bar').style.display = 'none';
@@ -6943,9 +6969,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                     .catch(() => null);
 
             try {
-                // 서버와 동일한 방식으로 캐시 키를 정규화한다.
-                // 예: "삼성 전자"와 "삼성전자"가 서로 다른 캐시가 되지 않게 한다.
-                const cacheKey = cleanQ.replace(/\s+/g, '').toUpperCase();
+                const cacheKey = cleanQ.toUpperCase();
                 const cached = ANALYZE_CACHE.get(cacheKey);
                 let data;
                 let response = null;
@@ -6977,6 +7001,9 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                     const detail = data.detail ? ` · ${data.detail}` : '';
                     throw new Error(`${data.error}${detail}`);
                 }
+
+                // 홈 이동/다른 종목 재검색 후 도착한 오래된 응답은 화면에 적용하지 않는다.
+                if (searchToken !== activeSearchToken) return;
 
                 if (data._perf) {
                     console.log(
@@ -7172,32 +7199,37 @@ if ((response && !response.ok) || data.error) {
                     const payload = await r.json();
                     if (payload && payload.ready && payload.data) {
                         if (searchToken !== activeSearchToken) return;
-                        // 완성된 상세 데이터를 아래에서 브라우저 캐시에 저장하고 전체 카드를 갱신한다.
-                        // forceServer=true 또는 doSearch() 재호출은 사용하지 않는다.
-                        // 완성된 서버 캐시 데이터를 현재 화면의 트랙 분석에 직접 반영한다.
+                        ANALYZE_CACHE.delete(query.trim().toUpperCase());
+                        // 완성된 서버 데이터를 현재 화면의 모든 분석 위젯에 반영한다.
+                        // 기존에는 track만 갱신되어 퀀트/거래대금/뉴스/컨센서스 등이
+                        // core 단계의 빈 데이터를 그대로 유지할 수 있었다.
                         const detailData = payload.data;
+                        ANALYZE_CACHE.set(String(detailData.symbol || query).trim().toUpperCase(), {
+                            time: Date.now(), data: detailData
+                        });
 
-                        // 상세 데이터가 준비되면 서버의 완성본을 브라우저 캐시에도 저장한다.
-                        // 이후 사이드바 재진입/새로고침에서는 core를 다시 기다리지 않고
-                        // 같은 완성 데이터를 즉시 전체 카드에 표시할 수 있다.
-                        const detailCacheKey = String(query || '').replace(/\s+/g, '').toUpperCase();
-                        ANALYZE_CACHE.set(detailCacheKey, { time: Date.now(), data: detailData });
+                        if (window.GaemiWidgets && window.GaemiWidgets.quant) {
+                            window.GaemiWidgets.quant.render(detailData.quant);
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
+                            window.GaemiWidgets.maliciousZone.render(detailData);
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
+                            window.GaemiWidgets.whyMovement.render(detailData);
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+                            window.GaemiWidgets.worldBoard.render(detailData.world_board || []);
+                        }
+                        if (detailData.market_calendar) {
+                            globalMarketCalendar = detailData.market_calendar;
+                            window.globalMarketCalendar = globalMarketCalendar;
+                            if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+                                window.GaemiWidgets.economicCalendar.resetState();
+                            }
+                            renderMarketCalendarView();
+                        }
 
-                        // 중요: 기존에는 상세 단계에서 트랙 분석만 다시 그렸다.
-                        // 그래서 서버에는 퀀트/거래대금/컨센서스/공시/뉴스가 준비되어 있어도
-                        // 새로고침 또는 재진입 후 화면에는 core의 빈 값이 남을 수 있었다.
-                        // 상세 완성본으로 관련 카드 전체를 다시 렌더링한다.
-                        if (window.GaemiWidgets) {
-                            if (window.GaemiWidgets.quant && detailData.quant) {
-                                window.GaemiWidgets.quant.render(detailData.quant);
-                            }
-                            if (window.GaemiWidgets.maliciousZone) {
-                                window.GaemiWidgets.maliciousZone.render(detailData);
-                            }
-                            if (window.GaemiWidgets.whyMovement) {
-                                window.GaemiWidgets.whyMovement.render(detailData);
-                            }
-
+                        if (window.GaemiWidgets && window.GaemiWidgets.track) {
                             const mr = detailData && detailData.movement_reason;
                             const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
                                 const a5 = a.key === 'market_5d' ? 1 : 0;
@@ -7211,22 +7243,24 @@ if ((response && !response.ok) || data.error) {
                                 : mr && mr.confidence === '중간'
                                     ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
                                     : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
-
-                            if (window.GaemiWidgets.track) {
-                                window.GaemiWidgets.track.render(detailData, mr, evidenceReasons, evidenceCount, confidenceStyle);
-                            }
-                            if (window.GaemiWidgets.stockNews && Array.isArray(detailData.stock_news)) {
-                                window.GaemiWidgets.stockNews.render(detailData.stock_news);
-                            }
-                            if (window.GaemiWidgets.globalNews && Array.isArray(detailData.global_news)) {
-                                window.GaemiWidgets.globalNews.render(detailData.global_news);
-                            }
-                            if (window.GaemiWidgets.consensus) {
-                                window.GaemiWidgets.consensus.render(detailData.consensus);
-                            }
-                            if (typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
-                                window.GaemiWidgets.renderDartDisclosure(detailData.dart_disclosures);
-                            }
+                            window.GaemiWidgets.track.render(detailData, mr, evidenceReasons, evidenceCount, confidenceStyle);
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
+                            window.GaemiWidgets.stockNews.load({
+                                symbol: detailData.symbol, market: detailData.market,
+                                name: detailData.name || detailData.formal_name, initial: detailData.stock_news
+                            });
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
+                            window.GaemiWidgets.globalNews.load({
+                                market: detailData.market, initial: detailData.global_news
+                            });
+                        }
+                        if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
+                            window.GaemiWidgets.consensus.render(detailData.consensus);
+                        }
+                        if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
+                            window.GaemiWidgets.renderDartDisclosure(detailData.dart_disclosures);
                         }
                         return;
                     }
@@ -7931,10 +7965,17 @@ class WebHandler(BaseHTTPRequestHandler):
                 should_wait = False
             deadline = time.monotonic() + (12.0 if should_wait else 0.0)
             while True:
-                cached = ANALYSIS_CACHE.get(clean_q)
+                cached = None
+                for candidate in _analysis_cache_keys(clean_q):
+                    hit = ANALYSIS_CACHE.get(candidate)
+                    if hit:
+                        hit_time, hit_data = hit
+                        if time.time() - hit_time < ANALYSIS_CORE_TTL:
+                            cached = (hit_time, hit_data)
+                            break
                 if cached:
                     cached_time, cached_data = cached
-                    if time.time() - cached_time < ANALYSIS_CORE_TTL and cached_data.get("_details_ready"):
+                    if cached_data.get("_details_ready"):
                         self._json(200, {"ok": True, "ready": True, "data": cached_data})
                         return
                 if time.monotonic() >= deadline:

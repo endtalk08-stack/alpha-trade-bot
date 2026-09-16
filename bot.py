@@ -125,7 +125,7 @@ US_STOCK_MAP = {
     "DIA": "DIA", "SOXX": "SOXX"
 }
 from us_leading_stocks import US_SECTOR_STOCK_UNIVERSE, US_TICKER_PATTERN, fetch_us_leading_stocks
-from news_sources import (fetch_google_stock_news, fetch_google_economic_news, fetch_rss_news)
+from news_sources import (fetch_naver_news, fetch_finlight_news, translate_news_titles_to_korean, fetch_finlight_stock_news, fetch_finlight_economic_news, fetch_rss_news)
 try:
     from .right_market_us import _right_sidebar_us_rows
 except ImportError:
@@ -138,7 +138,7 @@ for _sector_candidates in US_SECTOR_STOCK_UNIVERSE.values():
         US_STOCK_MAP.setdefault(_ticker, _ticker)
 
 DOMESTIC_FAST_MAP = {
-    "SK하이닉스": "000660", "하이닉스": "000660", "광전자": "017900",
+    "SK하이닉스": "000660", "하이닉스": "000660",
     "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150", "삼성중공업": "010140",
     "SK증권": "001510", "SK스퀘어": "402340", "솔트룩스": "304100",
     "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
@@ -1299,105 +1299,31 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 
 
 
-# 종목명 → 종목코드 공용 캐시.
-# 한 번 찾은 종목은 이후 오른쪽 사이드바 클릭/재검색에서 외부 검색을 반복하지 않는다.
-STOCK_CODE_CACHE = {}
-STOCK_CODE_CACHE_LOCK = threading.Lock()
-STOCK_CODE_CACHE_TTL = 60 * 60 * 24
-
-def _normalize_stock_lookup_text(value):
-    return str(value or "").strip().replace(" ", "").replace("-", "").upper()
-
-
-def _extract_stock_lookup_items(payload):
-    """Naver 자동완성 응답의 작은 스키마 차이를 흡수한다."""
-    if not isinstance(payload, dict):
-        return []
-    result = payload.get("result")
-    if isinstance(result, dict):
-        items = result.get("items")
-        if isinstance(items, list):
-            return items
-    items = payload.get("items")
-    return items if isinstance(items, list) else []
-
-
-def _store_stock_code_cache(key, code, name):
-    if not code or len(str(code)) != 6 or not str(code).isdigit():
-        return
-    with STOCK_CODE_CACHE_LOCK:
-        STOCK_CODE_CACHE[key] = (time.time(), str(code), str(name or code).strip())
-
 
 def find_stock_code(query):
-    raw_q = str(query or "").strip()
-    clean_q = _normalize_stock_lookup_text(raw_q)
-    if not clean_q:
-        return None, raw_q
-
+    clean_q = query.strip().replace(" ", "").upper()
     if clean_q.isdigit() and len(clean_q) == 6:
         return clean_q, clean_q
 
-    now = time.time()
-    with STOCK_CODE_CACHE_LOCK:
-        cached = STOCK_CODE_CACHE.get(clean_q)
-    if cached and now - cached[0] < STOCK_CODE_CACHE_TTL:
-        return cached[1], cached[2]
-
-    # 1) 이미 확실히 알고 있는 대표 종목은 가장 빠르게 처리한다.
     for name, code in DOMESTIC_FAST_MAP.items():
-        if _normalize_stock_lookup_text(name) == clean_q:
-            _store_stock_code_cache(clean_q, code, name)
+        if name.replace(" ", "").upper() == clean_q:
             return code, name
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-        "Accept": "application/json,text/plain,*/*",
-        "Referer": "https://m.stock.naver.com/",
-    }
-
-    # 2) 현재 Naver 모바일 자동완성.
-    urls = [
-        "https://m.stock.naver.com/front-api/search/autoComplete?query="
-        + urllib.parse.quote(raw_q) + "&target=stock",
-        # 3) 레거시 자동완성 fallback.
-        "https://ac.stock.naver.com/ac?q="
-        + urllib.parse.quote(raw_q)
-        + "&target=stock,index,marketindicator,coin,ipo&st=111",
-    ]
-
-    for url in urls:
-        try:
-            res = HTTP_SESSION.get(url, timeout=1.8, headers=headers)
-            if res.status_code != 200:
-                continue
-            items = _extract_stock_lookup_items(res.json())
-            if not items:
-                continue
-
-            first_valid = None
+    try:
+        url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
+        res = HTTP_SESSION.get(url, timeout=1.8).json()
+        items = res.get("result", {}).get("items", [])
+        if items:
             for it in items:
-                if not isinstance(it, dict):
-                    continue
-                name = str(it.get("name") or it.get("itemName") or "").strip()
-                code = re.sub(r"[^0-9]", "", str(it.get("code") or it.get("itemCode") or ""))
-                if len(code) != 6 or not name:
-                    continue
-                candidate = (code, name)
-                if first_valid is None:
-                    first_valid = candidate
-                if _normalize_stock_lookup_text(name) == clean_q:
-                    _store_stock_code_cache(clean_q, code, name)
+                name = str(it.get("name", "")).strip()
+                code = str(it.get("code", "")).strip()
+                if name.replace(" ", "").upper() == clean_q:
                     return code, name
-
-            if first_valid:
-                code, name = first_valid
-                _store_stock_code_cache(clean_q, code, name)
-                return code, name
-        except Exception as exc:
-            print(f"[STOCK CODE LOOKUP] failed: {type(exc).__name__}: {exc}")
-
-    return None, raw_q
+            first = items[0]
+            return str(first.get("code", "")).strip(), str(first.get("name", "")).strip()
+    except Exception:
+        pass
+    return None, query.strip()
 
 from domestic_market import _fetch_domestic_candles_naver_uncached
 from domestic_market_type import (
@@ -2670,15 +2596,15 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             df = context["df"]
 
             optional_futures = {
-                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_google_stock_news, symbol, market_name, formal_name, 20),
-                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_google_economic_news, market_name, 20),
-                "api_news": None,
+                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
+                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
+                "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
                 "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
                 "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
                 "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
                 "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
                 "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
-                "ticker_news": None,
+                "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
             }
 
             # details 단계에서는 모든 외부 API를 무한정 기다리지 않는다.
@@ -3021,15 +2947,15 @@ def run_full_pipeline(query, lightweight=False):
         _perf_stage("optional_external_skipped")
     else:
         optional_futures = {
-            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_google_stock_news, symbol, market_name, formal_name, 20),
-            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_google_economic_news, market_name, 20),
-            "api_news": None,
+            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
+            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
+            "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
             "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
             "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
             "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
             "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
             "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
-            "ticker_news": None,
+            "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
         }
         optional_results = _collect_optional_results(optional_futures)
         _perf_stage("optional_external")
@@ -3055,6 +2981,12 @@ def run_full_pipeline(query, lightweight=False):
     # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
     stock_news = merge_news_sources(stock_news_rss, ticker_news)
     global_news = merge_news_sources(global_news_rss, api_news)
+
+    # 미국주식은 영어 원문 제목 대신 한국어 제목을 표시한다.
+    # 원문 링크/언론사/발행일은 그대로 유지한다.
+    if market_name == "미국주식":
+        stock_news = translate_news_titles_to_korean(stock_news[:20], market_name)
+        global_news = translate_news_titles_to_korean(global_news[:20], market_name)
 
     if not lightweight:
         consensus = optional_results.get("consensus")
@@ -5953,7 +5885,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
             <div class="search-container">
                 <div class="search-box">
-                    <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                    <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) openStock(this.value, {source:'main-search'});" autocomplete="off">
                     
                     <div class="model-selector-wrap">
                         <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
@@ -5976,17 +5908,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
+                    <button class="send-btn" onclick="openStock(document.getElementById('centerInput').value, {source:'main-search'})">
                         <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                     </button>
                 </div>
             </div>
             <div class="popular-tags">
-                <button class="tag-btn" onclick="doSearch('SK하이닉스')">SK하이닉스</button>
-                <button class="tag-btn" onclick="doSearch('삼성전자')">삼성전자</button>
-                <button class="tag-btn" onclick="doSearch('알테오젠')">알테오젠</button>
-                <button class="tag-btn" onclick="doSearch('엔비디아')">엔비디아</button>
-                <button class="tag-btn" onclick="doSearch('비트코인')">비트코인</button>
+                <button class="tag-btn" onclick="openStock('SK하이닉스', {source:'example'})">SK하이닉스</button>
+                <button class="tag-btn" onclick="openStock('삼성전자', {source:'example'})">삼성전자</button>
+                <button class="tag-btn" onclick="openStock('알테오젠', {source:'example'})">알테오젠</button>
+                <button class="tag-btn" onclick="openStock('엔비디아', {source:'example'})">엔비디아</button>
+                <button class="tag-btn" onclick="openStock('비트코인', {source:'example'})">비트코인</button>
             </div>
         </div>
 
@@ -6355,7 +6287,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <div class="bottom-bar-grid-wrapper">
                 <div class="search-container">
                     <div class="search-box">
-                        <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                        <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) openStock(this.value, {source:'bottom-search'});" autocomplete="off">
                         
                         <div class="model-selector-wrap">
                             <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
@@ -6378,7 +6310,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
+                        <button class="send-btn" onclick="openStock(document.getElementById('bottomInput').value, {source:'bottom-search'})">
                             <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                         </button>
                     </div>
@@ -6855,7 +6787,50 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         const FAST_CHART_CACHE = new Map();
         const FAST_CHART_CACHE_TTL = 30 * 1000;
 
-        async function doSearch(query, forceServer = false, displayNameOverride = '') {
+        // 공통 종목 진입 계층: 모든 UI 진입점은 openStock()을 통해 doSearch()로 들어간다.
+        function normalizeStockMarket(market, value = '') {
+            const rawMarket = String(market || '').trim().toUpperCase();
+            if (rawMarket === 'KR' || rawMarket === 'KOREA' || rawMarket === 'DOMESTIC' || rawMarket === '국내' || rawMarket === '국내주식' || rawMarket === '국내증시') return 'KR';
+            if (rawMarket === 'US' || rawMarket === 'USA' || rawMarket === 'OVERSEAS' || rawMarket === '미국' || rawMarket === '미국주식' || rawMarket === '해외') return 'US';
+            if (rawMarket === 'CRYPTO' || rawMarket === 'COIN' || rawMarket === '암호화폐' || rawMarket === '코인') return 'CRYPTO';
+
+            const q = String(value || '').trim().replace(/\s+/g, '').toUpperCase();
+            if (/^\d{6}$/.test(q)) return 'KR';
+            if (/^[A-Z]{1,6}$/.test(q)) return 'US';
+            if (q.endsWith('USDT') || q.includes('BTC') || q.includes('ETH') || q.includes('코인') || q.includes('비트')) return 'CRYPTO';
+            return '';
+        }
+
+        function buildStockEntry(input, options = {}) {
+            const isObject = input && typeof input === 'object' && !Array.isArray(input);
+            const source = String((isObject ? input.source : options.source) || 'unknown').trim();
+            const rawQuery = String((isObject ? (input.query ?? input.symbol ?? input.name) : input) || '').trim();
+            const rawName = String((isObject ? input.name : options.name) || '').trim();
+            const rawSymbol = String((isObject ? input.symbol : options.symbol) || '').trim();
+            const rawMarket = (isObject ? input.market : options.market) || '';
+            const query = rawSymbol || rawQuery || rawName;
+            const name = rawName || ((rawSymbol && rawQuery && rawSymbol !== rawQuery) ? rawQuery : '');
+            const market = normalizeStockMarket(rawMarket, rawSymbol || rawQuery || rawName);
+            return {
+                query: query,
+                name: name,
+                symbol: rawSymbol || query,
+                market: market,
+                source: source || 'unknown'
+            };
+        }
+
+        function openStock(input, options = {}) {
+            const entry = buildStockEntry(input, options);
+            if (!entry.query) return;
+            try { window.__GAEMIGTP_LAST_STOCK_ENTRY__ = entry; } catch (e) {}
+            // 기존 분석 엔진은 그대로 유지하고, 입력/표시명/시장만 표준화해서 전달한다.
+            doSearch(entry.query, false, entry.name, entry.market);
+        }
+
+        window.openStock = openStock;
+
+        async function doSearch(query, forceServer = false, displayNameOverride = '', marketOverride = '', sourceOverride = '') {
             // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
             let materialText = '';
 
@@ -6888,9 +6863,13 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                 // displayNameOverride에 전달된 종목명을 그대로 보존한다.
                 const recentDisplayName = displayNameHint || cleanQ;
                 const recentSymbol = cleanQ.toUpperCase();
+                const recentMarket = normalizeStockMarket(marketOverride, cleanQ) || '';
+                const recentSource = String(sourceOverride || '').trim() || 'search';
                 const recentItem = {
                     name: recentDisplayName,
                     symbol: recentSymbol,
+                    market: recentMarket,
+                    source: recentSource,
                     price: null,
                     change_pct: null,
                     currency: ''
@@ -7042,6 +7021,24 @@ if ((response && !response.ok) || data.error) {
                 const displayName = displayNameHint || data.name || data.formal_name;
                 const displayPrice = data.price || data.price_str;
                 const displayTime = data.time || data.now_str;
+
+                // 서버가 실제 시장/심볼을 확정한 뒤 최근검색 항목도 같은 표준값으로 보정한다.
+                try {
+                    const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                    const resolvedSymbol = String(data.symbol || cleanQ).trim().toUpperCase();
+                    const resolvedMarket = normalizeStockMarket(data.market, resolvedSymbol || displayName);
+                    const idx = recent.findIndex(x => String(x?.symbol || '').toUpperCase() === String(cleanQ).trim().toUpperCase());
+                    if (idx >= 0) {
+                        recent[idx] = {
+                            ...recent[idx],
+                            name: displayName || recent[idx].name || resolvedSymbol,
+                            symbol: resolvedSymbol || recent[idx].symbol,
+                            market: resolvedMarket || recent[idx].market || '',
+                            source: recent[idx].source || String(sourceOverride || 'search')
+                        };
+                        localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(recent));
+                    }
+                } catch (e) {}
 
                 const usShortName = (isKrw || !data.symbol)
                     ? displayName
@@ -7286,18 +7283,12 @@ if ((response && !response.ok) || data.error) {
             const cleanSymbol = String(symbol || '').trim();
             const cleanName = getUsShortKrName(cleanSymbol, name);
             if (!cleanSymbol) return;
-
-            // 기존 종목 상세분석 진입점(doSearch)을 그대로 사용해
-            // 새로운 상세 페이지를 만들지 않는다.
-            doSearch(cleanSymbol);
-
-            // 현재 상세분석이 티커를 받는 경우에도 한글/정식명이 필요한
-            // 기존 흐름을 보완한다.
-            setTimeout(() => {
-                if (typeof loadCommunityData === 'function') {
-                    loadCommunityData(cleanSymbol, cleanName);
-                }
-            }, 0);
+            openStock({
+                symbol: cleanSymbol,
+                name: cleanName,
+                market: 'US',
+                source: 'us-leading'
+            });
         }
 
         async function loadSectorChart(sectorSymbol, sectorName) {
@@ -7384,7 +7375,7 @@ if ((response && !response.ok) || data.error) {
             const savedQuery = params.get('q');
 
             if (savedQuery && savedQuery.trim()) {
-                doSearch(savedQuery.trim());
+                openStock({ query: savedQuery.trim(), source: 'url-restore' });
             }
         });
     </script>
@@ -7791,7 +7782,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 market_name = str(params.get("market", [""])[0]).strip()
                 formal_name = str(params.get("name", [""])[0]).strip()
                 limit = int(params.get("limit", ["10"])[0])
-                rows = fetch_google_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
+                rows = fetch_finlight_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
+                if market_name == "미국주식":
+                    rows = translate_news_titles_to_korean(rows, market_name)
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
                 print(f"API ERROR /api/stock-news: {type(exc).__name__}: {exc}")
@@ -7802,7 +7795,9 @@ class WebHandler(BaseHTTPRequestHandler):
             try:
                 market_name = str(params.get("market", ["국내주식"])[0]).strip() or "국내주식"
                 limit = int(params.get("limit", ["10"])[0])
-                rows = fetch_google_economic_news(market_name, max(1, min(limit, 20)))
+                rows = fetch_finlight_economic_news(market_name, max(1, min(limit, 20)))
+                if market_name == "미국주식":
+                    rows = translate_news_titles_to_korean(rows, market_name)
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
                 print(f"API ERROR /api/global-news: {type(exc).__name__}: {exc}")

@@ -4557,9 +4557,20 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             const rawSymbol = String((isObject ? input.symbol : options.symbol) || '').trim();
             const rawMarket = isObject ? input.market : options.market;
             const source = String((isObject ? input.source : options.source) || 'unknown').trim();
-            const query = rawSymbol || rawQuery || rawName;
-            const name = rawName || ((rawSymbol && rawQuery && rawSymbol !== rawQuery) ? rawQuery : '');
+            // 모든 종목 진입점은 분석 전에 동일한 기준으로 표준화한다.
+            // KR: 화면 종목명으로 서버의 표준 6자리 종목코드를 다시 확인한다.
+            // US/CRYPTO: 표준 symbol/ticker를 사용한다.
+            // 사이드바 등에서 잘못된 symbol이 들어와도 KR 종목은 이름을 우선한다.
             const market = normalizeStockMarket(rawMarket, rawSymbol || rawQuery || rawName);
+            let query = rawQuery || rawName || rawSymbol;
+            if (market === 'KR' && rawName) {
+                query = rawName;
+            } else if (market === 'US' && rawSymbol) {
+                query = rawSymbol;
+            } else if (market === 'CRYPTO' && rawSymbol) {
+                query = rawSymbol;
+            }
+            const name = rawName || ((rawSymbol && rawQuery && rawSymbol !== rawQuery) ? rawQuery : '');
             return {
                 query,
                 name,

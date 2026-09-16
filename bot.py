@@ -4555,7 +4555,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
 
         function buildStockEntry(input, options = {}) {
             const isObject = input && typeof input === 'object' && !Array.isArray(input);
-            const rawQuery = String((isObject ? (input.query ?? input.symbol ?? input.name) : input) || '').trim();
+            const rawQuery = String((isObject ? (input.query ?? input.name ?? '') : input) || '').trim();
             const rawName = String((isObject ? input.name : options.name) || '').trim();
             const rawSymbol = String((isObject ? input.symbol : options.symbol) || '').trim();
             const rawMarket = isObject ? input.market : options.market;

@@ -138,7 +138,7 @@ for _sector_candidates in US_SECTOR_STOCK_UNIVERSE.values():
         US_STOCK_MAP.setdefault(_ticker, _ticker)
 
 DOMESTIC_FAST_MAP = {
-    "SK하이닉스": "000660", "하이닉스": "000660",
+    "SK하이닉스": "000660", "하이닉스": "000660", "광전자": "017900",
     "삼성전자": "005930", "삼전": "005930", "삼성전기": "009150", "삼성중공업": "010140",
     "SK증권": "001510", "SK스퀘어": "402340", "솔트룩스": "304100",
     "알테오젠": "196170", "에코프로": "086520", "에코프로비엠": "247540",
@@ -1299,31 +1299,105 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 
 
 
+# 종목명 → 종목코드 공용 캐시.
+# 한 번 찾은 종목은 이후 오른쪽 사이드바 클릭/재검색에서 외부 검색을 반복하지 않는다.
+STOCK_CODE_CACHE = {}
+STOCK_CODE_CACHE_LOCK = threading.Lock()
+STOCK_CODE_CACHE_TTL = 60 * 60 * 24
+
+def _normalize_stock_lookup_text(value):
+    return str(value or "").strip().replace(" ", "").replace("-", "").upper()
+
+
+def _extract_stock_lookup_items(payload):
+    """Naver 자동완성 응답의 작은 스키마 차이를 흡수한다."""
+    if not isinstance(payload, dict):
+        return []
+    result = payload.get("result")
+    if isinstance(result, dict):
+        items = result.get("items")
+        if isinstance(items, list):
+            return items
+    items = payload.get("items")
+    return items if isinstance(items, list) else []
+
+
+def _store_stock_code_cache(key, code, name):
+    if not code or len(str(code)) != 6 or not str(code).isdigit():
+        return
+    with STOCK_CODE_CACHE_LOCK:
+        STOCK_CODE_CACHE[key] = (time.time(), str(code), str(name or code).strip())
+
 
 def find_stock_code(query):
-    clean_q = query.strip().replace(" ", "").upper()
+    raw_q = str(query or "").strip()
+    clean_q = _normalize_stock_lookup_text(raw_q)
+    if not clean_q:
+        return None, raw_q
+
     if clean_q.isdigit() and len(clean_q) == 6:
         return clean_q, clean_q
 
+    now = time.time()
+    with STOCK_CODE_CACHE_LOCK:
+        cached = STOCK_CODE_CACHE.get(clean_q)
+    if cached and now - cached[0] < STOCK_CODE_CACHE_TTL:
+        return cached[1], cached[2]
+
+    # 1) 이미 확실히 알고 있는 대표 종목은 가장 빠르게 처리한다.
     for name, code in DOMESTIC_FAST_MAP.items():
-        if name.replace(" ", "").upper() == clean_q:
+        if _normalize_stock_lookup_text(name) == clean_q:
+            _store_stock_code_cache(clean_q, code, name)
             return code, name
 
-    try:
-        url = f"https://m.stock.naver.com/front-api/search/autoComplete?query={urllib.parse.quote(query.strip())}&target=stock"
-        res = HTTP_SESSION.get(url, timeout=1.8).json()
-        items = res.get("result", {}).get("items", [])
-        if items:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": "https://m.stock.naver.com/",
+    }
+
+    # 2) 현재 Naver 모바일 자동완성.
+    urls = [
+        "https://m.stock.naver.com/front-api/search/autoComplete?query="
+        + urllib.parse.quote(raw_q) + "&target=stock",
+        # 3) 레거시 자동완성 fallback.
+        "https://ac.stock.naver.com/ac?q="
+        + urllib.parse.quote(raw_q)
+        + "&target=stock,index,marketindicator,coin,ipo&st=111",
+    ]
+
+    for url in urls:
+        try:
+            res = HTTP_SESSION.get(url, timeout=1.8, headers=headers)
+            if res.status_code != 200:
+                continue
+            items = _extract_stock_lookup_items(res.json())
+            if not items:
+                continue
+
+            first_valid = None
             for it in items:
-                name = str(it.get("name", "")).strip()
-                code = str(it.get("code", "")).strip()
-                if name.replace(" ", "").upper() == clean_q:
+                if not isinstance(it, dict):
+                    continue
+                name = str(it.get("name") or it.get("itemName") or "").strip()
+                code = re.sub(r"[^0-9]", "", str(it.get("code") or it.get("itemCode") or ""))
+                if len(code) != 6 or not name:
+                    continue
+                candidate = (code, name)
+                if first_valid is None:
+                    first_valid = candidate
+                if _normalize_stock_lookup_text(name) == clean_q:
+                    _store_stock_code_cache(clean_q, code, name)
                     return code, name
-            first = items[0]
-            return str(first.get("code", "")).strip(), str(first.get("name", "")).strip()
-    except Exception:
-        pass
-    return None, query.strip()
+
+            if first_valid:
+                code, name = first_valid
+                _store_stock_code_cache(clean_q, code, name)
+                return code, name
+        except Exception as exc:
+            print(f"[STOCK CODE LOOKUP] failed: {type(exc).__name__}: {exc}")
+
+    return None, raw_q
 
 from domestic_market import _fetch_domestic_candles_naver_uncached
 from domestic_market_type import (

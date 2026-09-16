@@ -130,6 +130,16 @@ if (qList) {
                 <div class="quant-row-subval">유동성 비율</div>
             </div>
         </div>
+        <div class="quant-row-item">
+            <div class="quant-row-left">
+                <span class="quant-row-name">최근 20일 평균 거래대금</span>
+                <span class="quant-row-status status-pill-neutral">실제 데이터</span>
+            </div>
+            <div class="quant-row-right">
+                <div class="quant-row-val">${q.tval_20d || '-'}</div>
+                <div class="quant-row-subval">거래대금 기준</div>
+            </div>
+        </div>
     `;
     }
     }

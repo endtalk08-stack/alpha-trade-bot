@@ -125,7 +125,7 @@ US_STOCK_MAP = {
     "DIA": "DIA", "SOXX": "SOXX"
 }
 from us_leading_stocks import US_SECTOR_STOCK_UNIVERSE, US_TICKER_PATTERN, fetch_us_leading_stocks
-from news_sources import (fetch_naver_news, fetch_finlight_news, translate_news_titles_to_korean, fetch_finlight_stock_news, fetch_finlight_economic_news, fetch_rss_news)
+from news_sources import (fetch_google_stock_news, fetch_google_economic_news, fetch_rss_news)
 try:
     from .right_market_us import _right_sidebar_us_rows
 except ImportError:
@@ -2596,15 +2596,15 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
             df = context["df"]
 
             optional_futures = {
-                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
-                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
-                "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
+                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_google_stock_news, symbol, market_name, formal_name, 20),
+                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_google_economic_news, market_name, 20),
+                "api_news": None,
                 "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
                 "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
                 "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
                 "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
                 "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
-                "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
+                "ticker_news": None,
             }
 
             # details 단계에서는 모든 외부 API를 무한정 기다리지 않는다.
@@ -2947,15 +2947,15 @@ def run_full_pipeline(query, lightweight=False):
         _perf_stage("optional_external_skipped")
     else:
         optional_futures = {
-            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
-            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
-            "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
+            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_google_stock_news, symbol, market_name, formal_name, 20),
+            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_google_economic_news, market_name, 20),
+            "api_news": None,
             "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
             "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
             "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
             "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
             "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
-            "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
+            "ticker_news": None,
         }
         optional_results = _collect_optional_results(optional_futures)
         _perf_stage("optional_external")
@@ -2981,12 +2981,6 @@ def run_full_pipeline(query, lightweight=False):
     # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
     stock_news = merge_news_sources(stock_news_rss, ticker_news)
     global_news = merge_news_sources(global_news_rss, api_news)
-
-    # 미국주식은 영어 원문 제목 대신 한국어 제목을 표시한다.
-    # 원문 링크/언론사/발행일은 그대로 유지한다.
-    if market_name == "미국주식":
-        stock_news = translate_news_titles_to_korean(stock_news[:20], market_name)
-        global_news = translate_news_titles_to_korean(global_news[:20], market_name)
 
     if not lightweight:
         consensus = optional_results.get("consensus")
@@ -6775,7 +6769,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         }
 
         // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP51-US-SIDEBAR-FIX';
+        window.__GAEMIGTP_BUILD__ = 'STEP52-GOOGLE-NEWS-OPENSTOCK';
 
         const ANALYZE_CACHE = new Map();
         const ANALYZE_CACHE_TTL = 30 * 1000;
@@ -6787,35 +6781,39 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         const FAST_CHART_CACHE = new Map();
         const FAST_CHART_CACHE_TTL = 30 * 1000;
 
-        // 공통 종목 진입 계층: 모든 UI 진입점은 openStock()을 통해 doSearch()로 들어간다.
+        // =====================================================================
+        // 공통 종목 진입 계층
+        // 모든 종목 선택/검색 UI는 openStock() 하나를 거쳐 기존 doSearch()로 들어간다.
+        // 분석/뉴스/차트 엔진은 건드리지 않고 입력만 표준화한다.
+        // =====================================================================
         function normalizeStockMarket(market, value = '') {
             const rawMarket = String(market || '').trim().toUpperCase();
-            if (rawMarket === 'KR' || rawMarket === 'KOREA' || rawMarket === 'DOMESTIC' || rawMarket === '국내' || rawMarket === '국내주식' || rawMarket === '국내증시') return 'KR';
-            if (rawMarket === 'US' || rawMarket === 'USA' || rawMarket === 'OVERSEAS' || rawMarket === '미국' || rawMarket === '미국주식' || rawMarket === '해외') return 'US';
-            if (rawMarket === 'CRYPTO' || rawMarket === 'COIN' || rawMarket === '암호화폐' || rawMarket === '코인') return 'CRYPTO';
+            if (['KR', 'KOREA', 'DOMESTIC', '국내', '국내주식', '국내증시'].includes(rawMarket)) return 'KR';
+            if (['US', 'USA', 'OVERSEAS', '미국', '미국주식', '해외'].includes(rawMarket)) return 'US';
+            if (['CRYPTO', 'COIN', '암호화폐', '코인'].includes(rawMarket)) return 'CRYPTO';
 
             const q = String(value || '').trim().replace(/\s+/g, '').toUpperCase();
             if (/^\d{6}$/.test(q)) return 'KR';
+            if (q.endsWith('USDT') || /BTC|ETH/.test(q) || q.includes('코인') || q.includes('비트')) return 'CRYPTO';
             if (/^[A-Z]{1,6}$/.test(q)) return 'US';
-            if (q.endsWith('USDT') || q.includes('BTC') || q.includes('ETH') || q.includes('코인') || q.includes('비트')) return 'CRYPTO';
             return '';
         }
 
         function buildStockEntry(input, options = {}) {
             const isObject = input && typeof input === 'object' && !Array.isArray(input);
-            const source = String((isObject ? input.source : options.source) || 'unknown').trim();
             const rawQuery = String((isObject ? (input.query ?? input.symbol ?? input.name) : input) || '').trim();
             const rawName = String((isObject ? input.name : options.name) || '').trim();
             const rawSymbol = String((isObject ? input.symbol : options.symbol) || '').trim();
-            const rawMarket = (isObject ? input.market : options.market) || '';
+            const rawMarket = isObject ? input.market : options.market;
+            const source = String((isObject ? input.source : options.source) || 'unknown').trim();
             const query = rawSymbol || rawQuery || rawName;
             const name = rawName || ((rawSymbol && rawQuery && rawSymbol !== rawQuery) ? rawQuery : '');
             const market = normalizeStockMarket(rawMarket, rawSymbol || rawQuery || rawName);
             return {
-                query: query,
-                name: name,
+                query,
+                name,
                 symbol: rawSymbol || query,
-                market: market,
+                market,
                 source: source || 'unknown'
             };
         }
@@ -6824,10 +6822,8 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             const entry = buildStockEntry(input, options);
             if (!entry.query) return;
             try { window.__GAEMIGTP_LAST_STOCK_ENTRY__ = entry; } catch (e) {}
-            // 기존 분석 엔진은 그대로 유지하고, 입력/표시명/시장만 표준화해서 전달한다.
-            doSearch(entry.query, false, entry.name, entry.market);
+            doSearch(entry.query, false, entry.name, entry.market, entry.source);
         }
-
         window.openStock = openStock;
 
         async function doSearch(query, forceServer = false, displayNameOverride = '', marketOverride = '', sourceOverride = '') {
@@ -7022,12 +7018,13 @@ if ((response && !response.ok) || data.error) {
                 const displayPrice = data.price || data.price_str;
                 const displayTime = data.time || data.now_str;
 
-                // 서버가 실제 시장/심볼을 확정한 뒤 최근검색 항목도 같은 표준값으로 보정한다.
+                // 서버가 확정한 실제 symbol/market으로 최근검색 정보를 보정한다.
                 try {
                     const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                    const beforeSymbol = String(cleanQ || '').trim().toUpperCase();
                     const resolvedSymbol = String(data.symbol || cleanQ).trim().toUpperCase();
                     const resolvedMarket = normalizeStockMarket(data.market, resolvedSymbol || displayName);
-                    const idx = recent.findIndex(x => String(x?.symbol || '').toUpperCase() === String(cleanQ).trim().toUpperCase());
+                    const idx = recent.findIndex(x => String(x?.symbol || '').trim().toUpperCase() === beforeSymbol);
                     if (idx >= 0) {
                         recent[idx] = {
                             ...recent[idx],
@@ -7283,6 +7280,7 @@ if ((response && !response.ok) || data.error) {
             const cleanSymbol = String(symbol || '').trim();
             const cleanName = getUsShortKrName(cleanSymbol, name);
             if (!cleanSymbol) return;
+
             openStock({
                 symbol: cleanSymbol,
                 name: cleanName,
@@ -7782,9 +7780,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 market_name = str(params.get("market", [""])[0]).strip()
                 formal_name = str(params.get("name", [""])[0]).strip()
                 limit = int(params.get("limit", ["10"])[0])
-                rows = fetch_finlight_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
-                if market_name == "미국주식":
-                    rows = translate_news_titles_to_korean(rows, market_name)
+                rows = fetch_google_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
                 print(f"API ERROR /api/stock-news: {type(exc).__name__}: {exc}")
@@ -7795,9 +7791,7 @@ class WebHandler(BaseHTTPRequestHandler):
             try:
                 market_name = str(params.get("market", ["국내주식"])[0]).strip() or "국내주식"
                 limit = int(params.get("limit", ["10"])[0])
-                rows = fetch_finlight_economic_news(market_name, max(1, min(limit, 20)))
-                if market_name == "미국주식":
-                    rows = translate_news_titles_to_korean(rows, market_name)
+                rows = fetch_google_economic_news(market_name, max(1, min(limit, 20)))
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
                 print(f"API ERROR /api/global-news: {type(exc).__name__}: {exc}")

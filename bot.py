@@ -41,17 +41,6 @@ import numpy as np
 
 
 
-# DB layer (kept behavior-equivalent; separated from the main server module)
-from db import (
-    init_database,
-    save_market_prices,
-    save_quant_result,
-    get_db_health,
-    get_db_price_summary,
-    get_db_recent_prices,
-    _submit_db_write,
-)
-
 # Quant/Trading-value module
 from market_index import fetch_naver_realtime_index, fetch_market_5day_returns_from_df, fetch_market_5day_returns_from_symbol, fetch_naver_index_5day_returns
 from quant import (
@@ -126,6 +115,11 @@ US_STOCK_MAP = {
 }
 from us_leading_stocks import US_SECTOR_STOCK_UNIVERSE, US_TICKER_PATTERN, fetch_us_leading_stocks
 from news_sources import (fetch_google_stock_news, fetch_google_economic_news, fetch_rss_news)
+try:
+    from .right_market_us import _right_sidebar_us_rows
+except ImportError:
+    from right_market_us import _right_sidebar_us_rows
+
 
 # 주도종목 티커도 일반 미국주식 검색 경로에서 동일하게 처리
 for _sector_candidates in US_SECTOR_STOCK_UNIVERSE.values():
@@ -1387,7 +1381,7 @@ def fetch_naver_domestic_flow_metrics(code):
     """국내주식 실데이터: 당일 거래대금 + 최근 5거래일 외국인/기관 순매수.
 
     STEP 17:
-    - 거래대금은 Naver polling realtime의 aa(누적 거래대금) 필드를 우선 사용한다.
+    - 거래대금은 오른쪽 실시간 사이드바에서 검증된 Naver polling realtime의 aa 필드를 우선 사용한다.
     - polling에서 거래대금을 못 가져오는 경우 기존 Naver integration 필드 탐색을 fallback으로 사용한다.
     - 외국인/기관 수급 로직은 기존 구조를 유지한다.
     """
@@ -1432,7 +1426,8 @@ def fetch_naver_domestic_flow_metrics(code):
             return result
         data=r.json()
 
-        # 1) 거래대금: Naver polling realtime API의 aa(누적 거래대금)를 우선 사용한다.
+        # 1) 거래대금: 오른쪽 실시간 사이드바에서 실제 검증된
+        # Naver polling realtime API의 aa(누적 거래대금)를 우선 사용한다.
         # integration 응답은 구조/필드가 종목별로 달라 거래대금이 누락될 수 있어
         # aa를 1순위로 두고, 기존 integration 탐색은 fallback으로 유지한다.
         tv=None
@@ -2017,7 +2012,6 @@ def fetch_all_world_board_parallel(force=False):
 
     return CACHED_WORLD_BOARD or results
 
-from malicious_zone import _build_malicious_zones
 
 
 
@@ -2909,29 +2903,6 @@ def run_full_pipeline(query, lightweight=False):
         return None
 
     # ====================================================
-    # PostgreSQL 원천 OHLCV 저장
-    # STEP 2: 사용자 응답 경로에서 DB 저장을 기다리지 않는다.
-    # 분석에 사용할 df가 이후 계산 과정에서 변경될 수 있으므로
-    # 백그라운드 작업에 넘길 복사본을 만든다.
-    # ====================================================
-    try:
-        db_price_df = df.copy(deep=True)
-        if isinstance(df.attrs.get("_gaemi_raw_df"), pd.DataFrame):
-            db_price_df.attrs["_gaemi_raw_df"] = df.attrs["_gaemi_raw_df"].copy(deep=True)
-
-        _submit_db_write(
-            ("market_prices", market_name, str(symbol), "1d"),
-            save_market_prices,
-            df=db_price_df,
-            market_name=market_name,
-            symbol=symbol,
-            timeframe="1d",
-            source="alpha-trade-bot",
-        )
-    except Exception as exc:
-        print(f"[DB ASYNC] 원천 OHLCV 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
-
-    # ====================================================
     # STEP 8: /api/analyze 경량화
     # core 모드에서는 선택 외부 데이터를 기다리지 않는다. 완료 작업은 백그라운드에서
     # 캐시를 채우고, /api/analyze-details가 준비 여부를 알려준다.
@@ -3027,23 +2998,6 @@ def run_full_pipeline(query, lightweight=False):
     quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
     _perf_stage("quant")
 
-    try:
-        # 퀀트 결과도 응답을 막지 않도록 백그라운드 저장한다.
-        db_quant_df = df.copy(deep=True)
-        db_quant_payload = dict(quant) if isinstance(quant, dict) else quant
-
-        _submit_db_write(
-            ("quant_results", market_name, str(symbol), "1d"),
-            save_quant_result,
-            market_name=market_name,
-            symbol=symbol,
-            raw_price=raw_price,
-            df=db_quant_df,
-            quant=db_quant_payload,
-            timeframe="1d",
-        )
-    except Exception as exc:
-        print(f"[DB ASYNC] 퀀트 결과 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
 
     _perf_stage("movement_reason_start")
     try:
@@ -3176,8 +3130,7 @@ def run_full_pipeline(query, lightweight=False):
         "ma20_line": ma20_line,
         "ma60_line": ma60_line,
         "bb_up_line": bb_up_line,
-        "bb_dn_line": bb_dn_line,
-        "malicious_zones": _build_malicious_zones(df, raw_price)
+        "bb_dn_line": bb_dn_line
     }
 
     result_data["_details_ready"] = not lightweight
@@ -3205,6 +3158,355 @@ def run_full_pipeline(query, lightweight=False):
 # 8. 웹 프론트엔드 UI
 # ----------------------------------------------------
 
+
+# ===== STEP 21: 우측 실시간 시장 사이드바 =====
+RIGHT_MARKET_BOARD_CACHE = {}
+RIGHT_MARKET_BOARD_CACHE_TTL = 30
+RIGHT_MARKET_BOARD_CACHE_VERSION = 43
+RIGHT_MARKET_BOARD_CACHE_LOCK = threading.Lock()
+# STEP 41: 국내 우측 실시간 목록에서 현재 gaemiGTP 차트/분석 API가 지원하지
+# 않는 외국기업 계열 종목코드(9xxxxx)를 제외한다.
+# 거래대금 데이터 자체는 정상이어도 차트/분석이 404가 되는 종목을
+# 사용자가 클릭하지 않도록 사이드바 단계에서 미리 걸러낸다.
+RIGHT_MARKET_KR_EXCLUDED_PREFIXES = ("9",)
+RIGHT_MARKET_KR_EXCLUDED_CODES = {"950260"}
+RIGHT_MARKET_BOARD_SYMBOLS = [
+    "NVDA", "TSLA", "AAPL", "MSFT", "AMZN", "META", "GOOGL", "AMD",
+    "AVGO", "PLTR", "MU", "TSM", "NFLX", "COIN", "MSTR"
+]
+
+
+def _right_sidebar_kr_rows(limit=15):
+    """국내 실시간 거래대금 상위.
+
+    STEP 33:
+    - 국내 종목 후보는 Naver stock market JSON에서 가져온다.
+    - 실제 현재가/등락률/누적거래량/누적거래대금은 Naver 실시간 polling API로
+      한 번에 배치 조회한다.
+    - 따라서 목록 API의 필드 구조에 거래대금이 없더라도 실제 거래대금(aa)을 사용한다.
+    - 해외(Yahoo) / 코인(Binance) 수집 로직은 변경하지 않는다.
+    """
+    def _clean_key(value):
+        return re.sub(r"[^a-z0-9가-힣]", "", str(value or "").lower())
+
+    def _to_number(value):
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            try:
+                return float(value)
+            except Exception:
+                return None
+        text = str(value).strip().replace(",", "").replace("%", "").replace("원", "")
+        if text in {"", "-", "--", "nan", "NaN", "None", "null"}:
+            return None
+        try:
+            return float(text)
+        except Exception:
+            pass
+        m = re.match(r"^([0-9.]+)조(?:\s*([0-9.]+)억)?(?:\s*([0-9.]+)만)?$", text)
+        if m:
+            return float(m.group(1))*1_000_000_000_000 + float(m.group(2) or 0)*100_000_000 + float(m.group(3) or 0)*10_000
+        m = re.match(r"^([0-9.]+)억(?:\s*([0-9.]+)만)?$", text)
+        if m:
+            return float(m.group(1))*100_000_000 + float(m.group(2) or 0)*10_000
+        m = re.match(r"^([0-9.]+)백만$", text)
+        if m:
+            return float(m.group(1))*1_000_000
+        m = re.match(r"^([0-9.]+)천만$", text)
+        if m:
+            return float(m.group(1))*10_000_000
+        return None
+
+    def _find_value(item, aliases):
+        if not isinstance(item, dict):
+            return None
+        aliases = {_clean_key(x) for x in aliases}
+        for k, v in item.items():
+            if _clean_key(k) in aliases:
+                return v
+        for v in item.values():
+            if isinstance(v, dict):
+                for k, nv in v.items():
+                    if _clean_key(k) in aliases:
+                        return nv
+        return None
+
+    def _extract_candidate_items(payload):
+        """stock.naver.com / m.stock.naver.com 응답에서 종목 배열을 찾는다."""
+        candidates = []
+        preferred = {"result", "data", "items", "stocks", "stocklist", "stockitems", "list"}
+
+        def visit(obj, depth=0):
+            if depth > 6:
+                return
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    if _clean_key(k) in preferred and isinstance(v, (list, dict)):
+                        candidates.append(v)
+                    visit(v, depth + 1)
+            elif isinstance(obj, list):
+                if obj and any(isinstance(x, dict) for x in obj):
+                    candidates.append(obj)
+                for v in obj[:20]:
+                    visit(v, depth + 1)
+        visit(payload)
+
+        best = []
+        best_score = -1
+        for candidate in candidates:
+            arr = candidate if isinstance(candidate, list) else [candidate]
+            arr = [x for x in arr if isinstance(x, dict)]
+            if not arr:
+                continue
+            score = 0
+            for x in arr[:10]:
+                keys = {_clean_key(k) for k in x.keys()}
+                if keys & {"itemcode", "itemname", "stockcode", "stockname", "code", "name"}:
+                    score += 2
+                if keys & {"nowprice", "currentprice", "closeprice", "price"}:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best = arr
+        return best
+
+    def _candidate_from_item(item):
+        code = _find_value(item, ["itemCode", "itemcode", "stockCode", "stockcode", "code", "종목코드"])
+        name = _find_value(item, ["itemName", "itemname", "stockName", "stockname", "name", "종목명"])
+        price = _find_value(item, ["nowPrice", "tradePrice", "currentPrice", "closePrice", "price", "현재가"])
+        pct = _find_value(item, ["prevChangeRate", "changeRate", "fluctuationsRatio", "changePercent", "등락률"])
+        code = re.sub(r"[^0-9]", "", str(code or ""))
+        name = str(name or "").strip()
+        if len(code) != 6 or not name:
+            return None
+        return {"code": code, "name": name, "price": _to_number(price), "change_pct": _to_number(pct)}
+
+    # 1) 먼저 전체 국내 후보를 한 번에 받는다.
+    candidate_items = []
+    candidate_urls = [
+        "https://stock.naver.com/api/domestic/market/stock/default?tradeType=KRX&marketType=ALL&orderType=quantTop&startIdx=0&pageSize=100",
+        "https://m.stock.naver.com/front-api/stock/domestic/stockList?sortType=quantTop&category=KOSPI&page=1&pageSize=100",
+        "https://m.stock.naver.com/front-api/stock/domestic/stockList?sortType=quantTop&category=KOSDAQ&page=1&pageSize=100",
+    ]
+    for url in candidate_urls:
+        try:
+            res = HTTP_SESSION.get(url, timeout=3.5, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": "https://stock.naver.com/",
+            })
+            res.raise_for_status()
+            items = _extract_candidate_items(res.json())
+            for item in items:
+                row = _candidate_from_item(item)
+                if row:
+                    candidate_items.append(row)
+            if len(candidate_items) >= 60:
+                break
+        except Exception as exc:
+            print(f"[RIGHT MARKET BOARD] KR candidate API failed: {type(exc).__name__}: {exc}")
+
+    # 후보가 없으면 국내 기능만을 위한 마지막 fallback으로 기존 HTML을 사용한다.
+    if not candidate_items:
+        for sosok, exchange in ((0, "KOSPI"), (1, "KOSDAQ")):
+            try:
+                url = f"https://finance.naver.com/sise/sise_quant.naver?sosok={sosok}"
+                res = HTTP_SESSION.get(url, timeout=3.5, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": "https://finance.naver.com/",
+                })
+                res.raise_for_status()
+                tables = pd.read_html(io.StringIO(res.text))
+                for table in tables:
+                    if not isinstance(table, pd.DataFrame) or table.empty:
+                        continue
+                    flat = [str(c[-1] if isinstance(c, tuple) else c).strip() for c in table.columns]
+                    if "종목명" not in flat:
+                        continue
+                    table = table.copy(); table.columns = flat
+                    for _, item in table.iterrows():
+                        name = str(item.get("종목명") or "").strip()
+                        if name:
+                            candidate_items.append({"code": "", "name": name,
+                                "price": _to_number(item.get("현재가")),
+                                "change_pct": _to_number(item.get("등락률"))})
+                    break
+            except Exception as exc:
+                print(f"[RIGHT MARKET BOARD] KR HTML fallback failed: {type(exc).__name__}: {exc}")
+
+    # STEP 41: 현재 차트/분석 API에서 지원하지 않는 9xxxxx 계열 종목은
+    # 우측 국내 거래대금 목록에서 제외한다.
+    # (예: 950260 인제니아테라퓨틱스)
+    code_map = {}
+    for item in candidate_items:
+        code = str(item.get("code") or "").strip()
+        if not code or code in code_map:
+            continue
+        if code in RIGHT_MARKET_KR_EXCLUDED_CODES or any(code.startswith(prefix) for prefix in RIGHT_MARKET_KR_EXCLUDED_PREFIXES):
+            continue
+        code_map[code] = item
+    codes = list(code_map.keys())[:100]
+
+    if codes:
+        try:
+            query = "SERVICE_ITEM:" + ",".join(codes)
+            url = "https://polling.finance.naver.com/api/realtime?query=" + urllib.parse.quote(query, safe=":,")
+            res = HTTP_SESSION.get(url, timeout=3.5, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+                "Accept": "application/json,text/plain,*/*",
+                "Referer": "https://stock.naver.com/",
+            })
+            res.raise_for_status()
+            payload = res.json()
+            datas = []
+            for area in (payload.get("result", {}).get("areas", []) if isinstance(payload, dict) else []):
+                if isinstance(area, dict):
+                    datas.extend(area.get("datas") or [])
+            # 일부 응답은 result.areas가 아닌 최상위 areas를 사용한다.
+            if not datas and isinstance(payload, dict):
+                for area in payload.get("areas", []) or []:
+                    if isinstance(area, dict):
+                        datas.extend(area.get("datas") or [])
+            rows = []
+            for d in datas:
+                if not isinstance(d, dict):
+                    continue
+                code = str(d.get("cd") or d.get("itemCode") or "").strip()
+                item = code_map.get(code)
+                if not item:
+                    continue
+                price = _to_number(d.get("nv") or d.get("closePrice") or item.get("price"))
+
+                # Naver polling의 cr/cv는 일부 응답에서 절대값으로 내려오고,
+                # 실제 상승/하락 방향은 rf 코드로 구분된다.
+                # rf=2 상승, rf=5 하락, 그 외는 보합으로 처리한다.
+                raw_pct = _to_number(d.get("cr") or d.get("fluctuationsRatio") or item.get("change_pct"))
+                raw_change = _to_number(d.get("cv") or d.get("compareToPreviousClosePrice"))
+                rise_fall = str(d.get("rf") or "").strip()
+                if raw_pct is not None:
+                    pct = abs(raw_pct)
+                    if rise_fall == "5":
+                        pct = -pct
+                    elif rise_fall == "2":
+                        pct = pct
+                    else:
+                        # rf가 없는 예외 응답은 기존 signed 값을 보존한다.
+                        pct = raw_pct
+                else:
+                    pct = None
+                if raw_change is not None:
+                    change = abs(raw_change)
+                    if rise_fall == "5":
+                        change = -change
+                    elif rise_fall == "2":
+                        change = change
+                    else:
+                        change = raw_change
+                else:
+                    change = None
+                volume = _to_number(d.get("aq") or d.get("accumulatedTradingVolume"))
+                trading_value = _to_number(d.get("aa") or d.get("accumulatedTradingValue"))
+                if trading_value is None and price is not None and volume is not None:
+                    trading_value = price * volume
+                if trading_value is None:
+                    continue
+                rows.append({
+                    "rank": 0, "code": code, "symbol": code, "name": item["name"],
+                    "price": price, "change_pct": pct, "change": change,
+                    "trading_value": trading_value, "currency": "KRW", "market": "국내",
+                    "source": "Naver Realtime Polling", "exchange": "KRX",
+                })
+            if rows:
+                # STEP 42: 최종 안전필터. 후보 단계에서 제외되지 않았거나
+                # API 응답에서 코드가 다시 들어오는 경우에도 분석 불가능한
+                # 9xxxxx 계열 종목은 화면에 절대 노출하지 않는다.
+                rows = [
+                    row for row in rows
+                    if not any(
+                        (
+                            str(row.get("code") or row.get("symbol") or "").strip() in RIGHT_MARKET_KR_EXCLUDED_CODES
+                            or str(row.get("code") or row.get("symbol") or "").strip().startswith(prefix)
+                        )
+                        for prefix in RIGHT_MARKET_KR_EXCLUDED_PREFIXES
+                    )
+                ]
+                if not rows:
+                    return []
+                rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
+                for i, row in enumerate(rows[:limit], 1):
+                    row["rank"] = i
+                return rows[:limit]
+        except Exception as exc:
+            print(f"[RIGHT MARKET BOARD] KR realtime polling failed: {type(exc).__name__}: {exc}")
+
+    # 실시간 polling이 실패하더라도 후보 목록에 가격/거래대금이 있는 경우만 표시한다.
+    # 거래대금 없는 추정값을 만들어 순위를 왜곡하지 않는다.
+    return []
+
+
+def _right_sidebar_crypto_rows(limit=15):
+    """Binance USDT 현물 전체 티커에서 quoteVolume 기준 상위 코인을 조회한다."""
+    url = "https://api.binance.com/api/v3/ticker/24hr"
+    res = HTTP_SESSION.get(url, timeout=4.0, headers={"User-Agent": "Mozilla/5.0"})
+    res.raise_for_status()
+    payload = res.json()
+    rows = []
+    for item in payload if isinstance(payload, list) else []:
+        symbol = str(item.get("symbol") or "").upper()
+        if not symbol.endswith("USDT") or symbol.endswith("USDCUSDT"):
+            continue
+        try:
+            price = float(item.get("lastPrice") or 0)
+            pct = float(item.get("priceChangePercent") or 0)
+            change = float(item.get("priceChange") or 0)
+            qv = float(item.get("quoteVolume") or 0)
+        except Exception:
+            continue
+        base = symbol[:-4]
+        rows.append({
+            "rank": 0,
+            "code": symbol,
+            "symbol": symbol,
+            "name": base,
+            "price": price,
+            "change_pct": pct,
+            "change": change,
+            "trading_value": qv,
+            "currency": "USDT",
+            "market": "코인",
+            "source": "Binance",
+        })
+    rows.sort(key=lambda r: r.get("trading_value") or 0, reverse=True)
+    for i, row in enumerate(rows[:limit], 1):
+        row["rank"] = i
+    return rows[:limit]
+
+
+def fetch_right_market_board(market="kr", force=False):
+    key = str(market or "kr").strip().lower()
+    if key not in {"kr", "us", "crypto"}:
+        key = "kr"
+    now = time.time()
+    with RIGHT_MARKET_BOARD_CACHE_LOCK:
+        cached = RIGHT_MARKET_BOARD_CACHE.get(key)
+        if cached and cached.get("version") == RIGHT_MARKET_BOARD_CACHE_VERSION and not force and now - cached.get("time", 0) < RIGHT_MARKET_BOARD_CACHE_TTL:
+            return cached.get("data") or []
+    try:
+        if key == "kr":
+            rows = _right_sidebar_kr_rows()
+        elif key == "us":
+            rows = _right_sidebar_us_rows()
+        else:
+            rows = _right_sidebar_crypto_rows()
+    except Exception as exc:
+        print(f"[RIGHT MARKET BOARD] {key} fetch failed: {type(exc).__name__}: {exc}")
+        rows = []
+    if rows:
+        with RIGHT_MARKET_BOARD_CACHE_LOCK:
+            RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows, "version": RIGHT_MARKET_BOARD_CACHE_VERSION}
+    return rows
 
 DART_DISCLOSURE_WIDGET_JS = r"""
 (function () {
@@ -3258,7 +3560,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="/widgets/dart_disclosure.js"></script>
     <script src="/widgets/chart.js"></script>
     <script src="/widgets/stock_news.js"></script>
@@ -3268,2046 +3569,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <script src="/widgets/us_leading_stocks.js"></script>
     <script src="/widgets/quant.js"></script>
     <script src="/widgets/track.js"></script>
-    <script src="/widgets/why_movement.js"></script>
     <script src="/widgets/earnings_calendar.js"></script>
     <script src="/widgets/economic_calendar.js"></script>
     <script src="/widgets/analyst_consensus.js"></script>
     <script src="/widgets/vote.js"></script>
     <script src="/widgets/comment.js"></script>
-    <script src="/widgets/malicious_zone.js"></script>
-    <style>
-        :root {
-            --bg-body: #131314;
-            --bg-card: #1e1f20;
-            --bg-sidebar: #1e1f20;
-            --bg-subcard: #131314;
-            --bg-cal-card: #18191a;
-            --text-title: #f2f2f2;
-            --text-main: #e3e3e3;
-            --text-muted: #8e918f;
-            --text-sub: #c4c7c5;
-            --border-line: #282a2c;
-            --border-focus: #333538;
-            --btn-hover: rgba(255, 255, 255, 0.08);
-            --signal-border: rgba(16, 185, 129, 0.55);
-            --signal-glow: rgba(16, 185, 129, 0.12);
-            --bottom-fade: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%);
-            --star-gold: #f59e0b;
-        }
-
-        body.light-theme {
-            --bg-body: #f8f9fa;
-            --bg-card: #ffffff;
-            --bg-sidebar: #f1f3f4;
-            --bg-subcard: #f8f9fa;
-            --bg-cal-card: #ffffff;
-            --text-title: #1f1f1f;
-            --text-main: #202124;
-            --text-muted: #5f6368;
-            --text-sub: #3c4043;
-            --border-line: #dadce0;
-            --border-focus: #bdc1c6;
-            --btn-hover: rgba(0, 0, 0, 0.05);
-            --signal-border: rgba(16, 185, 129, 0.65);
-            --signal-glow: rgba(16, 185, 129, 0.08);
-            --bottom-fade: linear-gradient(180deg, rgba(248,249,250,0) 0%, rgba(248,249,250,1) 40%);
-            --star-gold: #d97706;
-        }
-
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
-        body { background-color: var(--bg-body); color: var(--text-main); min-height: 100vh; overflow-x: hidden; display: flex; transition: background-color 0.2s, color 0.2s; }
-        
-        #sidebar-wrapper {
-            width: 260px;
-            background-color: var(--bg-sidebar);
-            height: 100vh;
-            position: fixed;
-            top: 0;
-            left: 0;
-            display: flex;
-            flex-direction: column;
-            padding: 12px 14px 16px;
-            z-index: 100;
-            border-right: 1px solid var(--border-line);
-            transform: translateX(-100%);
-            transition: transform 0.25s ease, background-color 0.2s;
-            box-shadow: none;
-        }
-        #sidebar-wrapper.open { transform: translateX(0); box-shadow: 10px 0 30px rgba(0,0,0,0.25); }
-
-        .side-top-action { height: 44px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 4px; }
-        .gemini-menu-icon { background: transparent; border: none; color: var(--text-sub); cursor: pointer; padding: 6px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: background 0.15s, color 0.15s; }
-        .gemini-menu-icon:hover { background: var(--btn-hover); color: var(--text-title); }
-
-        .gemini-new-btn { display: flex; align-items: center; gap: 12px; background: var(--bg-body); border: 1px solid var(--border-line); color: var(--text-main); font-size: 0.875rem; font-weight: 500; padding: 10px 16px; border-radius: 24px; cursor: pointer; width: 100%; transition: all 0.2s; margin-bottom: 16px; }
-        .gemini-new-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); color: var(--text-title); }
-
-        .sidebar-scroll-area { flex: 1; overflow-y: auto; }
-        .sidebar-section-title { font-size: 0.75rem; color: var(--text-muted); font-weight: 600; padding: 8px 12px; letter-spacing: -0.2px; }
-        .sidebar-item { display: flex; align-items: center; padding: 9px 14px; border-radius: 20px; color: var(--text-sub); font-size: 0.875rem; cursor: pointer; margin-bottom: 2px; transition: background 0.15s, color 0.15s; }
-        .sidebar-item:hover { background: var(--btn-hover); color: var(--text-title); }
-
-        #content-wrapper { margin-left: 0; width: 100%; min-height: 100vh; display: flex; flex-direction: column; position: relative; }
-        header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: var(--bg-body); position: sticky; top: 0; z-index: 40; transition: background-color 0.2s; }
-        .header-left { display: flex; align-items: center; gap: 12px; }
-        .logo-top { font-weight: 700; font-size: 1.18rem; color: var(--text-title); letter-spacing: -0.5px; cursor: pointer; }
-
-        #main-view { min-height: calc(100vh - 56px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
-        .hero-title { font-size: 2.8rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: var(--text-title); text-align: center; }
-        .hero-sub { font-size: 0.95rem; color: var(--text-muted); margin-bottom: 24px; font-weight: 400; text-align: center; }
-
-        .search-container { width: 100%; max-width: 832px; position: relative; }
-        .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
-        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
-
-        /* 모델 선택기 */
-        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
-        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
-        .model-pill-btn:hover { background: var(--btn-hover); }
-        .model-pill-name { font-size: 0.82rem; font-weight: 600; color: var(--text-main); }
-        .model-pill-arrow { font-size: 0.6rem; color: var(--text-muted); }
-
-        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); z-index: 100; }
-        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; }
-        .model-dropdown-item:hover { background: var(--btn-hover); }
-        .model-dropdown-item.active { background: var(--btn-hover); }
-        .item-title { font-size: 0.88rem; font-weight: 600; color: var(--text-title); display: flex; justify-content: space-between; }
-        .item-sub { font-size: 0.73rem; color: var(--text-muted); margin-top: 2px; }
-        .item-check { color: #38bdf8; font-weight: bold; display: none; }
-        .model-dropdown-item.active .item-check { display: inline; }
-
-        .send-btn { width: 38px; height: 38px; border-radius: 50%; background: var(--border-line); border: none; color: var(--text-title); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
-        .send-btn:hover { background: var(--border-focus); }
-
-        .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
-        .tag-btn { background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }
-        .tag-btn:hover { background: var(--btn-hover); color: var(--text-title); }
-
-        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
-        .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
-
-        /* [핵심 마스터 그리드] PC: 832px(좌) + 348px(우) 완벽 대칭 구조 */
-        .dashboard-master-grid {
-            display: grid;
-            grid-template-columns: 832px 348px;
-            gap: 16px;
-            margin: 0 auto;
-            max-width: 1196px;
-            justify-content: center;
-            align-items: stretch;
-            position: relative;
-        }
-
-        /* 1행: 왜 움직였을까? — 코멘트 전용 */
-        #rowCause { grid-column: 1; grid-row: 1; }
-
-        /* 4행: 트랙 분석 — 종목 뉴스 바로 아래 */
-        #rowTrack { grid-column: 1; grid-row: 4; }
-
-        /* 2행: 차트(좌) & 증시(우) */
-        #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
-        #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
-
-        /* 3행: 종목 뉴스(좌) & 경제뉴스(우)
-           테스트 수정: 뉴스 카드끼리 높이를 강제로 공유하지 않음 */
-        #rowNews {
-            grid-column: 1;
-            grid-row: 3;
-            height: auto;
-            align-self: start;
-        }
-        #rowGlobalNews {
-            grid-column: 2;
-            grid-row: 3;
-            height: auto;
-            align-self: start;
-        }
-
-        /* 4행: 트랙 분석(좌) & 실적 일정(우) */
-        #rowTrack {
-            grid-column: 1;
-            grid-row: 4;
-            height: 100%;
-            min-height: 0;
-            align-self: stretch;
-        }
-        #rowEarningsCalendar {
-            grid-column: 2;
-            grid-row: 4;
-            height: 100%;
-            min-height: 0;
-            align-self: stretch;
-        }
-
-        /* 5행: 퀀트 분석(좌) & 경제 일정(우) */
-        #rowQuant {
-            grid-column: 1;
-            grid-row: 5;
-            height: 100%;
-            min-height: 0;
-            align-self: stretch;
-        }
-        #rowEconomicCalendar {
-            grid-column: 2;
-            grid-row: 5;
-            height: 100%;
-            min-height: 0;
-            align-self: stretch;
-        }
-
-        /* 같은 행의 좌/우 카드가 항상 1:1 높이가 되도록 그리드 행을 채운다. */
-        .calendar-widget {
-            min-height: 0;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            align-self: stretch;
-            box-sizing: border-box;
-            padding: 16px;
-        }
-
-        .calendar-widget-title {
-            display: flex;
-            align-items: center;
-            justify-content: flex-start;
-            gap: 8px;
-            margin-bottom: 10px;
-            font-size: 1.05rem;
-            line-height: 1.25;
-            font-weight: 800;
-            color: var(--text-title);
-            flex: 0 0 auto;
-        }
-
-        .calendar-widget-nav {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            margin-bottom: 8px;
-            flex: 0 0 auto;
-        }
-
-        .calendar-star-filter {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin: 0 0 8px;
-            flex: 0 0 auto;
-        }
-
-        .calendar-star-btn {
-            border: 1px solid var(--border-line);
-            background: var(--bg-card);
-            color: var(--text-sub);
-            border-radius: 999px;
-            padding: 4px 9px;
-            font-size: 0.66rem;
-            line-height: 1;
-            font-weight: 800;
-            cursor: pointer;
-        }
-
-        .calendar-star-btn.active {
-            background: var(--text-title);
-            color: #111;
-            border-color: var(--text-title);
-        }
-
-        .calendar-widget-subtitle {
-            font-size: 0.72rem;
-            line-height: 1.25;
-            font-weight: 700;
-            color: var(--text-muted);
-            margin: 1px 0 8px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            flex: 0 0 auto;
-        }
-
-        .calendar-widget-list {
-            min-height: 0;
-            flex: 1 1 auto;
-            overflow: hidden;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .calendar-widget-list .cal-card-item {
-            min-height: 64px;
-            padding: 9px 10px;
-            gap: 9px;
-            border-radius: 10px;
-            flex: 0 0 auto;
-        }
-
-        .calendar-widget-list .cal-time-col {
-            min-width: 48px;
-            font-size: 0.68rem;
-            line-height: 1.25;
-            font-weight: 700;
-        }
-
-        .calendar-widget-list .cal-event-title {
-            font-size: 0.76rem;
-            line-height: 1.3;
-            font-weight: 750;
-        }
-
-        .calendar-widget-list .cal-event-meta {
-            font-size: 0.64rem;
-            line-height: 1.3;
-            margin-top: 3px;
-        }
-
-        .calendar-widget-list .cal-importance-wrap {
-            margin-top: 4px;
-        }
-
-        .calendar-widget-list .cal-alarm-btn {
-            width: 27px;
-            height: 27px;
-            flex: 0 0 27px;
-        }
-
-        .calendar-widget .cal-pagination-bar {
-            flex: 0 0 auto;
-            margin-top: 8px;
-        }
-
-        .calendar-widget .cal-event-icon {
-            width: 32px;
-            height: 32px;
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex: 0 0 32px;
-            font-size: 0.58rem;
-            font-weight: 800;
-            color: var(--text-title);
-            background: var(--bg-card);
-            border: 1px solid var(--border-line);
-        }
-
-        .calendar-widget .cal-earn-item .cal-event-icon {
-            color: #7ee787;
-            border-color: rgba(126, 231, 135, 0.28);
-        }
-
-        .calendar-widget .cal-event-topline {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            min-width: 0;
-        }
-
-        .calendar-widget .cal-stars {
-            flex: 0 0 auto;
-            font-size: 0.72rem;
-            letter-spacing: -0.04em;
-            color: #ffb000;
-            white-space: nowrap;
-        }
-
-        .calendar-widget .cal-event-meta {
-            color: var(--text-sub);
-        }
-        /* 실적 캘린더: 기업명 아래에 미국 장 발표 시점을 한 줄로 표시 */
-        /* 실적 카드 표시 순서 고정:
-           별점/발표상태 → 기업명 → (미국 장 마감 후) → 예상 EPS/매출 */
-        .calendar-widget .cal-earn-item .cal-detail-col {
-            display: flex !important;
-            flex-direction: column !important;
-            min-width: 0 !important;
-        }
-        .calendar-widget .cal-earn-item .cal-event-topline {
-            order: 1 !important;
-            display: flex !important;
-        }
-        .calendar-widget .cal-earn-item .cal-event-title {
-            order: 2 !important;
-            display: block !important;
-            width: 100% !important;
-            margin-top: 1px !important;
-            margin-bottom: 0 !important;
-        }
-        .calendar-widget .cal-earn-item .cal-earn-timing {
-            order: 3 !important;
-            display: block !important;
-            width: 100% !important;
-            margin-top: 1px !important;
-            font-size: 0.70rem !important;
-            line-height: 1.25 !important;
-            font-weight: 700 !important;
-            color: var(--text-sub) !important;
-            white-space: normal !important;
-        }
-        .calendar-widget .cal-earn-item .cal-event-meta {
-            order: 4 !important;
-        }
-
-
-        .calendar-widget .cal-date-ctrl {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .calendar-widget .cal-current-date {
-            min-width: 116px;
-            text-align: center;
-            font-size: 0.86rem;
-            font-weight: 800;
-        }
-
-        @media (max-width: 1100px) {
-            #rowEarningsCalendar { order: 4; width: 100%; max-width: 832px; }
-            #rowQuant { order: 5; }
-            #rowEconomicCalendar { order: 6; width: 100%; max-width: 832px; }
-        }
-
-
-        /* 좌측 832px 단독 배치 행들 */
-        #rowConsensus { grid-column: 1; grid-row: 6; }
-        #rowVote { grid-column: 1; grid-row: 7; }
-        #rowComment { grid-column: 1; grid-row: 8; }
-        #rowDart { grid-column: 1; grid-row: 9; }
-        #rowSignal { grid-column: 1; grid-row: 10; }
-
-        .card {
-            background: var(--bg-card);
-            border-radius: 16px;
-            padding: 18px 16px;
-            border: 1px solid var(--border-line);
-            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-        }
-
-        .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
-        .price-title span { color: var(--text-muted); font-size: 0.85rem; font-weight: 400; margin-left: 4px; }
-        .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
-        .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
-
-        .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
-
-        .board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-line); }
-        .board-header-title { font-size: 0.95rem; font-weight: 800; color: var(--text-title); }
-        .board-header-sub { font-size: 0.7rem; color: var(--text-muted); }
-        .board-2col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; flex: 1; }
-
-        .mini-index-card {
-            background: var(--bg-subcard);
-            border: 1px solid var(--border-line);
-            border-radius: 10px;
-            padding: 7px 8px;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            transition: all 0.2s ease;
-            cursor: pointer;
-            min-height: 58px;
-        }
-        .mini-index-card:hover { border-color: var(--border-focus); background: var(--btn-hover); transform: translateY(-1px); }
-        .mini-top { display: flex; justify-content: space-between; align-items: center; }
-        .mini-name { font-size: 0.76rem; font-weight: 800; color: var(--text-title); }
-        .mini-tag { font-size: 0.6rem; font-weight: 700; color: var(--text-muted); background: var(--btn-hover); border: 1px solid var(--border-line); padding: 1px 4px; border-radius: 5px; }
-        .mini-mid-row { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 3px; }
-        .mini-price { font-size: 0.88rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
-        .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
-
-        /* 캘린더 위젯 스타일 */
-        .cal-top-title-area { margin-bottom: 10px; }
-        .cal-view-tabs {
-            display: flex;
-            align-items: center;
-            gap: 18px;
-            height: 30px;
-            margin-bottom: 8px;
-            border-bottom: 1px solid transparent;
-        }
-        .cal-view-tab {
-            position: relative;
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            height: 30px;
-            padding: 0 1px;
-            border: 0;
-            background: transparent;
-            color: var(--text-muted);
-            font-size: 0.72rem;
-            font-weight: 800;
-            letter-spacing: -0.2px;
-            cursor: pointer;
-            white-space: nowrap;
-        }
-        .cal-view-tab:hover { color: var(--text-title); }
-        .cal-view-tab.active { color: var(--text-title); }
-        .cal-view-tab.active::after {
-            content: "";
-            position: absolute;
-            left: 0;
-            right: 0;
-            bottom: -1px;
-            height: 2px;
-            background: var(--text-title);
-            border-radius: 2px;
-        }
-        .cal-view-custom-icon {
-            width: 14px;
-            height: 14px;
-            flex: 0 0 14px;
-        }
-        .cal-top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-        .cal-date-ctrl { display: flex; align-items: center; gap: 8px; }
-        .cal-arrow-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.75rem; transition: all 0.2s; }
-        .cal-arrow-btn:hover { background: var(--btn-hover); color: var(--text-title); border-color: var(--border-focus); }
-        .cal-current-date { font-size: 0.98rem; font-weight: 800; color: var(--text-title); letter-spacing: -0.3px; }
-        .cal-today-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); font-size: 0.72rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
-        .cal-today-btn:hover { background: var(--btn-hover); color: var(--text-title); }
-
-        .cal-filter-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; overflow-x: hidden; padding-bottom: 2px; }
-        .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
-        .cal-filter-pill.active { background: #ffffff; color: #121212; border-color: #ffffff; }
-        .cal-filter-pill .star-gold { color: var(--star-gold); }
-
-        .cal-day-header { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); margin: 2px 0 6px; }
-        
-        .cal-event-list-wrap {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            overflow: hidden;
-            justify-content: flex-start;
-        }
-
-        /* 캘린더 카드 고도화: 기존 색상/구조를 유지하면서 여백과 위계를 정리 */
-        .cal-card-item {
-            position: relative;
-            background: var(--bg-cal-card);
-            border: 1px solid var(--border-line);
-            border-radius: 10px;
-            padding: 9px 10px;
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
-            cursor: pointer;
-            min-height: 72px;
-            overflow: hidden;
-        }
-        .cal-card-item::before {
-            content: "";
-            position: absolute;
-            left: 0;
-            top: 10px;
-            bottom: 10px;
-            width: 2px;
-            border-radius: 2px;
-            background: transparent;
-            opacity: 0.75;
-        }
-        .cal-card-item:hover {
-            border-color: var(--border-focus);
-            background: var(--btn-hover);
-            transform: translateY(-1px);
-        }
-        .cal-time-col {
-            width: 46px;
-            flex-shrink: 0;
-            padding-top: 1px;
-            font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
-            font-size: 0.72rem;
-            font-weight: 800;
-            line-height: 1.15;
-            color: var(--text-sub);
-            font-variant-numeric: tabular-nums;
-            letter-spacing: -0.02em;
-        }
-        .cal-detail-col { flex: 1; min-width: 0; }
-        .cal-alarm-icon {
-            width: 17px;
-            height: 17px;
-            display: block;
-            fill: none;
-            stroke: currentColor;
-            stroke-width: 1.65;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-        }
-        .cal-alarm-btn {
-            flex: 0 0 28px;
-            width: 28px;
-            height: 28px;
-            margin-left: 2px;
-            border: 1px solid transparent;
-            border-radius: 7px;
-            background: transparent;
-            color: var(--text-muted);
-            font-size: 1rem;
-            line-height: 1;
-            cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            align-self: center;
-            opacity: 0.78;
-            transition: all 0.18s ease;
-        }
-        .cal-alarm-btn:hover {
-            border-color: var(--border-line);
-            background: var(--btn-hover);
-            opacity: 1;
-        }
-        .cal-alarm-btn.active {
-            color: #10b981;
-            border-color: rgba(16,185,129,0.28);
-            background: rgba(16,185,129,0.08);
-            opacity: 1;
-        }
-        .cal-event-title {
-            font-size: 0.8rem;
-            font-weight: 750;
-            color: var(--text-title);
-            line-height: 1.3;
-            word-break: keep-all;
-            margin-bottom: 3px;
-            letter-spacing: -0.015em;
-        }
-        .cal-event-meta {
-            display: flex;
-            align-items: baseline;
-            flex-wrap: wrap;
-            gap: 2px;
-            font-size: 0.66rem;
-            color: var(--text-muted);
-            line-height: 1.25;
-        }
-        .cal-actual-val {
-            color: #38bdf8;
-            font-weight: 750;
-            margin-right: 1px;
-        }
-
-        /* 중요도 막대: 우리 기존 청록 계열로 절제 */
-        .cal-importance-wrap {
-            margin-top: 7px;
-            width: 100%;
-        }
-        .cal-importance-bar {
-            position: relative;
-            width: 100%;
-            height: 5px;
-            border-radius: 5px;
-            background: #2a2f32;
-            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.035);
-        }
-        .cal-importance-bar::before {
-            content: "";
-            position: absolute;
-            inset: 0;
-            width: var(--importance-width, 50%);
-            border-radius: inherit;
-            background: linear-gradient(90deg, #4b5055 0%, #6b7075 100%);
-            opacity: 0.9;
-        }
-        .cal-importance-marker {
-            position: absolute;
-            top: 50%;
-            left: var(--importance-width, 50%);
-            width: 9px;
-            height: 9px;
-            transform: translate(-50%, -50%);
-            border-radius: 50%;
-            background: #ffffff;
-            border: 2px solid #10b981;
-            box-shadow: 0 0 0 2px rgba(16,185,129,0.10);
-        }
-        .cal-importance-labels {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-top: 4px;
-            font-size: 0.55rem;
-            line-height: 1;
-            color: var(--text-muted);
-            font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
-        }
-        .cal-importance-labels .center {
-            color: #10b981;
-            font-weight: 800;
-        }
-        .cal-importance-score {
-            margin-left: 3px;
-            color: #10b981;
-            font-weight: 800;
-            font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
-            font-variant-numeric: tabular-nums;
-        }
-
-        /* 하단 페이지네이션 바 */
-        .cal-pagination-bar {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            padding-top: 8px;
-            margin-top: auto;
-            border-top: 1px solid var(--border-line);
-        }
-        .cal-page-btn {
-            background: var(--bg-subcard);
-            border: 1px solid var(--border-line);
-            color: var(--text-sub);
-            width: 22px;
-            height: 22px;
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            font-size: 0.65rem;
-            transition: all 0.2s;
-        }
-        .cal-page-btn:hover:not(:disabled) { background: var(--btn-hover); color: var(--text-title); }
-        .cal-page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-        .cal-page-txt { font-size: 0.72rem; font-weight: 700; color: var(--text-muted); }
-
-        /* 퀀트 지표 레이아웃 */
-        .gauge-inner-box { width: 62px; height: 62px; border-radius: 50%; border: 4px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--bg-subcard); flex-shrink: 0; }
-        .quant-row-item { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border-line); font-size: 0.83rem; }
-        .quant-row-item:last-child { border-bottom: none; }
-        .quant-row-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-        .quant-row-name { font-weight: 700; color: var(--text-title); }
-        .quant-row-status { font-size: 0.7rem; font-weight: 700; }
-        .quant-row-right { text-align: right; flex-shrink: 0; }
-        .quant-row-val { font-weight: 800; color: var(--text-title); }
-        .movement-evidence-summary { margin: 2px 0 14px; }
-        .movement-evidence-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
-        .movement-evidence-label { font-size:0.72rem; font-weight:700; color:var(--text-main); }
-        .movement-evidence-count { font-size:0.72rem; font-weight:800; color:var(--text-muted); }
-        .movement-evidence-track { width:100%; height:7px; display:flex; gap:4px; }
-        .movement-evidence-seg { flex:1; height:7px; border-radius:4px; background:rgba(148,163,184,0.15); }
-        .movement-evidence-seg.active { background:#10b981; }
-        .movement-evidence-seg.active.negative { background:#ef4444; }
-        .movement-reason-row { padding:10px 0; border-bottom:1px solid var(--border-line); }
-        .movement-reason-row:last-child { border-bottom:none; }
-        .movement-reason-top { display:flex; justify-content:space-between; align-items:center; gap:12px; }
-        .movement-reason-title { display:flex; align-items:center; gap:7px; min-width:0; }
-        .movement-reason-icon { width:18px; height:18px; flex:0 0 18px; color:var(--text-muted); }
-        .movement-reason-name { font-size:0.82rem; font-weight:800; color:var(--text-title); }
-        .movement-reason-status { font-size:0.66rem; font-weight:800; padding:2px 7px; border-radius:9px; white-space:nowrap; }
-        .movement-reason-detail { margin:6px 0 7px 25px; font-size:0.72rem; line-height:1.45; color:var(--text-sub); word-break:keep-all; }
-        .movement-reason-meter { margin-left:25px; display:flex; align-items:center; gap:8px; }
-        .movement-reason-meter-track { flex:1; height:5px; border-radius:4px; background:rgba(148,163,184,0.12); overflow:hidden; }
-        .movement-reason-meter-fill { height:100%; border-radius:4px; }
-        .movement-reason-meter-value { width:52px; text-align:right; font-size:0.64rem; font-weight:800; color:var(--text-muted); }
-        
-        .movement-relative-chart { margin: 4px 0 14px; padding:10px 10px 9px; border:1px solid var(--border-line); border-radius:9px; background:var(--bg-subcard); }
-        .movement-relative-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
-        .movement-relative-title { font-size:0.76rem; font-weight:800; color:var(--text-title); }
-        .movement-relative-diff { font-size:0.68rem; font-weight:800; color:var(--text-muted); }
-        .movement-relative-chartbox { position:relative; height:92px; overflow:hidden; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
-        .movement-relative-gridline { position:absolute; left:0; right:0; height:1px; background:var(--border-line); opacity:.55; }
-        .movement-relative-svg { width:100%; height:100%; display:block; }
-        .movement-relative-legend { display:flex; gap:14px; align-items:center; margin-top:7px; font-size:0.62rem; color:var(--text-sub); }
-        .movement-relative-dot { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:4px; }
-        .movement-relative-note { margin-top:5px; font-size:0.62rem; line-height:1.35; color:var(--text-muted); word-break:keep-all; }
-
-.movement-mini-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:2px; }
-        .movement-mini-card { min-width:0; background:var(--bg-subcard); border:1px solid var(--border-line); border-radius:9px; padding:9px 8px 8px; }
-        .movement-mini-head { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-bottom:7px; }
-        .movement-mini-head .movement-reason-title { gap:5px; }
-        .movement-mini-head .movement-reason-name { font-size:0.76rem; }
-        .movement-mini-head .movement-reason-icon { width:15px; height:15px; flex-basis:15px; }
-        .movement-mini-head .movement-reason-status { font-size:0.58rem; padding:2px 5px; }
-        .movement-mini-chart { height:58px; display:flex; align-items:flex-end; padding:6px 3px 4px; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
-        .movement-mini-bars { width:100%; height:100%; display:flex; align-items:flex-end; gap:4px; }
-        .movement-mini-bar { flex:1; min-height:8%; border-radius:2px 2px 0 0; }
-        .movement-mini-value { display:flex; align-items:baseline; gap:2px; margin-top:7px; font-size:0.8rem; font-weight:800; color:var(--text-title); }
-        .movement-mini-unit { font-size:0.62rem; font-weight:700; color:var(--text-muted); }
-        .movement-mini-detail { min-height:30px; margin-top:3px; font-size:0.62rem; line-height:1.35; color:var(--text-sub); word-break:keep-all; }
-        .movement-mini-card .movement-reason-meter { margin:7px 0 0; }
-        .movement-mini-card .movement-reason-meter-value { width:24px; font-size:0.58rem; }
-        .movement-market5-card { overflow:hidden; }
-        .market5-line-chart { position:relative; height:58px; margin:5px 0 4px; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
-        .market5-line-chart svg { width:100%; height:100%; display:block; }
-        .market5-zero { position:absolute; left:0; right:0; height:1px; background:rgba(148,163,184,0.18); }
-        .market5-bars { height:42px; display:flex; align-items:flex-end; gap:4px; padding:4px 2px 0; border-bottom:1px solid var(--border-line); }
-        .market5-bar-wrap { flex:1; height:100%; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; min-width:0; }
-        .market5-bar { width:100%; min-height:4px; border-radius:2px 2px 0 0; display:block; opacity:.85; }
-        .market5-bar-label { font-size:.46rem; color:var(--text-muted); margin-top:2px; white-space:nowrap; }
-
-        @media (max-width: 980px) {
-            .movement-mini-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
-        }
-        @media (max-width: 560px) {
-            .movement-mini-grid { grid-template-columns:1fr; }
-        }
-
-
-        .quant-row-subval { font-size: 0.7rem; color: var(--text-muted); margin-top: 1px; }
-
-        .status-pill-positive { color: #10b981; }
-        .status-pill-negative { color: #ef4444; }
-        .status-pill-warning { color: #d97706; }
-        .status-pill-neutral { color: var(--text-muted); }
-
-        .dart-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-        .dart-item:last-child { border-bottom: none; }
-        .dart-title { color: var(--text-main); font-size: 0.83rem; font-weight: 500; line-height: 1.4; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .dart-title:hover { color: #0284c7; }
-        .dart-tag { font-size: 0.68rem; font-weight: 700; padding: 2px 6px; border-radius: 6px; flex-shrink: 0; }
-        .tag-positive { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
-        .tag-negative { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
-        .tag-warning { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.3); }
-        .tag-neutral { background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }
-
-        .vote-btn-wrap { display: flex; gap: 10px; margin-top: 10px; }
-        .vote-btn { flex: 1; padding: 10px; border-radius: 12px; border: 1px solid var(--border-line); background: var(--bg-subcard); color: var(--text-title); font-size: 0.88rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; }
-        .vote-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); }
-        .vote-btn.active-long { background: rgba(16, 185, 129, 0.15); border-color: #10b981; color: #10b981; }
-        .vote-btn.active-short { background: rgba(56, 189, 248, 0.15); border-color: #38bdf8; color: #38bdf8; }
-
-        .comment-input-box { display: flex; gap: 8px; margin-top: 12px; }
-        .comment-input-box input { flex: 1; min-width: 0; background: var(--bg-subcard); border: 1px solid var(--border-line); border-radius: 20px; padding: 9px 14px; color: var(--text-title); font-size: 0.82rem; outline: none; }
-        .comment-input-box button { background: #10b981; border: none; color: #ffffff; font-size: 0.8rem; font-weight: 700; padding: 0 16px; border-radius: 20px; cursor: pointer; flex-shrink: 0; }
-        .comment-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); font-size: 0.82rem; }
-        .comment-item:last-child { border-bottom: none; }
-        .comment-head { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 0.7rem; margin-bottom: 3px; }
-        .comment-nick { font-weight: 700; color: #10b981; }
-        .comment-body { color: var(--text-main); word-break: break-all; }
-
-        .signal-premium-card {
-            background: var(--bg-card) !important;
-            border: 1.8px solid #10b981 !important;
-            border-radius: 18px !important;
-            padding: 18px 20px !important;
-            box-shadow: 0 6px 24px var(--signal-glow) !important;
-            transition: all 0.25s ease;
-        }
-
-        .signal-card-header { display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; user-select: none; padding: 6px 0; }
-        .signal-card-title { font-size: 1.15rem !important; font-weight: 800 !important; color: #10b981 !important; text-align: center; letter-spacing: -0.4px; }
-        .signal-arrow-icon { width: 22px; height: 22px; fill: #10b981 !important; position: absolute; right: 4px; transition: transform 0.25s ease; }
-
-        .signal-premium-btn {
-            width: 100%;
-            background: var(--bg-card);
-            border: 1.8px solid #10b981;
-            border-radius: 16px;
-            padding: 15px 18px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #10b981;
-            font-size: 0.95rem;
-            font-weight: 800;
-            text-decoration: none;
-            cursor: pointer;
-            box-shadow: 0 4px 18px var(--signal-glow);
-            transition: all 0.2s ease;
-            text-align: center;
-        }
-        .signal-premium-btn:hover { background: rgba(16, 185, 129, 0.1); border-color: #059669; color: #059669; }
-
-        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.85rem; line-height: 1.6; color: var(--text-sub); border-top: 1px solid rgba(16, 185, 129, 0.2); }
-        .guide-title { font-weight: 800; color: #10b981; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; font-size: 0.92rem; }
-
-        .news-item { height: 60px; box-sizing: border-box; padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
-        .news-item:last-child { border-bottom: none; }
-        .news-title { color: var(--text-main); font-size: 0.85rem; font-weight: 500; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .news-title:hover { color: #0284c7; }
-        .news-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-        #bottom-bar {
-            display: none;
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            height: 74px;
-            background: var(--bottom-fade);
-            align-items: center;
-            justify-content: center;
-            padding: 0 12px 6px;
-            z-index: 50;
-        }
-        
-        .bottom-bar-grid-wrapper {
-            width: 100%;
-            max-width: 1196px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            margin: 0 auto;
-        }
-        .bottom-bar-grid-wrapper .search-container {
-            width: 100%;
-            max-width: 832px;
-            margin: 0 auto;
-        }
-
-        .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }
-
-        .dot-marker-style {
-            position: absolute;
-            top: -4px;
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            background: #10b981;
-            border: 2px solid #ffffff;
-            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
-            transform: translateX(-50%);
-        }
-
-        .val-up { color: #ef4444; }
-        .val-down { color: #38bdf8; }
-
-        /* [모바일 1열 순차 정렬] */
-        @media (max-width: 1200px) {
-            .dashboard-master-grid {
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                max-width: 832px;
-                gap: 14px;
-            }
-            .card, .signal-premium-card, .signal-premium-btn {
-                width: 100%;
-                max-width: 832px;
-            }
-            
-            /* 모바일 위젯 표시 순서 — PC 그리드에는 영향 없음 */
-            #rowCause { order: 1; }
-            #rowChart { order: 2; }
-            #rowNews { order: 3; }
-            #rowTrack { order: 4; }
-            #rowQuant { order: 5; }
-            #rowConsensus { order: 6; }
-            #rowVote { order: 7; }
-            #rowComment { order: 8; }
-            #rowSignal { order: 9; }
-            #rowWorld { order: 11; width: 100%; max-width: 832px; }
-            #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
-            #rowEarningsCalendar { order: 13; }
-            #rowEconomicCalendar { order: 14; }
-            #usLeadingRightStack {
-                position: static;
-                grid-column: auto;
-                grid-row: auto;
-                order: 15;
-                width: 100%;
-                max-width: 832px;
-                z-index: auto;
-            }
-            #rowUsLeadingSectors,
-            #rowUsLeadingStocks {
-                width: 100%;
-                max-width: 832px;
-            }
-
-            #rowDart { order: 16; }
-
-            .bottom-bar-grid-wrapper {
-                display: flex;
-                justify-content: center;
-                max-width: 832px;
-            }
-        }
-
-        /* ============================================================
-           캘린더 최종 디자인 v8
-           - PC: 기존 832px : 348px 구조 유지
-           - 좌/우 카드 높이 동기화
-           - Pretendard/Noto Sans KR 계열의 큰 한글 가독성
-           - 경제/실적 캘린더 공통 디자인
-        ============================================================ */
-        .calendar-widget {
-            padding: 18px 16px 14px !important;
-            border-radius: 16px !important;
-            background: #1b1c1d !important;
-            border: 1px solid #2b2d30 !important;
-            box-shadow: none !important;
-            min-height: 0 !important;
-        }
-        .calendar-widget,
-        .calendar-widget * {
-            font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
-        }
-        .calendar-widget-title {
-            font-size: 1.15rem !important;
-            line-height: 1.35 !important;
-            font-weight: 800 !important;
-            letter-spacing: -0.045em !important;
-            margin-bottom: 13px !important;
-            color: #f4f5f5 !important;
-        }
-        .calendar-widget-nav {
-            margin-bottom: 10px !important;
-            min-height: 36px;
-        }
-        .calendar-widget .cal-date-ctrl {
-            gap: 10px !important;
-        }
-        .calendar-widget .cal-arrow-btn {
-            width: 32px !important;
-            height: 32px !important;
-            border-radius: 9px !important;
-            font-size: 0.82rem !important;
-            background: #111213 !important;
-            border-color: #303235 !important;
-            color: #e8e9e9 !important;
-        }
-        .calendar-widget .cal-current-date {
-            min-width: 132px !important;
-            font-size: 0.94rem !important;
-            font-weight: 800 !important;
-            letter-spacing: -0.025em !important;
-            color: #f5f6f6 !important;
-        }
-        .calendar-widget .cal-today-btn {
-            font-size: 0.78rem !important;
-            padding: 6px 10px !important;
-            min-height: 32px;
-            border-radius: 9px !important;
-            background: #111213 !important;
-            border-color: #303235 !important;
-            color: #f0f1f1 !important;
-        }
-        .calendar-star-filter {
-            gap: 7px !important;
-            margin-bottom: 11px !important;
-            padding-bottom: 1px;
-        }
-        .calendar-star-btn {
-            min-width: 48px;
-            min-height: 30px;
-            padding: 5px 10px !important;
-            border-radius: 999px !important;
-            font-size: 0.72rem !important;
-            letter-spacing: -0.02em;
-            background: #202224 !important;
-            border-color: #2d3033 !important;
-            color: #b9bdbe !important;
-        }
-        .calendar-star-btn.active {
-            background: #f4f5f5 !important;
-            color: #111213 !important;
-            border-color: #f4f5f5 !important;
-        }
-        .calendar-widget-subtitle {
-            font-size: 0.78rem !important;
-            line-height: 1.35 !important;
-            font-weight: 750 !important;
-            margin: 1px 0 10px !important;
-            color: #aeb2b3 !important;
-        }
-        .calendar-widget-list {
-            gap: 9px !important;
-            overflow-y: auto !important;
-            overflow-x: hidden !important;
-            scrollbar-width: thin;
-            padding-right: 1px;
-        }
-        .calendar-widget-list .cal-card-item {
-            min-height: 78px !important;
-            padding: 11px 11px 11px 12px !important;
-            gap: 10px !important;
-            border-radius: 11px !important;
-            background: #202224 !important;
-            border: 1px solid #2b2e31 !important;
-            align-items: center !important;
-            transform: none !important;
-        }
-        .calendar-widget-list .cal-card-item::before {
-            top: 10px !important;
-            bottom: 10px !important;
-            width: 2px !important;
-            background: transparent !important;
-        }
-        .calendar-widget-list .cal-card-item:hover {
-            background: #232527 !important;
-            border-color: #383b3e !important;
-        }
-        .calendar-widget-list .cal-time-col {
-            min-width: 54px !important;
-            width: 54px !important;
-            font-family: 'Pretendard', 'Noto Sans KR', sans-serif !important;
-            font-size: 0.76rem !important;
-            font-weight: 800 !important;
-            line-height: 1.2 !important;
-            color: #eef0f0 !important;
-            letter-spacing: -0.025em !important;
-        }
-        .calendar-widget .cal-event-icon {
-            width: 34px !important;
-            height: 34px !important;
-            min-width: 34px !important;
-            border-radius: 9px !important;
-            background: #151718 !important;
-            border-color: #34373a !important;
-            font-size: 0.62rem !important;
-        }
-        .calendar-widget .cal-event-topline {
-            gap: 7px !important;
-            align-items: center !important;
-        }
-        .calendar-widget .cal-stars {
-            font-size: 0.72rem !important;
-            letter-spacing: -0.08em !important;
-            color: #ffb000 !important;
-        }
-        .calendar-widget .cal-event-title {
-            font-size: 0.86rem !important;
-            line-height: 1.38 !important;
-            font-weight: 800 !important;
-            letter-spacing: -0.045em !important;
-            color: #f3f4f4 !important;
-            margin-bottom: 3px !important;
-        }
-        .calendar-widget .cal-event-meta {
-            font-size: 0.68rem !important;
-            line-height: 1.35 !important;
-            color: #aeb2b3 !important;
-            letter-spacing: -0.025em !important;
-        }
-        .calendar-widget .cal-alarm-btn {
-            width: 30px !important;
-            height: 30px !important;
-            flex-basis: 30px !important;
-            border-radius: 8px !important;
-            color: #8d9293 !important;
-        }
-        .calendar-widget .cal-pagination-bar {
-            min-height: 36px;
-            padding-top: 9px !important;
-            margin-top: 9px !important;
-            border-top-color: #2a2c2e !important;
-        }
-        .calendar-widget .cal-page-btn {
-            width: 28px !important;
-            height: 28px !important;
-            border-radius: 8px !important;
-            background: #151718 !important;
-        }
-        .calendar-widget .cal-page-txt {
-            font-size: 0.7rem !important;
-            color: #9da1a2 !important;
-        }
-        /* 빈 상태도 중앙에 덩그러니 떠 보이지 않게 위계 조정 */
-        .calendar-widget-list > div[style*="height:100%"] {
-            min-height: 180px !important;
-            height: auto !important;
-            flex: 1 1 auto !important;
-            align-items: center !important;
-            justify-content: center !important;
-            font-size: 0.78rem !important;
-            color: #8f9495 !important;
-        }
-        @media (min-width: 1201px) {
-            .dashboard-master-grid {
-                grid-template-columns: minmax(0, 832px) 348px !important;
-                column-gap: 16px !important;
-            }
-            #rowTrack, #rowEarningsCalendar,
-            #rowQuant, #rowEconomicCalendar {
-                min-height: 560px;
-            }
-        }
-        @media (max-width: 1200px) {
-            .calendar-widget {
-                padding: 18px 16px 14px !important;
-            }
-            .calendar-widget-list .cal-card-item {
-                min-height: 78px !important;
-            }
-        }
-        @media (max-width: 520px) {
-            .calendar-widget {
-                padding: 15px 14px 12px !important;
-                border-radius: 14px !important;
-            }
-            .calendar-widget-title { font-size: 1.08rem !important; }
-            .calendar-widget .cal-current-date {
-                min-width: 116px !important;
-                font-size: 0.88rem !important;
-            }
-            .calendar-widget .cal-arrow-btn { width: 30px !important; height: 30px !important; }
-            .calendar-widget .cal-today-btn { min-height: 30px; padding: 5px 9px !important; }
-            .calendar-star-btn { min-width: 46px; min-height: 29px; font-size: 0.69rem !important; }
-            .calendar-widget-list .cal-card-item { min-height: 74px !important; }
-            .calendar-widget-list .cal-time-col { min-width: 50px !important; width: 50px !important; font-size: 0.72rem !important; }
-            .calendar-widget .cal-event-icon { width: 32px !important; height: 32px !important; min-width: 32px !important; }
-            .calendar-widget .cal-event-title { font-size: 0.82rem !important; }
-        }
-
-
-        .calendar-widget .calendar-full-btn {
-            flex: 0 0 auto;
-            margin-top: 9px;
-            min-height: 42px;
-            border-radius: 10px;
-            background: #202224;
-            border: 1px solid #2b2e31;
-            color: #e9ebeb;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            font-size: 0.76rem;
-            font-weight: 750;
-            letter-spacing: -0.025em;
-            cursor: pointer;
-        }
-        .calendar-widget .calendar-full-btn span { font-size: 0.9rem; color: #dfe2e2; }
-        .calendar-widget .calendar-full-btn:hover { background: #252729; border-color: #383b3e; }
-
-
-        /* ============================================================
-           v14: 경제/실적 캘린더 카드 최종 배치
-           시간 | 별표 + 발표대기 / 일정명 / 상세정보 | 알림
-           두 캘린더 완전히 동일한 내부 구조
-           ============================================================ */
-        .calendar-widget-list .cal-card-item {
-            display: grid !important;
-            grid-template-columns: 54px minmax(0, 1fr) 30px !important;
-            grid-template-rows: 1fr !important;
-            column-gap: 10px !important;
-            align-items: center !important;
-            width: 100% !important;
-            box-sizing: border-box !important;
-        }
-
-        .calendar-widget-list .cal-time-col {
-            grid-column: 1 !important;
-            grid-row: 1 !important;
-            width: 54px !important;
-            min-width: 54px !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            background: transparent !important;
-            border: 0 !important;
-            align-self: center !important;
-            text-align: left !important;
-        }
-
-        .calendar-widget-list .cal-detail-col {
-            grid-column: 2 !important;
-            grid-row: 1 !important;
-            min-width: 0 !important;
-            width: 100% !important;
-            overflow: hidden !important;
-            display: flex !important;
-            flex-direction: column !important;
-            justify-content: center !important;
-            align-items: flex-start !important;
-            gap: 2px !important;
-        }
-
-        /* 별표 + 발표대기는 반드시 일정명보다 위 */
-        .calendar-widget-list .cal-event-topline {
-            order: 1 !important;
-            display: flex !important;
-            flex-direction: row !important;
-            align-items: center !important;
-            justify-content: flex-start !important;
-            gap: 7px !important;
-            width: 100% !important;
-            min-width: 0 !important;
-            min-height: 16px !important;
-            margin: 0 !important;
-        }
-
-        .calendar-widget-list .cal-stars {
-            order: 1 !important;
-            flex: 0 0 auto !important;
-            width: auto !important;
-            min-width: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            display: inline-block !important;
-            white-space: nowrap !important;
-            font-size: 0.72rem !important;
-            line-height: 1.2 !important;
-            letter-spacing: -0.08em !important;
-            color: #ffb000 !important;
-        }
-
-        .calendar-widget-list .cal-event-status {
-            order: 2 !important;
-            flex: 0 0 auto !important;
-            display: inline-block !important;
-            font-size: 0.66rem !important;
-            line-height: 1.2 !important;
-            color: #aeb2b3 !important;
-            white-space: nowrap !important;
-            margin: 0 !important;
-        }
-
-        .calendar-widget-list .cal-event-title {
-            order: 2 !important;
-            display: block !important;
-            width: 100% !important;
-            min-width: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            overflow-wrap: anywhere !important;
-            word-break: keep-all !important;
-            font-size: 0.86rem !important;
-            line-height: 1.32 !important;
-            font-weight: 800 !important;
-            color: #f3f4f4 !important;
-        }
-
-        .calendar-widget-list .cal-event-meta {
-            order: 3 !important;
-            display: block !important;
-            width: 100% !important;
-            min-width: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            overflow-wrap: anywhere !important;
-            font-size: 0.68rem !important;
-            line-height: 1.3 !important;
-            color: #aeb2b3 !important;
-        }
-
-        .calendar-widget-list .cal-alarm-btn {
-            grid-column: 3 !important;
-            grid-row: 1 !important;
-            width: 30px !important;
-            min-width: 30px !important;
-            height: 30px !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            justify-self: end !important;
-            align-self: center !important;
-            flex: none !important;
-        }
-
-        /* ============================================================
-           v13: 경제/실적 캘린더 공통 내부 구조
-           시간 | 별표+발표상태+일정내용 | 알람
-           경제/실적 모두 동일한 CSS 구조를 사용
-           ============================================================ */
-        .calendar-widget-list .cal-card-item {
-            display: grid !important;
-            grid-template-columns: 54px minmax(0, 1fr) 30px !important;
-            column-gap: 10px !important;
-            align-items: center !important;
-            width: 100%;
-            box-sizing: border-box;
-        }
-        .calendar-widget-list .cal-time-col {
-            width: 54px !important;
-            min-width: 54px !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            align-self: center;
-        }
-        .calendar-widget-list .cal-detail-col {
-            grid-column: 2;
-            min-width: 0 !important;
-            width: auto !important;
-            overflow: hidden;
-            display: flex !important;
-            flex-direction: column !important;
-            justify-content: center !important;
-            gap: 2px !important;
-        }
-        .calendar-widget-list .cal-event-topline {
-            display: flex !important;
-            align-items: center !important;
-            gap: 7px !important;
-            min-width: 0;
-            min-height: 16px;
-        }
-        .calendar-widget-list .cal-stars {
-            flex: 0 0 auto !important;
-            width: auto !important;
-            min-width: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-            display: inline-block !important;
-            text-align: left !important;
-            white-space: nowrap !important;
-            font-size: 0.72rem !important;
-            line-height: 1.2 !important;
-            letter-spacing: -0.08em !important;
-            color: #ffb000 !important;
-        }
-        .calendar-widget-list .cal-event-status {
-            flex: 0 0 auto;
-            font-size: 0.66rem;
-            line-height: 1.2;
-            color: #aeb2b3;
-            white-space: nowrap;
-        }
-        .calendar-widget-list .cal-event-title {
-            margin: 0 !important;
-            min-width: 0;
-            overflow-wrap: anywhere;
-            word-break: keep-all;
-            font-size: 0.86rem !important;
-            line-height: 1.32 !important;
-            font-weight: 800 !important;
-        }
-        .calendar-widget-list .cal-event-meta {
-            margin: 0 !important;
-            min-width: 0;
-            overflow-wrap: anywhere;
-            font-size: 0.68rem !important;
-            line-height: 1.3 !important;
-        }
-        .calendar-widget-list .cal-event-icon {
-            display: none !important;
-        }
-        .calendar-widget-list .cal-alarm-btn {
-            grid-column: 3;
-            width: 30px !important;
-            min-width: 30px !important;
-            height: 30px !important;
-            flex: none !important;
-            justify-self: end;
-            margin: 0 !important;
-        }
-        @media (max-width: 520px) {
-            .calendar-widget-list .cal-card-item {
-                grid-template-columns: 50px minmax(0, 1fr) 28px !important;
-                column-gap: 8px !important;
-            }
-            .calendar-widget-list .cal-time-col {
-                width: 50px !important;
-                min-width: 50px !important;
-            }
-            .calendar-widget-list .cal-alarm-btn {
-                width: 28px !important;
-                min-width: 28px !important;
-                height: 28px !important;
-            }
-            .calendar-widget-list .cal-event-title {
-                font-size: 0.82rem !important;
-            }
-            .calendar-widget-list .cal-event-status {
-                font-size: 0.62rem !important;
-            }
-        }
-
-
-        /* ============================================================
-           v15: 다크/화이트 모드 캘린더 색상 연동
-           - 기존 캘린더에 고정된 다크 색상을 제거
-           - body.light-theme의 전역 CSS 변수와 연결
-           - 캘린더 2개 모두 동일하게 적용
-           ============================================================ */
-        body.light-theme .calendar-widget {
-            background: var(--bg-card) !important;
-            border-color: var(--border-line) !important;
-            color: var(--text-main) !important;
-        }
-
-        body.light-theme .calendar-widget-title,
-        body.light-theme .calendar-widget .cal-current-date {
-            color: var(--text-title) !important;
-        }
-
-        body.light-theme .calendar-widget .cal-arrow-btn,
-        body.light-theme .calendar-widget .cal-today-btn {
-            background: var(--bg-subcard) !important;
-            border-color: var(--border-focus) !important;
-            color: var(--text-main) !important;
-        }
-
-        body.light-theme .calendar-star-btn {
-            background: var(--bg-subcard) !important;
-            border-color: var(--border-line) !important;
-            color: var(--text-muted) !important;
-        }
-
-        body.light-theme .calendar-star-btn.active {
-            background: #202124 !important;
-            border-color: #202124 !important;
-            color: #ffffff !important;
-        }
-
-        body.light-theme .calendar-widget-subtitle,
-        body.light-theme .calendar-widget .cal-event-meta,
-        body.light-theme .calendar-widget .cal-event-status,
-        body.light-theme .calendar-widget .cal-page-txt {
-            color: var(--text-muted) !important;
-        }
-
-        body.light-theme .calendar-widget-list .cal-card-item {
-            background: #f8f9fa !important;
-            border-color: var(--border-line) !important;
-        }
-
-        body.light-theme .calendar-widget-list .cal-card-item:hover {
-            background: #ffffff !important;
-            border-color: var(--border-focus) !important;
-        }
-
-        body.light-theme .calendar-widget-list .cal-time-col,
-        body.light-theme .calendar-widget .cal-event-title {
-            color: var(--text-main) !important;
-        }
-
-        body.light-theme .calendar-widget .cal-alarm-btn {
-            color: #5f6368 !important;
-        }
-
-        body.light-theme .calendar-widget .cal-pagination-bar {
-            border-top-color: var(--border-line) !important;
-        }
-
-        body.light-theme .calendar-widget .cal-page-btn {
-            background: var(--bg-subcard) !important;
-            border-color: var(--border-line) !important;
-            color: var(--text-muted) !important;
-        }
-
-        body.light-theme .calendar-widget-list > div[style*="height:100%"] {
-            color: var(--text-muted) !important;
-        }
-
-    
-/* 오늘 버튼: 텍스트 대신 새로고침 기호(↻) 사용 */
-.cal-today-btn {
-    font-size: 1.15rem !important;
-    line-height: 1 !important;
-    font-weight: 700 !important;
-    padding: 6px 10px !important;
-    min-width: 36px !important;
-    min-height: 34px !important;
-}
-
-
-        .consensus-more-btn {
-            display: block;
-            width: 100%;
-            margin-top: 7px;
-            padding: 6px 0;
-            border: 1px solid var(--border-line);
-            border-radius: 8px;
-            background: transparent;
-            color: var(--text-muted);
-            font-size: 0.72rem;
-            font-weight: 700;
-            cursor: pointer;
-        }
-
-        .consensus-more-btn:hover {
-            color: var(--text-title);
-        }
-
-        /* 미국 주도업종: PC 애널리스트 오른쪽 / 모바일 경제 캘린더 바로 아래 */
-        #rowUsLeadingSectors {
-            grid-column: 2;
-            grid-row: 6;
-            min-height: 0;
-            align-self: stretch;
-        }
-
-        .us-leading-sector-card {
-            padding: 16px;
-            box-sizing: border-box;
-            background: var(--bg-card);
-            border: 1px solid var(--border-line);
-            border-radius: 16px;
-            display: flex;
-            flex-direction: column;
-            justify-content: flex-start;
-            overflow: hidden;
-        }
-
-        .us-leading-sector-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            margin-bottom: 8px;
-            padding-bottom: 6px;
-            border-bottom: 1px solid var(--border-line);
-            flex: 0 0 auto;
-        }
-
-        .us-leading-sector-title {
-            font-size: 0.95rem;
-            font-weight: 800;
-            color: var(--text-title);
-            white-space: nowrap;
-        }
-
-        .us-leading-sector-sub {
-            font-size: 0.68rem;
-            color: var(--text-muted);
-            white-space: nowrap;
-        }
-
-        .us-leading-sector-table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-        }
-
-        .us-leading-sector-table th {
-            font-size: 0.60rem;
-            font-weight: 700;
-            color: var(--text-muted);
-            padding: 4px 2px 6px;
-            text-align: right;
-            white-space: nowrap;
-        }
-
-        .us-leading-sector-table th:first-child { text-align: left; }
-
-        .us-leading-sector-table td {
-            font-size: 0.70rem;
-            color: var(--text-sub);
-            padding: 7px 2px;
-            border-top: 1px solid var(--border-line);
-            text-align: right;
-            white-space: nowrap;
-        }
-
-        .us-leading-sector-table td:first-child { text-align: left; }
-
-        .us-leading-sector-row {
-            cursor: pointer;
-        }
-
-        .us-leading-name {
-            width: 116px;
-            color: var(--text-title) !important;
-            font-weight: 700;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .us-leading-up { color: #ef4444 !important; font-weight: 700; }
-        .us-leading-down { color: #38bdf8 !important; font-weight: 700; }
-
-        .us-leading-sector-loading {
-            font-size: 0.72rem;
-            color: var(--text-muted);
-            padding: 16px 0;
-            text-align: center;
-        }
-
-        /* 미국 주도종목: 1단계 디자인 전용 */
-        /* 미국 주도업종 + 주도종목을 오른쪽 전용 스택으로 분리.
-           왼쪽 개미투표와 그리드 행 높이를 공유하지 않도록 한다. */
-        #usLeadingRightStack {
-            grid-column: 2;
-            grid-row: 6;
-            position: absolute;
-            align-self: start;
-            justify-self: stretch;
-            width: 100%;
-            min-width: 0;
-            min-height: 0;
-            box-sizing: border-box;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            z-index: 2;
-        }
-
-        #usLeadingRightStack > .card {
-            width: 100%;
-            min-width: 0;
-        }
-
-        #rowUsLeadingStocks {
-            grid-column: auto;
-            grid-row: auto;
-            align-self: auto;
-            min-height: 0;
-        }
-
-        .us-leading-stock-card {
-            padding: 16px;
-            box-sizing: border-box;
-            background: var(--bg-card);
-            border: 1px solid var(--border-line);
-            border-radius: 16px;
-            overflow: hidden;
-        }
-
-        .us-leading-stock-head {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-            margin-bottom: 8px;
-            padding-bottom: 6px;
-            border-bottom: 1px solid var(--border-line);
-        }
-
-        .us-leading-stock-title {
-            font-size: 0.95rem;
-            font-weight: 800;
-            color: var(--text-title);
-            white-space: nowrap;
-        }
-
-        .us-leading-stock-sub {
-            font-size: 0.68rem;
-            color: var(--text-muted);
-            white-space: nowrap;
-        }
-
-        .us-leading-stock-list {
-            display: flex;
-            flex-direction: column;
-            gap: 7px;
-        }
-
-        .us-leading-stock-item {
-            display: grid;
-            grid-template-columns: minmax(72px, 1fr) 74px minmax(72px, 1.15fr);
-            align-items: center;
-            gap: 8px;
-            min-height: 58px;
-            padding: 7px 8px;
-            box-sizing: border-box;
-            background: var(--bg-subcard);
-            border: 1px solid var(--border-line);
-            border-radius: 10px;
-        }
-
-        .us-leading-stock-name {
-            min-width: 0;
-            overflow: hidden;
-        }
-
-        .us-leading-stock-ticker {
-            font-size: 0.78rem;
-            line-height: 1.15;
-            font-weight: 800;
-            color: var(--text-title);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .us-leading-stock-company {
-            margin-top: 3px;
-            font-size: 0.62rem;
-            line-height: 1.15;
-            color: var(--text-muted);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .us-leading-stock-price {
-            min-width: 0;
-            text-align: right;
-        }
-
-        .us-leading-stock-value {
-            font-size: 0.75rem;
-            line-height: 1.15;
-            font-weight: 800;
-            color: var(--text-title);
-            white-space: nowrap;
-        }
-
-        .us-leading-stock-change {
-            margin-top: 3px;
-            font-size: 0.68rem;
-            line-height: 1.15;
-            font-weight: 800;
-            white-space: nowrap;
-        }
-
-        .us-leading-stock-change.up { color: #ef4444; }
-        .us-leading-stock-change.down { color: #38bdf8; }
-
-        .us-leading-stock-spark {
-            width: 100%;
-            min-width: 72px;
-            height: 34px;
-            display: block;
-            overflow: visible;
-            justify-self: end;
-            filter: drop-shadow(0 2px 3px rgba(16, 185, 129, 0.20));
-        }
-
-        .us-leading-stock-spark polyline {
-            fill: none;
-            stroke: #10b981;
-            stroke-width: 2.2;
-            stroke-linecap: round;
-            stroke-linejoin: round;
-            vector-effect: non-scaling-stroke;
-        }
-
-
-        /* 모바일 최종 배치 고정:
-           PC의 오른쪽 독립 배치는 유지하고 모바일에서는 1열 일반 흐름으로 복귀 */
-        @media (max-width: 1200px) {
-            .dashboard-master-grid {
-                position: relative;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                max-width: 832px;
-                gap: 14px;
-            }
-
-            #usLeadingRightStack {
-                position: static !important;
-                grid-column: auto !important;
-                grid-row: auto !important;
-                order: 15 !important;
-                align-self: center !important;
-                justify-self: auto !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                min-height: 0 !important;
-                box-sizing: border-box !important;
-                display: flex !important;
-                flex-direction: column !important;
-                gap: 14px !important;
-                z-index: auto !important;
-            }
-
-            #usLeadingRightStack > .card,
-            #rowUsLeadingSectors,
-            #rowUsLeadingStocks {
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                box-sizing: border-box !important;
-            }
-        }
-
-
-        /* 모바일 최종 폭/흐름 보정 */
-        @media (max-width: 1200px) {
-            #result-scroll-view {
-                width: 100% !important;
-                box-sizing: border-box !important;
-                overflow-x: hidden !important;
-            }
-
-            .result-inner {
-                width: 100% !important;
-                max-width: 832px !important;
-                box-sizing: border-box !important;
-                margin: 0 auto !important;
-            }
-
-            .dashboard-master-grid {
-                display: flex !important;
-                flex-direction: column !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                margin: 0 auto !important;
-                box-sizing: border-box !important;
-                gap: 14px !important;
-                overflow: visible !important;
-            }
-
-            .dashboard-master-grid > .card,
-            .dashboard-master-grid > .signal-premium-card,
-            .dashboard-master-grid > .signal-premium-btn,
-            #usLeadingRightStack {
-                position: static !important;
-                float: none !important;
-                left: auto !important;
-                right: auto !important;
-                top: auto !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                margin-left: 0 !important;
-                margin-right: 0 !important;
-                box-sizing: border-box !important;
-                transform: none !important;
-            }
-
-            #usLeadingRightStack {
-                order: 15 !important;
-                display: flex !important;
-                flex-direction: column !important;
-                gap: 14px !important;
-            }
-
-            #rowUsLeadingSectors,
-            #rowUsLeadingStocks {
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                box-sizing: border-box !important;
-            }
-        }
-
-        /* ============================================================
-           모바일 레이아웃 최종 격리
-           - PC의 grid-column/grid-row/height:100%를 모바일에서 전부 초기화
-           - 증시(rowWorld)가 오른쪽으로 붙는 현상 방지
-           - '왜 올라갔을까'와 높이를 공유하는 현상 방지
-           - 미국 주도업종/주도종목은 경제캘린더 아래 독립된 순서로 배치
-        ============================================================ */
-        @media (max-width: 1200px) {
-            #result-scroll-view {
-                width: 100vw !important;
-                max-width: 100vw !important;
-                padding-left: 12px !important;
-                padding-right: 12px !important;
-                box-sizing: border-box !important;
-                overflow-x: hidden !important;
-            }
-
-            .result-inner {
-                width: 100% !important;
-                max-width: 832px !important;
-                margin: 0 auto !important;
-                box-sizing: border-box !important;
-            }
-
-            .dashboard-master-grid {
-                display: flex !important;
-                flex-direction: column !important;
-                align-items: stretch !important;
-                justify-content: flex-start !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                margin: 0 auto !important;
-                gap: 14px !important;
-                box-sizing: border-box !important;
-                position: relative !important;
-            }
-
-            /* PC 2열 grid의 위치/높이 값을 모바일에서 완전 초기화 */
-            .dashboard-master-grid > * {
-                grid-column: auto !important;
-                grid-row: auto !important;
-                float: none !important;
-                position: static !important;
-                top: auto !important;
-                right: auto !important;
-                bottom: auto !important;
-                left: auto !important;
-                transform: none !important;
-                height: auto !important;
-                min-height: 0 !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                margin-left: 0 !important;
-                margin-right: 0 !important;
-                align-self: stretch !important;
-                box-sizing: border-box !important;
-            }
-
-            /* 기존 모바일 순서를 명확하게 재지정 */
-            #rowCause { order: 1 !important; }
-            #rowChart { order: 2 !important; }
-            #rowNews { order: 3 !important; }
-            #rowTrack { order: 4 !important; }
-            #rowQuant { order: 5 !important; }
-            #rowConsensus { order: 6 !important; }
-            #rowVote { order: 7 !important; }
-            #rowComment { order: 8 !important; }
-            #rowSignal { order: 9 !important; }
-            #rowWorld { order: 11 !important; }
-            #rowGlobalNews { order: 12 !important; }
-            #rowEarningsCalendar { order: 13 !important; }
-            #rowEconomicCalendar { order: 14 !important; }
-            #usLeadingRightStack { order: 15 !important; }
-            #rowDart { order: 16 !important; }
-
-            /* 주도업종 + 주도종목은 모바일에서만 하나의 세로 스택 */
-            #usLeadingRightStack {
-                display: flex !important;
-                flex-direction: column !important;
-                align-items: stretch !important;
-                gap: 14px !important;
-                position: static !important;
-                grid-column: auto !important;
-                grid-row: auto !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                height: auto !important;
-                min-height: 0 !important;
-                box-sizing: border-box !important;
-                z-index: auto !important;
-            }
-
-            #usLeadingRightStack > .card {
-                position: static !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                min-width: 0 !important;
-                height: auto !important;
-                min-height: 0 !important;
-                box-sizing: border-box !important;
-            }
-
-            #rowUsLeadingSectors,
-            #rowUsLeadingStocks {
-                grid-column: auto !important;
-                grid-row: auto !important;
-                width: 100% !important;
-                max-width: 832px !important;
-                height: auto !important;
-                min-height: 0 !important;
-                box-sizing: border-box !important;
-            }
-
-            /* 증시/왜 올라갔을까 등 카드가 서로 높이를 강제로 맞추지 않도록 */
-            #rowWorld,
-            #rowGlobalNews,
-            #rowChart,
-            #rowCause,
-            #rowNews,
-            #rowTrack,
-            #rowQuant,
-            #rowConsensus,
-            #rowVote {
-                height: auto !important;
-                min-height: 0 !important;
-                align-self: stretch !important;
-            }
-        }
-
-        /* gaemiGTP 시그널: 항상 열림 */
-        #rowSignal #signalBody {
-            display: block !important;
-            height: auto !important;
-            max-height: none !important;
-            overflow: visible !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-        }
-
-        /* 미국 주도종목 클릭 가능 표시: 기존 레이아웃 크기는 유지 */
-        .us-leading-stock-item {
-            cursor: pointer;
-        }
-        .us-leading-stock-item:focus-visible {
-            outline: 2px solid var(--border-line);
-            outline-offset: -2px;
-        }
-
-
-</style>
+    <link rel="stylesheet" href="/style.css?v=1">
 </head>
 <body>
 
@@ -5488,14 +3755,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 <div id="quantDetailList"></div>
                             </div>
 
-                        </div>
-
-                        <!-- 1행 좌측: 왜 움직였을까? — 코멘트 전용 -->
-                        <div class="card" id="rowCause" style="justify-content:flex-start;">
-                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
-                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
-                            </div>
-                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
                         <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
@@ -5730,14 +3989,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             <div id="dartList"></div>
                         </div>
 
-                        <!-- 8행: 악성 매물대 위젯 -->
-                        <div class="card" id="rowSignal">
-                            <div class="board-header">
-                                <span class="board-header-title">악성 매물대</span>
-                                <span style="font-size:0.72rem; color:var(--text-muted);">과거 거래가 집중된 저항 구간</span>
-                            </div>
-                            <div id="maliciousZoneBody" style="margin-top:10px;"></div>
-                        </div>
 </div>
 
                 </div>
@@ -5780,6 +4031,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </div>
     </div>
 
+    <script src="/widgets/right_market.js"></script>
+
     <script>
         let chart = null;
         let selectedMode = 'gaemi';
@@ -5792,15 +4045,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
         function setHtml(id, val) { const el = document.getElementById(id); if (el) el.innerHTML = (val !== undefined && val !== null) ? String(val) : ''; }
-
-        const SUPABASE_URL = "https://uaqvmsubzgzvxbdcwcad.supabase.co";
-        const SUPABASE_KEY = "sb_publishable_bcxDofsnPXgBICDDgQ8Ijw_fNjPcsRW";
-        let supabaseClient = null;
-        try {
-            if (window.supabase) {
-                supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-            }
-        } catch(e) {}
 
         function initTheme() {
             const saved = localStorage.getItem('gaemi_theme') || 'dark';
@@ -6283,6 +4527,8 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         }
         let activeSearchController = null;
         let activeDetailsController = null;
+        let rightMarketController = null;
+        let rightMarketRequestToken = 0;
         const FAST_CHART_CACHE = new Map();
         const FAST_CHART_CACHE_TTL = 30 * 1000;
 
@@ -6579,14 +4825,6 @@ if ((response && !response.ok) || data.error) {
                 if (window.GaemiWidgets && window.GaemiWidgets.quant) {
                     window.GaemiWidgets.quant.render(data.quant);
                 }
-                if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
-                    window.GaemiWidgets.maliciousZone.render(data);
-                }
-                // 3.5 왜 움직였을까? — 독립 위젯
-                if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
-                    window.GaemiWidgets.whyMovement.render(data);
-                }
-
                 // 3.6 트랙 분석 — 독립 위젯
                 if (window.GaemiWidgets && window.GaemiWidgets.track) {
                     const mr = data && data.movement_reason;
@@ -6688,12 +4926,6 @@ if ((response && !response.ok) || data.error) {
 
                         if (window.GaemiWidgets && window.GaemiWidgets.quant) {
                             window.GaemiWidgets.quant.render(detailData.quant);
-                        }
-                        if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
-                            window.GaemiWidgets.maliciousZone.render(detailData);
-                        }
-                        if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
-                            window.GaemiWidgets.whyMovement.render(detailData);
                         }
                         if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
                             window.GaemiWidgets.worldBoard.render(detailData.world_board || []);
@@ -6941,10 +5173,34 @@ if ((response && !response.ok) || data.error) {
     </script>
 
 
+    <!-- STEP 27: 우측 실시간 시장 사이드바 -->
+    <aside id="right-market-rail" class="collapsed" aria-label="실시간 시장 사이드바">
+        <section id="right-market-panel">
+            <div class="right-market-head">
+                <div><span class="right-market-title">실시간</span><span class="right-market-time" id="rightMarketTime">오늘 --:-- 기준</span></div>
+            </div>
+            <div class="right-market-tabs">
+                <button class="right-market-tab active" data-market="kr" onclick="switchRightMarket('kr')">국내</button>
+                <button class="right-market-tab" data-market="us" onclick="switchRightMarket('us')">해외</button>
+                <button class="right-market-tab" data-market="crypto" onclick="switchRightMarket('crypto')">코인</button>
+            </div>
+            <div class="right-market-sort"><span id="rightMarketSortLabel">거래대금 상위⌄</span><span>실시간⌄</span></div>
+            <div class="right-market-list" id="rightMarketList"><div class="right-market-empty">실시간 시장 데이터를 불러오는 중입니다.</div></div>
+        </section>
+        <nav id="right-market-icons" aria-label="시장 메뉴">
+            <button class="right-market-icon-btn right-market-close" onclick="toggleRightMarket()" title="오른쪽 사이드바 열기/닫기">»</button>
+            <button class="right-market-icon-btn active" data-right-menu="live" onclick="selectRightMenu('live')" title="실시간">◉</button>
+            <button class="right-market-icon-btn" data-right-menu="favorite" onclick="selectRightMenu('favorite')" title="관심">♡</button>
+            <button class="right-market-icon-btn" data-right-menu="recent" onclick="selectRightMenu('recent')" title="최근검색종목">◷</button>
+            <button class="right-market-icon-btn" data-right-menu="leaders" onclick="selectRightMenu('leaders')" title="실시간 상단">▥</button>
+        </nav>
+    </aside>
+
 </body>
 </html>
 """
 
+# right_market.js는 widgets/ 폴더의 실제 파일을 직접 서빙한다.
 # ----------------------------------------------------
 FAST_CHART_PAYLOAD_CACHE = {}
 FAST_CHART_PAYLOAD_TTL = 30
@@ -7116,15 +5372,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
             return
 
-        if parsed.path == "/widgets/why_movement.js":
-            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "why_movement.js")
-            try:
-                with open(widget_path, "rb") as f:
-                    payload = f.read()
-                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
-            except OSError:
-                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
-            return
 
         if parsed.path == "/widgets/track.js":
             widget_path = os.path.join(os.path.dirname(__file__), "widgets", "track.js")
@@ -7156,6 +5403,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
             return
 
+        if parsed.path == "/widgets/right_market.js":
+            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "right_market.js")
+            try:
+                with open(widget_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
         if parsed.path == "/widgets/stock_news.js":
             widget_path = os.path.join(os.path.dirname(__file__), "widgets", "stock_news.js")
             try:
@@ -7186,15 +5442,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
             return
 
-        if parsed.path == "/widgets/malicious_zone.js":
-            widget_path = os.path.join(os.path.dirname(__file__), "widgets", "malicious_zone.js")
-            try:
-                with open(widget_path, "rb") as f:
-                    payload = f.read()
-                self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
-            except OSError:
-                self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
-            return
 
         if parsed.path == "/widgets/chart.js":
             widget_path = os.path.join(os.path.dirname(__file__), "widgets", "chart.js")
@@ -7204,6 +5451,16 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._write_bytes_response(200, payload, "application/javascript; charset=utf-8", compress=True, cache_control="no-cache")
             except OSError:
                 self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
+            return
+
+        if parsed.path == "/style.css":
+            css_path = os.path.join(os.path.dirname(__file__), "style.css")
+            try:
+                with open(css_path, "rb") as f:
+                    payload = f.read()
+                self._write_bytes_response(200, payload, "text/css; charset=utf-8", compress=True, cache_control="no-cache")
+            except OSError:
+                self._json(404, {"error": "스타일시트를 찾을 수 없습니다."})
             return
 
         if parsed.path == "/widgets/analyst_consensus.js":
@@ -7235,52 +5492,16 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "위젯 리소스를 찾을 수 없습니다."})
             return
 
-        # PostgreSQL 연결 상태 확인
-        if parsed.path == "/api/db/health":
-            self._json(200, get_db_health())
-            return
-
-        # PostgreSQL 저장 데이터 확인
-        # /api/db/prices?market=Korea&symbol=000660&limit=10
-        if parsed.path == "/api/db/prices":
-            market = str(params.get("market", [""])[0]).strip()
-            symbol = str(params.get("symbol", [""])[0]).strip()
-
+        if parsed.path == "/api/right-market-board":
             try:
-                limit = int(params.get("limit", ["10"])[0])
-            except Exception:
-                limit = 10
-
-            if not market or not symbol:
-                self._json(
-                    400,
-                    {"ok": False, "error": "market와 symbol이 필요합니다."}
-                )
-                return
-
-            summary = get_db_price_summary(
-                market=market,
-                symbol=symbol,
-                timeframe="1d",
-            )
-            recent = get_db_recent_prices(
-                market=market,
-                symbol=symbol,
-                timeframe="1d",
-                limit=limit,
-            )
-
-            self._json(
-                200,
-                {
-                    "ok": summary.get("ok", False),
-                    "summary": summary,
-                    "data": recent,
-                }
-            )
+                market = str(params.get("market", ["kr"])[0]).strip().lower()
+                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                rows = fetch_right_market_board(market=market, force=force)
+                self._json(200, {"ok": True, "market": market, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/right-market-board: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "실시간 시장 데이터를 가져오지 못했습니다."})
             return
-
-
 
         if parsed.path == "/api/world-board":
             try:
@@ -7457,12 +5678,6 @@ class WebHandler(BaseHTTPRequestHandler):
         )
 
 def run_web_server():
-    # DB가 실패해도 기존 서버를 막지 않는다.
-    try:
-        init_database()
-    except Exception as exc:
-        print(f"[DB] 서버 시작 시 초기화 실패 - 기존 서버 계속 실행: {type(exc).__name__}: {exc}")
-
     port = int(os.environ.get("PORT", 10000))
     server = ThreadingHTTPServer(("0.0.0.0", port), WebHandler)
     print(f"gaemiGTP listening on :{port}")

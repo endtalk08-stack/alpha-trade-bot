@@ -24,7 +24,7 @@
         trackEvidenceVal.innerText = `${evidenceCount}/8`;
     }
     if (trackStatusBadge) {
-        trackStatusBadge.innerText = (mr && mr.confidence) || '-';
+        trackStatusBadge.innerText = mr.confidence || '-';
         trackStatusBadge.style.cssText = confidenceStyle;
     }
     if (trackStatusDots) {

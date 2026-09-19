@@ -280,7 +280,7 @@ def fetch_finlight_news(query="", symbol="", market_name="", formal_name="", lim
 
 
 def _translate_news_title_en_to_ko(title):
-    """영문 뉴스 제목을 한국어로 번역한다. 일시적 실패는 1회 재시도한다."""
+    """영문 뉴스 제목을 한국어로 번역한다. 실패하면 원문을 그대로 반환한다."""
     raw = html.unescape(str(title or "")).strip()
     if not raw:
         return raw
@@ -288,50 +288,33 @@ def _translate_news_title_en_to_ko(title):
     alpha_count = len(re.findall(r"[A-Za-z]", raw))
     if ko_count >= 2 or alpha_count < 4:
         return raw
-
     cache_key = f"en>ko:{raw}"
     cached = _cache_get(NEWS_TRANSLATION_CACHE, cache_key, NEWS_TRANSLATION_CACHE_TTL)
     if cached:
         return str(cached)
-
-    last_error = None
-    for attempt in range(2):
-        try:
-            response = HTTP_SESSION.get(
-                "https://translate.googleapis.com/translate_a/single",
-                params=[
-                    ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
-                    ("dt", "t"), ("q", raw),
-                ],
-                timeout=5.0,
-                headers={"User-Agent": "Mozilla/5.0"},
-            )
-            if response.status_code != 200:
-                last_error = f"HTTP {response.status_code}"
-                continue
-
-            payload = response.json()
-            translated = "".join(
-                str(part[0]) for part in (payload[0] or [])
-                if isinstance(part, list) and part and part[0]
-            ).strip()
-
-            # 번역 응답이 실제 한국어인지 확인한다.
-            if translated and (
-                re.search(r"[가-힣]", translated)
-                or not re.search(r"[A-Za-z]", raw)
-            ):
-                return _cache_set(
-                    NEWS_TRANSLATION_CACHE, cache_key, translated
-                )
-
-            last_error = "empty/non-korean translation"
-        except Exception as exc:
-            last_error = f"{type(exc).__name__}: {exc}"
-
-    if last_error:
-        print(f"[NEWS TRANSLATION] failed: {last_error}")
-    return raw
+    try:
+        response = HTTP_SESSION.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params=[
+                ("client", "gtx"), ("sl", "en"), ("tl", "ko"),
+                ("dt", "t"), ("q", raw),
+            ],
+            timeout=3.0,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if response.status_code != 200:
+            return raw
+        payload = response.json()
+        translated = "".join(
+            str(part[0]) for part in (payload[0] or [])
+            if isinstance(part, list) and part and part[0]
+        ).strip()
+        if not translated:
+            return raw
+        return _cache_set(NEWS_TRANSLATION_CACHE, cache_key, translated)
+    except Exception as exc:
+        print(f"[NEWS TRANSLATION] failed: {type(exc).__name__}: {exc}")
+        return raw
 
 
 def translate_news_titles_to_korean(items, market_name=""):
@@ -341,7 +324,6 @@ def translate_news_titles_to_korean(items, market_name=""):
     news_items = [dict(x) for x in items if isinstance(x, dict)]
     if not news_items:
         return []
-
     futures = {}
     for idx, item in enumerate(news_items):
         title = str(item.get("title") or "").strip()
@@ -349,128 +331,16 @@ def translate_news_titles_to_korean(items, market_name=""):
             futures[idx] = NEWS_TRANSLATION_EXECUTOR.submit(
                 _translate_news_title_en_to_ko, title
             )
-
     for idx, future in futures.items():
         try:
-            translated = future.result(timeout=6.5)
+            translated = future.result(timeout=3.5)
             if translated and translated != news_items[idx].get("title"):
                 news_items[idx]["title"] = translated
-                news_items[idx]["title_original"] = (
-                    str(news_items[idx].get("title_original") or "")
-                    or str(items[idx].get("title") or "")
-                )
+                news_items[idx]["title_original"] = str(news_items[idx].get("title_original") or "") or str(items[idx].get("title") or "")
         except Exception as exc:
             print(f"[NEWS TRANSLATION] result failed: {type(exc).__name__}: {exc}")
-
     return news_items
 
-
-
-
-def _google_stock_relevance_score(item, target_name=""):
-    """Google News 제목에서 종목/가격 재료 관련 기사를 우선한다."""
-    title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip().lower()
-    target = str(target_name or "").strip().lower()
-    score = 0
-
-    if target and target in title:
-        score += 10
-    # 주요 표기 변형
-    if "sk하이닉스" in target or "하이닉스" in target:
-        if any(term in title for term in ("sk하이닉스", "하이닉스", "sk하닉")):
-            score += 10
-    if "삼성전자" in target and any(term in title for term in ("삼성전자", "삼성전자우", "삼성")):
-        score += 8
-
-    material_keywords = [
-        "실적", "영업이익", "매출", "가이던스", "전망", "컨센서스", "수주", "계약",
-        "공급", "투자", "증설", "생산", "공장", "hbm", "메모리", "반도체", "ai",
-        "데이터센터", "인수", "합병", "지분", "자사주", "배당", "목표주가", "투자의견",
-        "외국인", "기관", "순매수", "순매도", "관세", "규제", "정책", "금리", "연준",
-        "cpi", "pce", "고용", "환율", "달러", "유가", "원유", "업황", "가격",
-        "공급망", "특허", "기술", "협력", "mou", "경영진",
-    ]
-    score += sum(2 for kw in material_keywords if kw in title)
-
-    low_value = [
-        "셰프", "맛집", "먹방", "연예", "배우", "가수", "축제", "전시", "콘서트",
-        "팬미팅", "패션", "화보", "광고", "모델", "홍보대사", "팝업", "사은품", "프로모션",
-    ]
-    score -= sum(5 for kw in low_value if kw in title)
-    return score
-
-
-def fetch_google_stock_news(symbol="", market_name="", formal_name="", limit=20):
-    """Google News RSS만 사용해 종목 관련 뉴스를 조회한다. 번역/Naver/Finlight를 사용하지 않는다."""
-    try:
-        lim = max(1, min(int(limit), 20))
-    except Exception:
-        lim = 10
-
-    name = str(formal_name or "").strip()
-    ticker = str(symbol or "").strip().upper()
-    if market_name == "미국주식":
-        query = f"{name} {ticker}".strip()
-    else:
-        query = name or ticker
-
-    rows = fetch_rss_news(query, max(lim * 2, lim))
-    enriched = []
-    seen = set()
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        title = re.sub(r"\s+", " ", str(row.get("title") or "")).strip()
-        key = title.lower()
-        if not title or key in seen:
-            continue
-        seen.add(key)
-        item = dict(row)
-        item["relevance_score"] = _google_stock_relevance_score(item, name or ticker)
-        enriched.append(item)
-
-    enriched.sort(
-        key=lambda x: (int(x.get("relevance_score") or 0), x.get("pubDate") or ""),
-        reverse=True,
-    )
-    return enriched[:lim]
-
-
-def fetch_google_economic_news(market_name="", limit=10):
-    """경제/시장 뉴스도 Google News RSS만 사용한다. 한국어 검색어로 구성한다."""
-    try:
-        final_limit = max(1, min(int(limit), 20))
-    except Exception:
-        final_limit = 10
-
-    queries = [
-        "미국증시 나스닥 다우 S&P500 미국증시 마감",
-        "연준 금리 인플레이션 관세 반도체 AI 원유 환율",
-        "미국증시 나스닥 연준 금리 반도체 AI 원유 환율",
-    ]
-
-    merged = []
-    seen = set()
-    per_query = max(5, min(10, final_limit))
-    for query in queries:
-        rows = fetch_rss_news(query, per_query)
-        for row in rows or []:
-            if not isinstance(row, dict):
-                continue
-            title = re.sub(r"\s+", " ", str(row.get("title") or "")).strip()
-            key = title.lower()
-            if not title or key in seen:
-                continue
-            seen.add(key)
-            item = dict(row)
-            item["relevance_score"] = _economic_news_priority(item, market_name)
-            merged.append(item)
-
-    merged.sort(
-        key=lambda x: (int(x.get("relevance_score") or 0), x.get("pubDate") or ""),
-        reverse=True,
-    )
-    return merged[:final_limit]
 
 def fetch_finlight_stock_news(symbol="", market_name="", formal_name="", limit=20):
     """선택 종목의 직접 관련 금융뉴스. Finlight 우선, 기존 RSS를 fallback으로 사용한다."""
@@ -518,7 +388,7 @@ def _economic_news_priority(item, market_name=""):
     title = str(item.get("title") or "").lower()
     score = int(item.get("relevance_score") or 0)
 
-    # 국내 종목 트랙분석에서 전일 미국 증시 흐름을 재료로
+    # 국내 종목의 "왜 움직였을까"에서 전일 미국 증시 흐름을 첫 번째 재료로
     # 사용할 수 있도록 미국 증시 마감/지수/반도체 시황에 추가 가중치를 준다.
     us_close_terms = [
         "미국증시", "뉴욕증시", "뉴욕 증시", "미국 증시", "나스닥",
@@ -696,7 +566,8 @@ def _fetch_rss_news_uncached(query_keyword, limit=5):
         print(f"[GOOGLE NEWS] RSS failed: {type(exc).__name__}: {exc}")
 
     if not headlines:
-        print(f"[GOOGLE NEWS] no results: {clean_k}")
+        print(f"[NEWS FALLBACK] Google News empty -> Naver News: {clean_k}")
+        headlines = fetch_naver_news(clean_k, limit)
 
     return headlines
 

@@ -7,6 +7,7 @@
     window.GaemiWidgets = window.GaemiWidgets || {};
     let requestToken = 0;
     let controller = null;
+    let lastRenderedMarket = '';
     const marketCache = new Map();
     const MARKET_CACHE_TTL_MS = 5 * 60 * 1000;
 

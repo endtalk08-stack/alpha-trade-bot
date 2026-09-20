@@ -8266,6 +8266,11 @@ class WebHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/global-news":
             try:
                 market_name = str(params.get("market", ["국내주식"])[0]).strip() or "국내주식"
+                market_name = {
+                    "KR": "국내주식",
+                    "US": "미국주식",
+                    "CRYPTO": "암호화폐",
+                }.get(market_name.upper(), market_name)
                 limit = int(params.get("limit", ["10"])[0])
                 rows = fetch_google_economic_news(market_name, max(1, min(limit, 20)))
                 if market_name == "미국주식":

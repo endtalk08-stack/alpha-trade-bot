@@ -48,3 +48,8 @@
 
 - 종목 전환 중 기존 종목 헤더/가격/차트를 먼저 비우지 않는다.
 - 새 Core 데이터가 확정되면 종목명·가격·등락률·차트를 같은 브라우저 프레임에서 반영한다.
+
+
+## v12 economic news fix
+- `lastRenderedMarket` state is explicitly initialized in the economic-news widget.
+- `/api/global-news` normalizes KR/US/CRYPTO market codes before Google News query selection.

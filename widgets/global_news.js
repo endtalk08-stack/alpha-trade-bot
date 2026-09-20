@@ -7,6 +7,8 @@
     window.GaemiWidgets = window.GaemiWidgets || {};
     let requestToken = 0;
     let controller = null;
+    const marketCache = new Map();
+    const MARKET_CACHE_TTL_MS = 5 * 60 * 1000;
 
     function render(items) {
         const root = document.getElementById('globalNewsList');
@@ -43,24 +45,51 @@
 
     async function load(context) {
         const ctx = context || {};
-        if (Array.isArray(ctx.initial)) render(ctx.initial);
-        const market = String(ctx.market || '국내주식').trim() || '국내주식';
+        const market = String(ctx.marketCode || ctx.market || '국내주식').trim() || '국내주식';
+        const cached = marketCache.get(market);
+        const now = Date.now();
+
+        // 경제뉴스는 종목별 데이터가 아니라 시장 단위 데이터다.
+        // 같은 시장의 종목을 연속해서 선택할 때는 재요청하지 않는다.
+        if (cached && Array.isArray(cached.data) && (now - cached.time) < MARKET_CACHE_TTL_MS) {
+            render(cached.data);
+            return cached.data;
+        }
+
+        if (Array.isArray(ctx.initial) && ctx.initial.length) {
+            marketCache.set(market, {time: now, data: ctx.initial.slice(0, 10)});
+            render(ctx.initial);
+        }
+
         const token = ++requestToken;
         if (controller) { try { controller.abort(); } catch (_) {} }
         controller = new AbortController();
         const qs = new URLSearchParams({market, limit: '10'});
         try {
-            const response = await fetch('/api/global-news?' + qs.toString(), {cache: 'no-store', signal: controller.signal});
+            const response = await fetch('/api/global-news?' + qs.toString(), {
+                cache: 'no-store', signal: controller.signal
+            });
             const payload = await response.json().catch(() => null);
-            if (token !== requestToken) return;
-            if (!response.ok || !payload || payload.ok === false) throw new Error((payload && payload.error) || '경제뉴스 데이터 오류');
-            render(payload.data || []);
+            if (token !== requestToken) return null;
+            if (!response.ok || !payload || payload.ok === false) {
+                throw new Error((payload && payload.error) || '경제뉴스 데이터 오류');
+            }
+            const items = Array.isArray(payload.data) ? payload.data : [];
+            marketCache.set(market, {time: Date.now(), data: items.slice(0, 10)});
+            render(items);
+            return items;
         } catch (error) {
-            if (error && error.name === 'AbortError') return;
-            if (!Array.isArray(ctx.initial) || !ctx.initial.length) render([]);
+            if (error && error.name === 'AbortError') return null;
+            if (!cached && (!Array.isArray(ctx.initial) || !ctx.initial.length)) render([]);
             console.warn('[GLOBAL NEWS] load failed:', error);
+            return null;
         }
     }
 
-    window.GaemiWidgets.globalNews = { render, load };
+    function clearCache(market) {
+        if (market) marketCache.delete(String(market));
+        else marketCache.clear();
+    }
+
+    window.GaemiWidgets.globalNews = { render, load, clearCache };
 })(window);

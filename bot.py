@@ -6169,11 +6169,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 </div>
             </div>
             <div class="popular-tags">
-                <button class="tag-btn" onclick="selectStock('SK하이닉스')">SK하이닉스</button>
-                <button class="tag-btn" onclick="selectStock('삼성전자')">삼성전자</button>
-                <button class="tag-btn" onclick="selectStock('알테오젠')">알테오젠</button>
-                <button class="tag-btn" onclick="selectStock('엔비디아')">엔비디아</button>
-                <button class="tag-btn" onclick="selectStock('비트코인')">비트코인</button>
+                <button class="tag-btn" onclick="selectStock({key:'KR:000660',market:'KR',symbol:'000660',name:'SK하이닉스'})">SK하이닉스</button>
+                <button class="tag-btn" onclick="selectStock({key:'KR:005930',market:'KR',symbol:'005930',name:'삼성전자'})">삼성전자</button>
+                <button class="tag-btn" onclick="selectStock({key:'KR:196170',market:'KR',symbol:'196170',name:'알테오젠'})">알테오젠</button>
+                <button class="tag-btn" onclick="selectStock({key:'US:NVDA',market:'US',symbol:'NVDA',name:'엔비디아'})">엔비디아</button>
+                <button class="tag-btn" onclick="selectStock({key:'CRYPTO:BTCUSDT',market:'CRYPTO',symbol:'BTCUSDT',name:'비트코인'})">비트코인</button>
             </div>
         </div>
 

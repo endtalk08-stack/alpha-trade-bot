@@ -58,3 +58,14 @@
 - Fixed a domestic canonical-symbol routing bug where `KR:000660` / `KR:005930` could be passed into `find_stock_code()` after server-side resolution.
 - Domestic analysis now uses the already-resolved canonical `instrument.symbol` and `instrument.name` directly, preventing false `/api/analyze` 404 responses for sidebar-selected KR stocks.
 - Focused test verified `run_full_pipeline('KR:000660', lightweight=True)` returns `KR:000660`, `SK하이닉스`, and chart candles without calling the legacy name resolver.
+
+## STEP 55 — 메인 검색창 하단 고정 종목도 canonical instrument로 통합
+- 하단 인기/고정 종목 버튼 5개를 문자열 검색 호출에서 `{key, market, symbol, name}` 객체 호출로 변경.
+- SK하이닉스 → `KR:000660`
+- 삼성전자 → `KR:005930`
+- 알테오젠 → `KR:196170`
+- 엔비디아 → `US:NVDA`
+- 비트코인 → `CRYPTO:BTCUSDT`
+- `selectStock()`의 기존 호환 경로는 유지하여 기존 위젯 호출과의 호환성을 보존.
+- 실제 서버 HTML 원본(`bot.py`의 `HTML_PAGE`)과 `home.out`의 HTML을 동일 상태로 유지.
+- 목적: 메인 검색 / 하단 고정 종목 / 오른쪽 사이드바가 모두 동일한 canonical 종목 식별 체계를 사용하도록 통합.

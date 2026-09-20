@@ -7384,7 +7384,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         }
 
         // 브라우저 콘솔에서 실제 배포본의 단일 종목 흐름 버전을 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP56-WIDGET-INDEPENDENT';
+        window.__GAEMIGTP_BUILD__ = 'STEP59-CANONICAL-INPUT-EARNINGS-INDEPENDENT';
 
         let currentInstrument = null;
         let activeSearchToken = 0;
@@ -7498,8 +7498,15 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
 
             const center = document.getElementById('centerInput');
             const bottom = document.getElementById('bottomInput');
-            if (center) center.value = rawQuery;
-            if (bottom) bottom.value = rawQuery;
+            // 종목 전환 중에는 이전 종목명을 유지한다. 사이드바에서 이름을 함께 받은 경우
+            // 그 이름을 즉시 유지하고, canonical key를 검색창에 노출하지 않는다.
+            if (displayNameHint) {
+                if (center) center.value = displayNameHint;
+                if (bottom) bottom.value = displayNameHint;
+            } else if (!currentInstrument) {
+                if (center) center.value = rawQuery;
+                if (bottom) bottom.value = rawQuery;
+            }
 
             document.getElementById('main-view').style.display = 'none';
             document.getElementById('result-scroll-view').style.display = 'block';
@@ -7613,8 +7620,17 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
 
             const center = document.getElementById('centerInput');
             const bottom = document.getElementById('bottomInput');
-            if (center) center.value = pendingStockSelection.displayNameOverride || rawQuery;
-            if (bottom) bottom.value = pendingStockSelection.displayNameOverride || rawQuery;
+            // 사이드바처럼 이미 종목명을 알고 있는 선택은 이름을 유지한다.
+            // KR:000660 같은 canonical key가 검색창에 잠깐 나타났다 다시 이름으로 바뀌는
+            // 불필요한 화면 전환을 없앤다. URL/데이터 식별자는 여전히 market+symbol이다.
+            const selectionDisplay = pendingStockSelection.displayNameOverride;
+            if (selectionDisplay) {
+                if (center) center.value = selectionDisplay;
+                if (bottom) bottom.value = selectionDisplay;
+            } else if (!currentInstrument) {
+                if (center) center.value = rawQuery;
+                if (bottom) bottom.value = rawQuery;
+            }
 
             if (stockSelectionRunning) return;
 
@@ -7810,6 +7826,9 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                 window.GaemiWidgets.economicCalendar.load(false);
             } else {
                 loadMarketCalendar();
+            }
+            if (window.GaemiWidgets && window.GaemiWidgets.earningsCalendar) {
+                window.GaemiWidgets.earningsCalendar.load(false);
             }
             loadUsLeadingSectors();
         });
@@ -8292,6 +8311,15 @@ class WebHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"API ERROR /api/market-calendar: {type(exc).__name__}: {exc}")
                 self._json(500, {"ok": False, "error": "시장 캘린더 데이터를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/earnings-calendar":
+            try:
+                rows = fetch_all_real_earnings() or []
+                self._json(200, {"ok": True, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/earnings-calendar: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "실적 캘린더 데이터를 가져오지 못했습니다."})
             return
 
         if parsed.path == "/api/us-leading-stocks":

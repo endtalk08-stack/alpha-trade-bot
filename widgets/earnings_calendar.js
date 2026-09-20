@@ -8,6 +8,9 @@
     let page = 1;
     let starFilter = 'all';
     let autoJumped = false;
+    let earningsData = [];
+    let loadToken = 0;
+    let loadController = null;
     const ITEMS_PER_PAGE = 4;
 
     function setText(id, value) {
@@ -16,7 +19,7 @@
     }
 
     function calendarData() {
-        return Array.isArray(window.globalMarketCalendar) ? window.globalMarketCalendar : [];
+        return Array.isArray(earningsData) ? earningsData : [];
     }
 
     function todayKstKey() {
@@ -178,5 +181,29 @@
         render();
     }
 
-    window.GaemiWidgets.earningsCalendar = { render, setStarFilter, shiftDate, resetDate, changePage };
+
+    async function load(force = false) {
+        const token = ++loadToken;
+        if (loadController) { try { loadController.abort(); } catch (_) {} }
+        loadController = new AbortController();
+        try {
+            const url = '/api/earnings-calendar' + (force ? '?force=1' : '');
+            const response = await fetch(url, { cache: 'no-store', signal: loadController.signal });
+            const payload = await response.json().catch(() => null);
+            if (token !== loadToken) return;
+            if (!response.ok || !payload || payload.ok === false) {
+                throw new Error((payload && payload.error) || '실적 캘린더 데이터 오류');
+            }
+            earningsData = Array.isArray(payload.data) ? payload.data : [];
+            offset = 0;
+            page = 1;
+            autoJumped = false;
+            render();
+        } catch (error) {
+            if (error && error.name === 'AbortError') return;
+            console.warn('[EARNINGS CALENDAR] load failed:', error);
+            render();
+        }
+    }
+    window.GaemiWidgets.earningsCalendar = { render, load, setStarFilter, shiftDate, resetDate, changePage };
 })();

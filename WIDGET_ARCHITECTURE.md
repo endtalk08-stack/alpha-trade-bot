@@ -53,3 +53,8 @@
 ## v12 economic news fix
 - `lastRenderedMarket` state is explicitly initialized in the economic-news widget.
 - `/api/global-news` normalizes KR/US/CRYPTO market codes before Google News query selection.
+
+
+## v13 clarification
+- Right-sidebar selection keeps the display name in the input; URL/data identity remains canonical market+symbol.
+- Earnings calendar now has its own `/api/earnings-calendar` endpoint and client-side data state, independent from the economic calendar.

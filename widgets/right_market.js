@@ -45,7 +45,10 @@
                 const symbol = escapeRightMarketText(row.symbol || '');
                 const clickSymbol = escapeRightMarketText(row.symbol || row.name || '');
                 const clickName = escapeRightMarketText(krName || row.name || row.symbol || '');
-                return `<div class="right-market-row" role="button" tabindex="0" data-right-symbol="${clickSymbol}" data-right-name="${clickName}">
+                const rowMarket = String(row.market_code || row.market_code_name || '').trim().toUpperCase();
+                const marketCode = rowMarket || (rightMarketKey === 'kr' ? 'KR' : (rightMarketKey === 'us' ? 'US' : 'CRYPTO'));
+                const clickQuery = escapeRightMarketText(`${marketCode}:${row.symbol || row.name || ''}`);
+                return `<div class="right-market-row" role="button" tabindex="0" data-right-symbol="${clickSymbol}" data-right-query="${clickQuery}" data-right-name="${clickName}" data-right-market="${escapeRightMarketText(marketCode)}">
                     <div class="right-market-rank">${row.rank || idx + 1}</div>
                     <div class="right-market-logo">${badge}</div>
                     <div style="min-width:0"><div class="right-market-name">${name}</div><div class="right-market-symbol">${symbol}</div></div>
@@ -104,9 +107,11 @@
             const openRow = (row) => {
                 if (!row) return;
                 const symbol = row.getAttribute('data-right-symbol') || '';
+                const query = row.getAttribute('data-right-query') || '';
                 const name = row.getAttribute('data-right-name') || '';
-                if (!symbol) return;
-                selectStock(symbol, false, name);
+                if (!symbol && !query) return;
+                const market = row.getAttribute('data-right-market') || '';
+                selectStock({ key: query || symbol, symbol, market, name });
             };
             list.addEventListener('click', (event) => {
                 const row = event.target.closest('.right-market-row');

@@ -36,3 +36,20 @@
 - 이전 종목 완료 응답이 새 선택 사이에 화면에 끼어들지 않도록 대기 선택 존재 여부를 렌더링에서 차단
 - core 분석 요청이 15초 이상 걸릴 때 브라우저가 무한 로딩 상태에 머물지 않도록 timeout 적용
 - 외부 데이터의 순간적인 빈 응답으로 전체 분석이 None이 된 경우 서버에서 250ms 후 1회 재시도
+
+## STEP 55 — Right-sidebar provider resilience
+- Right-sidebar clicks now carry an explicit market-qualified symbol (`KR:`, `US:`, `CRYPTO:`).
+- Domestic OHLCV fallback chain ends with PostgreSQL stored prices when web providers temporarily fail.
+- US Yahoo chart uses query1/query2 fallback; if `FINNHUB_API_KEY` is configured, Finnhub daily candles are a final provider fallback.
+- Yahoo quote failure can fall back to chart-derived current/previous close.
+- Goal: prevent first-time/uncached right-sidebar selections from failing just because one external provider is temporarily unavailable.
+
+
+## Final dynamic instrument integration
+- Added runtime instrument registry; discovered sidebar/broker-style symbols are auto-registered instead of being fixed in source.
+- Right sidebar rows now carry `market_code` and `instrument_key` and open through the same selection path.
+- `/api/analyze` accepts explicit `m` + `s` so dynamically supplied tickers bypass name-resolution ambiguity.
+- Added a public Stooq daily OHLCV fallback for new US tickers when Yahoo/DB are unavailable.
+- Existing UI, database tables, analysis calculations, and sidebar ranking behavior were preserved.
+
+- Recent/favorite sidebar rows now honor each row's stored market code instead of assuming the currently selected sidebar tab market.

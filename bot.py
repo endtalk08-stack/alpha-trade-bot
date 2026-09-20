@@ -161,6 +161,41 @@ DOMESTIC_FAST_MAP = {
 INSTRUMENT_RESOLUTION_CACHE = {}
 INSTRUMENT_RESOLUTION_CACHE_TTL = 3600
 
+# 동적 종목 마스터: 고정 목록이 아니라 검색/사이드바/향후 증권사 API가 발견한
+# 종목을 자동 등록한다. 분석 가능 여부를 이 목록으로 제한하지 않는다.
+INSTRUMENT_REGISTRY = {}
+INSTRUMENT_REGISTRY_LOCK = threading.Lock()
+
+def register_instrument(instrument):
+    if not isinstance(instrument, dict):
+        return None
+    key = str(instrument.get('key') or '').strip().upper()
+    if not key:
+        return None
+    item = dict(instrument)
+    item['key'] = key
+    item['symbol'] = str(item.get('symbol') or '').strip().upper()
+    item['market'] = _normalize_market_hint(item.get('market')) or item.get('market')
+    with INSTRUMENT_REGISTRY_LOCK:
+        INSTRUMENT_REGISTRY[key] = dict(item)
+    return item
+
+def register_dynamic_instrument(market, symbol, name=''):
+    symbol = str(symbol or '').strip().upper()
+    market = _normalize_market_hint(market)
+    if not symbol or not market:
+        return None
+    market_names = {'KR':'국내주식','US':'미국주식','CRYPTO':'암호화폐','INDEX':'글로벌증시'}
+    return register_instrument({
+        'key': instrument_key(market, symbol),
+        'market': market,
+        'market_name': market_names.get(market, market),
+        'symbol': symbol,
+        'name': str(name or '').strip() or symbol,
+        'market_index_name': None,
+        'input': symbol,
+    })
+
 def _normalize_market_hint(value):
     v = str(value or '').strip().lower()
     return {
@@ -209,15 +244,15 @@ def resolve_instrument(query='', market_hint=None, symbol_hint=None, name_hint=N
                 sym = f'{sym}USDT'
             if pref == 'INDEX':
                 kind, market_name, index_name = _global_index_metadata(sym)
-                return {'key': instrument_key('INDEX', sym), 'market': kind, 'market_name': market_name,
-                        'symbol': sym, 'name': hint_name or DOMESTIC_CODE_NAME_MAP.get(sym) or US_SYMBOL_NAME_MAP.get(sym) or CRYPTO_SYMBOL_NAME_MAP.get(sym) or sym, 'market_index_name': index_name, 'input': raw}
-            return {'key': instrument_key(pref, sym), 'market': pref,
+                return register_instrument({'key': instrument_key('INDEX', sym), 'market': kind, 'market_name': market_name,
+                        'symbol': sym, 'name': hint_name or DOMESTIC_CODE_NAME_MAP.get(sym) or US_SYMBOL_NAME_MAP.get(sym) or CRYPTO_SYMBOL_NAME_MAP.get(sym) or sym, 'market_index_name': index_name, 'input': raw})
+            return register_instrument({'key': instrument_key(pref, sym), 'market': pref,
                     'market_name': {'KR':'국내주식','US':'미국주식','CRYPTO':'암호화폐'}[pref],
-                    'symbol': sym, 'name': hint_name or (DOMESTIC_CODE_NAME_MAP.get(sym) if pref == 'KR' else US_SYMBOL_NAME_MAP.get(sym) if pref == 'US' else CRYPTO_SYMBOL_NAME_MAP.get(sym)) or sym, 'market_index_name': None, 'input': raw}
+                    'symbol': sym, 'name': hint_name or (DOMESTIC_CODE_NAME_MAP.get(sym) if pref == 'KR' else US_SYMBOL_NAME_MAP.get(sym) if pref == 'US' else CRYPTO_SYMBOL_NAME_MAP.get(sym)) or sym, 'market_index_name': None, 'input': raw})
 
     cached = INSTRUMENT_RESOLUTION_CACHE.get(lookup)
     if cached and time.time() - cached[0] < INSTRUMENT_RESOLUTION_CACHE_TTL:
-        return dict(cached[1])
+        return register_instrument(dict(cached[1]))
 
     # 명시적 market hint가 있으면 hint를 우선 적용한다.
     if hint_market == 'KR' and (lookup.isdigit() and len(lookup) == 6):
@@ -262,7 +297,7 @@ def resolve_instrument(query='', market_hint=None, symbol_hint=None, name_hint=N
                   'market_index_name': None, 'input': raw}
 
     INSTRUMENT_RESOLUTION_CACHE[lookup] = (time.time(), dict(result))
-    return result
+    return register_instrument(result)
 
 
 # 코드 -> 대표 종목명 역매핑. canonical URL/새로고침에서도 이름을 복원한다.
@@ -1996,6 +2031,34 @@ def _fetch_domestic_candles_uncached(code, anchor_price=None):
         except Exception as exc:
             print(f"[DOMESTIC YAHOO FALLBACK] {code}{suffix} failed: {type(exc).__name__}: {exc}")
 
+    # 6) PostgreSQL에 이미 저장된 동일 종목 OHLCV를 최종 안전망으로 사용한다.
+    # 과거에 한 번이라도 정상 조회된 종목은 외부 제공처가 순간적으로 실패해도
+    # 빈 화면 대신 마지막 저장 데이터를 이용해 차트/퀀트 계산을 계속할 수 있다.
+    try:
+        db_market = "Korea"
+        db_rows = get_db_recent_prices(db_market, str(code).strip().upper(), "1d", 400)
+        if isinstance(db_rows, list) and len(db_rows) >= 15:
+            records = []
+            for item in reversed(db_rows):
+                try:
+                    records.append({
+                        "Date": pd.to_datetime(item.get("timestamp")),
+                        "Open": float(item.get("open")),
+                        "High": float(item.get("high")),
+                        "Low": float(item.get("low")),
+                        "Close": float(item.get("close")),
+                        "Volume": float(item.get("volume") or 0.0),
+                    })
+                except Exception:
+                    continue
+            if len(records) >= 15:
+                df = pd.DataFrame(records).drop_duplicates(subset=["Date"]).set_index("Date").sort_index()
+                df.attrs["_gaemi_raw_df"] = df.copy()
+                print(f"[DOMESTIC DB FALLBACK] {code}: 저장된 {len(df)}건 사용")
+                return df
+    except Exception as exc:
+        print(f"[DOMESTIC DB FALLBACK] {code} failed: {type(exc).__name__}: {exc}")
+
     return None
 
 def _schedule_domestic_candle_refresh(key):
@@ -2921,6 +2984,31 @@ def _run_full_pipeline_impl(query, lightweight=False):
             chart_price, _, df = chart_future.result()
             quote_snapshot = quote_future.result()
 
+        # Yahoo 차트가 일시적으로 실패한 경우 DB에 과거 OHLCV가 있으면 즉시 복구한다.
+        if df is None or getattr(df, "empty", True):
+            try:
+                db_rows = get_db_recent_prices("US", str(symbol).strip().upper(), "1d", 400)
+                if isinstance(db_rows, list) and len(db_rows) >= 15:
+                    records = []
+                    for item in reversed(db_rows):
+                        try:
+                            records.append({
+                                "Date": pd.to_datetime(item.get("timestamp")),
+                                "Open": float(item.get("open")),
+                                "High": float(item.get("high")),
+                                "Low": float(item.get("low")),
+                                "Close": float(item.get("close")),
+                                "Volume": float(item.get("volume") or 0.0),
+                            })
+                        except Exception:
+                            continue
+                    if len(records) >= 15:
+                        df = pd.DataFrame(records).drop_duplicates(subset=["Date"]).set_index("Date").sort_index()
+                        chart_price = float(df["Close"].iloc[-1])
+                        print(f"[US DB FALLBACK] {symbol}: 저장된 {len(df)}건 사용")
+            except Exception as exc:
+                print(f"[US DB FALLBACK] {symbol} failed: {type(exc).__name__}: {exc}")
+
         if isinstance(quote_snapshot, dict) and quote_snapshot.get("price") is not None:
             try:
                 raw_price = float(quote_snapshot.get("price"))
@@ -3679,6 +3767,18 @@ def fetch_right_market_board(market="kr", force=False):
         print(f"[RIGHT MARKET BOARD] {key} fetch failed: {type(exc).__name__}: {exc}")
         rows = []
     if rows:
+        market_code = {'kr':'KR','us':'US','crypto':'CRYPTO'}.get(key, key.upper())
+        normalized_rows = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            symbol = str(row.get('symbol') or row.get('code') or '').strip().upper()
+            name = str(row.get('name') or symbol).strip()
+            if symbol:
+                row['market_code'] = market_code
+                row['instrument_key'] = instrument_key(market_code, symbol)
+                register_dynamic_instrument(market_code, symbol, name)
+            normalized_rows.append(row)
+        rows = normalized_rows
         with RIGHT_MARKET_BOARD_CACHE_LOCK:
             RIGHT_MARKET_BOARD_CACHE[key] = {"time": time.time(), "data": rows, "version": RIGHT_MARKET_BOARD_CACHE_VERSION}
     return rows
@@ -7055,7 +7155,7 @@ document.getElementById('result-card-wrap').style.display = 'block';
 // 자동으로 페이지 맨 위로 이동시키지 않는다.
         }
 
-        async function _runSelectedStock(query, forceServer = false, displayNameOverride = '') {
+        async function _runSelectedStock(query, forceServer = false, displayNameOverride = '', marketHint = '', symbolHint = '') {
             const rawQuery = String(query || '').trim();
             if (!rawQuery) return;
 
@@ -7090,7 +7190,10 @@ document.getElementById('result-card-wrap').style.display = 'block';
 
             // 서버가 종목의 canonical key를 확정한다. 프론트는 임의의 종목키를 만들지 않는다.
             try {
-                const url = '/api/analyze?q=' + encodeURIComponent(rawQuery) + '&mode=core';
+                let url = '/api/analyze?q=' + encodeURIComponent(rawQuery) + '&mode=core';
+                if (marketHint && symbolHint) {
+                    url += '&m=' + encodeURIComponent(marketHint) + '&s=' + encodeURIComponent(symbolHint);
+                }
                 const timeoutId = setTimeout(() => {
                     try { activeSearchController?.abort(); } catch (e) {}
                 }, 15000);
@@ -7160,13 +7263,18 @@ document.getElementById('result-card-wrap').style.display = 'block';
         // STEP 54: 실제 브라우저 종목 선택 진입점.
         // 현재 분석이 끝나기 전에 새 종목을 누르면 최신 선택만 대기열에 남긴다.
         async function selectStock(query, forceServer = false, displayNameOverride = '') {
-            const rawQuery = String(query || '').trim();
+            const isObject = query && typeof query === 'object';
+            const rawQuery = isObject
+                ? String(query.key || query.symbol || '').trim()
+                : String(query || '').trim();
             if (!rawQuery) return;
 
             pendingStockSelection = {
                 query: rawQuery,
+                marketHint: isObject ? String(query.market || query.market_code || '').trim().toUpperCase() : '',
+                symbolHint: isObject ? String(query.symbol || '').trim().toUpperCase() : '',
                 forceServer: !!forceServer,
-                displayNameOverride: String(displayNameOverride || '').trim()
+                displayNameOverride: String(isObject ? (query.name || query.displayName || displayNameOverride) : displayNameOverride || '').trim()
             };
 
             if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
@@ -7184,7 +7292,7 @@ document.getElementById('result-card-wrap').style.display = 'block';
                     const job = pendingStockSelection;
                     pendingStockSelection = null;
                     try {
-                        await _runSelectedStock(job.query, job.forceServer, job.displayNameOverride);
+                        await _runSelectedStock(job.query, job.forceServer, job.displayNameOverride, job.marketHint, job.symbolHint);
                     } catch (e) {
                         console.error('[STOCK SELECT QUEUE] run failed:', e);
                     }
@@ -7923,9 +8031,21 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/analyze":
             q = str(params.get("q", [""])[0]).strip()
-            if not q:
-                self._json(400, {"error": "종목명을 입력해주세요."})
+            market_param = str(params.get("m", [""])[0]).strip().upper()
+            symbol_param = str(params.get("s", [""])[0]).strip().upper()
+            if not q and not symbol_param:
+                self._json(400, {"error": "종목명 또는 종목코드가 필요합니다."})
                 return
+            if symbol_param:
+                resolved = resolve_instrument(
+                    query=f"{market_param}:{symbol_param}" if market_param else symbol_param,
+                    market_hint=market_param,
+                    symbol_hint=symbol_param,
+                )
+                if not resolved:
+                    self._json(404, {"error": "종목을 찾을 수 없습니다."})
+                    return
+                q = resolved['key']
             mode = str(params.get("mode", ["full"])[0]).strip().lower()
             lightweight = mode == "core"
             _perf_begin("analyze", q)

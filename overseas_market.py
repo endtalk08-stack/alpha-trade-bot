@@ -2,6 +2,7 @@
 
 Behavior-preserving extraction from bot.py.
 """
+import os
 import time
 import threading
 import urllib.parse
@@ -67,27 +68,128 @@ def fetch_overseas_candles(symbol):
 
     try:
         encoded_sym = urllib.parse.quote(key)
-        url = (
-            f"https://query1.finance.yahoo.com/v8/finance/chart/"
-            f"{encoded_sym}?range=5y&interval=1d&includePrePost=false"
-        )
-        response = HTTP_SESSION.get(
-            url,
-            timeout=5.0,
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-        response.raise_for_status()
-
-        res = response.json()
-        chart = res.get("chart") or {}
-        if chart.get("error"):
-            raise RuntimeError(f"Yahoo chart error: {chart.get('error')}")
-
-        result = chart.get("result") or []
+        headers = {"User-Agent": "Mozilla/5.0"}
+        last_error = None
+        result = None
+        # Yahoo Q1 장애/일시 차단 시 Q2로 같은 차트를 한 번 더 시도한다.
+        # chart v8은 별도 crumb 없이 사용할 수 있어 quote v7과 분리해서 안정적으로 사용한다.
+        for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+            try:
+                url = (
+                    f"https://{host}/v8/finance/chart/{encoded_sym}"
+                    f"?range=5y&interval=1d&includePrePost=false"
+                )
+                response = HTTP_SESSION.get(url, timeout=5.0, headers=headers)
+                response.raise_for_status()
+                res = response.json()
+                chart = res.get("chart") or {}
+                if chart.get("error"):
+                    raise RuntimeError(f"Yahoo chart error: {chart.get('error')}")
+                candidate = chart.get("result") or []
+                if candidate:
+                    result = candidate
+                    break
+                raise RuntimeError("Yahoo chart result가 비어 있습니다.")
+            except Exception as exc:
+                last_error = exc
+                print(f"[YAHOO CHART PROVIDER] {key} {host} failed: {type(exc).__name__}: {exc}")
         if not result:
-            raise RuntimeError("Yahoo chart result가 비어 있습니다.")
+            # Yahoo 두 호스트가 모두 실패한 경우, 설정된 Finnhub 키가 있으면
+            # 일봉 OHLCV를 보조 공급처에서 받아 첫 검색도 빈 화면으로 끝나지 않게 한다.
+            finnhub_key = os.environ.get("FINNHUB_API_KEY", "").strip()
+            if finnhub_key:
+                try:
+                    now_ts = int(time.time())
+                    from_ts = now_ts - 5 * 365 * 24 * 60 * 60
+                    finnhub_url = (
+                        "https://finnhub.io/api/v1/stock/candle"
+                        f"?symbol={urllib.parse.quote(key)}&resolution=D&from={from_ts}&to={now_ts}"
+                        f"&token={urllib.parse.quote(finnhub_key)}"
+                    )
+                    fr = HTTP_SESSION.get(finnhub_url, timeout=5.0, headers=headers)
+                    fr.raise_for_status()
+                    fp = fr.json()
+                    if str(fp.get("s") or "").lower() == "ok":
+                        ts_list = fp.get("t") or []
+                        opens = fp.get("o") or []
+                        highs = fp.get("h") or []
+                        lows = fp.get("l") or []
+                        closes = fp.get("c") or []
+                        volumes = fp.get("v") or []
+                        n = min(len(ts_list), len(opens), len(highs), len(lows), len(closes))
+                        records = []
+                        for i in range(n):
+                            try:
+                                if any(v is None for v in (opens[i], highs[i], lows[i], closes[i])):
+                                    continue
+                                records.append({
+                                    "Date": pd.to_datetime(ts_list[i], unit="s"),
+                                    "Open": float(opens[i]),
+                                    "High": float(highs[i]),
+                                    "Low": float(lows[i]),
+                                    "Close": float(closes[i]),
+                                    "Volume": float(volumes[i] or 0.0) if i < len(volumes) else 0.0,
+                                })
+                            except Exception:
+                                continue
+                        if len(records) >= 15:
+                            result = [{"timestamp": int(pd.Timestamp(r["Date"]).timestamp()),
+                                       "indicators": {"quote": [{
+                                           "open": [r["Open"] for r in records],
+                                           "high": [r["High"] for r in records],
+                                           "low": [r["Low"] for r in records],
+                                           "close": [r["Close"] for r in records],
+                                           "volume": [r["Volume"] for r in records],
+                                       }]},
+                                       "_finnhub_records": records}]
+                            print(f"[FINNHUB CHART FALLBACK] {key}: {len(records)}건 사용")
+                except Exception as exc:
+                    print(f"[FINNHUB CHART FALLBACK] {key} failed: {type(exc).__name__}: {exc}")
+        if not result:
+            # Yahoo와 DB가 모두 비어 있을 때도 신규 동적 종목이 첫 클릭부터
+            # 분석될 수 있도록 공개 CSV 공급처(Stooq)를 마지막 무인 fallback으로 사용한다.
+            try:
+                stooq_symbol = key.lower() + '.us'
+                stooq_url = f"https://stooq.com/q/d/l/?s={urllib.parse.quote(stooq_symbol)}&i=d"
+                sr = HTTP_SESSION.get(stooq_url, timeout=5.0, headers=headers)
+                if sr.ok and 'Date,Open,High,Low,Close' in sr.text[:200]:
+                    records = []
+                    for line in sr.text.splitlines()[1:]:
+                        parts = [p.strip() for p in line.split(',')]
+                        if len(parts) < 6:
+                            continue
+                        try:
+                            records.append({
+                                'Date': pd.to_datetime(parts[0]),
+                                'Open': float(parts[1]),
+                                'High': float(parts[2]),
+                                'Low': float(parts[3]),
+                                'Close': float(parts[4]),
+                                'Volume': float(parts[5] or 0),
+                            })
+                        except Exception:
+                            continue
+                    if len(records) >= 15:
+                        result = [{'_stooq_records': records}]
+                        print(f'[STOOQ CHART FALLBACK] {key}: {len(records)}건 사용')
+            except Exception as exc:
+                print(f'[STOOQ CHART FALLBACK] {key} failed: {type(exc).__name__}: {exc}')
+
+        if not result:
+            raise last_error or RuntimeError("해외 차트 공급처가 모두 실패했습니다.")
 
         item = result[0]
+        if item.get("_finnhub_records") or item.get("_stooq_records"):
+            records = list(item.get("_finnhub_records") or item.get("_stooq_records") or [])
+            df = pd.DataFrame(records).set_index("Date").sort_index()
+            chart_close = float(df["Close"].iloc[-1])
+            result_value = (chart_close, f"{chart_close:,.2f} 달러", df)
+            OVERSEAS_CANDLE_CACHE[key] = {"time": time.time(), "df": df.copy()}
+            try:
+                inflight.set_result(result_value)
+            except Exception:
+                pass
+            return chart_close, f"{chart_close:,.2f} 달러", df
         ts = item.get("timestamp") or []
         quote = (item.get("indicators") or {}).get("quote") or [{}]
         quote = quote[0] if quote else {}
@@ -243,6 +345,35 @@ def fetch_overseas_quote_snapshot(symbol):
             return dict(value) if isinstance(value, dict) else value
 
     value = _fetch_overseas_quote_snapshot_uncached(key)
+
+    # 2026년 현재 Yahoo v7 quote는 세션/crumb 검증에 걸릴 수 있다.
+    # 현재가가 꼭 필요한 화면에서도 quote 실패 때문에 전체 분석을 실패시키지 않는다.
+    # chart v8의 마지막/직전 종가를 보조 시세로 사용한다.
+    if value is None:
+        try:
+            chart_close, _, df = fetch_overseas_candles(key)
+            if df is not None and not df.empty:
+                closes = pd.to_numeric(df.get("Close"), errors="coerce").dropna()
+                if not closes.empty:
+                    prev = float(closes.iloc[-2]) if len(closes) >= 2 else None
+                    price = float(closes.iloc[-1])
+                    pct = ((price - prev) / prev * 100.0) if prev else None
+                    value = {
+                        "symbol": key,
+                        "price": price,
+                        "previous_close": prev,
+                        "change_pct": pct,
+                        "market_state": "CLOSED",
+                        "price_source": "chart",
+                        "currency": "USD",
+                        "regular_market_price": price,
+                        "pre_market_price": None,
+                        "post_market_price": None,
+                        "timestamp": None,
+                    }
+                    print(f"[YAHOO QUOTE FALLBACK] {key}: chart v8 종가 사용")
+        except Exception as exc:
+            print(f"[YAHOO QUOTE FALLBACK] {key} failed: {type(exc).__name__}: {exc}")
 
     with MARKET_DATA_CACHE_LOCK:
         OVERSEAS_QUOTE_CACHE[key] = {

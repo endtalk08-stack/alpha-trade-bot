@@ -3273,10 +3273,19 @@ def _run_full_pipeline_impl(query, lightweight=False):
         l = float(row['Low'])
         c = float(row['Close'])
         if not (np.isnan(o) or np.isnan(h) or np.isnan(l) or np.isnan(c)):
+            volume_value = 0.0
+            try:
+                if 'Volume' in row.index and pd.notna(row['Volume']):
+                    volume_value = max(0.0, float(row['Volume']))
+                elif 'volume' in row.index and pd.notna(row['volume']):
+                    volume_value = max(0.0, float(row['volume']))
+            except Exception:
+                volume_value = 0.0
             candles.append({
                 "time": t_str,
                 "open": o, "high": h,
-                "low": l, "close": c
+                "low": l, "close": c,
+                "volume": volume_value
             })
         if 'MA20' in row and not np.isnan(row['MA20']):
             ma20_line.append({"time": t_str, "value": float(row['MA20'])})
@@ -3839,7 +3848,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="/widgets/dart_disclosure.js"></script>
     <script src="/widgets/chart.js"></script>
@@ -6615,15 +6624,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
             updateThemeIcon(isLight);
 
             chart = window.gaemiChart || chart;
-            if (chart) {
-                chart.applyOptions({
-                    layout: {
-                        background: { color: isLight ? '#ffffff' : '#1e1f20' },
-                        textColor: isLight ? '#5f6368' : '#8e918f'
-                    },
-                    timeScale: { borderColor: isLight ? '#dadce0' : '#282a2c' },
-                    rightPriceScale: { borderColor: isLight ? '#dadce0' : '#282a2c' }
-                });
+            if (chart && typeof window.updateGaemiChartTheme === 'function') {
+                window.updateGaemiChartTheme();
             }
         }
 
@@ -6638,8 +6640,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         function resizeChart() {
             const container = document.getElementById('tvChart');
             chart = window.gaemiChart || chart;
-            if (chart && container && container.clientWidth > 0) {
-                chart.applyOptions({ width: container.clientWidth });
+            if (chart && container && container.clientWidth > 0 && typeof chart.resize === 'function') {
+                chart.resize();
             }
         }
 

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 def _build_chart_payload(df):
-    """차트는 캔들만 표시한다. 이평선/볼린저밴드는 계산·전송하지 않는다."""
+    """차트는 캔들 + 거래량만 표시한다. 이평선/볼린저밴드는 전송하지 않는다."""
     if df is None or df.empty:
         return None
 
@@ -17,12 +17,21 @@ def _build_chart_payload(df):
         l = float(row["Low"])
         c = float(row["Close"])
         if not any(np.isnan(v) for v in (o, h, l, c)):
+            volume_value = 0.0
+            try:
+                if "Volume" in row.index and pd.notna(row["Volume"]):
+                    volume_value = max(0.0, float(row["Volume"]))
+                elif "volume" in row.index and pd.notna(row["volume"]):
+                    volume_value = max(0.0, float(row["volume"]))
+            except Exception:
+                volume_value = 0.0
             candles.append({
                 "time": t_str,
                 "open": o,
                 "high": h,
                 "low": l,
-                "close": c
+                "close": c,
+                "volume": volume_value
             })
 
     return {

@@ -69,3 +69,11 @@
 - `selectStock()`의 기존 호환 경로는 유지하여 기존 위젯 호출과의 호환성을 보존.
 - 실제 서버 HTML 원본(`bot.py`의 `HTML_PAGE`)과 `home.out`의 HTML을 동일 상태로 유지.
 - 목적: 메인 검색 / 하단 고정 종목 / 오른쪽 사이드바가 모두 동일한 canonical 종목 식별 체계를 사용하도록 통합.
+
+## Chart v1 — Apache ECharts candlestick + volume
+- 기존 Lightweight Charts 위젯을 Apache ECharts 기반으로 교체했다.
+- 범위는 캔들 + 거래량으로 제한하고, 이평선/볼린저/매물대/이벤트 마커는 추가하지 않았다.
+- 차트 인스턴스를 종목마다 삭제·재생성하지 않고 최초 1회 생성 후 `setOption()`으로 데이터만 교체한다.
+- `/api/analyze`의 기존 `candles` 계약을 유지하면서 각 캔들에 `volume`을 추가했다.
+- 테마 변경/창 크기 변경 시 기존 차트 인스턴스를 유지하고 필요한 옵션만 갱신한다.
+- 외부 데이터 수집·분석·DB 로직은 변경하지 않았다.

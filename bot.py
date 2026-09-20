@@ -7041,7 +7041,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         function resetToHome() {
             // 홈으로 돌아오면 현재 종목 상태를 먼저 무효화한다.
-            pendingStockSelection = null;
             activeSearchToken++;
             if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
             if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
@@ -7368,13 +7367,6 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         let rightMarketController = null;
         let rightMarketRequestToken = 0;
 
-        // STEP 54: 오른쪽 사이드바 연속 선택 안정화.
-        // 이전 fetch를 브라우저에서 abort해도 이미 Render에서 시작된 Python/외부 API 작업은
-        // 즉시 취소되지 않으므로, 빠른 종목 전환은 서버 작업을 동시에 쌓게 만든다.
-        // 최신 선택만 남기고 실제 분석은 한 번에 하나만 실행한다.
-        let stockSelectionRunning = false;
-        let pendingStockSelection = null;
-
         // ============================================================
         // STEP 55: 종목 화면 렌더링 분리
         // - 종목 선택은 하나의 상태로 유지한다.
@@ -7384,7 +7376,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         // - details 응답은 전체 화면을 다시 그리지 않고 해당 카드만 갱신한다.
         // ============================================================
         function isCurrentStockRender(searchToken) {
-            return searchToken === activeSearchToken && !pendingStockSelection;
+            return searchToken === activeSearchToken;
         }
 
         function renderStockCore(data, searchToken, displayNameOverride = '') {
@@ -7574,54 +7566,37 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             }
         }
 
-        // STEP 54: 실제 브라우저 종목 선택 진입점.
-        // 현재 분석이 끝나기 전에 새 종목을 누르면 최신 선택만 대기열에 남긴다.
+        // STEP 60: 실제 브라우저 종목 선택 진입점.
+        // 새 종목을 누르면 이전 브라우저 요청을 즉시 무효화하고 새 선택을 시작한다.
+        // 대기열을 사용하지 않으며, 각 응답은 token으로 최신 선택만 화면에 반영한다.
         async function selectStock(query, forceServer = false, displayNameOverride = '') {
             const isObject = query && typeof query === 'object';
             const rawQuery = isObject
-                ? String(query.key || query.symbol || '').trim()
+                ? String(query.symbol || query.key || '').trim()
                 : String(query || '').trim();
             if (!rawQuery) return;
 
-            pendingStockSelection = {
-                query: rawQuery,
-                marketHint: isObject ? String(query.market || query.market_code || '').trim().toUpperCase() : '',
-                symbolHint: isObject ? String(query.symbol || '').trim().toUpperCase() : '',
-                forceServer: !!forceServer,
-                displayNameOverride: String(isObject ? (query.name || query.displayName || displayNameOverride) : displayNameOverride || '').trim()
-            };
+            const marketHint = isObject ? String(query.market || query.market_code || '').trim().toUpperCase() : '';
+            const symbolHint = isObject ? String(query.symbol || '').trim().toUpperCase() : '';
+            const displayNameHint = String(isObject ? (query.name || query.displayName || displayNameOverride) : displayNameOverride || '').trim();
 
+            if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
             if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
 
             const center = document.getElementById('centerInput');
             const bottom = document.getElementById('bottomInput');
-            // 사이드바처럼 이미 종목명을 알고 있는 선택은 이름을 유지한다.
-            // KR:000660 같은 canonical key가 검색창에 잠깐 나타났다 다시 이름으로 바뀌는
-            // 불필요한 화면 전환을 없앤다. URL/데이터 식별자는 여전히 market+symbol이다.
-            const selectionDisplay = pendingStockSelection.displayNameOverride;
-            if (selectionDisplay) {
-                if (center) center.value = selectionDisplay;
-                if (bottom) bottom.value = selectionDisplay;
+            if (displayNameHint) {
+                if (center) center.value = displayNameHint;
+                if (bottom) bottom.value = displayNameHint;
             } else if (!currentInstrument) {
                 if (center) center.value = rawQuery;
                 if (bottom) bottom.value = rawQuery;
             }
 
-            if (stockSelectionRunning) return;
-
-            stockSelectionRunning = true;
             try {
-                while (pendingStockSelection) {
-                    const job = pendingStockSelection;
-                    pendingStockSelection = null;
-                    try {
-                        await _runSelectedStock(job.query, job.forceServer, job.displayNameOverride, job.marketHint, job.symbolHint);
-                    } catch (e) {
-                        console.error('[STOCK SELECT QUEUE] run failed:', e);
-                    }
-                }
-            } finally {
-                stockSelectionRunning = false;
+                await _runSelectedStock(rawQuery, !!forceServer, displayNameHint, marketHint, symbolHint);
+            } catch (e) {
+                console.error('[STOCK SELECT] run failed:', e);
             }
         }
 

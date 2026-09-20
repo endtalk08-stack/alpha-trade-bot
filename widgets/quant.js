@@ -22,7 +22,6 @@
 
     async function load(context) {
         const ctx = context || {};
-        renderLoading();
         const token = ++requestToken;
         if (controller) { try { controller.abort(); } catch (_) {} }
         controller = new AbortController();
@@ -37,25 +36,10 @@
             if (e && e.name === 'AbortError') return;
             if (token !== requestToken) return;
             console.warn('[QUANT] load failed:', e);
-            render({});
+            // 실패 시 이전에 성공한 퀀트 결과를 유지한다.
         }
     }
 
-
-    function renderLoading() {
-        setTxt('qScoreVal', '…');
-        setTxt('qScoreBadge', '불러오는 중');
-        setHtml('qScoreDots', '이 종목의 퀀트 데이터를 조회하고 있습니다.');
-        setTxt('qZScoreVal', '…');
-        setTxt('qVolVal', '…');
-        setTxt('qMomentumValTxt', '현재 …');
-        setTxt('qLow52w', '');
-        setTxt('qHigh52w', '');
-        const fill = document.getElementById('qSliderFill'); if (fill) fill.style.width = '0%';
-        const dot = document.getElementById('qDotMarker'); if (dot) dot.style.left = '0%';
-        const chart = document.getElementById('qSignalChart'); if (chart) chart.innerHTML = '';
-        const list = document.getElementById('quantDetailList'); if (list) list.innerHTML = '<div style="padding:12px 0;color:var(--text-muted);font-size:.78rem;">퀀트 데이터를 불러오는 중입니다.</div>';
-    }
 
     function render(q) {
         if (!q) q = {};

@@ -63,7 +63,6 @@
   }
 
   async function load(context) {
-    render({});
     const ctx=context||{}; const token=++requestToken;
     if(controller){try{controller.abort();}catch(_){} }
     controller=new AbortController();
@@ -77,7 +76,7 @@
     }catch(e){
       if(e?.name==='AbortError')return;
       if(token!==requestToken)return;
-      console.warn('[TRACK] load failed:',e); render({});
+      console.warn('[TRACK] load failed:',e); // 실패 시 이전에 성공한 트랙 결과를 유지한다.
     }
   }
   GaemiWidgets.track={render,load};

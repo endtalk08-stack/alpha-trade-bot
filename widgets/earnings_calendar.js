@@ -16,7 +16,7 @@
     }
 
     function calendarData() {
-        return Array.isArray(window.globalEarningsCalendar) ? window.globalEarningsCalendar : [];
+        return Array.isArray(window.globalMarketCalendar) ? window.globalMarketCalendar : [];
     }
 
     function todayKstKey() {
@@ -152,26 +152,6 @@
         if (typeof window.scheduleCalendarHeightSync === 'function') window.scheduleCalendarHeightSync();
     }
 
-    let loadToken = 0;
-    let loadController = null;
-    async function load(force = false) {
-        const token = ++loadToken;
-        if (loadController) { try { loadController.abort(); } catch (_) {} }
-        loadController = new AbortController();
-        try {
-            const response = await fetch('/api/earnings-calendar' + (force ? '?force=1' : ''), { cache: 'no-store', signal: loadController.signal });
-            const payload = await response.json().catch(() => null);
-            if (token !== loadToken) return;
-            if (!response.ok || !payload || payload.ok === false) throw new Error((payload && payload.error) || '실적 캘린더 데이터 오류');
-            window.globalEarningsCalendar = Array.isArray(payload.data) ? payload.data : [];
-            offset = 0; page = 1; autoJumped = false; render();
-        } catch (error) {
-            if (error && error.name === 'AbortError') return;
-            console.warn('[EARNINGS CALENDAR] load failed:', error);
-            render();
-        }
-    }
-
     function setStarFilter(value, btn) {
         starFilter = value;
         document.querySelectorAll('#rowEarningsCalendar .calendar-star-btn').forEach(b => b.classList.remove('active'));
@@ -198,5 +178,5 @@
         render();
     }
 
-    window.GaemiWidgets.earningsCalendar = { render, load, setStarFilter, shiftDate, resetDate, changePage };
+    window.GaemiWidgets.earningsCalendar = { render, setStarFilter, shiftDate, resetDate, changePage };
 })();

@@ -7,6 +7,7 @@
     window.GaemiWidgets = window.GaemiWidgets || {};
     let requestToken = 0;
     let controller = null;
+    let hasRenderedOnce = false;
 
     function render(items) {
         const root = document.getElementById('stockNewsList');
@@ -43,7 +44,11 @@
 
     async function load(context) {
         const ctx = context || {};
-        render([]);
+        const root = document.getElementById('stockNewsList');
+        if (!hasRenderedOnce && root && !root.innerHTML.trim()) {
+            render([]);
+        }
+        if (root) { root.setAttribute('aria-busy', 'true'); root.style.opacity = '0.55'; }
         const symbol = String(ctx.symbol || '').trim();
         const market = String(ctx.market || '').trim();
         const name = String(ctx.name || '').trim();
@@ -58,9 +63,13 @@
             if (token !== requestToken) return;
             if (!response.ok || !payload || payload.ok === false) throw new Error((payload && payload.error) || '뉴스 데이터 오류');
             render(payload.data || []);
+            hasRenderedOnce = true;
+            if (root) { root.removeAttribute('aria-busy'); root.style.opacity = '1'; }
         } catch (error) {
             if (error && error.name === 'AbortError') return;
-            if (!Array.isArray(ctx.initial) || !ctx.initial.length) render([]);
+            if (!hasRenderedOnce || !root || !root.innerHTML.trim()) render([]);
+            hasRenderedOnce = hasRenderedOnce || !!(root && root.innerHTML.trim());
+            if (root) { root.removeAttribute('aria-busy'); root.style.opacity = '1'; }
             console.warn('[STOCK NEWS] load failed:', error);
         }
     }

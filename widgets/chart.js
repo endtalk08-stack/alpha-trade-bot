@@ -203,9 +203,8 @@
 
         chart.setOption(buildOption(rows), {
             notMerge: false,
-            lazyUpdate: true
+            lazyUpdate: false
         });
-        chart.resize();
     }
 
     function updateTheme() {

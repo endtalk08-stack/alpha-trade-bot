@@ -48,7 +48,11 @@
         const market = String(ctx.marketCode || ctx.market || '국내주식').trim() || '국내주식';
         const cached = marketCache.get(market);
         const now = Date.now();
-        if (!cached) render([]);
+        // 같은 시장에서 종목만 바뀔 때 기존 경제뉴스를 유지한다.
+        // 시장 자체가 바뀌면 이전 시장 뉴스가 보이지 않도록 먼저 비운다.
+        const root = document.getElementById('globalNewsList');
+        if (root && lastRenderedMarket && lastRenderedMarket !== market) render([]);
+        if (!cached && root && !root.innerHTML.trim()) render([]);
 
         // 경제뉴스는 종목별 데이터가 아니라 시장 단위 데이터다.
         // 같은 시장의 종목을 연속해서 선택할 때는 재요청하지 않는다.
@@ -78,10 +82,11 @@
             const items = Array.isArray(payload.data) ? payload.data : [];
             marketCache.set(market, {time: Date.now(), data: items.slice(0, 10)});
             render(items);
+            lastRenderedMarket = market;
             return items;
         } catch (error) {
             if (error && error.name === 'AbortError') return null;
-            if (!cached && (!Array.isArray(ctx.initial) || !ctx.initial.length)) render([]);
+            if (!cached && root && !root.innerHTML.trim() && (!Array.isArray(ctx.initial) || !ctx.initial.length)) render([]);
             console.warn('[GLOBAL NEWS] load failed:', error);
             return null;
         }

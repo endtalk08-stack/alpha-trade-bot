@@ -13,7 +13,7 @@
     const ITEMS_PER_PAGE = 4;
 
     function data() {
-        return Array.isArray(window.globalEconomicCalendar) ? window.globalEconomicCalendar : [];
+        return Array.isArray(window.globalMarketCalendar) ? window.globalMarketCalendar : [];
     }
 
     function setText(id, value) {
@@ -173,12 +173,12 @@
         if (loadController) { try { loadController.abort(); } catch (_) {} }
         loadController = new AbortController();
         try {
-            const url = '/api/economic-calendar' + (force ? '?force=1' : '');
+            const url = '/api/market-calendar' + (force ? '?force=1' : '');
             const response = await fetch(url, { cache: 'no-store', signal: loadController.signal });
             const payload = await response.json().catch(() => null);
             if (token !== loadToken) return;
             if (!response.ok || !payload || payload.ok === false) throw new Error((payload && payload.error) || '시장 캘린더 데이터 오류');
-            window.globalEconomicCalendar = Array.isArray(payload.data) ? payload.data : [];
+            window.globalMarketCalendar = Array.isArray(payload.data) ? payload.data : [];
             offset = 0; page = 1; autoJumped = false;
             render();
         } catch (error) {

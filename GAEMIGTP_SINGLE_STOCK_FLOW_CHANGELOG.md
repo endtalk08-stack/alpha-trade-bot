@@ -53,3 +53,8 @@
 - Existing UI, database tables, analysis calculations, and sidebar ranking behavior were preserved.
 
 - Recent/favorite sidebar rows now honor each row's stored market code instead of assuming the currently selected sidebar tab market.
+
+## V4 PATCH — 2026-09-20
+- Fixed a domestic canonical-symbol routing bug where `KR:000660` / `KR:005930` could be passed into `find_stock_code()` after server-side resolution.
+- Domestic analysis now uses the already-resolved canonical `instrument.symbol` and `instrument.name` directly, preventing false `/api/analyze` 404 responses for sidebar-selected KR stocks.
+- Focused test verified `run_full_pipeline('KR:000660', lightweight=True)` returns `KR:000660`, `SK하이닉스`, and chart candles without calling the legacy name resolver.

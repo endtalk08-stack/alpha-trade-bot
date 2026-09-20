@@ -3021,11 +3021,16 @@ def _run_full_pipeline_impl(query, lightweight=False):
         market_name = "미국주식"
         is_krw = False
     else:
-        code, name = find_stock_code(query)
+        # canonical key(KR:005930)가 들어온 경우 다시 종목명 검색을 하지 않는다.
+        # 기존 코드처럼 find_stock_code(query)에 canonical 문자열을 넣으면
+        # "KR:000660" -> 국내 종목 코드 탐색 실패 -> /api/analyze 404가 발생할 수 있다.
+        # Resolver가 이미 확정한 symbol/name을 그대로 사용한다.
+        code = str(instrument.get("symbol") or "").strip().upper()
+        name = str(instrument.get("name") or "").strip()
         if not code:
             return None
-        symbol = instrument["symbol"] or code
-        formal_name = instrument.get("name") or name
+        symbol = code
+        formal_name = name or code
 
         # STEP 9: 국내주식 가격/차트 관련 외부 호출을 병렬화한다.
         # 기존에는 거래소 구분 → 실시간 가격 → 1200일 차트가 순차 실행되어

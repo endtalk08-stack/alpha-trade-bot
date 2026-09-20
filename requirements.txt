@@ -1,7 +1,4 @@
 requests
 pandas
 numpy
-matplotlib
-mplfinance
-python-telegram-bot
 psycopg[binary]>=3.2,<4

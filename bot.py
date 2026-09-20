@@ -1,29 +1,16 @@
 from earnings_calendar import _classify_earnings_hour, _normalize_earnings_timestamp, _fetch_yahoo_earnings_timestamps
 from world_board import fetch_single_world_item
-from dart_disclosure import fetch_dart_disclosures
 from crypto import _fetch_crypto_candles_uncached, fetch_crypto_candles
 from overseas_market import fetch_overseas_candles
 from us_leading_sectors import fetch_us_leading_sectors
-from cache import EXTERNAL_CACHE_LOCK, FRED_LAST_REQUEST_TS, FRED_MIN_INTERVAL, API_LOCK, _rate_limit_wait, _cache_get, _cache_set
+from cache import _cache_get, _cache_set
 import os
 import ast
 from serialization import clean_for_json
 from chart_payload import _build_chart_payload
-from macro_sources import ALPHA_NEWS_CACHE
 
 # Shared HTTP/performance infrastructure
 from performance import HTTP_SESSION, _PERF_HISTORY, _PERF_HISTORY_MAX, _PERF_LOCAL, _PERF_REQUESTS, _PERF_REQUESTS_LOCK, _perf_record_http, _perf_run_with_context, _perf_submit, _perf_stage, _perf_store_history, _perf_history_snapshot, _timed_http_get, _perf_begin, _perf_snapshot
-from db import (
-    init_database,
-    get_db_health,
-    get_db_price_summary,
-    get_db_recent_prices,
-)
-from news_sources import (
-    translate_news_titles_to_korean,
-    fetch_finlight_stock_news,
-    fetch_finlight_economic_news,
-)
 from chart_runtime import _fetch_fast_domestic_chart, _fetch_fast_overseas_chart
 
 # 실적 캘린더 첫 화면에 보여줄 주요 예정 실적 수
@@ -31,6 +18,7 @@ EARNINGS_PREVIEW_COUNT = 4
 import re
 import io
 import gzip
+import gc
 import json
 import time
 import urllib.parse
@@ -45,14 +33,30 @@ except ImportError:
 from concurrent.futures import ThreadPoolExecutor, wait, Future, FIRST_COMPLETED
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
+import requests
 import pandas as pd
 import numpy as np
 
 
 
+# DB layer (kept behavior-equivalent; separated from the main server module)
+from db import (
+    init_database,
+    get_db_health,
+    get_db_price_summary,
+    get_db_recent_prices,
+    _submit_db_write,
+)
 
 # Quant/Trading-value module
-from quant import calculate_quant_factors
+from market_index import fetch_naver_realtime_index, fetch_market_5day_returns_from_df, fetch_market_5day_returns_from_symbol, fetch_naver_index_5day_returns
+from quant import (
+    get_trading_val_rank,
+    run_real_vectorized_backtest,
+    _cached_quant_backtest,
+    calculate_quant_factors,
+)
+from numeric_utils import _safe_float
 
 
 from economic_calendar import (
@@ -72,11 +76,6 @@ FRED_API_KEY = os.environ.get("FRED_API_KEY", "").strip()
 TRADING_ECONOMICS_API_KEY = os.environ.get("TRADING_ECONOMICS_API_KEY", "").strip()
 ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
 
-FRED_API_KEY = os.environ.get("FRED_API_KEY", "").strip()
-TRADING_ECONOMICS_API_KEY = os.environ.get("TRADING_ECONOMICS_API_KEY", "").strip()
-
-NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "").strip()
-FINLIGHT_API_KEY = os.environ.get("FINLIGHT_API_KEY", "").strip()
 import consensus as _consensus
 from consensus import fetch_market_consensus_unified
 _consensus.FINNHUB_API_KEY = FINNHUB_API_KEY
@@ -117,6 +116,8 @@ US_STOCK_MAP = {
     "DIA": "DIA", "SOXX": "SOXX"
 }
 from us_leading_stocks import US_SECTOR_STOCK_UNIVERSE, US_TICKER_PATTERN, fetch_us_leading_stocks
+from news_sources import fetch_google_stock_news, fetch_google_economic_news
+from dart_disclosure import fetch_dart_disclosures
 try:
     from .right_market_us import _right_sidebar_us_rows
 except ImportError:
@@ -331,8 +332,16 @@ CACHED_WORLD_BOARD = []
 CACHED_WORLD_BOARD_FETCH_TIME = 0
 WORLD_BOARD_TTL = 300
 WORLD_BOARD_CACHE_LOCK = threading.Lock()
-CACHED_MARKET_CALENDAR = []
-LAST_CALENDAR_FETCH_TIME = 0
+CACHED_ECONOMIC_CALENDAR = []
+LAST_ECONOMIC_CALENDAR_FETCH_TIME = 0
+CACHED_EARNINGS_CALENDAR = []
+LAST_EARNINGS_CALENDAR_FETCH_TIME = 0
+ECONOMIC_CALENDAR_TTL = 600
+EARNINGS_CALENDAR_TTL = 1800
+ECONOMIC_CALENDAR_CACHE_LOCK = threading.Lock()
+EARNINGS_CALENDAR_CACHE_LOCK = threading.Lock()
+CALENDAR_SOURCE_CACHE = {}
+CALENDAR_SOURCE_CACHE_TTL = 1800
 
 # ===== External API cache / rate-limit protection =====
 
@@ -1005,83 +1014,53 @@ def fetch_all_real_earnings():
         return _cache_set(EARNINGS_RESULT_CACHE, cache_key, list(result))
     return result or []
 
-def fetch_real_market_calendar_live():
-    """실적 + 경제 캘린더를 실제 API에서 가져와 화면용 단일 배열로 합칩니다."""
-    global CACHED_MARKET_CALENDAR, LAST_CALENDAR_FETCH_TIME
-
-    now = time.time()
-
-    # 실적 데이터만 캐시되어 있는 경우에는 그대로 반환하면 안 됩니다.
-    # 경제 캘린더도 반드시 함께 확인해야 합니다.
-    # 기존 코드에서는 실적이 먼저 들어오면 CACHED_MARKET_CALENDAR가 truthy가 되어
-    # 경제 API 호출 자체가 건너뛰어지는 문제가 있었습니다.
-    if CACHED_MARKET_CALENDAR and (now - LAST_CALENDAR_FETCH_TIME) < 600:
-        has_earnings = any(
-            isinstance(ev, dict) and ev.get("type") == "earn"
-            for ev in CACHED_MARKET_CALENDAR
-        )
-        has_economic = any(
-            isinstance(ev, dict) and str(ev.get("type", "")).lower() in {"eco", "economic"}
-            for ev in CACHED_MARKET_CALENDAR
-        )
-        if has_earnings and has_economic:
-            return CACHED_MARKET_CALENDAR
-
-    earnings = []
-    economic = []
-
-    try:
-        earnings = fetch_all_real_earnings() or []
-    except Exception as exc:
-        print("[MARKET CALENDAR] 실적 캘린더 조회 실패:", repr(exc))
-
-    try:
-        economic = fetch_economic_calendar_history_future(
-            days_back=180,
-            days_forward=90,
-        ) or []
-    except Exception as exc:
-        print("[MARKET CALENDAR] 경제 캘린더 조회 실패:", repr(exc))
-
-    # 경제 캘린더는 한국/미국만 허용합니다.
-    raw_economic_count = len(economic)
-    economic = _filter_kr_us_economic_events(economic)
-
-    print(
-        f"[MARKET CALENDAR][ECO FILTER] "
-        f"raw={raw_economic_count}, kr_us={len(economic)}"
-    )
-
-    combined = [
-        ev for ev in (earnings + economic)
-        if isinstance(ev, dict) and ev.get("date_key")
-    ]
-
+def _dedupe_calendar_rows(rows):
     unique = {}
-    for ev in combined:
-        key = (
-            ev.get("type", ""),
-            ev.get("ticker", ""),
-            ev.get("date_key", ""),
-            ev.get("time", ""),
-            ev.get("name", ""),
-        )
+    for ev in rows or []:
+        if not isinstance(ev, dict) or not ev.get("date_key"):
+            continue
+        key = (ev.get("type", ""), ev.get("ticker", ""), ev.get("date_key", ""), ev.get("time", ""), ev.get("name", ""))
         unique[key] = ev
+    return sorted(unique.values(), key=lambda x: x.get("ts", 0))
 
-    combined = sorted(unique.values(), key=lambda x: x.get("ts", 0))
 
-    # 빈 결과는 캐시하지 않습니다.
-    if combined:
-        CACHED_MARKET_CALENDAR = combined
-        LAST_CALENDAR_FETCH_TIME = now
-        print(
-            f"[MARKET CALENDAR] 정상 수집: 전체 {len(combined)}건 / "
-            f"실적 {len(earnings)}건 / 경제 {len(economic)}건"
-        )
-        return combined
+def fetch_economic_calendar_live(force=False):
+    global CACHED_ECONOMIC_CALENDAR, LAST_ECONOMIC_CALENDAR_FETCH_TIME
+    now = time.time()
+    with ECONOMIC_CALENDAR_CACHE_LOCK:
+        if not force and CACHED_ECONOMIC_CALENDAR and now - LAST_ECONOMIC_CALENDAR_FETCH_TIME < ECONOMIC_CALENDAR_TTL:
+            return list(CACHED_ECONOMIC_CALENDAR)
+    try:
+        rows = fetch_economic_calendar_history_future(days_back=180, days_forward=90) or []
+        rows = _filter_kr_us_economic_events(rows)
+        rows = _dedupe_calendar_rows(rows)
+    except Exception as exc:
+        print(f"[ECONOMIC CALENDAR] fetch failed: {type(exc).__name__}: {exc}")
+        rows = []
+    with ECONOMIC_CALENDAR_CACHE_LOCK:
+        if rows:
+            CACHED_ECONOMIC_CALENDAR = rows
+            LAST_ECONOMIC_CALENDAR_FETCH_TIME = now
+        return list(CACHED_ECONOMIC_CALENDAR)
 
-    print("[MARKET CALENDAR] 실적/경제 캘린더 데이터가 없습니다.")
-    return CACHED_MARKET_CALENDAR or []
+
+def fetch_earnings_calendar_live(force=False):
+    global CACHED_EARNINGS_CALENDAR, LAST_EARNINGS_CALENDAR_FETCH_TIME
+    now = time.time()
+    with EARNINGS_CALENDAR_CACHE_LOCK:
+        if not force and CACHED_EARNINGS_CALENDAR and now - LAST_EARNINGS_CALENDAR_FETCH_TIME < EARNINGS_CALENDAR_TTL:
+            return list(CACHED_EARNINGS_CALENDAR)
+    try:
+        rows = [ev for ev in (fetch_all_real_earnings() or []) if isinstance(ev, dict) and ev.get("type") == "earn"]
+        rows = _dedupe_calendar_rows(rows)
+    except Exception as exc:
+        print(f"[EARNINGS CALENDAR] fetch failed: {type(exc).__name__}: {exc}")
+        rows = []
+    with EARNINGS_CALENDAR_CACHE_LOCK:
+        if rows:
+            CACHED_EARNINGS_CALENDAR = rows
+            LAST_EARNINGS_CALENDAR_FETCH_TIME = now
+        return list(CACHED_EARNINGS_CALENDAR)
 
 
 def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
@@ -1103,7 +1082,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
     to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
     cache_key = f"eco:{from_d}:{to_d}"
 
-    cached = _cache_get(ALPHA_NEWS_CACHE, cache_key, 1800)
+    cached = _cache_get(CALENDAR_SOURCE_CACHE, cache_key, CALENDAR_SOURCE_CACHE_TTL)
     if cached:
         cached = _filter_kr_us_economic_events(cached)
         if cached:
@@ -1209,7 +1188,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
                 if finnhub_out:
                     print(f"[CALENDAR][ECO] Finnhub 성공: {len(finnhub_out)}건")
                     return _cache_set(
-                        ALPHA_NEWS_CACHE, cache_key, finnhub_out
+                        CALENDAR_SOURCE_CACHE, cache_key, finnhub_out
                     )
 
             else:
@@ -1326,7 +1305,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
                             f"[CALENDAR][ECO] Trading Economics 성공: {len(te_out)}건"
                         )
                         return _cache_set(
-                            ALPHA_NEWS_CACHE, cache_key, te_out
+                            CALENDAR_SOURCE_CACHE, cache_key, te_out
                         )
 
             else:
@@ -1416,7 +1395,7 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
     # 절대 빈 결과를 30분 캐시하지 않는다.
     if out:
         print(f"[CALENDAR][ECO] ForexFactory fallback 성공: {len(out)}건")
-        return _cache_set(ALPHA_NEWS_CACHE, cache_key, out)
+        return _cache_set(CALENDAR_SOURCE_CACHE, cache_key, out)
 
     print("[CALENDAR][ECO] 모든 경제 일정 소스에서 데이터가 없습니다.")
     return []
@@ -1535,159 +1514,6 @@ def get_naver_realtime_price(code):
     value = _get_naver_realtime_price_uncached(key)
     NAVER_REALTIME_CACHE[key] = {"time": now, "value": value}
     return value
-
-def fetch_naver_domestic_flow_metrics(code):
-    """국내주식 실데이터: 당일 거래대금 + 최근 5거래일 외국인/기관 순매수.
-
-    STEP 17:
-    - 거래대금은 오른쪽 실시간 사이드바에서 검증된 Naver polling realtime의 aa 필드를 우선 사용한다.
-    - polling에서 거래대금을 못 가져오는 경우 기존 Naver integration 필드 탐색을 fallback으로 사용한다.
-    - 외국인/기관 수급 로직은 기존 구조를 유지한다.
-    """
-    result={"trading_value":None,"foreigner_latest":None,"institution_latest":None,
-            "foreigner_5d":None,"institution_5d":None,
-            "trading_value_detail":"거래대금 데이터 확인 필요",
-            "foreigner_detail":"외국인 수급 데이터 확인 필요",
-            "institution_detail":"기관 수급 데이터 확인 필요"}
-    if not code: return result
-
-    def num(v):
-        if v is None: return None
-        if isinstance(v,(int,float)) and not isinstance(v,bool): return float(v)
-        x=str(v).strip().replace(',','').replace(' ','')
-        try:
-            if any(u in x for u in ('조','억','만')):
-                total=0.0; found=False
-                for u,mul in [('조',10**12),('억',10**8),('만',10**4)]:
-                    m=re.search(r'([+-]?\d+(?:\.\d+)?)'+u,x)
-                    if m:
-                        total += float(m.group(1))*mul; found=True
-                return total if found else None
-            return float(x.replace('%',''))
-        except Exception:
-            return None
-
-    def norm_key(v):
-        return re.sub(r'[^0-9a-z가-힣]','',str(v).lower())
-
-    def walk_dicts(obj):
-        if isinstance(obj,dict):
-            yield obj
-            for v in obj.values():
-                yield from walk_dicts(v)
-        elif isinstance(obj,list):
-            for v in obj:
-                yield from walk_dicts(v)
-
-    try:
-        r=HTTP_SESSION.get(f"https://m.stock.naver.com/api/stock/{code}/integration",timeout=2.2)
-        if r.status_code!=200:
-            return result
-        data=r.json()
-
-        # 1) 거래대금: 오른쪽 실시간 사이드바에서 실제 검증된
-        # Naver polling realtime API의 aa(누적 거래대금)를 우선 사용한다.
-        # integration 응답은 구조/필드가 종목별로 달라 거래대금이 누락될 수 있어
-        # aa를 1순위로 두고, 기존 integration 탐색은 fallback으로 유지한다.
-        tv=None
-        try:
-            query = "SERVICE_ITEM:" + str(code).strip()
-            realtime_url = "https://polling.finance.naver.com/api/realtime?query=" + urllib.parse.quote(query, safe=":,")
-            realtime_res = HTTP_SESSION.get(realtime_url, timeout=2.5, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
-                "Accept": "application/json,text/plain,*/*",
-                "Referer": "https://stock.naver.com/",
-            })
-            realtime_res.raise_for_status()
-            realtime_payload = realtime_res.json()
-            realtime_datas=[]
-            areas = realtime_payload.get("result", {}).get("areas", []) if isinstance(realtime_payload, dict) else []
-            for area in areas:
-                if isinstance(area,dict):
-                    realtime_datas.extend(area.get("datas") or [])
-            if not realtime_datas and isinstance(realtime_payload,dict):
-                for area in realtime_payload.get("areas",[]) or []:
-                    if isinstance(area,dict):
-                        realtime_datas.extend(area.get("datas") or [])
-            for item in realtime_datas:
-                if not isinstance(item,dict):
-                    continue
-                item_code=str(item.get("cd") or item.get("itemCode") or "").strip()
-                if item_code and item_code != str(code).strip():
-                    continue
-                candidate=num(item.get("aa") or item.get("accumulatedTradingValue"))
-                if candidate is not None and candidate >= 0:
-                    tv=candidate
-                    break
-        except Exception as realtime_exc:
-            print(f"[NAVER FLOW] {code}: realtime 거래대금 조회 실패: {type(realtime_exc).__name__}: {realtime_exc}")
-
-        # realtime aa를 가져오지 못한 경우에만 기존 integration 필드 탐색을 fallback으로 사용한다.
-        if tv is None:
-            priority_groups = [
-                {
-                    'accumulatedtradingvalue','accumulatedtradingamount',
-                    'accumulatedtradingamountvalue','accumulatedamountvalue',
-                    '누적거래대금','누적거래대금액'
-                },
-                {
-                    'tradingvalue','tradingvalueamount','tradingamount',
-                    '거래대금','거래대금액'
-                },
-                {
-                    'amount','accumulatedamount'
-                },
-            ]
-            candidates_by_group=[[] for _ in priority_groups]
-            for obj in walk_dicts(data):
-                for raw_k,v in obj.items():
-                    k=norm_key(raw_k)
-                    for idx,keys in enumerate(priority_groups):
-                        if k in keys:
-                            n=num(v)
-                            if n is not None and n >= 0:
-                                candidates_by_group[idx].append(n)
-                            break
-
-            for candidates in candidates_by_group:
-                if candidates:
-                    # 동일 응답 안에서 같은 필드가 여러 번 나타날 수 있으므로 최대값을 사용한다.
-                    tv=max(candidates)
-                    break
-
-        result['trading_value']=tv
-        if tv is not None:
-            if tv >= 10**12:
-                result['trading_value_detail']=f"당일 거래대금 {tv/10**12:.2f}조원"
-            elif tv >= 10**8:
-                result['trading_value_detail']=f"당일 거래대금 {tv/10**8:.0f}억원"
-            else:
-                result['trading_value_detail']=f"당일 거래대금 {tv:,.0f}원"
-
-        # 2) 외국인/기관: 기존 dealTrendInfos 구조를 그대로 우선 사용한다.
-        fv=[]; iv=[]
-        for it in (data.get('dealTrendInfos') or [])[-5:]:
-            if not isinstance(it,dict): continue
-            for k in ('foreignerPureBuyQuant','foreignerNetBuyQuantity','foreignPureBuyQuant'):
-                v=num(it.get(k))
-                if v is not None:
-                    fv.append(v); break
-            for k in ('organPureBuyQuant','institutionPureBuyQuant','institutionNetBuyQuantity'):
-                v=num(it.get(k))
-                if v is not None:
-                    iv.append(v); break
-        if fv:
-            total=sum(fv); result['foreigner_latest']=fv[-1]; result['foreigner_5d']=total
-            result['foreigner_detail']=f"최근 5거래일 외국인 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
-        if iv:
-            total=sum(iv); result['institution_latest']=iv[-1]; result['institution_5d']=total
-            result['institution_detail']=f"최근 5거래일 기관 {'순매수' if total>0 else '순매도' if total<0 else '순매수/순매도 없음'} {abs(total):,.0f}주"
-
-        if tv is None:
-            print(f"[NAVER FLOW] {code}: 거래대금 필드 미검출 (priority keys 탐색 완료)")
-    except Exception as exc:
-        print(f"[NAVER FLOW] {code} fetch failed: {exc}")
-    return result
 
 def _parse_yahoo_domestic_candles(code):
     """국내 종목의 5년 일봉을 Yahoo에서 빠르게 확보한다.
@@ -2210,9 +2036,6 @@ STOCK_CORE_CONTEXT_CACHE = {}
 STOCK_CORE_CONTEXT_TTL = 60
 STOCK_CORE_CONTEXT_MAX = 64
 STOCK_CORE_CONTEXT_LOCK = threading.Lock()
-STOCK_CORE_INFLIGHT = {}
-STOCK_CORE_INFLIGHT_LOCK = threading.Lock()
-STOCK_CORE_INFLIGHT_TIMEOUT = 30.0
 
 
 def _format_core_price(market_code, market_name, price):
@@ -2299,52 +2122,79 @@ def _load_us_df_from_db(symbol):
         return None
 
 
+STOCK_CORE_CONTEXT_INFLIGHT = {}
+STOCK_CORE_CONTEXT_INFLIGHT_LOCK = threading.Lock()
+STOCK_CORE_CONTEXT_INFLIGHT_TIMEOUT = 45.0
+
 def _load_stock_core_context(query='', market_hint=None, symbol_hint=None, name_hint=None):
-    """선택된 종목의 공통 Core를 한 번만 취득하고 모든 위젯이 공유한다."""
     instrument = resolve_instrument(query, market_hint=market_hint, symbol_hint=symbol_hint, name_hint=name_hint)
     if not instrument:
         return None
     key = instrument['key']
     now = time.time()
+    with STOCK_CORE_CONTEXT_LOCK:
+        cached = STOCK_CORE_CONTEXT_CACHE.get(key)
+        if cached and now - cached['time'] < STOCK_CORE_CONTEXT_TTL:
+            return cached['context']
+    while True:
+        with STOCK_CORE_CONTEXT_INFLIGHT_LOCK:
+            event = STOCK_CORE_CONTEXT_INFLIGHT.get(key)
+            if event is None:
+                event = threading.Event()
+                STOCK_CORE_CONTEXT_INFLIGHT[key] = event
+                owner = True
+            else:
+                owner = False
+        if owner:
+            break
+        if event.wait(timeout=STOCK_CORE_CONTEXT_INFLIGHT_TIMEOUT):
+            with STOCK_CORE_CONTEXT_LOCK:
+                cached = STOCK_CORE_CONTEXT_CACHE.get(key)
+                if cached and time.time() - cached['time'] < STOCK_CORE_CONTEXT_TTL:
+                    return cached['context']
+            continue
+        with STOCK_CORE_CONTEXT_INFLIGHT_LOCK:
+            if STOCK_CORE_CONTEXT_INFLIGHT.get(key) is event:
+                STOCK_CORE_CONTEXT_INFLIGHT.pop(key, None)
+                event = threading.Event()
+                STOCK_CORE_CONTEXT_INFLIGHT[key] = event
+                owner = True
+                break
+    try:
+        return _load_stock_core_context_uncached(instrument['key'], market_hint=instrument['market'], symbol_hint=instrument['symbol'], name_hint=instrument.get('name'))
+    finally:
+        with STOCK_CORE_CONTEXT_INFLIGHT_LOCK:
+            current = STOCK_CORE_CONTEXT_INFLIGHT.get(key)
+            if current is event:
+                STOCK_CORE_CONTEXT_INFLIGHT.pop(key, None)
+                event.set()
 
-    # 1) 짧은 공통 Core 캐시 확인
+def _load_stock_core_context_uncached(query='', market_hint=None, symbol_hint=None, name_hint=None):
+    instrument = resolve_instrument(query, market_hint=market_hint, symbol_hint=symbol_hint, name_hint=name_hint)
+    if not instrument:
+        return None
+    key = instrument['key']
+    now = time.time()
     with STOCK_CORE_CONTEXT_LOCK:
         cached = STOCK_CORE_CONTEXT_CACHE.get(key)
         if cached and now - cached['time'] < STOCK_CORE_CONTEXT_TTL:
             return cached['context']
 
-    # 2) 같은 종목의 Core를 이미 가져오는 중이면 결과를 기다린다.
-    owner = False
-    event = None
-    with STOCK_CORE_INFLIGHT_LOCK:
-        event = STOCK_CORE_INFLIGHT.get(key)
-        if event is None:
-            event = threading.Event()
-            STOCK_CORE_INFLIGHT[key] = event
-            owner = True
-
-    if not owner:
-        if event.wait(timeout=STOCK_CORE_INFLIGHT_TIMEOUT):
-            with STOCK_CORE_CONTEXT_LOCK:
-                cached = STOCK_CORE_CONTEXT_CACHE.get(key)
-                if cached and time.time() - cached['time'] < STOCK_CORE_CONTEXT_TTL:
-                    return cached['context']
-        return None
+    market_code = instrument['market']
+    symbol = instrument['symbol']
+    formal_name = instrument.get('name') or symbol
+    market_name = instrument.get('market_name') or '국내주식'
+    market_index_name = instrument.get('market_index_name')
+    raw_price = None
+    price_str = '-'
+    df = None
+    current_session = None
+    current_price_source = None
+    current_previous_close = None
 
     try:
-        market_code = instrument['market']
-        symbol = instrument['symbol']
-        formal_name = instrument.get('name') or symbol
-        market_name = instrument.get('market_name') or '국내주식'
-        market_index_name = instrument.get('market_index_name')
-        raw_price = None
-        price_str = '-'
-        df = None
-        current_session = None
-        current_price_source = None
-        current_previous_close = None
-
         if market_code == 'KR':
+            # 거래소 구분은 표시용이므로 캐시된 값만 사용하고, 없으면 백그라운드 갱신한다.
             market_index_name = _get_cached_domestic_market_type(symbol) or market_index_name
             if market_index_name is None:
                 _perf_submit(OPTIONAL_API_EXECUTOR, _refresh_domestic_market_type, symbol)
@@ -2358,7 +2208,6 @@ def _load_stock_core_context(query='', market_hint=None, symbol_hint=None, name_
                 raw_price = float(df['Close'].iloc[-1])
                 price_str = _format_core_price('KR', market_name, raw_price)
             current_price_source = 'Naver/KRX'
-
         elif market_code == 'US':
             with ThreadPoolExecutor(max_workers=2) as ex:
                 f_chart = ex.submit(fetch_overseas_candles, symbol)
@@ -2379,12 +2228,10 @@ def _load_stock_core_context(query='', market_hint=None, symbol_hint=None, name_
                 current_price_source = 'Yahoo chart'
             price_str = _format_core_price('US', market_name, raw_price)
             market_name = '미국주식'
-
         elif market_code == 'CRYPTO':
             raw_price, price_str, df = fetch_crypto_candles(symbol)
             market_name = '암호화폐'
             current_price_source = 'Binance'
-
         elif market_code == 'INDEX':
             raw_price, price_str, df = fetch_overseas_candles(symbol)
             _, market_name, market_index_name = _global_index_metadata(symbol)
@@ -2392,57 +2239,48 @@ def _load_stock_core_context(query='', market_hint=None, symbol_hint=None, name_
             current_price_source = 'Yahoo'
         else:
             return None
-
-        if raw_price is None and df is not None and not df.empty:
-            raw_price = float(df['Close'].iloc[-1])
-            price_str = _format_core_price(market_code, market_name, raw_price)
-
-        if raw_price is None or df is None or getattr(df, 'empty', True):
-            return None
-
-        change_pct = None
-        if current_previous_close is not None:
-            try:
-                prev = float(current_previous_close)
-                if prev:
-                    change_pct = ((float(raw_price) - prev) / prev) * 100.0
-            except Exception:
-                change_pct = None
-        if change_pct is None:
-            change_pct = _calc_core_change_pct(raw_price, df)
-
-        context = {
-            'instrument': dict(instrument),
-            'market_code': market_code,
-            'market': market_name,
-            'market_index_name': market_index_name,
-            'symbol': symbol,
-            'name': formal_name,
-            'current_price': raw_price,
-            'price': price_str,
-            'current_change_pct': change_pct,
-            'current_previous_close': current_previous_close,
-            'current_session': current_session,
-            'current_price_source': current_price_source,
-            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S KST'),
-            'candles': _build_core_candles(df),
-            '_df': df.copy(deep=True),
-        }
-        with STOCK_CORE_CONTEXT_LOCK:
-            STOCK_CORE_CONTEXT_CACHE[key] = {'time': time.time(), 'context': context}
-            if len(STOCK_CORE_CONTEXT_CACHE) > STOCK_CORE_CONTEXT_MAX:
-                oldest_key = min(STOCK_CORE_CONTEXT_CACHE, key=lambda k: STOCK_CORE_CONTEXT[k]['time'])
-                STOCK_CORE_CONTEXT_CACHE.pop(oldest_key, None)
-        return context
     except Exception as exc:
         print(f'[STOCK CORE] {key} fetch failed: {type(exc).__name__}: {exc}')
         return None
-    finally:
-        with STOCK_CORE_INFLIGHT_LOCK:
-            current = STOCK_CORE_INFLIGHT.get(key)
-            if current is event:
-                STOCK_CORE_INFLIGHT.pop(key, None)
-                event.set()
+
+    if raw_price is None or df is None or getattr(df, 'empty', True):
+        return None
+
+    change_pct = None
+    if current_previous_close:
+        try:
+            prev = float(current_previous_close)
+            if prev:
+                change_pct = ((float(raw_price) - prev) / prev) * 100.0
+        except Exception:
+            change_pct = None
+    if change_pct is None:
+        change_pct = _calc_core_change_pct(raw_price, df)
+
+    context = {
+        'instrument': dict(instrument),
+        'market_code': market_code,
+        'market': market_name,
+        'market_index_name': market_index_name,
+        'symbol': symbol,
+        'name': formal_name,
+        'current_price': raw_price,
+        'price': price_str,
+        'current_change_pct': change_pct,
+        'current_previous_close': current_previous_close,
+        'current_session': current_session,
+        'current_price_source': current_price_source,
+        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S KST'),
+        'candles': _build_core_candles(df),
+        '_df': df.copy(deep=True),
+    }
+    with STOCK_CORE_CONTEXT_LOCK:
+        STOCK_CORE_CONTEXT_CACHE[key] = {'time': now, 'context': context}
+        if len(STOCK_CORE_CONTEXT_CACHE) > STOCK_CORE_CONTEXT_MAX:
+            oldest_key = min(STOCK_CORE_CONTEXT_CACHE, key=lambda k: STOCK_CORE_CONTEXT[k]['time'])
+            STOCK_CORE_CONTEXT_CACHE.pop(oldest_key, None)
+    return context
+
 
 def run_independent_stock_core(query='', lightweight=False, market_hint=None, symbol_hint=None, name_hint=None):
     context = _load_stock_core_context(query, market_hint, symbol_hint, name_hint)
@@ -2481,16 +2319,56 @@ def _get_widget_core_from_params(params):
 
 
 def _load_track_context(ins):
-    """트랙은 공유 Core만 사용한다. 자체적으로 차트/원천 데이터를 다시 조회하지 않는다."""
+    """트랙 전용 최소 원천 데이터 로더. Core 캐시가 없거나 핵심 quote가 실패해도
+    차트/일봉 데이터만으로 트랙 위젯을 계산할 수 있게 한다.
+    """
     if not ins:
         return None
     try:
-        return _load_stock_core_context(
+        context = _load_stock_core_context(
             ins['key'], market_hint=ins['market'], symbol_hint=ins['symbol'], name_hint=ins.get('name')
         )
+        if context:
+            return context
     except Exception as exc:
         print(f"[TRACK CORE] {ins.get('key')} shared core failed: {type(exc).__name__}: {exc}")
+
+    try:
+        payload = run_fast_chart_pipeline(ins['symbol'])
+        candles = (payload or {}).get('candles') or []
+        if len(candles) < 2:
+            return None
+        rows = []
+        for row in candles:
+            rows.append({
+                'Date': pd.to_datetime(row.get('time')),
+                'Open': float(row.get('open')),
+                'High': float(row.get('high')),
+                'Low': float(row.get('low')),
+                'Close': float(row.get('close')),
+                'Volume': float(row.get('volume') or 0),
+            })
+        df = pd.DataFrame(rows).set_index('Date').sort_index()
+        current = float(df['Close'].iloc[-1])
+        previous = float(df['Close'].iloc[-2]) if len(df) >= 2 else None
+        change = ((current - previous) / previous * 100.0) if previous else None
+        market_name = ins.get('market_name') or '국내주식'
+        return {
+            'instrument': dict(ins),
+            'market_code': ins['market'],
+            'market': market_name,
+            'symbol': ins['symbol'],
+            'name': ins.get('name') or ins['symbol'],
+            'current_price': current,
+            'price': _format_core_price(ins['market'], market_name, current),
+            'current_change_pct': change,
+            'candles': candles,
+            '_df': df,
+        }
+    except Exception as exc:
+        print(f"[TRACK FAST] {ins.get('key')} fallback failed: {type(exc).__name__}: {exc}")
         return None
+
 
 def build_track_widget_data(context):
     df = context.get('_df')
@@ -2970,6 +2848,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="/widgets/dart_disclosure.js"></script>
     <script src="/widgets/chart.js"></script>
     <script src="/widgets/stock_news.js"></script>
@@ -3720,8 +3599,54 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .quant-row-status { font-size: 0.7rem; font-weight: 700; }
         .quant-row-right { text-align: right; flex-shrink: 0; }
         .quant-row-val { font-weight: 800; color: var(--text-title); }
+        .movement-evidence-summary { margin: 2px 0 14px; }
+        .movement-evidence-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
+        .movement-evidence-label { font-size:0.72rem; font-weight:700; color:var(--text-main); }
+        .movement-evidence-count { font-size:0.72rem; font-weight:800; color:var(--text-muted); }
+        .movement-evidence-track { width:100%; height:7px; display:flex; gap:4px; }
+        .movement-evidence-seg { flex:1; height:7px; border-radius:4px; background:rgba(148,163,184,0.15); }
+        .movement-evidence-seg.active { background:#10b981; }
+        .movement-evidence-seg.active.negative { background:#ef4444; }
+        .movement-reason-row { padding:10px 0; border-bottom:1px solid var(--border-line); }
+        .movement-reason-row:last-child { border-bottom:none; }
+        .movement-reason-top { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+        .movement-reason-title { display:flex; align-items:center; gap:7px; min-width:0; }
+        .movement-reason-icon { width:18px; height:18px; flex:0 0 18px; color:var(--text-muted); }
+        .movement-reason-name { font-size:0.82rem; font-weight:800; color:var(--text-title); }
+        .movement-reason-status { font-size:0.66rem; font-weight:800; padding:2px 7px; border-radius:9px; white-space:nowrap; }
+        .movement-reason-detail { margin:6px 0 7px 25px; font-size:0.72rem; line-height:1.45; color:var(--text-sub); word-break:keep-all; }
+        .movement-reason-meter { margin-left:25px; display:flex; align-items:center; gap:8px; }
+        .movement-reason-meter-track { flex:1; height:5px; border-radius:4px; background:rgba(148,163,184,0.12); overflow:hidden; }
+        .movement-reason-meter-fill { height:100%; border-radius:4px; }
+        .movement-reason-meter-value { width:52px; text-align:right; font-size:0.64rem; font-weight:800; color:var(--text-muted); }
         
+        .movement-relative-chart { margin: 4px 0 14px; padding:10px 10px 9px; border:1px solid var(--border-line); border-radius:9px; background:var(--bg-subcard); }
+        .movement-relative-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+        .movement-relative-title { font-size:0.76rem; font-weight:800; color:var(--text-title); }
+        .movement-relative-diff { font-size:0.68rem; font-weight:800; color:var(--text-muted); }
+        .movement-relative-chartbox { position:relative; height:92px; overflow:hidden; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
+        .movement-relative-gridline { position:absolute; left:0; right:0; height:1px; background:var(--border-line); opacity:.55; }
+        .movement-relative-svg { width:100%; height:100%; display:block; }
+        .movement-relative-legend { display:flex; gap:14px; align-items:center; margin-top:7px; font-size:0.62rem; color:var(--text-sub); }
+        .movement-relative-dot { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:4px; }
+        .movement-relative-note { margin-top:5px; font-size:0.62rem; line-height:1.35; color:var(--text-muted); word-break:keep-all; }
 
+.movement-mini-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:2px; }
+        .movement-mini-card { min-width:0; background:var(--bg-subcard); border:1px solid var(--border-line); border-radius:9px; padding:9px 8px 8px; }
+        .movement-mini-head { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-bottom:7px; }
+        .movement-mini-head .movement-reason-title { gap:5px; }
+        .movement-mini-head .movement-reason-name { font-size:0.76rem; }
+        .movement-mini-head .movement-reason-icon { width:15px; height:15px; flex-basis:15px; }
+        .movement-mini-head .movement-reason-status { font-size:0.58rem; padding:2px 5px; }
+        .movement-mini-chart { height:58px; display:flex; align-items:flex-end; padding:6px 3px 4px; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
+        .movement-mini-bars { width:100%; height:100%; display:flex; align-items:flex-end; gap:4px; }
+        .movement-mini-bar { flex:1; min-height:8%; border-radius:2px 2px 0 0; }
+        .movement-mini-value { display:flex; align-items:baseline; gap:2px; margin-top:7px; font-size:0.8rem; font-weight:800; color:var(--text-title); }
+        .movement-mini-unit { font-size:0.62rem; font-weight:700; color:var(--text-muted); }
+        .movement-mini-detail { min-height:30px; margin-top:3px; font-size:0.62rem; line-height:1.35; color:var(--text-sub); word-break:keep-all; }
+        .movement-mini-card .movement-reason-meter { margin:7px 0 0; }
+        .movement-mini-card .movement-reason-meter-value { width:24px; font-size:0.58rem; }
+        .movement-market5-card { overflow:hidden; }
         .market5-line-chart { position:relative; height:58px; margin:5px 0 4px; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
         .market5-line-chart svg { width:100%; height:100%; display:block; }
         .market5-zero { position:absolute; left:0; right:0; height:1px; background:rgba(148,163,184,0.18); }
@@ -3731,8 +3656,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .market5-bar-label { font-size:.46rem; color:var(--text-muted); margin-top:2px; white-space:nowrap; }
 
         @media (max-width: 980px) {
+            .movement-mini-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
         }
         @media (max-width: 560px) {
+            .movement-mini-grid { grid-template-columns:1fr; }
         }
 
 
@@ -5653,14 +5580,19 @@ HTML_PAGE = r"""<!DOCTYPE html>
         let chart = null;
         let selectedMode = 'gaemi';
         let currentSymbol = '';
-        let globalMarketCalendar = [];
-        let currentCalOffset = 0;
-        let currentCalFilter = 'all';
-        let currentCalPage = 1;
         const calItemsPerPage = 4;
 
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
         function setHtml(id, val) { const el = document.getElementById(id); if (el) el.innerHTML = (val !== undefined && val !== null) ? String(val) : ''; }
+
+        const SUPABASE_URL = "https://uaqvmsubzgzvxbdcwcad.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_bcxDofsnPXgBICDDgQ8Ijw_fNjPcsRW";
+        let supabaseClient = null;
+        try {
+            if (window.supabase) {
+                supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+            }
+        } catch(e) {}
 
         function initTheme() {
             const saved = localStorage.getItem('gaemi_theme') || 'dark';
@@ -5807,48 +5739,6 @@ function renderSparklineSVG(points, isUp) {
             </svg>`;
         }
 
-        function getTargetDateStr(offset) {
-            const now = new Date();
-            const kstString = new Intl.DateTimeFormat('en-CA', {
-                timeZone: 'Asia/Seoul',
-                year: 'numeric', month: '2-digit', day: '2-digit'
-            }).format(now);
-            const [yyyy, mm, dd] = kstString.split('-').map(Number);
-            const d = new Date(Date.UTC(yyyy, mm - 1, dd + Number(offset || 0)));
-            return `${d.getUTCFullYear()}.${String(d.getUTCMonth() + 1).padStart(2, '0')}.${String(d.getUTCDate()).padStart(2, '0')}`;
-        }
-
-        function shiftCalendarDate(delta) {
-            currentCalOffset += delta;
-            currentCalPage = 1;
-            renderMarketCalendarView();
-        }
-
-        function resetCalendarDate() {
-            currentCalOffset = 0;
-            currentCalPage = 1;
-            renderMarketCalendarView();
-        }
-
-        function setCalendarFilter(filterKey) {
-            currentCalFilter = filterKey;
-            currentCalPage = 1;
-            document.querySelectorAll('.cal-filter-pill').forEach(btn => btn.classList.remove('active'));
-            if (filterKey === 'all') document.getElementById('filterAll').classList.add('active');
-            if (filterKey === 'star3') document.getElementById('filterStar3').classList.add('active');
-            if (filterKey === 'star2') document.getElementById('filterStar2').classList.add('active');
-            if (filterKey === 'star1') document.getElementById('filterStar1').classList.add('active');
-            if (filterKey === 'earn') document.getElementById('filterEarn').classList.add('active');
-            if (filterKey === 'eco') document.getElementById('filterEco').classList.add('active');
-            renderMarketCalendarView();
-        }
-
-        function changeCalPage(delta) {
-            currentCalPage += delta;
-            renderMarketCalendarView();
-        }
-
-
         // 캘린더 알람: 브라우저 알림 권한 + localStorage 저장
         const CAL_ALARM_STORAGE_KEY = 'calendar_alarm_events_v1';
         const CAL_ALARM_MINUTES_BEFORE = 10;
@@ -5898,7 +5788,7 @@ function renderSparklineSVG(points, isUp) {
             if (alarms[key]) {
                 delete alarms[key];
                 saveCalendarAlarms(alarms);
-                renderMarketCalendarView();
+                rerenderCalendarForEvent(ev);
                 return;
             }
 
@@ -5921,7 +5811,7 @@ function renderSparklineSVG(points, isUp) {
                 notified: false
             };
             saveCalendarAlarms(alarms);
-            renderMarketCalendarView();
+            rerenderCalendarForEvent(ev);
         }
 
         function parseCalendarEventTime(ev) {
@@ -5973,8 +5863,8 @@ function renderSparklineSVG(points, isUp) {
 
         // ============================================================
         // 경제 일정 / 실적 일정 독립 위젯
-        // - 같은 globalMarketCalendar 데이터를 사용하지만
-        //   날짜 이동/페이지 상태/렌더링은 서로 완전히 분리
+        // - 조회 데이터도 각각 분리한다.
+        // - 날짜 이동/페이지 상태/렌더링도 서로 독립한다.
         // ============================================================
         // 경제 캘린더는 독립 위젯으로 분리되어 있습니다.
         function renderEconomicCalendarView() {
@@ -5996,6 +5886,11 @@ function renderSparklineSVG(points, isUp) {
         function changeEconomicCalendarPage(delta) {
             return window.GaemiWidgets && window.GaemiWidgets.economicCalendar
                 ? window.GaemiWidgets.economicCalendar.changePage(delta) : undefined;
+        }
+
+        function rerenderCalendarForEvent(ev) {
+            if (ev && ev.type === 'earn') return renderEarningsCalendarView();
+            return renderEconomicCalendarView();
         }
 
         // 실적 캘린더는 독립 위젯으로 분리되어 있습니다.
@@ -6063,12 +5958,15 @@ function renderSparklineSVG(points, isUp) {
         window.addEventListener('resize', scheduleCalendarHeightSync);
         if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleCalendarHeightSync);
         setTimeout(scheduleCalendarHeightSync, 300);
+
         // 브라우저 콘솔에서 실제 배포본의 단일 종목 흐름 버전을 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP58-CORE-SINGLEFLIGHT-WIDGET-INDEPENDENT';
+        window.__GAEMIGTP_BUILD__ = 'STEP59-CORE-SHARED-WIDGET-INDEPENDENT';
 
         let currentInstrument = null;
         let activeSearchToken = 0;
         let activeSearchController = null;
+        let rightMarketController = null;
+        let rightMarketRequestToken = 0;
 
         // STEP 54: 오른쪽 사이드바 연속 선택 안정화.
         // 이전 fetch를 브라우저에서 abort해도 이미 Render에서 시작된 Python/외부 API 작업은
@@ -6134,31 +6032,23 @@ function renderSparklineSVG(points, isUp) {
             const symbol = data.symbol || '';
             const name = data.name || data.formal_name || displayName || '';
 
-            // 핵심 화면이 한 번 그려진 뒤 각 위젯을 독립적으로 출발시킨다.
-            // 하나의 위젯이 늦거나 실패해도 다른 위젯의 렌더링을 막지 않는다.
-            const dispatch = () => {
-                try { if (window.GaemiWidgets?.quant?.load) window.GaemiWidgets.quant.load({ market, symbol, name }); }
-                catch (e) { console.warn('[QUANT] dispatch failed:', e); }
-                try { if (window.GaemiWidgets?.vote?.load) window.GaemiWidgets.vote.load(symbol); }
-                catch (e) { console.warn('[VOTE] dispatch failed:', e); }
-                try { if (window.GaemiWidgets?.comment?.load) window.GaemiWidgets.comment.load(symbol); }
-                catch (e) { console.warn('[COMMENT] dispatch failed:', e); }
-                try { if (window.GaemiWidgets?.track?.load) window.GaemiWidgets.track.load({ market, symbol, name }); }
-                catch (e) { console.warn('[TRACK] dispatch failed:', e); }
-                try { if (window.GaemiWidgets?.stockNews?.load) window.GaemiWidgets.stockNews.load({ symbol, market: data.market, name, initial: [] }); }
-                catch (e) { console.warn('[STOCK NEWS] dispatch failed:', e); }
-                try { if (window.GaemiWidgets?.globalNews?.load) window.GaemiWidgets.globalNews.load({ market: data.market, marketCode: market, initial: [] }); }
-                catch (e) { console.warn('[GLOBAL NEWS] dispatch failed:', e); }
-                try { if (window.GaemiWidgets?.consensus?.load) window.GaemiWidgets.consensus.load({ market, symbol, name, price: data.current_price }); }
-                catch (e) { console.warn('[CONSENSUS] dispatch failed:', e); }
-                try { if (window.GaemiWidgets?.dart?.load) window.GaemiWidgets.dart.load({ market, symbol, name }); }
-                catch (e) { console.warn('[DART] dispatch failed:', e); }
-            };
-            if (typeof requestAnimationFrame === 'function') {
-                requestAnimationFrame(dispatch);
-            } else {
-                setTimeout(dispatch, 0);
-            }
+            // 모든 독립 위젯은 같은 순간에 '출발'만 시키고, 결과는 각자 자기 카드에 반영한다.
+            try { if (window.GaemiWidgets?.quant?.load) window.GaemiWidgets.quant.load({ market, symbol, name }); }
+            catch (e) { console.warn('[QUANT] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.vote?.load) window.GaemiWidgets.vote.load(symbol); }
+            catch (e) { console.warn('[VOTE] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.comment?.load) window.GaemiWidgets.comment.load(symbol); }
+            catch (e) { console.warn('[COMMENT] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.track?.load) window.GaemiWidgets.track.load({ market, symbol, name }); }
+            catch (e) { console.warn('[TRACK] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.stockNews?.load) window.GaemiWidgets.stockNews.load({ symbol, market: data.market, name, initial: [] }); }
+            catch (e) { console.warn('[STOCK NEWS] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.globalNews?.load) window.GaemiWidgets.globalNews.load({ market: data.market, marketCode: market, initial: [] }); }
+            catch (e) { console.warn('[GLOBAL NEWS] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.consensus?.load) window.GaemiWidgets.consensus.load({ market, symbol, name, price: data.current_price }); }
+            catch (e) { console.warn('[CONSENSUS] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.dart?.load) window.GaemiWidgets.dart.load({ market, symbol, name }); }
+            catch (e) { console.warn('[DART] dispatch failed:', e); }
         }
 
         function renderStockData(data, searchToken, displayNameOverride = '') {
@@ -6229,7 +6119,6 @@ function renderSparklineSVG(points, isUp) {
                     symbol: data.symbol || '',
                     name: data.name || data.formal_name || displayNameHint || rawQuery
                 };
-                currentSymbol = currentInstrument.symbol;
                 const resolvedDisplay = displayNameHint || data.name || data.formal_name || data.symbol || rawQuery;
                 if (center) center.value = resolvedDisplay;
                 if (bottom) bottom.value = resolvedDisplay;
@@ -6285,7 +6174,6 @@ function renderSparklineSVG(points, isUp) {
                 forceServer: !!forceServer,
                 displayNameOverride: String(isObject ? (query.name || query.displayName || displayNameOverride) : displayNameOverride || '').trim()
             };
-
 
             const center = document.getElementById('centerInput');
             const bottom = document.getElementById('bottomInput');
@@ -6458,25 +6346,6 @@ function renderSparklineSVG(points, isUp) {
             return null;
         }
 
-        async function loadMarketCalendar() {
-            try {
-                const response = await fetch('/api/market-calendar');
-                const data = await response.json().catch(() => null);
-                if (!response.ok || !data || data.error) throw new Error((data && data.error) || '시장 캘린더 데이터 오류');
-                if (Array.isArray(data.data)) {
-                    globalMarketCalendar = data.data;
-                    window.globalMarketCalendar = globalMarketCalendar;
-                    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
-                        window.GaemiWidgets.economicCalendar.resetState();
-                    }
-                    renderMarketCalendarView();
-                }
-            } catch (error) {
-                console.error('Market calendar:', error);
-            }
-        }
-
-
         // STEP 4: 무거운 세계시장/캘린더 데이터는 분석 요청과 분리해서 병렬 로딩한다.
         window.addEventListener('DOMContentLoaded', () => {
             if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
@@ -6484,8 +6353,9 @@ function renderSparklineSVG(points, isUp) {
             }
             if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
                 window.GaemiWidgets.economicCalendar.load(false);
-            } else {
-                loadMarketCalendar();
+            }
+            if (window.GaemiWidgets && window.GaemiWidgets.earningsCalendar?.load) {
+                window.GaemiWidgets.earningsCalendar.load(false);
             }
             loadUsLeadingSectors();
         });
@@ -6879,11 +6749,16 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/widget/consensus":
             try:
-                context = _get_widget_core_from_params(params)
-                if not context:
-                    self._json(404, {"ok": False, "error": "종목 핵심 데이터를 찾을 수 없습니다."})
+                ins = _widget_instrument_from_params(params)
+                if not ins:
+                    self._json(404, {"ok": False, "error": "종목을 확인할 수 없습니다."})
                     return
-                result = fetch_market_consensus_unified(context['symbol'], context['market'], context['current_price'], context['name'])
+                raw_price = str(params.get("price", [""])[0]).strip()
+                try:
+                    current_price = float(raw_price.replace(",", "")) if raw_price else None
+                except Exception:
+                    current_price = None
+                result = fetch_market_consensus_unified(ins['symbol'], ins['market_name'], current_price, ins['name'])
                 self._json(200, {"ok": True, "data": result or {}})
             except Exception as exc:
                 print(f"API ERROR /api/widget/consensus: {type(exc).__name__}: {exc}")
@@ -6892,11 +6767,11 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/widget/dart":
             try:
-                context = _get_widget_core_from_params(params)
-                if not context:
-                    self._json(404, {"ok": False, "error": "종목 핵심 데이터를 찾을 수 없습니다."})
+                ins = _widget_instrument_from_params(params)
+                if not ins:
+                    self._json(404, {"ok": False, "error": "종목을 확인할 수 없습니다."})
                     return
-                rows = fetch_dart_disclosures(context['symbol'], context['market_code'] == 'KR', 5)
+                rows = fetch_dart_disclosures(ins['symbol'], ins['market'] == 'KR', 5)
                 self._json(200, {"ok": True, "data": rows or []})
             except Exception as exc:
                 print(f"API ERROR /api/widget/dart: {type(exc).__name__}: {exc}")
@@ -6930,9 +6805,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 market_name = str(params.get("market", [""])[0]).strip()
                 formal_name = str(params.get("name", [""])[0]).strip()
                 limit = int(params.get("limit", ["10"])[0])
-                rows = fetch_finlight_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
-                if market_name == "미국주식":
-                    rows = translate_news_titles_to_korean(rows, market_name)
+                rows = fetch_google_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
                 print(f"API ERROR /api/stock-news: {type(exc).__name__}: {exc}")
@@ -6943,26 +6816,32 @@ class WebHandler(BaseHTTPRequestHandler):
             try:
                 market_name = str(params.get("market", ["국내주식"])[0]).strip() or "국내주식"
                 limit = int(params.get("limit", ["10"])[0])
-                rows = fetch_finlight_economic_news(market_name, max(1, min(limit, 20)))
-                if market_name == "미국주식":
-                    rows = translate_news_titles_to_korean(rows, market_name)
+                rows = fetch_google_economic_news(market_name, max(1, min(limit, 20)))
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
                 print(f"API ERROR /api/global-news: {type(exc).__name__}: {exc}")
                 self._json(500, {"ok": False, "error": "경제뉴스를 가져오지 못했습니다."})
             return
 
-        if parsed.path == "/api/market-calendar":
+
+        if parsed.path == "/api/economic-calendar":
             try:
                 force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
-                if force:
-                    global LAST_CALENDAR_FETCH_TIME
-                    LAST_CALENDAR_FETCH_TIME = 0
-                rows = fetch_real_market_calendar_live()
+                rows = fetch_economic_calendar_live(force=force)
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
-                print(f"API ERROR /api/market-calendar: {type(exc).__name__}: {exc}")
-                self._json(500, {"ok": False, "error": "시장 캘린더 데이터를 가져오지 못했습니다."})
+                print(f"API ERROR /api/economic-calendar: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "경제 캘린더 데이터를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/earnings-calendar":
+            try:
+                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
+                rows = fetch_earnings_calendar_live(force=force)
+                self._json(200, {"ok": True, "data": rows})
+            except Exception as exc:
+                print(f"API ERROR /api/earnings-calendar: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "실적 캘린더 데이터를 가져오지 못했습니다."})
             return
 
         if parsed.path == "/api/us-leading-stocks":

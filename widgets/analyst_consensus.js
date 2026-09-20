@@ -76,7 +76,7 @@
         const token = ++requestToken;
         if (controller) { try { controller.abort(); } catch (_) {} }
         controller = new AbortController();
-        const qs = new URLSearchParams({m: String(ctx.market || ''), s: String(ctx.symbol || ''), name: String(ctx.name || '')});
+        const qs = new URLSearchParams({m: String(ctx.market || ''), s: String(ctx.symbol || ''), name: String(ctx.name || ''), price: ctx.price == null ? '' : String(ctx.price)});
         try {
             const r = await fetch('/api/widget/consensus?' + qs.toString(), {cache:'no-store', signal:controller.signal});
             const payload = await r.json().catch(() => null);

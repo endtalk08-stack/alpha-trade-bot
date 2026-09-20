@@ -17,8 +17,48 @@
         if (el) el.innerHTML = value == null ? '' : String(value);
     }
 
+    let requestToken = 0;
+    let controller = null;
+
+    async function load(context) {
+        const ctx = context || {};
+        renderLoading();
+        const token = ++requestToken;
+        if (controller) { try { controller.abort(); } catch (_) {} }
+        controller = new AbortController();
+        const qs = new URLSearchParams({m: String(ctx.market || ''), s: String(ctx.symbol || ''), name: String(ctx.name || '')});
+        try {
+            const r = await fetch('/api/widget/quant?' + qs.toString(), {cache:'no-store', signal:controller.signal});
+            const payload = await r.json().catch(() => null);
+            if (token !== requestToken) return;
+            if (!r.ok || !payload || payload.ok === false) throw new Error(payload?.error || '퀀트 데이터 오류');
+            render(payload.data || {});
+        } catch (e) {
+            if (e && e.name === 'AbortError') return;
+            if (token !== requestToken) return;
+            console.warn('[QUANT] load failed:', e);
+            render({});
+        }
+    }
+
+
+    function renderLoading() {
+        setTxt('qScoreVal', '…');
+        setTxt('qScoreBadge', '불러오는 중');
+        setHtml('qScoreDots', '이 종목의 퀀트 데이터를 조회하고 있습니다.');
+        setTxt('qZScoreVal', '…');
+        setTxt('qVolVal', '…');
+        setTxt('qMomentumValTxt', '현재 …');
+        setTxt('qLow52w', '');
+        setTxt('qHigh52w', '');
+        const fill = document.getElementById('qSliderFill'); if (fill) fill.style.width = '0%';
+        const dot = document.getElementById('qDotMarker'); if (dot) dot.style.left = '0%';
+        const chart = document.getElementById('qSignalChart'); if (chart) chart.innerHTML = '';
+        const list = document.getElementById('quantDetailList'); if (list) list.innerHTML = '<div style="padding:12px 0;color:var(--text-muted);font-size:.78rem;">퀀트 데이터를 불러오는 중입니다.</div>';
+    }
+
     function render(q) {
-        if (!q) return;
+        if (!q) q = {};
 
 setTxt('qScoreVal', q.quant_score);
 setTxt('qScoreBadge', q.score_badge);
@@ -134,5 +174,5 @@ if (qList) {
     }
     }
 
-    window.GaemiWidgets.quant = Object.freeze({ render });
+    window.GaemiWidgets.quant = Object.freeze({ render, load });
 })(window);

@@ -68,6 +68,29 @@
         };
     }
 
+    let requestToken = 0;
+    let controller = null;
+
+    async function load(context) {
+        const ctx = context || {};
+        const token = ++requestToken;
+        if (controller) { try { controller.abort(); } catch (_) {} }
+        controller = new AbortController();
+        const qs = new URLSearchParams({m: String(ctx.market || ''), s: String(ctx.symbol || ''), name: String(ctx.name || '')});
+        try {
+            const r = await fetch('/api/widget/consensus?' + qs.toString(), {cache:'no-store', signal:controller.signal});
+            const payload = await r.json().catch(() => null);
+            if (token !== requestToken) return;
+            if (!r.ok || !payload || payload.ok === false) throw new Error(payload?.error || '컨센서스 데이터 오류');
+            render(payload.data || null);
+        } catch (e) {
+            if (e?.name === 'AbortError') return;
+            if (token !== requestToken) return;
+            console.warn('[CONSENSUS] load failed:', e);
+            render(null);
+        }
+    }
+
     function render(c) {
         const card = document.getElementById('rowConsensus');
         if (!card) return;
@@ -114,7 +137,7 @@
     }
 
     window.GaemiWidgets.consensus = {
-        render,
+        render, load,
         getMarketMode: () => state.mode
     };
 })();

@@ -48,6 +48,7 @@
         const market = String(ctx.marketCode || ctx.market || '국내주식').trim() || '국내주식';
         const cached = marketCache.get(market);
         const now = Date.now();
+        if (!cached) render([]);
 
         // 경제뉴스는 종목별 데이터가 아니라 시장 단위 데이터다.
         // 같은 시장의 종목을 연속해서 선택할 때는 재요청하지 않는다.

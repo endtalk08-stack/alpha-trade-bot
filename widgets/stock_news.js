@@ -43,7 +43,7 @@
 
     async function load(context) {
         const ctx = context || {};
-        if (Array.isArray(ctx.initial)) render(ctx.initial);
+        render([]);
         const symbol = String(ctx.symbol || '').trim();
         const market = String(ctx.market || '').trim();
         const name = String(ctx.name || '').trim();

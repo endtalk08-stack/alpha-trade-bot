@@ -18,13 +18,11 @@
     <script src="/widgets/us_leading_stocks.js"></script>
     <script src="/widgets/quant.js"></script>
     <script src="/widgets/track.js"></script>
-    <script src="/widgets/why_movement.js"></script>
     <script src="/widgets/earnings_calendar.js"></script>
     <script src="/widgets/economic_calendar.js"></script>
     <script src="/widgets/analyst_consensus.js"></script>
     <script src="/widgets/vote.js"></script>
     <script src="/widgets/comment.js"></script>
-    <script src="/widgets/malicious_zone.js"></script>
     <style>
         :root {
             --bg-body: #131314;
@@ -147,9 +145,6 @@
             align-items: stretch;
             position: relative;
         }
-
-        /* 1행: 왜 움직였을까? — 코멘트 전용 */
-        #rowCause { grid-column: 1; grid-row: 1; }
 
         /* 4행: 트랙 분석 — 종목 뉴스 바로 아래 */
         #rowTrack { grid-column: 1; grid-row: 4; }
@@ -426,7 +421,6 @@
         #rowVote { grid-column: 1; grid-row: 7; }
         #rowComment { grid-column: 1; grid-row: 8; }
         #rowDart { grid-column: 1; grid-row: 9; }
-        #rowSignal { grid-column: 1; grid-row: 10; }
 
         .card {
             background: var(--bg-card);
@@ -963,7 +957,6 @@
             }
             
             /* 모바일 위젯 표시 순서 — PC 그리드에는 영향 없음 */
-            #rowCause { order: 1; }
             #rowChart { order: 2; }
             #rowNews { order: 3; }
             #rowTrack { order: 4; }
@@ -971,7 +964,6 @@
             #rowConsensus { order: 6; }
             #rowVote { order: 7; }
             #rowComment { order: 8; }
-            #rowSignal { order: 9; }
             #rowWorld { order: 11; width: 100%; max-width: 832px; }
             #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
             #rowEarningsCalendar { order: 13; }
@@ -1991,7 +1983,6 @@
             }
 
             /* 기존 모바일 순서를 명확하게 재지정 */
-            #rowCause { order: 1 !important; }
             #rowChart { order: 2 !important; }
             #rowNews { order: 3 !important; }
             #rowTrack { order: 4 !important; }
@@ -1999,7 +1990,6 @@
             #rowConsensus { order: 6 !important; }
             #rowVote { order: 7 !important; }
             #rowComment { order: 8 !important; }
-            #rowSignal { order: 9 !important; }
             #rowWorld { order: 11 !important; }
             #rowGlobalNews { order: 12 !important; }
             #rowEarningsCalendar { order: 13 !important; }
@@ -2050,7 +2040,6 @@
             #rowWorld,
             #rowGlobalNews,
             #rowChart,
-            #rowCause,
             #rowNews,
             #rowTrack,
             #rowQuant,
@@ -2063,14 +2052,6 @@
         }
 
         /* gaemiGTP 시그널: 항상 열림 */
-        #rowSignal #signalBody {
-            display: block !important;
-            height: auto !important;
-            max-height: none !important;
-            overflow: visible !important;
-            visibility: visible !important;
-            opacity: 1 !important;
-        }
 
         /* 미국 주도종목 클릭 가능 표시: 기존 레이아웃 크기는 유지 */
         .us-leading-stock-item {
@@ -2480,15 +2461,7 @@
 
                         </div>
 
-                        <!-- 1행 좌측: 왜 움직였을까? — 코멘트 전용 -->
-                        <div class="card" id="rowCause" style="justify-content:flex-start;">
-                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
-                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
-                            </div>
-                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
-                        </div>
-
-                        <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
+                        <!-- 트랙 분석 -->
                         <div class="card" id="rowTrack" style="justify-content:flex-start;">
                             <div style="margin-bottom:14px;">
                                 <span style="font-size:1.05rem; font-weight:800; color:var(--text-title);">트랙 분석</span>
@@ -2718,15 +2691,6 @@
                                 <span style="font-size:0.72rem; color:var(--text-muted);">최근 핵심 공시</span>
                             </div>
                             <div id="dartList"></div>
-                        </div>
-
-                        <!-- 8행: 악성 매물대 위젯 -->
-                        <div class="card" id="rowSignal">
-                            <div class="board-header">
-                                <span class="board-header-title">악성 매물대</span>
-                                <span style="font-size:0.72rem; color:var(--text-muted);">과거 거래가 집중된 저항 구간</span>
-                            </div>
-                            <div id="maliciousZoneBody" style="margin-top:10px;"></div>
                         </div>
 </div>
 
@@ -3230,7 +3194,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         }
 
         // 브라우저 콘솔에서 실제 배포본의 단일 종목 흐름 버전을 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP55-RENDER-SEPARATION';
+        window.__GAEMIGTP_BUILD__ = 'STEP56-WIDGET-INDEPENDENT';
 
         let currentInstrument = null;
         let activeSearchToken = 0;
@@ -3306,9 +3270,6 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             setTxt('rChange', changeText);
             setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
 
-            if (typeof loadCommunityData === 'function') {
-                loadCommunityData(data.symbol, displayName);
-            }
 
             const loading = document.getElementById('loading');
             const result = document.getElementById('result-card-wrap');
@@ -3316,127 +3277,142 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             if (result) result.style.display = 'block';
         }
 
-        function loadStockLinkedWidgets(data, searchToken, displayName = '') {
-            if (!isCurrentStockRender(searchToken) || !data) return;
+        // STEP 56: 위젯 완전 독립 렌더링
+        // - core는 종목명/가격/차트만 담당한다.
+        // - 퀀트/트랙/종목뉴스/경제뉴스/컨센서스는 각자 자신의 API를 호출한다.
+        // - 한 위젯의 실패/지연은 다른 위젯의 렌더링을 막지 않는다.
+        // - 왜 움직였을까/악성 매물대는 더 이상 사용하지 않는다.
+        let widgetLoadControllers = new Map();
+        let widgetLoadTokens = new Map();
 
-            // 종목 뉴스는 종목별 독립 요청. core 응답의 initial은 빠른 표시용으로만 사용한다.
-            if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
-                window.GaemiWidgets.stockNews.load({
-                    symbol: data.symbol,
-                    market: data.market,
-                    name: data.name || data.formal_name || displayName,
-                    initial: data.stock_news
-                });
+        function isCurrentWidgetRequest(widgetName, searchToken, token) {
+            return isCurrentStockRender(searchToken) && widgetLoadTokens.get(widgetName) === token;
+        }
+
+        function abortWidgetRequest(widgetName) {
+            const controller = widgetLoadControllers.get(widgetName);
+            if (controller) {
+                try { controller.abort(); } catch (_) {}
             }
+            widgetLoadControllers.delete(widgetName);
+        }
 
-            // 경제뉴스는 '종목'이 아니라 '시장' 단위다.
-            // 위젯 자체가 시장별 캐시를 사용하므로 동일 시장의 종목 전환에서는 재요청하지 않는다.
-            if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
-                window.GaemiWidgets.globalNews.load({
-                    market: data.market,
-                    marketCode: data.market_code,
-                    initial: data.global_news
-                });
-            }
-
-            // core의 컨센서스는 로딩 placeholder일 수 있다. details가 준비되면 실제 값으로 갱신한다.
-            if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
-                window.GaemiWidgets.consensus.render(data.consensus);
+        async function loadIndependentWidget(widgetName, url, onData, searchToken) {
+            if (!isCurrentStockRender(searchToken)) return;
+            abortWidgetRequest(widgetName);
+            const controller = new AbortController();
+            const token = (widgetLoadTokens.get(widgetName) || 0) + 1;
+            widgetLoadTokens.set(widgetName, token);
+            widgetLoadControllers.set(widgetName, controller);
+            try {
+                const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
+                const payload = await response.json().catch(() => null);
+                if (!isCurrentWidgetRequest(widgetName, searchToken, token)) return;
+                if (!response.ok || !payload || payload.ok === false) {
+                    throw new Error((payload && (payload.error || payload.detail)) || `${widgetName} 데이터 오류`);
+                }
+                onData(payload.data || {});
+            } catch (error) {
+                if (error && error.name === 'AbortError') return;
+                if (!isCurrentWidgetRequest(widgetName, searchToken, token)) return;
+                console.warn(`[${widgetName}] load failed:`, error);
+                try { onData(null); } catch (_) {}
+            } finally {
+                if (widgetLoadControllers.get(widgetName) === controller) widgetLoadControllers.delete(widgetName);
             }
         }
 
-        // 최초 core 응답: 핵심 → 분석 → 연결 위젯을 서로 다른 렌더 단계로 나눈다.
+        function renderStockCore(data, searchToken, displayNameOverride = '') {
+            if (!isCurrentStockRender(searchToken) || !data) return;
+
+            if (Array.isArray(data.candles) && data.candles.length) {
+                try { initTvChart(data.candles); } catch (e) { console.warn('[CHART] render failed:', e); }
+            }
+
+            const isKrw = data.market === '국내주식' || data.market === '국내증시';
+            const displayName = String(displayNameOverride || data.name || data.formal_name || data.symbol || '').trim();
+            const displayPrice = data.price || data.price_str;
+            const displayTime = data.time || data.now_str;
+            const usShortName = (isKrw || !data.symbol)
+                ? displayName
+                : getUsShortKrName(data.symbol, displayName);
+
+            setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
+            setTxt('rPrice', displayPrice);
+
+            const rawChangePct = data.current_change_pct ?? data.change_pct ?? data.changePercent ?? data.rate ?? null;
+            let changeText = '';
+            if (rawChangePct !== null && rawChangePct !== undefined && rawChangePct !== '') {
+                const n = Number(String(rawChangePct).replace(/[%+,]/g, ''));
+                if (Number.isFinite(n)) changeText = `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
+            }
+            setTxt('rChange', changeText);
+            setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
+
+
+            const loading = document.getElementById('loading');
+            const result = document.getElementById('result-card-wrap');
+            if (loading) loading.style.display = 'none';
+            if (result) result.style.display = 'block';
+        }
+
+        function startIndependentWidgets(data, searchToken, displayName = '') {
+            if (!isCurrentStockRender(searchToken) || !data) return;
+            const qs = (params) => new URLSearchParams(params).toString();
+            const market = data.market_code || '';
+            const symbol = data.symbol || '';
+            const name = data.name || data.formal_name || displayName || '';
+
+            scheduleStockRender(searchToken, () => {
+                if (window.GaemiWidgets?.quant?.load) {
+                    window.GaemiWidgets.quant.load({ market, symbol, name });
+                }
+            }, 0);
+
+            scheduleStockRender(searchToken, () => {
+                if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
+            }, 6);
+
+            scheduleStockRender(searchToken, () => {
+                if (window.GaemiWidgets?.comment) window.GaemiWidgets.comment.load(symbol);
+            }, 7);
+
+            scheduleStockRender(searchToken, () => {
+                if (window.GaemiWidgets?.track?.load) {
+                    window.GaemiWidgets.track.load({ market, symbol, name });
+                }
+            }, 8);
+
+            scheduleStockRender(searchToken, () => {
+                if (window.GaemiWidgets?.stockNews?.load) {
+                    window.GaemiWidgets.stockNews.load({symbol, market: data.market, name, initial: []});
+                }
+            }, 16);
+
+            scheduleStockRender(searchToken, () => {
+                if (window.GaemiWidgets?.globalNews?.load) {
+                    window.GaemiWidgets.globalNews.load({market: data.market, marketCode: market, initial: []});
+                }
+            }, 24);
+
+            scheduleStockRender(searchToken, () => {
+                if (window.GaemiWidgets?.consensus?.load) {
+                    window.GaemiWidgets.consensus.load({market, symbol, name, price: data.current_price});
+                }
+            }, 32);
+
+            scheduleStockRender(searchToken, () => {
+                if (window.GaemiWidgets?.dart?.load) {
+                    window.GaemiWidgets.dart.load({market, symbol, name});
+                }
+            }, 40);
+        }
+
         function renderStockData(data, searchToken, displayNameOverride = '') {
             if (!isCurrentStockRender(searchToken) || !data) return;
             cancelScheduledStockRenders();
-
             renderStockCore(data, searchToken, displayNameOverride);
-
-            // 분석 카드들은 서로 기다리지 않게 단계적으로 그린다.
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets && window.GaemiWidgets.quant) {
-                    window.GaemiWidgets.quant.render(data.quant);
-                }
-            }, 16);
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
-                    window.GaemiWidgets.maliciousZone.render(data);
-                }
-                if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
-                    window.GaemiWidgets.whyMovement.render(data);
-                }
-            }, 32);
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets && window.GaemiWidgets.track) {
-                    const mr = data && data.movement_reason;
-                    const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
-                        const a5 = a.key === 'market_5d' ? 1 : 0;
-                        const b5 = b.key === 'market_5d' ? 1 : 0;
-                        if (a5 !== b5) return a5 - b5;
-                        return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
-                    });
-                    const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
-                    const confidenceStyle = mr && mr.confidence === '높음'
-                        ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
-                        : mr && mr.confidence === '중간'
-                            ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
-                            : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
-                    window.GaemiWidgets.track.render(data, mr, evidenceReasons, evidenceCount, confidenceStyle);
-                }
-            }, 48);
-
-            // 네트워크 요청은 렌더링을 막지 않도록 별도 단계에서 시작한다.
-            scheduleStockRender(searchToken, () => {
-                loadStockLinkedWidgets(data, searchToken, displayNameOverride);
-            }, 64);
-        }
-
-        // details는 전체 화면을 다시 그리지 않는다.
-        // 이미 안정화된 차트/글로벌 위젯/헤더는 건드리지 않고 분석 결과 카드만 교체한다.
-        function renderStockDetails(data, searchToken) {
-            if (!isCurrentStockRender(searchToken) || !data) return;
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets && window.GaemiWidgets.quant) {
-                    window.GaemiWidgets.quant.render(data.quant);
-                }
-            }, 0);
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
-                    window.GaemiWidgets.maliciousZone.render(data);
-                }
-                if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
-                    window.GaemiWidgets.whyMovement.render(data);
-                }
-            }, 16);
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets && window.GaemiWidgets.track) {
-                    const mr = data.movement_reason;
-                    const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
-                        const a5 = a.key === 'market_5d' ? 1 : 0;
-                        const b5 = b.key === 'market_5d' ? 1 : 0;
-                        if (a5 !== b5) return a5 - b5;
-                        return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
-                    });
-                    const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
-                    const confidenceStyle = mr && mr.confidence === '높음'
-                        ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
-                        : mr && mr.confidence === '중간'
-                            ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
-                            : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
-                    window.GaemiWidgets.track.render(data, mr, evidenceReasons, evidenceCount, confidenceStyle);
-                }
-            }, 32);
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
-                    window.GaemiWidgets.consensus.render(data.consensus);
-                }
-                if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
-                    window.GaemiWidgets.renderDartDisclosure(data.dart_disclosures);
-                }
-            }, 48);
+            startIndependentWidgets(data, searchToken, displayNameOverride);
         }
 
         async function _runSelectedStock(query, forceServer = false, displayNameOverride = '', marketHint = '', symbolHint = '') {
@@ -3531,9 +3507,6 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
 
                 renderStockData(data, searchToken, displayNameHint);
 
-                if (data._details_ready === false && currentInstrument.key) {
-                    pollAnalysisDetails(currentInstrument.key, searchToken, 0);
-                }
             } catch (err) {
                 if (err && err.name === 'AbortError') return;
                 console.error('Analysis Error:', err);
@@ -3596,30 +3569,6 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         window.selectStock = selectStock;
         window.openStock = selectStock;
         window.doSearch = doSearch;
-
-        async function pollAnalysisDetails(cacheKey, searchToken, attempt = 0) {
-            if (searchToken !== activeSearchToken || attempt >= 10 || !cacheKey) return;
-            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
-            activeDetailsController = new AbortController();
-            const detailsSignal = activeDetailsController.signal;
-            try {
-                const r = await fetch('/api/analyze-details?key=' + encodeURIComponent(cacheKey) + '&wait=1', {
-                    cache: 'no-store', signal: detailsSignal
-                });
-                if (r.status === 200) {
-                    const payload = await r.json();
-                    if (payload && payload.ready && payload.data && searchToken === activeSearchToken) {
-                        renderStockDetails(payload.data, searchToken);
-                        return;
-                    }
-                }
-            } catch (e) {
-                if (e && e.name === 'AbortError') return;
-            }
-            if (searchToken === activeSearchToken) {
-                setTimeout(() => pollAnalysisDetails(cacheKey, searchToken, attempt + 1), 800);
-            }
-        }
 
         function formatUsStockPrice(value) {
             const n = Number(value);

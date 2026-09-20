@@ -106,7 +106,7 @@
                 const symbol = row.getAttribute('data-right-symbol') || '';
                 const name = row.getAttribute('data-right-name') || '';
                 if (!symbol) return;
-                doSearch(symbol, false, name);
+                selectStock(symbol, false, name);
             };
             list.addEventListener('click', (event) => {
                 const row = event.target.closest('.right-market-row');

@@ -25,7 +25,7 @@
             const clickName = w.name === 'USD/KRW' ? '환율' : w.name;
             const safeClick = String(clickName || '').replace(/'/g, "\\'");
             return `
-                <div class="mini-index-card" onclick="doSearch('${safeClick}')">
+                <div class="mini-index-card" onclick="selectStock('${safeClick}')">
                     <div class="mini-top">
                         <span class="mini-name">${String(w.name || '')}</span>
                         <span class="mini-tag">${String(w.tag || '')}</span>

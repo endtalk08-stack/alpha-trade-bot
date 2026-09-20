@@ -152,6 +152,139 @@ DOMESTIC_FAST_MAP = {
     "휴젤": "145020", "클래시스": "214150", "리노공업": "058470"
 }
 
+
+# ----------------------------------------------------
+# CANONICAL INSTRUMENT RESOLUTION
+# ----------------------------------------------------
+# 종목 선택 경로가 달라도 최종적으로 동일한 시장/종목코드를 사용한다.
+# key 예: KR:005930 / US:NVDA / CRYPTO:BTCUSDT / INDEX:^KS11
+INSTRUMENT_RESOLUTION_CACHE = {}
+INSTRUMENT_RESOLUTION_CACHE_TTL = 3600
+
+def _normalize_market_hint(value):
+    v = str(value or '').strip().lower()
+    return {
+        'kr': 'KR', 'korea': 'KR', '국내': 'KR', '국내주식': 'KR', '국내증시': 'KR',
+        'us': 'US', 'usa': 'US', '미국': 'US', '미국주식': 'US',
+        'crypto': 'CRYPTO', 'coin': 'CRYPTO', '코인': 'CRYPTO', '암호화폐': 'CRYPTO',
+        'index': 'INDEX', '지수': 'INDEX', '글로벌증시': 'INDEX', '외환': 'INDEX', '원자재': 'INDEX',
+    }.get(v, str(value or '').strip().upper() or None)
+
+
+def _global_index_metadata(symbol):
+    symbol = str(symbol or '').strip().upper()
+    if symbol in ('^KS11', '^KQ11'):
+        return 'INDEX', '국내증시', 'KOSPI' if symbol == '^KS11' else 'KOSDAQ'
+    if symbol == 'KRW=X':
+        return 'INDEX', '외환', None
+    if symbol in ('CL=F', 'GC=F'):
+        return 'INDEX', '원자재', None
+    return 'INDEX', '글로벌증시', None
+
+
+def instrument_key(market, symbol):
+    market_code = _normalize_market_hint(market) or 'US'
+    symbol = str(symbol or '').strip().upper()
+    if market_code == 'CRYPTO' and symbol and not symbol.endswith('USDT'):
+        symbol = f'{symbol}USDT'
+    return f'{market_code}:{symbol}'
+
+
+def resolve_instrument(query='', market_hint=None, symbol_hint=None, name_hint=None):
+    """모든 종목 진입점을 하나의 canonical instrument로 정규화한다."""
+    raw = str(query or '').strip()
+    hint_market = _normalize_market_hint(market_hint)
+    hint_symbol = str(symbol_hint or '').strip().upper()
+    hint_name = str(name_hint or '').strip()
+    lookup = (hint_symbol or raw).replace(' ', '').strip().upper()
+    if not lookup:
+        return None
+
+    # 서버/프론트가 canonical key를 그대로 전달하는 경우
+    if ':' in lookup:
+        pref, sym = lookup.split(':', 1)
+        pref = _normalize_market_hint(pref)
+        if pref in {'KR', 'US', 'CRYPTO', 'INDEX'} and sym:
+            if pref == 'CRYPTO' and not sym.endswith('USDT'):
+                sym = f'{sym}USDT'
+            if pref == 'INDEX':
+                kind, market_name, index_name = _global_index_metadata(sym)
+                return {'key': instrument_key('INDEX', sym), 'market': kind, 'market_name': market_name,
+                        'symbol': sym, 'name': hint_name or DOMESTIC_CODE_NAME_MAP.get(sym) or US_SYMBOL_NAME_MAP.get(sym) or CRYPTO_SYMBOL_NAME_MAP.get(sym) or sym, 'market_index_name': index_name, 'input': raw}
+            return {'key': instrument_key(pref, sym), 'market': pref,
+                    'market_name': {'KR':'국내주식','US':'미국주식','CRYPTO':'암호화폐'}[pref],
+                    'symbol': sym, 'name': hint_name or (DOMESTIC_CODE_NAME_MAP.get(sym) if pref == 'KR' else US_SYMBOL_NAME_MAP.get(sym) if pref == 'US' else CRYPTO_SYMBOL_NAME_MAP.get(sym)) or sym, 'market_index_name': None, 'input': raw}
+
+    cached = INSTRUMENT_RESOLUTION_CACHE.get(lookup)
+    if cached and time.time() - cached[0] < INSTRUMENT_RESOLUTION_CACHE_TTL:
+        return dict(cached[1])
+
+    # 명시적 market hint가 있으면 hint를 우선 적용한다.
+    if hint_market == 'KR' and (lookup.isdigit() and len(lookup) == 6):
+        result = {'key': instrument_key('KR', lookup), 'market': 'KR', 'market_name': '국내주식',
+                  'symbol': lookup, 'name': hint_name or DOMESTIC_CODE_NAME_MAP.get(lookup, lookup), 'market_index_name': None, 'input': raw}
+    elif hint_market == 'US' and re.fullmatch(r'[A-Z0-9.\-]{1,8}', lookup):
+        result = {'key': instrument_key('US', lookup), 'market': 'US', 'market_name': '미국주식',
+                  'symbol': lookup, 'name': hint_name or US_STOCK_MAP.get(lookup, lookup), 'market_index_name': None, 'input': raw}
+    elif hint_market == 'CRYPTO':
+        sym = lookup if lookup.endswith('USDT') else CRYPTO_MAP.get(lookup, f'{lookup}USDT')
+        result = {'key': instrument_key('CRYPTO', sym), 'market': 'CRYPTO', 'market_name': '암호화폐',
+                  'symbol': sym, 'name': hint_name or raw or sym, 'market_index_name': None, 'input': raw}
+    elif lookup in GLOBAL_INDEX_MAP:
+        sym = GLOBAL_INDEX_MAP[lookup]
+        _, market_name, index_name = _global_index_metadata(sym)
+        result = {'key': instrument_key('INDEX', sym), 'market': 'INDEX', 'market_name': market_name,
+                  'symbol': sym, 'name': hint_name or raw or lookup, 'market_index_name': index_name, 'input': raw}
+    elif lookup in CRYPTO_MAP or lookup.endswith('USDT') or any(c in lookup for c in ('BTC', 'ETH', 'XRP', 'DOGE', 'SOL', 'ADA', 'AVAX')):
+        sym = CRYPTO_MAP.get(lookup, lookup if lookup.endswith('USDT') else f'{lookup}USDT')
+        result = {'key': instrument_key('CRYPTO', sym), 'market': 'CRYPTO', 'market_name': '암호화폐',
+                  'symbol': sym, 'name': hint_name or raw or sym, 'market_index_name': None, 'input': raw}
+    elif lookup in US_STOCK_MAP:
+        sym = US_STOCK_MAP[lookup]
+        result = {'key': instrument_key('US', sym), 'market': 'US', 'market_name': '미국주식',
+                  'symbol': sym, 'name': hint_name or (raw if any('가' <= c <= '힣' for c in raw) else sym), 'market_index_name': None, 'input': raw}
+    elif US_TICKER_PATTERN.fullmatch(lookup or ''):
+        result = {'key': instrument_key('US', lookup), 'market': 'US', 'market_name': '미국주식',
+                  'symbol': lookup, 'name': hint_name or lookup, 'market_index_name': None, 'input': raw}
+    elif lookup.isdigit() and len(lookup) == 6:
+        result = {'key': instrument_key('KR', lookup), 'market': 'KR', 'market_name': '국내주식',
+                  'symbol': lookup, 'name': hint_name or DOMESTIC_CODE_NAME_MAP.get(lookup, lookup), 'market_index_name': None, 'input': raw}
+    else:
+        # find_stock_code는 아래에서 정의되며 런타임에는 이미 존재한다.
+        try:
+            code, name = find_stock_code(raw)
+        except Exception:
+            code, name = None, None
+        if not code:
+            return None
+        result = {'key': instrument_key('KR', code), 'market': 'KR', 'market_name': '국내주식',
+                  'symbol': str(code).strip().upper(), 'name': hint_name or str(name or raw).strip(),
+                  'market_index_name': None, 'input': raw}
+
+    INSTRUMENT_RESOLUTION_CACHE[lookup] = (time.time(), dict(result))
+    return result
+
+
+# 코드 -> 대표 종목명 역매핑. canonical URL/새로고침에서도 이름을 복원한다.
+DOMESTIC_CODE_NAME_MAP = {}
+for _domestic_name, _domestic_code in DOMESTIC_FAST_MAP.items():
+    DOMESTIC_CODE_NAME_MAP.setdefault(str(_domestic_code).strip(), _domestic_name)
+
+US_SYMBOL_NAME_MAP = {}
+for _us_alias, _us_symbol in US_STOCK_MAP.items():
+    _alias = str(_us_alias).strip()
+    _sym = str(_us_symbol).strip().upper()
+    # 영문 티커보다 한글 별칭을 우선해 화면 복원 이름으로 사용한다.
+    if _sym and any('가' <= c <= '힣' for c in _alias):
+        US_SYMBOL_NAME_MAP.setdefault(_sym, _alias)
+
+CRYPTO_SYMBOL_NAME_MAP = {}
+for _crypto_alias, _crypto_symbol in CRYPTO_MAP.items():
+    _alias = str(_crypto_alias).strip()
+    _sym = str(_crypto_symbol).strip().upper()
+    if _sym and any('가' <= c <= '힣' for c in _alias):
+        CRYPTO_SYMBOL_NAME_MAP.setdefault(_sym, _alias)
+
 WORLD_BOARD_CONFIG = [
     {"name": "코스피", "sym": "^KS11", "tag": "국내"},
     {"name": "코스닥", "sym": "^KQ11", "tag": "국내"},
@@ -175,6 +308,9 @@ WORLD_BOARD_CACHE_LOCK = threading.Lock()
 CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
 ANALYSIS_CACHE = {}
+ANALYSIS_INFLIGHT = {}
+ANALYSIS_INFLIGHT_LOCK = threading.Lock()
+ANALYSIS_INFLIGHT_TIMEOUT = 45.0
 ANALYSIS_ENRICHING = set()
 ANALYSIS_ENRICH_CONTEXT = {}
 ANALYSIS_ENRICH_LOCK = threading.Lock()
@@ -2574,12 +2710,12 @@ def _collect_optional_results(futures, timeout=OPTIONAL_API_SOFT_TIMEOUT):
     return results
 
 
-def _schedule_analysis_enrichment(clean_q, base_result, context):
+def _schedule_analysis_enrichment(cache_key, base_result, context):
     """핵심 응답 이후 선택 외부 데이터를 백그라운드에서 채워 캐시를 완성한다."""
     with ANALYSIS_ENRICH_LOCK:
-        if clean_q in ANALYSIS_ENRICHING:
+        if cache_key in ANALYSIS_ENRICHING:
             return
-        ANALYSIS_ENRICHING.add(clean_q)
+        ANALYSIS_ENRICHING.add(cache_key)
 
     def worker():
         try:
@@ -2680,33 +2816,37 @@ def _schedule_analysis_enrichment(clean_q, base_result, context):
                 "movement_reason": movement_reason, "world_board": world_board, "market_calendar": market_calendar,
                 "_details_ready": True,
             })
-            ANALYSIS_CACHE[clean_q] = (time.time(), enriched)
+            ANALYSIS_CACHE[cache_key] = (time.time(), enriched)
             with ANALYSIS_ENRICH_LOCK:
-                ANALYSIS_ENRICH_CONTEXT.pop(clean_q, None)
-            print(f"[ANALYSIS ENRICH] {clean_q} details ready")
+                ANALYSIS_ENRICH_CONTEXT.pop(cache_key, None)
+            print(f"[ANALYSIS ENRICH] {cache_key} details ready")
         except Exception as exc:
-            print(f"[ANALYSIS ENRICH] {clean_q} failed: {type(exc).__name__}: {exc}")
+            print(f"[ANALYSIS ENRICH] {cache_key} failed: {type(exc).__name__}: {exc}")
         finally:
             with ANALYSIS_ENRICH_LOCK:
-                ANALYSIS_ENRICHING.discard(clean_q)
+                ANALYSIS_ENRICHING.discard(cache_key)
 
     # 재검색/새로고침으로 같은 core 캐시를 다시 읽더라도
     # 이미 시작된 enrichment 작업의 실행 맥락을 잃지 않도록 보관한다.
     with ANALYSIS_ENRICH_LOCK:
-        ANALYSIS_ENRICH_CONTEXT[clean_q] = context
+        ANALYSIS_ENRICH_CONTEXT[cache_key] = context
     ANALYSIS_ENRICH_EXECUTOR.submit(worker)
 
 
-def run_full_pipeline(query, lightweight=False):
+def _run_full_pipeline_impl(query, lightweight=False):
     global ANALYSIS_CACHE, CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR
-    clean_q = query.strip().replace(" ", "").upper()
+    clean_q = str(query or '').strip().replace(" ", "").upper()
+    instrument = resolve_instrument(query)
+    if not instrument:
+        return None
+    cache_key = instrument["key"]
     now_ts = time.time()
 
     _perf_stage("cache_check")
 
-    if clean_q in ANALYSIS_CACHE:
-        cached_time, cached_data = ANALYSIS_CACHE[clean_q]
-        if now_ts - cached_time < ANALYSIS_CORE_TTL:
+    if cache_key in ANALYSIS_CACHE:
+        cached_time, cached_data = ANALYSIS_CACHE[cache_key]
+        if now_ts - cached_time < ANALYSIS_CORE_TTL and (lightweight or cached_data.get("_details_ready")):
             # STEP 4: 세계시장 보드/시장 캘린더는 별도 API가 담당한다.
             # 분석 캐시 응답에 현재 서버 캐시가 있으면 화면 호환성을 위해
             # 붙여주되, 캐시가 없다고 해서 외부 API를 호출하지 않는다.
@@ -2721,19 +2861,19 @@ def run_full_pipeline(query, lightweight=False):
             # 뉴스·컨센서스·트랙 분석이 비어 있는 상태가 반복되는 것을 막는다.
             if lightweight and not cached_data.get("_details_ready"):
                 with ANALYSIS_ENRICH_LOCK:
-                    enriching = clean_q in ANALYSIS_ENRICHING
-                    enrich_context = ANALYSIS_ENRICH_CONTEXT.get(clean_q)
+                    enriching = cache_key in ANALYSIS_ENRICHING
+                    enrich_context = ANALYSIS_ENRICH_CONTEXT.get(cache_key)
                 if (not enriching) and enrich_context:
-                    _schedule_analysis_enrichment(clean_q, cached_data, enrich_context)
+                    _schedule_analysis_enrichment(cache_key, cached_data, enrich_context)
             return cached_data
 
     market_name = "국내주식"
     market_index_name = None
     is_krw = True
 
-    if clean_q in GLOBAL_INDEX_MAP:
-        symbol = GLOBAL_INDEX_MAP[clean_q]
-        formal_name = query.strip()
+    if instrument["market"] == "INDEX":
+        symbol = instrument["symbol"]
+        formal_name = instrument.get("name") or query.strip()
 
         # 환율/글로벌 지수 조회 실패가 전체 검색을 멈추게 하지 않는다.
         try:
@@ -2764,16 +2904,16 @@ def run_full_pipeline(query, lightweight=False):
             price_str = f"${curr_p:,.2f}" if curr_p else "-"
         raw_price = curr_p
 
-    elif clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
-        symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
-        formal_name = clean_q
+    elif instrument["market"] == "CRYPTO":
+        symbol = instrument["symbol"]
+        formal_name = instrument.get("name") or clean_q
         raw_price, price_str, df = fetch_crypto_candles(symbol)
         market_name = "암호화폐"
         is_krw = False
 
-    elif clean_q in US_STOCK_MAP:
-        symbol = US_STOCK_MAP[clean_q]
-        formal_name = query.strip()
+    elif instrument["market"] == "US":
+        symbol = instrument["symbol"]
+        formal_name = instrument.get("name") or query.strip()
         # 차트와 실시간 시세는 서로 의존하지 않으므로 동시에 조회한다.
         with ThreadPoolExecutor(max_workers=2) as price_executor:
             chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
@@ -2792,55 +2932,12 @@ def run_full_pipeline(query, lightweight=False):
             price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
         market_name = "미국주식"
         is_krw = False
-    # STEP 11: 영문 티커는 대소문자와 관계없이 미국주식 경로로 처리한다.
-    # 기존에는 소문자 티커(예: xom, nvda)가 US_STOCK_MAP에 없으면
-    # 국내주식 분기로 떨어져 Naver autoComplete를 호출했다.
-    # 그 결과 XOM 분석에서도 약 480ms가 불필요하게 발생했다.
-    # 1~6자리 영문 입력은 Naver 검색을 거치지 않고 Yahoo 경로로 바로 보낸다.
-    elif US_TICKER_PATTERN.fullmatch(clean_q or ""):
-        symbol = clean_q
-        formal_name = query.strip() or symbol
-        with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
-            quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
-            chart_price, _, df = chart_future.result()
-            quote_snapshot = quote_future.result()
-
-        if isinstance(quote_snapshot, dict) and quote_snapshot.get("price") is not None:
-            try:
-                raw_price = float(quote_snapshot.get("price"))
-            except (TypeError, ValueError):
-                raw_price = chart_price
-            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
-        else:
-            raw_price = chart_price
-            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
-        market_name = "미국주식"
-        is_krw = False
-    elif any(c.isupper() for c in query) and not any('\uac00' <= char <= '\ud7a3' for char in query):
-        symbol = query.upper().strip()
-        formal_name = symbol
-        # 차트와 실시간 시세를 병렬 조회한다.
-        with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
-            quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
-            chart_price, _, df = chart_future.result()
-            quote_snapshot = quote_future.result()
-
-        if quote_snapshot:
-            raw_price = quote_snapshot["price"]
-            price_str = f"{raw_price:,.2f} 달러"
-        else:
-            raw_price = chart_price
-            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
-        market_name = "미국주식"
-        is_krw = False
-
     else:
         code, name = find_stock_code(query)
         if not code:
             return None
-        symbol, formal_name = code, name
+        symbol = instrument["symbol"] or code
+        formal_name = instrument.get("name") or name
 
         # STEP 9: 국내주식 가격/차트 관련 외부 호출을 병렬화한다.
         # 기존에는 거래소 구분 → 실시간 가격 → 1200일 차트가 순차 실행되어
@@ -3132,6 +3229,8 @@ def run_full_pipeline(query, lightweight=False):
         "formal_name": formal_name,
         "symbol": symbol,
         "market": market_name,
+        "market_code": instrument.get("market"),
+        "instrument_key": cache_key,
         "market_index_name": market_index_name,
         "price": price_str,
         "current_price": raw_price,
@@ -3160,13 +3259,13 @@ def run_full_pipeline(query, lightweight=False):
     }
 
     result_data["_details_ready"] = not lightweight
-    ANALYSIS_CACHE[clean_q] = (now_ts, result_data)
+    ANALYSIS_CACHE[cache_key] = (now_ts, result_data)
 
     if lightweight:
         try:
             enrich_df = df.copy(deep=True)
             _schedule_analysis_enrichment(
-                clean_q,
+                cache_key,
                 result_data,
                 {
                     "market_name": market_name, "symbol": symbol, "formal_name": formal_name,
@@ -3178,6 +3277,52 @@ def run_full_pipeline(query, lightweight=False):
             print(f"[ANALYSIS ENRICH] scheduling failed: {type(exc).__name__}: {exc}")
 
     return result_data
+
+def run_full_pipeline(query, lightweight=False):
+    """canonical instrument 기준으로 동일 분석의 중복 실행을 차단한다."""
+    instrument = resolve_instrument(query)
+    if not instrument:
+        return None
+    inflight_key = f'{instrument["key"]}:{"core" if lightweight else "full"}'
+
+    # 빠른 cache hit는 내부 구현에 맡긴다. 여기서는 동시 실행만 합친다.
+    owner = False
+    event = None
+    with ANALYSIS_INFLIGHT_LOCK:
+        event = ANALYSIS_INFLIGHT.get(inflight_key)
+        if event is None:
+            event = threading.Event()
+            ANALYSIS_INFLIGHT[inflight_key] = event
+            owner = True
+
+    if not owner:
+        # 먼저 실행 중인 같은 종목/같은 모드가 끝나길 기다린다.
+        event.wait(timeout=ANALYSIS_INFLIGHT_TIMEOUT)
+        cached = ANALYSIS_CACHE.get(instrument["key"])
+        if cached:
+            cached_data = cached[1]
+            if lightweight or cached_data.get("_details_ready"):
+                return cached_data
+        # 기존 작업이 실패/시간초과했으면 현재 요청이 한 번 더 시도한다.
+        with ANALYSIS_INFLIGHT_LOCK:
+            current = ANALYSIS_INFLIGHT.get(inflight_key)
+            if current is event and event.is_set():
+                ANALYSIS_INFLIGHT.pop(inflight_key, None)
+                event = threading.Event()
+                ANALYSIS_INFLIGHT[inflight_key] = event
+                owner = True
+        if not owner:
+            return None
+
+    try:
+        return _run_full_pipeline_impl(query, lightweight=lightweight)
+    finally:
+        with ANALYSIS_INFLIGHT_LOCK:
+            current = ANALYSIS_INFLIGHT.get(inflight_key)
+            if current is event:
+                ANALYSIS_INFLIGHT.pop(inflight_key, None)
+                event.set()
+
 
 # ----------------------------------------------------
 # 8. 웹 프론트엔드 UI
@@ -5885,7 +6030,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
             <div class="search-container">
                 <div class="search-box">
-                    <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                    <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) selectStock(this.value);" autocomplete="off">
                     
                     <div class="model-selector-wrap">
                         <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
@@ -5908,17 +6053,17 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         </div>
                     </div>
 
-                    <button class="send-btn" onclick="doSearch(document.getElementById('centerInput').value)">
+                    <button class="send-btn" onclick="selectStock(document.getElementById('centerInput').value)">
                         <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                     </button>
                 </div>
             </div>
             <div class="popular-tags">
-                <button class="tag-btn" onclick="doSearch('SK하이닉스')">SK하이닉스</button>
-                <button class="tag-btn" onclick="doSearch('삼성전자')">삼성전자</button>
-                <button class="tag-btn" onclick="doSearch('알테오젠')">알테오젠</button>
-                <button class="tag-btn" onclick="doSearch('엔비디아')">엔비디아</button>
-                <button class="tag-btn" onclick="doSearch('비트코인')">비트코인</button>
+                <button class="tag-btn" onclick="selectStock('SK하이닉스')">SK하이닉스</button>
+                <button class="tag-btn" onclick="selectStock('삼성전자')">삼성전자</button>
+                <button class="tag-btn" onclick="selectStock('알테오젠')">알테오젠</button>
+                <button class="tag-btn" onclick="selectStock('엔비디아')">엔비디아</button>
+                <button class="tag-btn" onclick="selectStock('비트코인')">비트코인</button>
             </div>
         </div>
 
@@ -6287,7 +6432,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <div class="bottom-bar-grid-wrapper">
                 <div class="search-container">
                     <div class="search-box">
-                        <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) doSearch(this.value);" autocomplete="off">
+                        <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) selectStock(this.value);" autocomplete="off">
                         
                         <div class="model-selector-wrap">
                             <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
@@ -6310,7 +6455,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                             </div>
                         </div>
 
-                        <button class="send-btn" onclick="doSearch(document.getElementById('bottomInput').value)">
+                        <button class="send-btn" onclick="selectStock(document.getElementById('bottomInput').value)">
                             <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                         </button>
                     </div>
@@ -6441,6 +6586,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
         });
 
         function resetToHome() {
+            // 진행 중인 종목 요청이 홈으로 돌아온 뒤 늦게 도착해 화면을 다시 덮지 못하게 한다.
+            activeSearchToken++;
+            if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
+            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
+            activeSearchController = null;
+            activeDetailsController = null;
+            currentInstrument = null;
             document.getElementById('main-view').style.display = 'flex';
             document.getElementById('result-scroll-view').style.display = 'none';
             document.getElementById('bottom-bar').style.display = 'none';
@@ -6459,6 +6611,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
             // 홈으로 돌아가면 저장된 종목 URL도 제거
             const homeUrl = new URL(window.location.href);
             homeUrl.searchParams.delete('q');
+            homeUrl.searchParams.delete('m');
+            homeUrl.searchParams.delete('s');
             window.history.replaceState({}, '', homeUrl.toString());
             const side = document.getElementById('sidebar-wrapper');
             if (side) side.classList.remove('open');
@@ -6774,332 +6928,235 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             }
         }
 
-        // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP51-US-SIDEBAR-FIX';
+        // 브라우저 콘솔에서 실제 배포본의 단일 종목 흐름 버전을 확인할 수 있다.
+        window.__GAEMIGTP_BUILD__ = 'STEP53-SINGLE-STOCK-FLOW';
 
-        const ANALYZE_CACHE = new Map();
-        const ANALYZE_CACHE_TTL = 30 * 1000;
+        let currentInstrument = null;
         let activeSearchToken = 0;
         let activeSearchController = null;
         let activeDetailsController = null;
         let rightMarketController = null;
         let rightMarketRequestToken = 0;
-        const FAST_CHART_CACHE = new Map();
-        const FAST_CHART_CACHE_TTL = 30 * 1000;
 
-        async function doSearch(query, forceServer = false, displayNameOverride = '') {
-            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
-            let materialText = '';
+        function renderStockData(data, searchToken, displayNameOverride = '') {
+            if (!data || searchToken !== activeSearchToken) return;
 
-            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
-
-            const cleanQ = String(query || '').trim();
-            if (!cleanQ) return;
-
-            // 새 종목을 클릭하면 이전 분석/상세 폴링 요청을 즉시 중단한다.
-            // activeSearchToken은 화면 적용 방지용이고, AbortController는 실제 HTTP 요청을 중단한다.
-            if (activeSearchController) {
-                try { activeSearchController.abort(); } catch (e) {}
+            // 차트도 동일한 analyze 응답의 candles만 사용한다.
+            if (Array.isArray(data.candles) && data.candles.length) {
+                try { initTvChart(data.candles); } catch (e) { console.warn('[CHART] render failed:', e); }
             }
-            if (activeDetailsController) {
-                try { activeDetailsController.abort(); } catch (e) {}
-            }
+
+            const isKrw = data.market === '국내주식' || data.market === '국내증시';
+const displayName = String(displayNameOverride || data.name || data.formal_name || data.symbol || '').trim();
+const displayPrice = data.price || data.price_str;
+const displayTime = data.time || data.now_str;
+
+const usShortName = (isKrw || !data.symbol)
+    ? displayName
+    : getUsShortKrName(data.symbol, displayName);
+setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
+setTxt('rPrice', displayPrice);
+setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
+
+loadCommunityData(data.symbol, displayName);
+
+// 1. 증시는 지금 위젯 렌더링 (독립 위젯으로 분리)
+if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+    window.GaemiWidgets.worldBoard.render(data.world_board || []);
+}
+
+
+// 2. 캘린더 데이터 저장 및 렌더링
+if (data.market_calendar) {
+    globalMarketCalendar = data.market_calendar;
+
+    // 중요:
+    // 최초 화면 렌더링 시에는 API 데이터가 아직 도착하지 않아
+    // 경제 캘린더 자동 이동 플래그가 먼저 켜질 수 있습니다.
+    // 실제 데이터가 도착한 뒤 다시 한 번 자동 이동을 판단합니다.
+    window.globalMarketCalendar = globalMarketCalendar;
+    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+        window.GaemiWidgets.economicCalendar.resetState();
+    }
+    renderMarketCalendarView();
+}
+
+// 3. 퀀트 분석 데이터 렌더링 (독립 위젯)
+if (window.GaemiWidgets && window.GaemiWidgets.quant) {
+    window.GaemiWidgets.quant.render(data.quant);
+}
+if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
+    window.GaemiWidgets.maliciousZone.render(data);
+}
+// 3.5 왜 움직였을까? — 독립 위젯
+if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
+    window.GaemiWidgets.whyMovement.render(data);
+}
+
+// 3.6 트랙 분석 — 독립 위젯
+if (window.GaemiWidgets && window.GaemiWidgets.track) {
+    const mr = data && data.movement_reason;
+    const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
+        const a5 = a.key === 'market_5d' ? 1 : 0;
+        const b5 = b.key === 'market_5d' ? 1 : 0;
+        if (a5 !== b5) return a5 - b5;
+        return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
+    });
+    const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
+    const confidenceStyle = mr && mr.confidence === '높음'
+        ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+        : mr && mr.confidence === '중간'
+            ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+            : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+    window.GaemiWidgets.track.render(data, mr, evidenceReasons, evidenceCount, confidenceStyle);
+}
+// 4. 종목 뉴스 렌더링 — 독립 위젯
+if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
+    window.GaemiWidgets.stockNews.load({
+        symbol: data.symbol, market: data.market,
+        name: data.name || data.formal_name, initial: data.stock_news
+    });
+}
+
+// 5. 경제뉴스 위젯 — 독립 API에서 직접 갱신
+if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
+    window.GaemiWidgets.globalNews.load({
+        market: data.market, initial: data.global_news
+    });
+}
+
+// 5. 애널리스트 컨센서스 — 독립 위젯
+if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
+    window.GaemiWidgets.consensus.render(data.consensus);
+}
+
+if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
+    window.GaemiWidgets.renderDartDisclosure(data.dart_disclosures);
+}
+
+document.getElementById('loading').style.display = 'none';
+document.getElementById('result-card-wrap').style.display = 'block';
+
+// 오른쪽 사이드바 종목 클릭 시 사용자가 보고 있던 스크롤 위치를 유지한다.
+// 자동으로 페이지 맨 위로 이동시키지 않는다.
+        }
+
+        async function selectStock(query, forceServer = false, displayNameOverride = '') {
+            const rawQuery = String(query || '').trim();
+            if (!rawQuery) return;
+
+            if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
+            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
             activeSearchController = new AbortController();
             const searchSignal = activeSearchController.signal;
-
-            // STEP 37: 우측 실시간 시장에서 종목코드로 진입하더라도
-            // 목록에서 이미 확보한 한글 종목명을 상세 화면 제목에 유지한다.
+            const searchToken = ++activeSearchToken;
             const displayNameHint = String(displayNameOverride || '').trim();
 
-            // STEP 21: 최근검색종목 메뉴에서 사용할 최소 검색 이력을 로컬에 저장한다.
-            try {
-                const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
-                // STEP 40: 최근검색종목은 검색에 사용한 코드가 아니라
-                // 화면에서 사용한 실제 표시명을 우선 저장한다.
-                // 우측 국내/해외/코인 목록에서 종목을 클릭한 경우에는
-                // displayNameOverride에 전달된 종목명을 그대로 보존한다.
-                const recentDisplayName = displayNameHint || cleanQ;
-                const recentSymbol = cleanQ.toUpperCase();
-                const recentItem = {
-                    name: recentDisplayName,
-                    symbol: recentSymbol,
-                    price: null,
-                    change_pct: null,
-                    currency: ''
-                };
-                const next = [recentItem, ...recent.filter(x => {
-                    const oldSymbol = String(x?.symbol || '').toUpperCase();
-                    const oldName = String(x?.name || '').toUpperCase();
-                    return oldSymbol !== recentSymbol && oldName !== recentSymbol;
-                })].slice(0, 15);
-                localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
-            } catch (e) {}
-
-            // 현재 분석 종목을 URL에 저장하여 새로고침해도 같은 종목을 유지
-            const searchUrl = new URL(window.location.href);
-            searchUrl.searchParams.set('q', cleanQ);
-            window.history.replaceState({}, '', searchUrl.toString());
-
-            document.getElementById('centerInput').value = cleanQ;
-            document.getElementById('bottomInput').value = cleanQ;
+            const center = document.getElementById('centerInput');
+            const bottom = document.getElementById('bottomInput');
+            if (center) center.value = rawQuery;
+            if (bottom) bottom.value = rawQuery;
 
             document.getElementById('main-view').style.display = 'none';
             document.getElementById('result-scroll-view').style.display = 'block';
             document.getElementById('bottom-bar').style.display = 'flex';
             document.getElementById('loading').style.display = 'flex';
             document.getElementById('result-card-wrap').style.display = 'block';
-            const fastTitle = document.getElementById('rTitle');
-            const fastPrice = document.getElementById('rPrice');
-            const fastMeta = document.getElementById('rMeta');
-            if (fastTitle) fastTitle.textContent = displayNameHint || cleanQ.toUpperCase();
-            if (fastPrice) fastPrice.textContent = '';
-            if (fastMeta) fastMeta.textContent = '';
+            const title = document.getElementById('rTitle');
+            const price = document.getElementById('rPrice');
+            const meta = document.getElementById('rMeta');
+            if (title) title.textContent = displayNameHint || rawQuery.toUpperCase();
+            if (price) price.textContent = '';
+            if (meta) meta.textContent = '실제 데이터를 불러오는 중입니다.';
 
             if (window.innerWidth <= 900) {
                 const side = document.getElementById('sidebar-wrapper');
                 if (side) side.classList.remove('open');
             }
 
-            const searchToken = ++activeSearchToken;
-
-            // 🚀 첫 화면 차트 전용 요청: 전체 분석을 기다리지 않고 즉시 시작
-            const fastChartKey = cleanQ.toUpperCase();
-            const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
-            const fastChartStartedAt = performance.now();
-            const fastChartPromise = (
-                fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
-            )
-                ? Promise.resolve(fastChartCached.data)
-                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ), {
-                    signal: searchSignal,
-                    cache: 'no-store'
-                })
-                    .then(r => r.ok ? r.json() : null)
-                    .then(chartData => {
-                        console.log(`[gaemiGTP 초고속차트] ${cleanQ} | ${(performance.now() - fastChartStartedAt).toFixed(0)}ms`);
-                        if (chartData) {
-                            FAST_CHART_CACHE.set(fastChartKey, {
-                                time: Date.now(),
-                                data: chartData
-                            });
-                        }
-                        return chartData;
-                    })
-                    .catch(() => null);
-
+            // 서버가 종목의 canonical key를 확정한다. 프론트는 임의의 종목키를 만들지 않는다.
             try {
-                const cacheKey = cleanQ.toUpperCase();
-                const cached = ANALYZE_CACHE.get(cacheKey);
-                let data;
-                let response = null;
-
-                if (!forceServer && cached && (Date.now() - cached.time) < ANALYZE_CACHE_TTL) {
-                    data = cached.data;
-                } else {
-                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=core';
-                    response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
-
-                    const contentType = response.headers.get("content-type") || "";
-                    if (contentType.includes("application/json")) {
-                        data = await response.json();
-                    } else {
-                        await response.text();
-                        throw new Error("서버 응답 오류 (" + response.status + ")");
-                    }
-
-                    if (response.ok && data && !data.error) {
-                        ANALYZE_CACHE.set(cacheKey, { time: Date.now(), data });
-                    }
-                }
-
-                if (!data) {
-                    throw new Error("분석 데이터를 받지 못했습니다.");
-                }
-
-                if (data.error) {
+                const url = '/api/analyze?q=' + encodeURIComponent(rawQuery) + '&mode=core';
+                const response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
+                const contentType = response.headers.get('content-type') || '';
+                let data = contentType.includes('application/json') ? await response.json() : null;
+                if (!data) throw new Error('서버 응답을 읽지 못했습니다.');
+                if (!response.ok || data.error) {
                     const detail = data.detail ? ` · ${data.detail}` : '';
-                    throw new Error(`${data.error}${detail}`);
+                    throw new Error(`${data.error || '종목 데이터를 가져오지 못했습니다.'}${detail}`);
                 }
+                if (searchToken !== activeSearchToken) return;
 
-                if (data._perf) {
-                    console.log(
-                        `[gaemiGTP 성능] ${cleanQ} | 전체 ${data._perf.total_ms}ms | HTTP ${data._perf.http_call_count}회`
-                    );
-                    console.table(data._perf.slowest_http || []);
+                currentInstrument = {
+                    key: data.instrument_key || '',
+                    market: data.market_code || '',
+                    symbol: data.symbol || '',
+                    name: data.name || data.formal_name || displayNameHint || rawQuery
+                };
+                const resolvedDisplay = displayNameHint || data.name || data.formal_name || data.symbol || rawQuery;
+                if (center) center.value = resolvedDisplay;
+                if (bottom) bottom.value = resolvedDisplay;
+
+                // URL은 입력 문자열이 아니라 canonical market/symbol로 저장한다.
+                const stateUrl = new URL(window.location.href);
+                stateUrl.searchParams.delete('q');
+                if (data.market_code) stateUrl.searchParams.set('m', data.market_code);
+                if (data.symbol) stateUrl.searchParams.set('s', data.symbol);
+                window.history.replaceState({}, '', stateUrl.toString());
+
+                // 최근검색도 canonical symbol을 기준으로 중복 제거한다.
+                try {
+                    const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
+                    const recentItem = {
+                        name: displayNameHint || data.name || data.formal_name || data.symbol,
+                        symbol: data.symbol || rawQuery.toUpperCase(),
+                        market: data.market_code || '',
+                        key: data.instrument_key || '',
+                        price: data.current_price ?? null,
+                        change_pct: data.current_change_pct ?? null,
+                        currency: data.market_code === 'KR' ? 'KRW' : ''
+                    };
+                    const next = [recentItem, ...recent.filter(x => String(x?.key || '') !== String(recentItem.key))].slice(0, 15);
+                    localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
+                } catch (e) {}
+
+                renderStockData(data, searchToken, displayNameHint);
+
+                if (data._details_ready === false && currentInstrument.key) {
+                    pollAnalysisDetails(currentInstrument.key, searchToken, 0);
                 }
-
-                // 🚀 차트는 core 분석 완료를 기다리지 않는다.
-                if (fastChartCached && Array.isArray(fastChartCached.data?.candles) && fastChartCached.data.candles.length) {
-                    setTimeout(() => {
-                        if (searchToken !== activeSearchToken) return;
-                        initTvChart(fastChartCached.data.candles);
-                        const last = fastChartCached.data.candles[fastChartCached.data.candles.length - 1];
-                        if (last && Number.isFinite(Number(last.close))) {
-                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
-                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
-                        }
-                    }, 0);
-                } else {
-                    fastChartPromise.then(chartData => {
-                        if (searchToken !== activeSearchToken || !chartData) return;
-                        if (chartData?._perf) {
-                            console.log(
-                                `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
-                            );
-                            console.table(chartData._perf.slowest_http || []);
-                        }
-                        if (!Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                        initTvChart(chartData.candles);
-                        const last = chartData.candles[chartData.candles.length - 1];
-                        if (last && Number.isFinite(Number(last.close))) {
-                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
-                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
-                        }
-                    });
-                }
-
-                // /api/chart를 별도로 호출하지 않는다. /api/analyze가 반환한
-                // 동일 candles를 바로 사용해 한 종목 클릭당 Yahoo 차트 중복 요청을 제거한다.
-                if (searchToken === activeSearchToken && Array.isArray(data.candles) && data.candles.length) {
-                    initTvChart(data.candles);
-                }
-
-if ((response && !response.ok) || data.error) {
-                    alert(data.error || '종목을 찾을 수 없습니다.');
-                    document.getElementById('loading').style.display = 'none';
-                    return;
-                }
-
-                const isKrw = data.market === '국내주식' || data.market === '국내증시';
-                const displayName = displayNameHint || data.name || data.formal_name;
-                const displayPrice = data.price || data.price_str;
-                const displayTime = data.time || data.now_str;
-
-                const usShortName = (isKrw || !data.symbol)
-                    ? displayName
-                    : getUsShortKrName(data.symbol, displayName);
-                setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
-                setTxt('rPrice', displayPrice);
-                setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
-
-                loadCommunityData(data.symbol, displayName);
-
-                // 1. 증시는 지금 위젯 렌더링 (독립 위젯으로 분리)
-                if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
-                    window.GaemiWidgets.worldBoard.render(data.world_board || []);
-                }
-
-
-                // 2. 캘린더 데이터 저장 및 렌더링
-                if (data.market_calendar) {
-                    globalMarketCalendar = data.market_calendar;
-
-                    // 중요:
-                    // 최초 화면 렌더링 시에는 API 데이터가 아직 도착하지 않아
-                    // 경제 캘린더 자동 이동 플래그가 먼저 켜질 수 있습니다.
-                    // 실제 데이터가 도착한 뒤 다시 한 번 자동 이동을 판단합니다.
-                    window.globalMarketCalendar = globalMarketCalendar;
-                    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
-                        window.GaemiWidgets.economicCalendar.resetState();
-                    }
-                    renderMarketCalendarView();
-                }
-
-                // 3. 퀀트 분석 데이터 렌더링 (독립 위젯)
-                if (window.GaemiWidgets && window.GaemiWidgets.quant) {
-                    window.GaemiWidgets.quant.render(data.quant);
-                }
-                if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
-                    window.GaemiWidgets.maliciousZone.render(data);
-                }
-                // 3.5 왜 움직였을까? — 독립 위젯
-                if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
-                    window.GaemiWidgets.whyMovement.render(data);
-                }
-
-                // 3.6 트랙 분석 — 독립 위젯
-                if (window.GaemiWidgets && window.GaemiWidgets.track) {
-                    const mr = data && data.movement_reason;
-                    const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
-                        const a5 = a.key === 'market_5d' ? 1 : 0;
-                        const b5 = b.key === 'market_5d' ? 1 : 0;
-                        if (a5 !== b5) return a5 - b5;
-                        return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
-                    });
-                    const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
-                    const confidenceStyle = mr && mr.confidence === '높음'
-                        ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
-                        : mr && mr.confidence === '중간'
-                            ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
-                            : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
-                    window.GaemiWidgets.track.render(data, mr, evidenceReasons, evidenceCount, confidenceStyle);
-                }
-                // 4. 종목 뉴스 렌더링 — 독립 위젯
-                if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
-                    window.GaemiWidgets.stockNews.load({
-                        symbol: data.symbol, market: data.market,
-                        name: data.name || data.formal_name, initial: data.stock_news
-                    });
-                }
-
-                // 5. 경제뉴스 위젯 — 독립 API에서 직접 갱신
-                if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
-                    window.GaemiWidgets.globalNews.load({
-                        market: data.market, initial: data.global_news
-                    });
-                }
-
-                // 5. 애널리스트 컨센서스 — 독립 위젯
-                if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
-                    window.GaemiWidgets.consensus.render(data.consensus);
-                }
-
-                if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
-                    window.GaemiWidgets.renderDartDisclosure(data.dart_disclosures);
-                }
-
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('result-card-wrap').style.display = 'block';
-
-                // STEP 50: 첫 검색부터 전체 분석 데이터를 받아 뉴스/컨센서스/트랙 분석이 빈 상태로 남지 않게 한다.
-                if (data._details_ready === false) {
-                    pollAnalysisDetails(cleanQ, searchToken);
-                }
-
-                // 오른쪽 사이드바 종목 클릭 시 사용자가 보고 있던 스크롤 위치를 유지한다.
-                // 자동으로 페이지 맨 위로 이동시키지 않는다.
-
             } catch (err) {
                 if (err && err.name === 'AbortError') return;
-                console.error("Analysis Error:", err);
-                const msg = err && err.message ? err.message : '알 수 없는 오류';
+                console.error('Analysis Error:', err);
                 if (searchToken === activeSearchToken) {
-                    alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
+                    alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + (err?.message || '알 수 없는 오류'));
                     document.getElementById('loading').style.display = 'none';
                 }
             }
         }
 
-        async function pollAnalysisDetails(query, searchToken, attempt = 0) {
-            // optional 데이터(종목뉴스/해외뉴스/컨센서스/트랙 분석)가 준비될 시간을
-            // 기존 4.5초보다 충분히 확보한다. 준비되면 full 재분석을 다시 돌리지 않고
-            // 서버의 완성 캐시를 그대로 한 번 렌더링한다.
-            if (searchToken !== activeSearchToken || attempt >= 40) return;
-            if (activeDetailsController) {
-                try { activeDetailsController.abort(); } catch (e) {}
-            }
+        // 기존 호출부 호환용. 실제 단일 진입점은 selectStock이다.
+        async function doSearch(query, forceServer = false, displayNameOverride = '') {
+            return selectStock(query, forceServer, displayNameOverride);
+        }
+
+        window.selectStock = selectStock;
+        window.openStock = selectStock;
+        window.doSearch = doSearch;
+
+        async function pollAnalysisDetails(cacheKey, searchToken, attempt = 0) {
+            if (searchToken !== activeSearchToken || attempt >= 10 || !cacheKey) return;
+            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
             activeDetailsController = new AbortController();
             const detailsSignal = activeDetailsController.signal;
             try {
-                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store', signal: detailsSignal});
+                const r = await fetch('/api/analyze-details?key=' + encodeURIComponent(cacheKey) + '&wait=1', {
+                    cache: 'no-store', signal: detailsSignal
+                });
                 if (r.status === 200) {
                     const payload = await r.json();
-                    if (payload && payload.ready && payload.data) {
-                        if (searchToken !== activeSearchToken) return;
-                        ANALYZE_CACHE.delete(query.trim().toUpperCase());
-                        // forceServer=true를 사용하면 무거운 외부 API를 다시 호출하므로 금지.
-                        // 서버 ANALYSIS_CACHE의 완성 데이터를 core 요청으로 받아 즉시 렌더링한다.
-                        await doSearch(query, false);
+                    if (payload && payload.ready && payload.data && searchToken === activeSearchToken) {
+                        renderStockData(payload.data, searchToken, currentInstrument?.name || '');
                         return;
                     }
                 }
@@ -7107,7 +7164,7 @@ if ((response && !response.ok) || data.error) {
                 if (e && e.name === 'AbortError') return;
             }
             if (searchToken === activeSearchToken) {
-                setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
+                setTimeout(() => pollAnalysisDetails(cacheKey, searchToken, attempt + 1), 800);
             }
         }
 
@@ -7199,21 +7256,10 @@ if ((response && !response.ok) || data.error) {
         }
 
         function openUsLeadingStock(symbol, name) {
-            const cleanSymbol = String(symbol || '').trim();
+            const cleanSymbol = String(symbol || '').trim().toUpperCase();
             const cleanName = getUsShortKrName(cleanSymbol, name);
             if (!cleanSymbol) return;
-
-            // 기존 종목 상세분석 진입점(doSearch)을 그대로 사용해
-            // 새로운 상세 페이지를 만들지 않는다.
-            doSearch(cleanSymbol);
-
-            // 현재 상세분석이 티커를 받는 경우에도 한글/정식명이 필요한
-            // 기존 흐름을 보완한다.
-            setTimeout(() => {
-                if (typeof loadCommunityData === 'function') {
-                    loadCommunityData(cleanSymbol, cleanName);
-                }
-            }, 0);
+            selectStock(cleanSymbol, false, cleanName);
         }
 
         async function loadSectorChart(sectorSymbol, sectorName) {
@@ -7297,10 +7343,14 @@ if ((response && !response.ok) || data.error) {
 
             // 새로고침 시 URL에 저장된 종목을 자동 복원
             const params = new URLSearchParams(window.location.search);
+            const savedMarket = params.get('m');
+            const savedSymbol = params.get('s');
             const savedQuery = params.get('q');
 
-            if (savedQuery && savedQuery.trim()) {
-                doSearch(savedQuery.trim());
+            if (savedMarket && savedSymbol) {
+                selectStock(`${savedMarket}:${savedSymbol}`);
+            } else if (savedQuery && savedQuery.trim()) {
+                selectStock(savedQuery.trim());
             }
         });
     </script>
@@ -7346,56 +7396,39 @@ FAST_CHART_PAYLOAD_TTL = 30
 
 
 def run_fast_chart_pipeline(query):
-    clean_q = str(query or "").strip().replace(" ", "").upper()
-    if not clean_q:
+    instrument = resolve_instrument(query)
+    if not instrument:
         return None
+    cache_key = instrument["key"]
 
-    cached_payload = FAST_CHART_PAYLOAD_CACHE.get(clean_q)
+    cached_payload = FAST_CHART_PAYLOAD_CACHE.get(cache_key)
     if cached_payload and (time.time() - cached_payload["time"]) < FAST_CHART_PAYLOAD_TTL:
         return dict(cached_payload["data"])
 
     def _finish(df):
         payload = _build_chart_payload(df) if df is not None else None
         if payload:
-            FAST_CHART_PAYLOAD_CACHE[clean_q] = {
+            FAST_CHART_PAYLOAD_CACHE[cache_key] = {
                 "time": time.time(),
                 "data": dict(payload),
             }
         return payload
 
-    # 글로벌 지수
-    if clean_q in GLOBAL_INDEX_MAP:
-        symbol = GLOBAL_INDEX_MAP[clean_q]
-        df = _fetch_fast_overseas_chart(symbol)
-        return _finish(df)
-
-    # 암호화폐
-    if clean_q.endswith("USDT") or clean_q in CRYPTO_MAP or any(c in clean_q for c in ["BTC", "ETH", "코인", "비트"]):
-        symbol = CRYPTO_MAP.get(clean_q, clean_q if clean_q.endswith("USDT") else f"{clean_q}USDT")
-        try:
-            _, _, df = fetch_crypto_candles(symbol)
+    try:
+        if instrument["market"] == "INDEX":
+            df = _fetch_fast_overseas_chart(instrument["symbol"])
             return _finish(df)
-        except Exception:
-            return None
-
-    # 미국주식
-    if clean_q in US_STOCK_MAP:
-        symbol = US_STOCK_MAP[clean_q]
-        df = _fetch_fast_overseas_chart(symbol)
+        if instrument["market"] == "CRYPTO":
+            _, _, df = fetch_crypto_candles(instrument["symbol"])
+            return _finish(df)
+        if instrument["market"] == "US":
+            df = _fetch_fast_overseas_chart(instrument["symbol"])
+            return _finish(df)
+        df = _fetch_fast_domestic_chart(instrument["symbol"])
         return _finish(df)
-
-    # STEP 11: 영문 티커는 소문자로 입력해도 Naver 자동완성으로 가지 않는다.
-    if US_TICKER_PATTERN.fullmatch(clean_q or ""):
-        symbol = clean_q
-        df = _fetch_fast_overseas_chart(symbol)
-        return _build_chart_payload(df) if df is not None else None
-
-    # 국내주식
-    code, _ = find_stock_code(query)
-    if not code:
+    except Exception as exc:
+        print(f"[FAST CHART] {cache_key} failed: {type(exc).__name__}: {exc}")
         return None
-    df = _fetch_fast_domestic_chart(code)
-    return _build_chart_payload(df) if df is not None else None
 
 
 # ----------------------------------------------------
@@ -7800,10 +7833,15 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/analyze-details":
             q = str(params.get("q", [""])[0]).strip()
-            if not q:
+            key_param = str(params.get("key", [""])[0]).strip().upper()
+            if not q and not key_param:
                 self._json(400, {"ok": False, "error": "종목명을 입력해주세요."})
                 return
-            clean_q = q.replace(" ", "").upper()
+            instrument = resolve_instrument(key_param or q)
+            if not instrument:
+                self._json(404, {"ok": False, "error": "종목을 찾을 수 없습니다."})
+                return
+            cache_key = instrument["key"]
             # 클라이언트가 짧게 여러 번 폴링하지 않도록, 한 번의 요청에서
             # 최대 8초 동안 enrichment 완료 여부를 확인한다.
             try:
@@ -7812,7 +7850,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 should_wait = False
             deadline = time.monotonic() + (12.0 if should_wait else 0.0)
             while True:
-                cached = ANALYSIS_CACHE.get(clean_q)
+                cached = ANALYSIS_CACHE.get(cache_key)
                 if cached:
                     cached_time, cached_data = cached
                     if time.time() - cached_time < ANALYSIS_CORE_TTL and cached_data.get("_details_ready"):

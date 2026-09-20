@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="/widgets/dart_disclosure.js"></script>
     <script src="/widgets/chart.js"></script>
     <script src="/widgets/stock_news.js"></script>
@@ -17,12 +18,2258 @@
     <script src="/widgets/us_leading_stocks.js"></script>
     <script src="/widgets/quant.js"></script>
     <script src="/widgets/track.js"></script>
+    <script src="/widgets/why_movement.js"></script>
     <script src="/widgets/earnings_calendar.js"></script>
     <script src="/widgets/economic_calendar.js"></script>
     <script src="/widgets/analyst_consensus.js"></script>
     <script src="/widgets/vote.js"></script>
     <script src="/widgets/comment.js"></script>
-    <link rel="stylesheet" href="/style.css?v=1">
+    <script src="/widgets/malicious_zone.js"></script>
+    <style>
+        :root {
+            --bg-body: #131314;
+            --bg-card: #1e1f20;
+            --bg-sidebar: #1e1f20;
+            --bg-subcard: #131314;
+            --bg-cal-card: #18191a;
+            --text-title: #f2f2f2;
+            --text-main: #e3e3e3;
+            --text-muted: #8e918f;
+            --text-sub: #c4c7c5;
+            --border-line: #282a2c;
+            --border-focus: #333538;
+            --btn-hover: rgba(255, 255, 255, 0.08);
+            --signal-border: rgba(16, 185, 129, 0.55);
+            --signal-glow: rgba(16, 185, 129, 0.12);
+            --bottom-fade: linear-gradient(180deg, rgba(19,19,20,0) 0%, rgba(19,19,20,1) 40%);
+            --star-gold: #f59e0b;
+        }
+
+        body.light-theme {
+            --bg-body: #f8f9fa;
+            --bg-card: #ffffff;
+            --bg-sidebar: #f1f3f4;
+            --bg-subcard: #f8f9fa;
+            --bg-cal-card: #ffffff;
+            --text-title: #1f1f1f;
+            --text-main: #202124;
+            --text-muted: #5f6368;
+            --text-sub: #3c4043;
+            --border-line: #dadce0;
+            --border-focus: #bdc1c6;
+            --btn-hover: rgba(0, 0, 0, 0.05);
+            --signal-border: rgba(16, 185, 129, 0.65);
+            --signal-glow: rgba(16, 185, 129, 0.08);
+            --bottom-fade: linear-gradient(180deg, rgba(248,249,250,0) 0%, rgba(248,249,250,1) 40%);
+            --star-gold: #d97706;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Google Sans', 'Roboto', -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", sans-serif; }
+        body { background-color: var(--bg-body); color: var(--text-main); min-height: 100vh; overflow-x: hidden; display: flex; transition: background-color 0.2s, color 0.2s; }
+        
+        #sidebar-wrapper {
+            width: 260px;
+            background-color: var(--bg-sidebar);
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            display: flex;
+            flex-direction: column;
+            padding: 12px 14px 16px;
+            z-index: 100;
+            border-right: 1px solid var(--border-line);
+            transform: translateX(-100%);
+            transition: transform 0.25s ease, background-color 0.2s;
+            box-shadow: none;
+        }
+        #sidebar-wrapper.open { transform: translateX(0); box-shadow: 10px 0 30px rgba(0,0,0,0.25); }
+
+        .side-top-action { height: 44px; display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; padding: 0 4px; }
+        .gemini-menu-icon { background: transparent; border: none; color: var(--text-sub); cursor: pointer; padding: 6px; border-radius: 50%; display: flex; align-items: center; justify-content: center; transition: background 0.15s, color 0.15s; }
+        .gemini-menu-icon:hover { background: var(--btn-hover); color: var(--text-title); }
+
+        .gemini-new-btn { display: flex; align-items: center; gap: 12px; background: var(--bg-body); border: 1px solid var(--border-line); color: var(--text-main); font-size: 0.875rem; font-weight: 500; padding: 10px 16px; border-radius: 24px; cursor: pointer; width: 100%; transition: all 0.2s; margin-bottom: 16px; }
+        .gemini-new-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); color: var(--text-title); }
+
+        .sidebar-scroll-area { flex: 1; overflow-y: auto; }
+        .sidebar-section-title { font-size: 0.75rem; color: var(--text-muted); font-weight: 600; padding: 8px 12px; letter-spacing: -0.2px; }
+        .sidebar-item { display: flex; align-items: center; padding: 9px 14px; border-radius: 20px; color: var(--text-sub); font-size: 0.875rem; cursor: pointer; margin-bottom: 2px; transition: background 0.15s, color 0.15s; }
+        .sidebar-item:hover { background: var(--btn-hover); color: var(--text-title); }
+
+        #content-wrapper { margin-left: 0; width: 100%; min-height: 100vh; display: flex; flex-direction: column; position: relative; }
+        header { height: 56px; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; background: var(--bg-body); position: sticky; top: 0; z-index: 40; transition: background-color 0.2s; }
+        .header-left { display: flex; align-items: center; gap: 12px; }
+        .logo-top { font-weight: 700; font-size: 1.18rem; color: var(--text-title); letter-spacing: -0.5px; cursor: pointer; }
+
+        #main-view { min-height: calc(100vh - 56px); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; }
+        .hero-title { font-size: 2.8rem; font-weight: 700; margin-bottom: 6px; letter-spacing: -1px; color: var(--text-title); text-align: center; }
+        .hero-sub { font-size: 0.95rem; color: var(--text-muted); margin-bottom: 24px; font-weight: 400; text-align: center; }
+
+        .search-container { width: 100%; max-width: 832px; position: relative; }
+        .search-box { width: 100%; min-height: 60px; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 30px; padding: 8px 12px 8px 18px; display: flex; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.1); position: relative; }
+        .search-box input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-title); font-size: 0.95rem; }
+
+        /* 모델 선택기 */
+        .model-selector-wrap { position: relative; margin-right: 4px; flex-shrink: 0; }
+        .model-pill-btn { background: transparent; border: none; border-radius: 20px; padding: 6px 8px; display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
+        .model-pill-btn:hover { background: var(--btn-hover); }
+        .model-pill-name { font-size: 0.82rem; font-weight: 600; color: var(--text-main); }
+        .model-pill-arrow { font-size: 0.6rem; color: var(--text-muted); }
+
+        .model-dropdown-menu { display: none; position: absolute; bottom: calc(100% + 10px); right: 0; width: 210px; max-width: 80vw; background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); z-index: 100; }
+        .model-dropdown-item { padding: 9px 12px; border-radius: 10px; cursor: pointer; }
+        .model-dropdown-item:hover { background: var(--btn-hover); }
+        .model-dropdown-item.active { background: var(--btn-hover); }
+        .item-title { font-size: 0.88rem; font-weight: 600; color: var(--text-title); display: flex; justify-content: space-between; }
+        .item-sub { font-size: 0.73rem; color: var(--text-muted); margin-top: 2px; }
+        .item-check { color: #38bdf8; font-weight: bold; display: none; }
+        .model-dropdown-item.active .item-check { display: inline; }
+
+        .send-btn { width: 38px; height: 38px; border-radius: 50%; background: var(--border-line); border: none; color: var(--text-title); display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+        .send-btn:hover { background: var(--border-focus); }
+
+        .popular-tags { display: flex; gap: 8px; margin-top: 20px; flex-wrap: wrap; justify-content: center; }
+        .tag-btn { background: var(--bg-card); border: 1px solid var(--border-line); border-radius: 16px; padding: 6px 13px; font-size: 0.82rem; color: var(--text-sub); cursor: pointer; }
+        .tag-btn:hover { background: var(--btn-hover); color: var(--text-title); }
+
+        #result-scroll-view { display: none; width: 100%; min-height: 100vh; padding: 16px 12px 100px; }
+        .result-inner { max-width: 1220px; margin: 0 auto; width: 100%; }
+
+        /* [핵심 마스터 그리드] PC: 832px(좌) + 348px(우) 완벽 대칭 구조 */
+        .dashboard-master-grid {
+            display: grid;
+            grid-template-columns: 832px 348px;
+            gap: 16px;
+            margin: 0 auto;
+            max-width: 1196px;
+            justify-content: center;
+            align-items: stretch;
+            position: relative;
+        }
+
+        /* 1행: 왜 움직였을까? — 코멘트 전용 */
+        #rowCause { grid-column: 1; grid-row: 1; }
+
+        /* 4행: 트랙 분석 — 종목 뉴스 바로 아래 */
+        #rowTrack { grid-column: 1; grid-row: 4; }
+
+        /* 2행: 차트(좌) & 증시(우) */
+        #rowChart { grid-column: 1; grid-row: 2; height: 100%; }
+        #rowWorld { grid-column: 2; grid-row: 2; height: 100%; }
+
+        /* 3행: 종목 뉴스(좌) & 경제뉴스(우)
+           테스트 수정: 뉴스 카드끼리 높이를 강제로 공유하지 않음 */
+        #rowNews {
+            grid-column: 1;
+            grid-row: 3;
+            height: auto;
+            align-self: start;
+        }
+        #rowGlobalNews {
+            grid-column: 2;
+            grid-row: 3;
+            height: auto;
+            align-self: start;
+        }
+
+        /* 4행: 트랙 분석(좌) & 실적 일정(우) */
+        #rowTrack {
+            grid-column: 1;
+            grid-row: 4;
+            height: 100%;
+            min-height: 0;
+            align-self: stretch;
+        }
+        #rowEarningsCalendar {
+            grid-column: 2;
+            grid-row: 4;
+            height: 100%;
+            min-height: 0;
+            align-self: stretch;
+        }
+
+        /* 5행: 퀀트 분석(좌) & 경제 일정(우) */
+        #rowQuant {
+            grid-column: 1;
+            grid-row: 5;
+            height: 100%;
+            min-height: 0;
+            align-self: stretch;
+        }
+        #rowEconomicCalendar {
+            grid-column: 2;
+            grid-row: 5;
+            height: 100%;
+            min-height: 0;
+            align-self: stretch;
+        }
+
+        /* 같은 행의 좌/우 카드가 항상 1:1 높이가 되도록 그리드 행을 채운다. */
+        .calendar-widget {
+            min-height: 0;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            align-self: stretch;
+            box-sizing: border-box;
+            padding: 16px;
+        }
+
+        .calendar-widget-title {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 8px;
+            margin-bottom: 10px;
+            font-size: 1.05rem;
+            line-height: 1.25;
+            font-weight: 800;
+            color: var(--text-title);
+            flex: 0 0 auto;
+        }
+
+        .calendar-widget-nav {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+            flex: 0 0 auto;
+        }
+
+        .calendar-star-filter {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin: 0 0 8px;
+            flex: 0 0 auto;
+        }
+
+        .calendar-star-btn {
+            border: 1px solid var(--border-line);
+            background: var(--bg-card);
+            color: var(--text-sub);
+            border-radius: 999px;
+            padding: 4px 9px;
+            font-size: 0.66rem;
+            line-height: 1;
+            font-weight: 800;
+            cursor: pointer;
+        }
+
+        .calendar-star-btn.active {
+            background: var(--text-title);
+            color: #111;
+            border-color: var(--text-title);
+        }
+
+        .calendar-widget-subtitle {
+            font-size: 0.72rem;
+            line-height: 1.25;
+            font-weight: 700;
+            color: var(--text-muted);
+            margin: 1px 0 8px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 0 0 auto;
+        }
+
+        .calendar-widget-list {
+            min-height: 0;
+            flex: 1 1 auto;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .calendar-widget-list .cal-card-item {
+            min-height: 64px;
+            padding: 9px 10px;
+            gap: 9px;
+            border-radius: 10px;
+            flex: 0 0 auto;
+        }
+
+        .calendar-widget-list .cal-time-col {
+            min-width: 48px;
+            font-size: 0.68rem;
+            line-height: 1.25;
+            font-weight: 700;
+        }
+
+        .calendar-widget-list .cal-event-title {
+            font-size: 0.76rem;
+            line-height: 1.3;
+            font-weight: 750;
+        }
+
+        .calendar-widget-list .cal-event-meta {
+            font-size: 0.64rem;
+            line-height: 1.3;
+            margin-top: 3px;
+        }
+
+        .calendar-widget-list .cal-importance-wrap {
+            margin-top: 4px;
+        }
+
+        .calendar-widget-list .cal-alarm-btn {
+            width: 27px;
+            height: 27px;
+            flex: 0 0 27px;
+        }
+
+        .calendar-widget .cal-pagination-bar {
+            flex: 0 0 auto;
+            margin-top: 8px;
+        }
+
+        .calendar-widget .cal-event-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 32px;
+            font-size: 0.58rem;
+            font-weight: 800;
+            color: var(--text-title);
+            background: var(--bg-card);
+            border: 1px solid var(--border-line);
+        }
+
+        .calendar-widget .cal-earn-item .cal-event-icon {
+            color: #7ee787;
+            border-color: rgba(126, 231, 135, 0.28);
+        }
+
+        .calendar-widget .cal-event-topline {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            min-width: 0;
+        }
+
+        .calendar-widget .cal-stars {
+            flex: 0 0 auto;
+            font-size: 0.72rem;
+            letter-spacing: -0.04em;
+            color: #ffb000;
+            white-space: nowrap;
+        }
+
+        .calendar-widget .cal-event-meta {
+            color: var(--text-sub);
+        }
+        /* 실적 캘린더: 기업명 아래에 미국 장 발표 시점을 한 줄로 표시 */
+        /* 실적 카드 표시 순서 고정:
+           별점/발표상태 → 기업명 → (미국 장 마감 후) → 예상 EPS/매출 */
+        .calendar-widget .cal-earn-item .cal-detail-col {
+            display: flex !important;
+            flex-direction: column !important;
+            min-width: 0 !important;
+        }
+        .calendar-widget .cal-earn-item .cal-event-topline {
+            order: 1 !important;
+            display: flex !important;
+        }
+        .calendar-widget .cal-earn-item .cal-event-title {
+            order: 2 !important;
+            display: block !important;
+            width: 100% !important;
+            margin-top: 1px !important;
+            margin-bottom: 0 !important;
+        }
+        .calendar-widget .cal-earn-item .cal-earn-timing {
+            order: 3 !important;
+            display: block !important;
+            width: 100% !important;
+            margin-top: 1px !important;
+            font-size: 0.70rem !important;
+            line-height: 1.25 !important;
+            font-weight: 700 !important;
+            color: var(--text-sub) !important;
+            white-space: normal !important;
+        }
+        .calendar-widget .cal-earn-item .cal-event-meta {
+            order: 4 !important;
+        }
+
+
+        .calendar-widget .cal-date-ctrl {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .calendar-widget .cal-current-date {
+            min-width: 116px;
+            text-align: center;
+            font-size: 0.86rem;
+            font-weight: 800;
+        }
+
+        @media (max-width: 1100px) {
+            #rowEarningsCalendar { order: 4; width: 100%; max-width: 832px; }
+            #rowQuant { order: 5; }
+            #rowEconomicCalendar { order: 6; width: 100%; max-width: 832px; }
+        }
+
+
+        /* 좌측 832px 단독 배치 행들 */
+        #rowConsensus { grid-column: 1; grid-row: 6; }
+        #rowVote { grid-column: 1; grid-row: 7; }
+        #rowComment { grid-column: 1; grid-row: 8; }
+        #rowDart { grid-column: 1; grid-row: 9; }
+        #rowSignal { grid-column: 1; grid-row: 10; }
+
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            padding: 18px 16px;
+            border: 1px solid var(--border-line);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.03);
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
+        .price-title span { color: var(--text-muted); font-size: 0.85rem; font-weight: 400; margin-left: 4px; }
+        .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
+        .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
+
+        .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
+
+        .board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-line); }
+        .board-header-title { font-size: 0.95rem; font-weight: 800; color: var(--text-title); }
+        .board-header-sub { font-size: 0.7rem; color: var(--text-muted); }
+        .board-2col-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; flex: 1; }
+
+        .mini-index-card {
+            background: var(--bg-subcard);
+            border: 1px solid var(--border-line);
+            border-radius: 10px;
+            padding: 7px 8px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            min-height: 58px;
+        }
+        .mini-index-card:hover { border-color: var(--border-focus); background: var(--btn-hover); transform: translateY(-1px); }
+        .mini-top { display: flex; justify-content: space-between; align-items: center; }
+        .mini-name { font-size: 0.76rem; font-weight: 800; color: var(--text-title); }
+        .mini-tag { font-size: 0.6rem; font-weight: 700; color: var(--text-muted); background: var(--btn-hover); border: 1px solid var(--border-line); padding: 1px 4px; border-radius: 5px; }
+        .mini-mid-row { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 3px; }
+        .mini-price { font-size: 0.88rem; font-weight: 800; color: var(--text-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
+        .mini-rate { font-size: 0.72rem; font-weight: 700; line-height: 1.1; margin-top: 1px; }
+
+        /* 캘린더 위젯 스타일 */
+        .cal-top-title-area { margin-bottom: 10px; }
+        .cal-view-tabs {
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            height: 30px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid transparent;
+        }
+        .cal-view-tab {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            height: 30px;
+            padding: 0 1px;
+            border: 0;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.72rem;
+            font-weight: 800;
+            letter-spacing: -0.2px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .cal-view-tab:hover { color: var(--text-title); }
+        .cal-view-tab.active { color: var(--text-title); }
+        .cal-view-tab.active::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: -1px;
+            height: 2px;
+            background: var(--text-title);
+            border-radius: 2px;
+        }
+        .cal-view-custom-icon {
+            width: 14px;
+            height: 14px;
+            flex: 0 0 14px;
+        }
+        .cal-top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+        .cal-date-ctrl { display: flex; align-items: center; gap: 8px; }
+        .cal-arrow-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.75rem; transition: all 0.2s; }
+        .cal-arrow-btn:hover { background: var(--btn-hover); color: var(--text-title); border-color: var(--border-focus); }
+        .cal-current-date { font-size: 0.98rem; font-weight: 800; color: var(--text-title); letter-spacing: -0.3px; }
+        .cal-today-btn { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-sub); font-size: 0.72rem; font-weight: 700; padding: 3px 8px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
+        .cal-today-btn:hover { background: var(--btn-hover); color: var(--text-title); }
+
+        .cal-filter-bar { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; overflow-x: hidden; padding-bottom: 2px; }
+        .cal-filter-pill { background: var(--bg-subcard); border: 1px solid var(--border-line); color: var(--text-muted); font-size: 0.68rem; font-weight: 700; padding: 2px 7px; border-radius: 12px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+        .cal-filter-pill.active { background: #ffffff; color: #121212; border-color: #ffffff; }
+        .cal-filter-pill .star-gold { color: var(--star-gold); }
+
+        .cal-day-header { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); margin: 2px 0 6px; }
+        
+        .cal-event-list-wrap {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            overflow: hidden;
+            justify-content: flex-start;
+        }
+
+        /* 캘린더 카드 고도화: 기존 색상/구조를 유지하면서 여백과 위계를 정리 */
+        .cal-card-item {
+            position: relative;
+            background: var(--bg-cal-card);
+            border: 1px solid var(--border-line);
+            border-radius: 10px;
+            padding: 9px 10px;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+            cursor: pointer;
+            min-height: 72px;
+            overflow: hidden;
+        }
+        .cal-card-item::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 10px;
+            bottom: 10px;
+            width: 2px;
+            border-radius: 2px;
+            background: transparent;
+            opacity: 0.75;
+        }
+        .cal-card-item:hover {
+            border-color: var(--border-focus);
+            background: var(--btn-hover);
+            transform: translateY(-1px);
+        }
+        .cal-time-col {
+            width: 46px;
+            flex-shrink: 0;
+            padding-top: 1px;
+            font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
+            font-size: 0.72rem;
+            font-weight: 800;
+            line-height: 1.15;
+            color: var(--text-sub);
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.02em;
+        }
+        .cal-detail-col { flex: 1; min-width: 0; }
+        .cal-alarm-icon {
+            width: 17px;
+            height: 17px;
+            display: block;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 1.65;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+        .cal-alarm-btn {
+            flex: 0 0 28px;
+            width: 28px;
+            height: 28px;
+            margin-left: 2px;
+            border: 1px solid transparent;
+            border-radius: 7px;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 1rem;
+            line-height: 1;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            align-self: center;
+            opacity: 0.78;
+            transition: all 0.18s ease;
+        }
+        .cal-alarm-btn:hover {
+            border-color: var(--border-line);
+            background: var(--btn-hover);
+            opacity: 1;
+        }
+        .cal-alarm-btn.active {
+            color: #10b981;
+            border-color: rgba(16,185,129,0.28);
+            background: rgba(16,185,129,0.08);
+            opacity: 1;
+        }
+        .cal-event-title {
+            font-size: 0.8rem;
+            font-weight: 750;
+            color: var(--text-title);
+            line-height: 1.3;
+            word-break: keep-all;
+            margin-bottom: 3px;
+            letter-spacing: -0.015em;
+        }
+        .cal-event-meta {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 2px;
+            font-size: 0.66rem;
+            color: var(--text-muted);
+            line-height: 1.25;
+        }
+        .cal-actual-val {
+            color: #38bdf8;
+            font-weight: 750;
+            margin-right: 1px;
+        }
+
+        /* 중요도 막대: 우리 기존 청록 계열로 절제 */
+        .cal-importance-wrap {
+            margin-top: 7px;
+            width: 100%;
+        }
+        .cal-importance-bar {
+            position: relative;
+            width: 100%;
+            height: 5px;
+            border-radius: 5px;
+            background: #2a2f32;
+            box-shadow: inset 0 0 0 1px rgba(255,255,255,0.035);
+        }
+        .cal-importance-bar::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            width: var(--importance-width, 50%);
+            border-radius: inherit;
+            background: linear-gradient(90deg, #4b5055 0%, #6b7075 100%);
+            opacity: 0.9;
+        }
+        .cal-importance-marker {
+            position: absolute;
+            top: 50%;
+            left: var(--importance-width, 50%);
+            width: 9px;
+            height: 9px;
+            transform: translate(-50%, -50%);
+            border-radius: 50%;
+            background: #ffffff;
+            border: 2px solid #10b981;
+            box-shadow: 0 0 0 2px rgba(16,185,129,0.10);
+        }
+        .cal-importance-labels {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 4px;
+            font-size: 0.55rem;
+            line-height: 1;
+            color: var(--text-muted);
+            font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
+        }
+        .cal-importance-labels .center {
+            color: #10b981;
+            font-weight: 800;
+        }
+        .cal-importance-score {
+            margin-left: 3px;
+            color: #10b981;
+            font-weight: 800;
+            font-family: 'Roboto Mono', 'D2Coding', 'Consolas', monospace;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* 하단 페이지네이션 바 */
+        .cal-pagination-bar {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding-top: 8px;
+            margin-top: auto;
+            border-top: 1px solid var(--border-line);
+        }
+        .cal-page-btn {
+            background: var(--bg-subcard);
+            border: 1px solid var(--border-line);
+            color: var(--text-sub);
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 0.65rem;
+            transition: all 0.2s;
+        }
+        .cal-page-btn:hover:not(:disabled) { background: var(--btn-hover); color: var(--text-title); }
+        .cal-page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .cal-page-txt { font-size: 0.72rem; font-weight: 700; color: var(--text-muted); }
+
+        /* 퀀트 지표 레이아웃 */
+        .gauge-inner-box { width: 62px; height: 62px; border-radius: 50%; border: 4px solid #10b981; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--bg-subcard); flex-shrink: 0; }
+        .quant-row-item { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border-line); font-size: 0.83rem; }
+        .quant-row-item:last-child { border-bottom: none; }
+        .quant-row-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+        .quant-row-name { font-weight: 700; color: var(--text-title); }
+        .quant-row-status { font-size: 0.7rem; font-weight: 700; }
+        .quant-row-right { text-align: right; flex-shrink: 0; }
+        .quant-row-val { font-weight: 800; color: var(--text-title); }
+        .movement-evidence-summary { margin: 2px 0 14px; }
+        .movement-evidence-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
+        .movement-evidence-label { font-size:0.72rem; font-weight:700; color:var(--text-main); }
+        .movement-evidence-count { font-size:0.72rem; font-weight:800; color:var(--text-muted); }
+        .movement-evidence-track { width:100%; height:7px; display:flex; gap:4px; }
+        .movement-evidence-seg { flex:1; height:7px; border-radius:4px; background:rgba(148,163,184,0.15); }
+        .movement-evidence-seg.active { background:#10b981; }
+        .movement-evidence-seg.active.negative { background:#ef4444; }
+        .movement-reason-row { padding:10px 0; border-bottom:1px solid var(--border-line); }
+        .movement-reason-row:last-child { border-bottom:none; }
+        .movement-reason-top { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+        .movement-reason-title { display:flex; align-items:center; gap:7px; min-width:0; }
+        .movement-reason-icon { width:18px; height:18px; flex:0 0 18px; color:var(--text-muted); }
+        .movement-reason-name { font-size:0.82rem; font-weight:800; color:var(--text-title); }
+        .movement-reason-status { font-size:0.66rem; font-weight:800; padding:2px 7px; border-radius:9px; white-space:nowrap; }
+        .movement-reason-detail { margin:6px 0 7px 25px; font-size:0.72rem; line-height:1.45; color:var(--text-sub); word-break:keep-all; }
+        .movement-reason-meter { margin-left:25px; display:flex; align-items:center; gap:8px; }
+        .movement-reason-meter-track { flex:1; height:5px; border-radius:4px; background:rgba(148,163,184,0.12); overflow:hidden; }
+        .movement-reason-meter-fill { height:100%; border-radius:4px; }
+        .movement-reason-meter-value { width:52px; text-align:right; font-size:0.64rem; font-weight:800; color:var(--text-muted); }
+        
+        .movement-relative-chart { margin: 4px 0 14px; padding:10px 10px 9px; border:1px solid var(--border-line); border-radius:9px; background:var(--bg-subcard); }
+        .movement-relative-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+        .movement-relative-title { font-size:0.76rem; font-weight:800; color:var(--text-title); }
+        .movement-relative-diff { font-size:0.68rem; font-weight:800; color:var(--text-muted); }
+        .movement-relative-chartbox { position:relative; height:92px; overflow:hidden; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
+        .movement-relative-gridline { position:absolute; left:0; right:0; height:1px; background:var(--border-line); opacity:.55; }
+        .movement-relative-svg { width:100%; height:100%; display:block; }
+        .movement-relative-legend { display:flex; gap:14px; align-items:center; margin-top:7px; font-size:0.62rem; color:var(--text-sub); }
+        .movement-relative-dot { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:4px; }
+        .movement-relative-note { margin-top:5px; font-size:0.62rem; line-height:1.35; color:var(--text-muted); word-break:keep-all; }
+
+.movement-mini-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:2px; }
+        .movement-mini-card { min-width:0; background:var(--bg-subcard); border:1px solid var(--border-line); border-radius:9px; padding:9px 8px 8px; }
+        .movement-mini-head { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-bottom:7px; }
+        .movement-mini-head .movement-reason-title { gap:5px; }
+        .movement-mini-head .movement-reason-name { font-size:0.76rem; }
+        .movement-mini-head .movement-reason-icon { width:15px; height:15px; flex-basis:15px; }
+        .movement-mini-head .movement-reason-status { font-size:0.58rem; padding:2px 5px; }
+        .movement-mini-chart { height:58px; display:flex; align-items:flex-end; padding:6px 3px 4px; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
+        .movement-mini-bars { width:100%; height:100%; display:flex; align-items:flex-end; gap:4px; }
+        .movement-mini-bar { flex:1; min-height:8%; border-radius:2px 2px 0 0; }
+        .movement-mini-value { display:flex; align-items:baseline; gap:2px; margin-top:7px; font-size:0.8rem; font-weight:800; color:var(--text-title); }
+        .movement-mini-unit { font-size:0.62rem; font-weight:700; color:var(--text-muted); }
+        .movement-mini-detail { min-height:30px; margin-top:3px; font-size:0.62rem; line-height:1.35; color:var(--text-sub); word-break:keep-all; }
+        .movement-mini-card .movement-reason-meter { margin:7px 0 0; }
+        .movement-mini-card .movement-reason-meter-value { width:24px; font-size:0.58rem; }
+        .movement-market5-card { overflow:hidden; }
+        .market5-line-chart { position:relative; height:58px; margin:5px 0 4px; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
+        .market5-line-chart svg { width:100%; height:100%; display:block; }
+        .market5-zero { position:absolute; left:0; right:0; height:1px; background:rgba(148,163,184,0.18); }
+        .market5-bars { height:42px; display:flex; align-items:flex-end; gap:4px; padding:4px 2px 0; border-bottom:1px solid var(--border-line); }
+        .market5-bar-wrap { flex:1; height:100%; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; min-width:0; }
+        .market5-bar { width:100%; min-height:4px; border-radius:2px 2px 0 0; display:block; opacity:.85; }
+        .market5-bar-label { font-size:.46rem; color:var(--text-muted); margin-top:2px; white-space:nowrap; }
+
+        @media (max-width: 980px) {
+            .movement-mini-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+        }
+        @media (max-width: 560px) {
+            .movement-mini-grid { grid-template-columns:1fr; }
+        }
+
+
+        .quant-row-subval { font-size: 0.7rem; color: var(--text-muted); margin-top: 1px; }
+
+        .status-pill-positive { color: #10b981; }
+        .status-pill-negative { color: #ef4444; }
+        .status-pill-warning { color: #d97706; }
+        .status-pill-neutral { color: var(--text-muted); }
+
+        .dart-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .dart-item:last-child { border-bottom: none; }
+        .dart-title { color: var(--text-main); font-size: 0.83rem; font-weight: 500; line-height: 1.4; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .dart-title:hover { color: #0284c7; }
+        .dart-tag { font-size: 0.68rem; font-weight: 700; padding: 2px 6px; border-radius: 6px; flex-shrink: 0; }
+        .tag-positive { background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .tag-negative { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); }
+        .tag-warning { background: rgba(249, 115, 22, 0.15); color: #f97316; border: 1px solid rgba(249, 115, 22, 0.3); }
+        .tag-neutral { background: var(--btn-hover); color: var(--text-muted); border: 1px solid var(--border-line); }
+
+        .vote-btn-wrap { display: flex; gap: 10px; margin-top: 10px; }
+        .vote-btn { flex: 1; padding: 10px; border-radius: 12px; border: 1px solid var(--border-line); background: var(--bg-subcard); color: var(--text-title); font-size: 0.88rem; font-weight: 700; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: all 0.2s; }
+        .vote-btn:hover { background: var(--btn-hover); border-color: var(--border-focus); }
+        .vote-btn.active-long { background: rgba(16, 185, 129, 0.15); border-color: #10b981; color: #10b981; }
+        .vote-btn.active-short { background: rgba(56, 189, 248, 0.15); border-color: #38bdf8; color: #38bdf8; }
+
+        .comment-input-box { display: flex; gap: 8px; margin-top: 12px; }
+        .comment-input-box input { flex: 1; min-width: 0; background: var(--bg-subcard); border: 1px solid var(--border-line); border-radius: 20px; padding: 9px 14px; color: var(--text-title); font-size: 0.82rem; outline: none; }
+        .comment-input-box button { background: #10b981; border: none; color: #ffffff; font-size: 0.8rem; font-weight: 700; padding: 0 16px; border-radius: 20px; cursor: pointer; flex-shrink: 0; }
+        .comment-item { padding: 9px 0; border-bottom: 1px solid var(--border-line); font-size: 0.82rem; }
+        .comment-item:last-child { border-bottom: none; }
+        .comment-head { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 0.7rem; margin-bottom: 3px; }
+        .comment-nick { font-weight: 700; color: #10b981; }
+        .comment-body { color: var(--text-main); word-break: break-all; }
+
+        .signal-premium-card {
+            background: var(--bg-card) !important;
+            border: 1.8px solid #10b981 !important;
+            border-radius: 18px !important;
+            padding: 18px 20px !important;
+            box-shadow: 0 6px 24px var(--signal-glow) !important;
+            transition: all 0.25s ease;
+        }
+
+        .signal-card-header { display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer; user-select: none; padding: 6px 0; }
+        .signal-card-title { font-size: 1.15rem !important; font-weight: 800 !important; color: #10b981 !important; text-align: center; letter-spacing: -0.4px; }
+        .signal-arrow-icon { width: 22px; height: 22px; fill: #10b981 !important; position: absolute; right: 4px; transition: transform 0.25s ease; }
+
+        .signal-premium-btn {
+            width: 100%;
+            background: var(--bg-card);
+            border: 1.8px solid #10b981;
+            border-radius: 16px;
+            padding: 15px 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #10b981;
+            font-size: 0.95rem;
+            font-weight: 800;
+            text-decoration: none;
+            cursor: pointer;
+            box-shadow: 0 4px 18px var(--signal-glow);
+            transition: all 0.2s ease;
+            text-align: center;
+        }
+        .signal-premium-btn:hover { background: rgba(16, 185, 129, 0.1); border-color: #059669; color: #059669; }
+
+        .guide-box { padding: 14px 0 0 0; margin-top: 14px; font-size: 0.85rem; line-height: 1.6; color: var(--text-sub); border-top: 1px solid rgba(16, 185, 129, 0.2); }
+        .guide-title { font-weight: 800; color: #10b981; margin-bottom: 6px; display: flex; align-items: center; gap: 4px; font-size: 0.92rem; }
+
+        .news-item { height: 60px; box-sizing: border-box; padding: 10px 0; border-bottom: 1px solid var(--border-line); text-decoration: none; display: flex; flex-direction: column; justify-content: center; overflow: hidden; }
+        .news-item:last-child { border-bottom: none; }
+        .news-title { color: var(--text-main); font-size: 0.85rem; font-weight: 500; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .news-title:hover { color: #0284c7; }
+        .news-meta { color: var(--text-muted); font-size: 0.72rem; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+        #bottom-bar {
+            display: none;
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 74px;
+            background: var(--bottom-fade);
+            align-items: center;
+            justify-content: center;
+            padding: 0 12px 6px;
+            z-index: 50;
+        }
+        
+        .bottom-bar-grid-wrapper {
+            width: 100%;
+            max-width: 1196px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0 auto;
+        }
+        .bottom-bar-grid-wrapper .search-container {
+            width: 100%;
+            max-width: 832px;
+            margin: 0 auto;
+        }
+
+        .loading { display: none; text-align: center; color: #0284c7; margin: 40px 0; font-size: 0.9rem; }
+
+        .dot-marker-style {
+            position: absolute;
+            top: -4px;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #10b981;
+            border: 2px solid #ffffff;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+            transform: translateX(-50%);
+        }
+
+        .val-up { color: #ef4444; }
+        .val-down { color: #38bdf8; }
+
+        /* [모바일 1열 순차 정렬] */
+        @media (max-width: 1200px) {
+            .dashboard-master-grid {
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                max-width: 832px;
+                gap: 14px;
+            }
+            .card, .signal-premium-card, .signal-premium-btn {
+                width: 100%;
+                max-width: 832px;
+            }
+            
+            /* 모바일 위젯 표시 순서 — PC 그리드에는 영향 없음 */
+            #rowCause { order: 1; }
+            #rowChart { order: 2; }
+            #rowNews { order: 3; }
+            #rowTrack { order: 4; }
+            #rowQuant { order: 5; }
+            #rowConsensus { order: 6; }
+            #rowVote { order: 7; }
+            #rowComment { order: 8; }
+            #rowSignal { order: 9; }
+            #rowWorld { order: 11; width: 100%; max-width: 832px; }
+            #rowGlobalNews { order: 12; width: 100%; max-width: 832px; }
+            #rowEarningsCalendar { order: 13; }
+            #rowEconomicCalendar { order: 14; }
+            #usLeadingRightStack {
+                position: static;
+                grid-column: auto;
+                grid-row: auto;
+                order: 15;
+                width: 100%;
+                max-width: 832px;
+                z-index: auto;
+            }
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                width: 100%;
+                max-width: 832px;
+            }
+
+            #rowDart { order: 16; }
+
+            .bottom-bar-grid-wrapper {
+                display: flex;
+                justify-content: center;
+                max-width: 832px;
+            }
+        }
+
+        /* ============================================================
+           캘린더 최종 디자인 v8
+           - PC: 기존 832px : 348px 구조 유지
+           - 좌/우 카드 높이 동기화
+           - Pretendard/Noto Sans KR 계열의 큰 한글 가독성
+           - 경제/실적 캘린더 공통 디자인
+        ============================================================ */
+        .calendar-widget {
+            padding: 18px 16px 14px !important;
+            border-radius: 16px !important;
+            background: #1b1c1d !important;
+            border: 1px solid #2b2d30 !important;
+            box-shadow: none !important;
+            min-height: 0 !important;
+        }
+        .calendar-widget,
+        .calendar-widget * {
+            font-family: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+        }
+        .calendar-widget-title {
+            font-size: 1.15rem !important;
+            line-height: 1.35 !important;
+            font-weight: 800 !important;
+            letter-spacing: -0.045em !important;
+            margin-bottom: 13px !important;
+            color: #f4f5f5 !important;
+        }
+        .calendar-widget-nav {
+            margin-bottom: 10px !important;
+            min-height: 36px;
+        }
+        .calendar-widget .cal-date-ctrl {
+            gap: 10px !important;
+        }
+        .calendar-widget .cal-arrow-btn {
+            width: 32px !important;
+            height: 32px !important;
+            border-radius: 9px !important;
+            font-size: 0.82rem !important;
+            background: #111213 !important;
+            border-color: #303235 !important;
+            color: #e8e9e9 !important;
+        }
+        .calendar-widget .cal-current-date {
+            min-width: 132px !important;
+            font-size: 0.94rem !important;
+            font-weight: 800 !important;
+            letter-spacing: -0.025em !important;
+            color: #f5f6f6 !important;
+        }
+        .calendar-widget .cal-today-btn {
+            font-size: 0.78rem !important;
+            padding: 6px 10px !important;
+            min-height: 32px;
+            border-radius: 9px !important;
+            background: #111213 !important;
+            border-color: #303235 !important;
+            color: #f0f1f1 !important;
+        }
+        .calendar-star-filter {
+            gap: 7px !important;
+            margin-bottom: 11px !important;
+            padding-bottom: 1px;
+        }
+        .calendar-star-btn {
+            min-width: 48px;
+            min-height: 30px;
+            padding: 5px 10px !important;
+            border-radius: 999px !important;
+            font-size: 0.72rem !important;
+            letter-spacing: -0.02em;
+            background: #202224 !important;
+            border-color: #2d3033 !important;
+            color: #b9bdbe !important;
+        }
+        .calendar-star-btn.active {
+            background: #f4f5f5 !important;
+            color: #111213 !important;
+            border-color: #f4f5f5 !important;
+        }
+        .calendar-widget-subtitle {
+            font-size: 0.78rem !important;
+            line-height: 1.35 !important;
+            font-weight: 750 !important;
+            margin: 1px 0 10px !important;
+            color: #aeb2b3 !important;
+        }
+        .calendar-widget-list {
+            gap: 9px !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            scrollbar-width: thin;
+            padding-right: 1px;
+        }
+        .calendar-widget-list .cal-card-item {
+            min-height: 78px !important;
+            padding: 11px 11px 11px 12px !important;
+            gap: 10px !important;
+            border-radius: 11px !important;
+            background: #202224 !important;
+            border: 1px solid #2b2e31 !important;
+            align-items: center !important;
+            transform: none !important;
+        }
+        .calendar-widget-list .cal-card-item::before {
+            top: 10px !important;
+            bottom: 10px !important;
+            width: 2px !important;
+            background: transparent !important;
+        }
+        .calendar-widget-list .cal-card-item:hover {
+            background: #232527 !important;
+            border-color: #383b3e !important;
+        }
+        .calendar-widget-list .cal-time-col {
+            min-width: 54px !important;
+            width: 54px !important;
+            font-family: 'Pretendard', 'Noto Sans KR', sans-serif !important;
+            font-size: 0.76rem !important;
+            font-weight: 800 !important;
+            line-height: 1.2 !important;
+            color: #eef0f0 !important;
+            letter-spacing: -0.025em !important;
+        }
+        .calendar-widget .cal-event-icon {
+            width: 34px !important;
+            height: 34px !important;
+            min-width: 34px !important;
+            border-radius: 9px !important;
+            background: #151718 !important;
+            border-color: #34373a !important;
+            font-size: 0.62rem !important;
+        }
+        .calendar-widget .cal-event-topline {
+            gap: 7px !important;
+            align-items: center !important;
+        }
+        .calendar-widget .cal-stars {
+            font-size: 0.72rem !important;
+            letter-spacing: -0.08em !important;
+            color: #ffb000 !important;
+        }
+        .calendar-widget .cal-event-title {
+            font-size: 0.86rem !important;
+            line-height: 1.38 !important;
+            font-weight: 800 !important;
+            letter-spacing: -0.045em !important;
+            color: #f3f4f4 !important;
+            margin-bottom: 3px !important;
+        }
+        .calendar-widget .cal-event-meta {
+            font-size: 0.68rem !important;
+            line-height: 1.35 !important;
+            color: #aeb2b3 !important;
+            letter-spacing: -0.025em !important;
+        }
+        .calendar-widget .cal-alarm-btn {
+            width: 30px !important;
+            height: 30px !important;
+            flex-basis: 30px !important;
+            border-radius: 8px !important;
+            color: #8d9293 !important;
+        }
+        .calendar-widget .cal-pagination-bar {
+            min-height: 36px;
+            padding-top: 9px !important;
+            margin-top: 9px !important;
+            border-top-color: #2a2c2e !important;
+        }
+        .calendar-widget .cal-page-btn {
+            width: 28px !important;
+            height: 28px !important;
+            border-radius: 8px !important;
+            background: #151718 !important;
+        }
+        .calendar-widget .cal-page-txt {
+            font-size: 0.7rem !important;
+            color: #9da1a2 !important;
+        }
+        /* 빈 상태도 중앙에 덩그러니 떠 보이지 않게 위계 조정 */
+        .calendar-widget-list > div[style*="height:100%"] {
+            min-height: 180px !important;
+            height: auto !important;
+            flex: 1 1 auto !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 0.78rem !important;
+            color: #8f9495 !important;
+        }
+        @media (min-width: 1201px) {
+            .dashboard-master-grid {
+                grid-template-columns: minmax(0, 832px) 348px !important;
+                column-gap: 16px !important;
+            }
+            #rowTrack, #rowEarningsCalendar,
+            #rowQuant, #rowEconomicCalendar {
+                min-height: 560px;
+            }
+        }
+        @media (max-width: 1200px) {
+            .calendar-widget {
+                padding: 18px 16px 14px !important;
+            }
+            .calendar-widget-list .cal-card-item {
+                min-height: 78px !important;
+            }
+        }
+        @media (max-width: 520px) {
+            .calendar-widget {
+                padding: 15px 14px 12px !important;
+                border-radius: 14px !important;
+            }
+            .calendar-widget-title { font-size: 1.08rem !important; }
+            .calendar-widget .cal-current-date {
+                min-width: 116px !important;
+                font-size: 0.88rem !important;
+            }
+            .calendar-widget .cal-arrow-btn { width: 30px !important; height: 30px !important; }
+            .calendar-widget .cal-today-btn { min-height: 30px; padding: 5px 9px !important; }
+            .calendar-star-btn { min-width: 46px; min-height: 29px; font-size: 0.69rem !important; }
+            .calendar-widget-list .cal-card-item { min-height: 74px !important; }
+            .calendar-widget-list .cal-time-col { min-width: 50px !important; width: 50px !important; font-size: 0.72rem !important; }
+            .calendar-widget .cal-event-icon { width: 32px !important; height: 32px !important; min-width: 32px !important; }
+            .calendar-widget .cal-event-title { font-size: 0.82rem !important; }
+        }
+
+
+        .calendar-widget .calendar-full-btn {
+            flex: 0 0 auto;
+            margin-top: 9px;
+            min-height: 42px;
+            border-radius: 10px;
+            background: #202224;
+            border: 1px solid #2b2e31;
+            color: #e9ebeb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-size: 0.76rem;
+            font-weight: 750;
+            letter-spacing: -0.025em;
+            cursor: pointer;
+        }
+        .calendar-widget .calendar-full-btn span { font-size: 0.9rem; color: #dfe2e2; }
+        .calendar-widget .calendar-full-btn:hover { background: #252729; border-color: #383b3e; }
+
+
+        /* ============================================================
+           v14: 경제/실적 캘린더 카드 최종 배치
+           시간 | 별표 + 발표대기 / 일정명 / 상세정보 | 알림
+           두 캘린더 완전히 동일한 내부 구조
+           ============================================================ */
+        .calendar-widget-list .cal-card-item {
+            display: grid !important;
+            grid-template-columns: 54px minmax(0, 1fr) 30px !important;
+            grid-template-rows: 1fr !important;
+            column-gap: 10px !important;
+            align-items: center !important;
+            width: 100% !important;
+            box-sizing: border-box !important;
+        }
+
+        .calendar-widget-list .cal-time-col {
+            grid-column: 1 !important;
+            grid-row: 1 !important;
+            width: 54px !important;
+            min-width: 54px !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            background: transparent !important;
+            border: 0 !important;
+            align-self: center !important;
+            text-align: left !important;
+        }
+
+        .calendar-widget-list .cal-detail-col {
+            grid-column: 2 !important;
+            grid-row: 1 !important;
+            min-width: 0 !important;
+            width: 100% !important;
+            overflow: hidden !important;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            align-items: flex-start !important;
+            gap: 2px !important;
+        }
+
+        /* 별표 + 발표대기는 반드시 일정명보다 위 */
+        .calendar-widget-list .cal-event-topline {
+            order: 1 !important;
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: flex-start !important;
+            gap: 7px !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            min-height: 16px !important;
+            margin: 0 !important;
+        }
+
+        .calendar-widget-list .cal-stars {
+            order: 1 !important;
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            display: inline-block !important;
+            white-space: nowrap !important;
+            font-size: 0.72rem !important;
+            line-height: 1.2 !important;
+            letter-spacing: -0.08em !important;
+            color: #ffb000 !important;
+        }
+
+        .calendar-widget-list .cal-event-status {
+            order: 2 !important;
+            flex: 0 0 auto !important;
+            display: inline-block !important;
+            font-size: 0.66rem !important;
+            line-height: 1.2 !important;
+            color: #aeb2b3 !important;
+            white-space: nowrap !important;
+            margin: 0 !important;
+        }
+
+        .calendar-widget-list .cal-event-title {
+            order: 2 !important;
+            display: block !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow-wrap: anywhere !important;
+            word-break: keep-all !important;
+            font-size: 0.86rem !important;
+            line-height: 1.32 !important;
+            font-weight: 800 !important;
+            color: #f3f4f4 !important;
+        }
+
+        .calendar-widget-list .cal-event-meta {
+            order: 3 !important;
+            display: block !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow-wrap: anywhere !important;
+            font-size: 0.68rem !important;
+            line-height: 1.3 !important;
+            color: #aeb2b3 !important;
+        }
+
+        .calendar-widget-list .cal-alarm-btn {
+            grid-column: 3 !important;
+            grid-row: 1 !important;
+            width: 30px !important;
+            min-width: 30px !important;
+            height: 30px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            justify-self: end !important;
+            align-self: center !important;
+            flex: none !important;
+        }
+
+        /* ============================================================
+           v13: 경제/실적 캘린더 공통 내부 구조
+           시간 | 별표+발표상태+일정내용 | 알람
+           경제/실적 모두 동일한 CSS 구조를 사용
+           ============================================================ */
+        .calendar-widget-list .cal-card-item {
+            display: grid !important;
+            grid-template-columns: 54px minmax(0, 1fr) 30px !important;
+            column-gap: 10px !important;
+            align-items: center !important;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        .calendar-widget-list .cal-time-col {
+            width: 54px !important;
+            min-width: 54px !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            align-self: center;
+        }
+        .calendar-widget-list .cal-detail-col {
+            grid-column: 2;
+            min-width: 0 !important;
+            width: auto !important;
+            overflow: hidden;
+            display: flex !important;
+            flex-direction: column !important;
+            justify-content: center !important;
+            gap: 2px !important;
+        }
+        .calendar-widget-list .cal-event-topline {
+            display: flex !important;
+            align-items: center !important;
+            gap: 7px !important;
+            min-width: 0;
+            min-height: 16px;
+        }
+        .calendar-widget-list .cal-stars {
+            flex: 0 0 auto !important;
+            width: auto !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            display: inline-block !important;
+            text-align: left !important;
+            white-space: nowrap !important;
+            font-size: 0.72rem !important;
+            line-height: 1.2 !important;
+            letter-spacing: -0.08em !important;
+            color: #ffb000 !important;
+        }
+        .calendar-widget-list .cal-event-status {
+            flex: 0 0 auto;
+            font-size: 0.66rem;
+            line-height: 1.2;
+            color: #aeb2b3;
+            white-space: nowrap;
+        }
+        .calendar-widget-list .cal-event-title {
+            margin: 0 !important;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            word-break: keep-all;
+            font-size: 0.86rem !important;
+            line-height: 1.32 !important;
+            font-weight: 800 !important;
+        }
+        .calendar-widget-list .cal-event-meta {
+            margin: 0 !important;
+            min-width: 0;
+            overflow-wrap: anywhere;
+            font-size: 0.68rem !important;
+            line-height: 1.3 !important;
+        }
+        .calendar-widget-list .cal-event-icon {
+            display: none !important;
+        }
+        .calendar-widget-list .cal-alarm-btn {
+            grid-column: 3;
+            width: 30px !important;
+            min-width: 30px !important;
+            height: 30px !important;
+            flex: none !important;
+            justify-self: end;
+            margin: 0 !important;
+        }
+        @media (max-width: 520px) {
+            .calendar-widget-list .cal-card-item {
+                grid-template-columns: 50px minmax(0, 1fr) 28px !important;
+                column-gap: 8px !important;
+            }
+            .calendar-widget-list .cal-time-col {
+                width: 50px !important;
+                min-width: 50px !important;
+            }
+            .calendar-widget-list .cal-alarm-btn {
+                width: 28px !important;
+                min-width: 28px !important;
+                height: 28px !important;
+            }
+            .calendar-widget-list .cal-event-title {
+                font-size: 0.82rem !important;
+            }
+            .calendar-widget-list .cal-event-status {
+                font-size: 0.62rem !important;
+            }
+        }
+
+
+        /* ============================================================
+           v15: 다크/화이트 모드 캘린더 색상 연동
+           - 기존 캘린더에 고정된 다크 색상을 제거
+           - body.light-theme의 전역 CSS 변수와 연결
+           - 캘린더 2개 모두 동일하게 적용
+           ============================================================ */
+        body.light-theme .calendar-widget {
+            background: var(--bg-card) !important;
+            border-color: var(--border-line) !important;
+            color: var(--text-main) !important;
+        }
+
+        body.light-theme .calendar-widget-title,
+        body.light-theme .calendar-widget .cal-current-date {
+            color: var(--text-title) !important;
+        }
+
+        body.light-theme .calendar-widget .cal-arrow-btn,
+        body.light-theme .calendar-widget .cal-today-btn {
+            background: var(--bg-subcard) !important;
+            border-color: var(--border-focus) !important;
+            color: var(--text-main) !important;
+        }
+
+        body.light-theme .calendar-star-btn {
+            background: var(--bg-subcard) !important;
+            border-color: var(--border-line) !important;
+            color: var(--text-muted) !important;
+        }
+
+        body.light-theme .calendar-star-btn.active {
+            background: #202124 !important;
+            border-color: #202124 !important;
+            color: #ffffff !important;
+        }
+
+        body.light-theme .calendar-widget-subtitle,
+        body.light-theme .calendar-widget .cal-event-meta,
+        body.light-theme .calendar-widget .cal-event-status,
+        body.light-theme .calendar-widget .cal-page-txt {
+            color: var(--text-muted) !important;
+        }
+
+        body.light-theme .calendar-widget-list .cal-card-item {
+            background: #f8f9fa !important;
+            border-color: var(--border-line) !important;
+        }
+
+        body.light-theme .calendar-widget-list .cal-card-item:hover {
+            background: #ffffff !important;
+            border-color: var(--border-focus) !important;
+        }
+
+        body.light-theme .calendar-widget-list .cal-time-col,
+        body.light-theme .calendar-widget .cal-event-title {
+            color: var(--text-main) !important;
+        }
+
+        body.light-theme .calendar-widget .cal-alarm-btn {
+            color: #5f6368 !important;
+        }
+
+        body.light-theme .calendar-widget .cal-pagination-bar {
+            border-top-color: var(--border-line) !important;
+        }
+
+        body.light-theme .calendar-widget .cal-page-btn {
+            background: var(--bg-subcard) !important;
+            border-color: var(--border-line) !important;
+            color: var(--text-muted) !important;
+        }
+
+        body.light-theme .calendar-widget-list > div[style*="height:100%"] {
+            color: var(--text-muted) !important;
+        }
+
+    
+/* 오늘 버튼: 텍스트 대신 새로고침 기호(↻) 사용 */
+.cal-today-btn {
+    font-size: 1.15rem !important;
+    line-height: 1 !important;
+    font-weight: 700 !important;
+    padding: 6px 10px !important;
+    min-width: 36px !important;
+    min-height: 34px !important;
+}
+
+
+        .consensus-more-btn {
+            display: block;
+            width: 100%;
+            margin-top: 7px;
+            padding: 6px 0;
+            border: 1px solid var(--border-line);
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.72rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .consensus-more-btn:hover {
+            color: var(--text-title);
+        }
+
+        /* 미국 주도업종: PC 애널리스트 오른쪽 / 모바일 경제 캘린더 바로 아래 */
+        #rowUsLeadingSectors {
+            grid-column: 2;
+            grid-row: 6;
+            min-height: 0;
+            align-self: stretch;
+        }
+
+        .us-leading-sector-card {
+            padding: 16px;
+            box-sizing: border-box;
+            background: var(--bg-card);
+            border: 1px solid var(--border-line);
+            border-radius: 16px;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+            overflow: hidden;
+        }
+
+        .us-leading-sector-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-line);
+            flex: 0 0 auto;
+        }
+
+        .us-leading-sector-title {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-sub {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+        }
+
+        .us-leading-sector-table th {
+            font-size: 0.60rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            padding: 4px 2px 6px;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-table th:first-child { text-align: left; }
+
+        .us-leading-sector-table td {
+            font-size: 0.70rem;
+            color: var(--text-sub);
+            padding: 7px 2px;
+            border-top: 1px solid var(--border-line);
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .us-leading-sector-table td:first-child { text-align: left; }
+
+        .us-leading-sector-row {
+            cursor: pointer;
+        }
+
+        .us-leading-name {
+            width: 116px;
+            color: var(--text-title) !important;
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .us-leading-up { color: #ef4444 !important; font-weight: 700; }
+        .us-leading-down { color: #38bdf8 !important; font-weight: 700; }
+
+        .us-leading-sector-loading {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            padding: 16px 0;
+            text-align: center;
+        }
+
+        /* 미국 주도종목: 1단계 디자인 전용 */
+        /* 미국 주도업종 + 주도종목을 오른쪽 전용 스택으로 분리.
+           왼쪽 개미투표와 그리드 행 높이를 공유하지 않도록 한다. */
+        #usLeadingRightStack {
+            grid-column: 2;
+            grid-row: 6;
+            position: absolute;
+            align-self: start;
+            justify-self: stretch;
+            width: 100%;
+            min-width: 0;
+            min-height: 0;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            z-index: 2;
+        }
+
+        #usLeadingRightStack > .card {
+            width: 100%;
+            min-width: 0;
+        }
+
+        #rowUsLeadingStocks {
+            grid-column: auto;
+            grid-row: auto;
+            align-self: auto;
+            min-height: 0;
+        }
+
+        .us-leading-stock-card {
+            padding: 16px;
+            box-sizing: border-box;
+            background: var(--bg-card);
+            border: 1px solid var(--border-line);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+
+        .us-leading-stock-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid var(--border-line);
+        }
+
+        .us-leading-stock-title {
+            font-size: 0.95rem;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-sub {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-list {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .us-leading-stock-item {
+            display: grid;
+            grid-template-columns: minmax(72px, 1fr) 74px minmax(72px, 1.15fr);
+            align-items: center;
+            gap: 8px;
+            min-height: 58px;
+            padding: 7px 8px;
+            box-sizing: border-box;
+            background: var(--bg-subcard);
+            border: 1px solid var(--border-line);
+            border-radius: 10px;
+        }
+
+        .us-leading-stock-name {
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        .us-leading-stock-ticker {
+            font-size: 0.78rem;
+            line-height: 1.15;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .us-leading-stock-company {
+            margin-top: 3px;
+            font-size: 0.62rem;
+            line-height: 1.15;
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .us-leading-stock-price {
+            min-width: 0;
+            text-align: right;
+        }
+
+        .us-leading-stock-value {
+            font-size: 0.75rem;
+            line-height: 1.15;
+            font-weight: 800;
+            color: var(--text-title);
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-change {
+            margin-top: 3px;
+            font-size: 0.68rem;
+            line-height: 1.15;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .us-leading-stock-change.up { color: #ef4444; }
+        .us-leading-stock-change.down { color: #38bdf8; }
+
+        .us-leading-stock-spark {
+            width: 100%;
+            min-width: 72px;
+            height: 34px;
+            display: block;
+            overflow: visible;
+            justify-self: end;
+            filter: drop-shadow(0 2px 3px rgba(16, 185, 129, 0.20));
+        }
+
+        .us-leading-stock-spark polyline {
+            fill: none;
+            stroke: #10b981;
+            stroke-width: 2.2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            vector-effect: non-scaling-stroke;
+        }
+
+
+        /* 모바일 최종 배치 고정:
+           PC의 오른쪽 독립 배치는 유지하고 모바일에서는 1열 일반 흐름으로 복귀 */
+        @media (max-width: 1200px) {
+            .dashboard-master-grid {
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                max-width: 832px;
+                gap: 14px;
+            }
+
+            #usLeadingRightStack {
+                position: static !important;
+                grid-column: auto !important;
+                grid-row: auto !important;
+                order: 15 !important;
+                align-self: center !important;
+                justify-self: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 14px !important;
+                z-index: auto !important;
+            }
+
+            #usLeadingRightStack > .card,
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                box-sizing: border-box !important;
+            }
+        }
+
+
+        /* 모바일 최종 폭/흐름 보정 */
+        @media (max-width: 1200px) {
+            #result-scroll-view {
+                width: 100% !important;
+                box-sizing: border-box !important;
+                overflow-x: hidden !important;
+            }
+
+            .result-inner {
+                width: 100% !important;
+                max-width: 832px !important;
+                box-sizing: border-box !important;
+                margin: 0 auto !important;
+            }
+
+            .dashboard-master-grid {
+                display: flex !important;
+                flex-direction: column !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                margin: 0 auto !important;
+                box-sizing: border-box !important;
+                gap: 14px !important;
+                overflow: visible !important;
+            }
+
+            .dashboard-master-grid > .card,
+            .dashboard-master-grid > .signal-premium-card,
+            .dashboard-master-grid > .signal-premium-btn,
+            #usLeadingRightStack {
+                position: static !important;
+                float: none !important;
+                left: auto !important;
+                right: auto !important;
+                top: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                box-sizing: border-box !important;
+                transform: none !important;
+            }
+
+            #usLeadingRightStack {
+                order: 15 !important;
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 14px !important;
+            }
+
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                box-sizing: border-box !important;
+            }
+        }
+
+        /* ============================================================
+           모바일 레이아웃 최종 격리
+           - PC의 grid-column/grid-row/height:100%를 모바일에서 전부 초기화
+           - 증시(rowWorld)가 오른쪽으로 붙는 현상 방지
+           - '왜 올라갔을까'와 높이를 공유하는 현상 방지
+           - 미국 주도업종/주도종목은 경제캘린더 아래 독립된 순서로 배치
+        ============================================================ */
+        @media (max-width: 1200px) {
+            #result-scroll-view {
+                width: 100vw !important;
+                max-width: 100vw !important;
+                padding-left: 12px !important;
+                padding-right: 12px !important;
+                box-sizing: border-box !important;
+                overflow-x: hidden !important;
+            }
+
+            .result-inner {
+                width: 100% !important;
+                max-width: 832px !important;
+                margin: 0 auto !important;
+                box-sizing: border-box !important;
+            }
+
+            .dashboard-master-grid {
+                display: flex !important;
+                flex-direction: column !important;
+                align-items: stretch !important;
+                justify-content: flex-start !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                margin: 0 auto !important;
+                gap: 14px !important;
+                box-sizing: border-box !important;
+                position: relative !important;
+            }
+
+            /* PC 2열 grid의 위치/높이 값을 모바일에서 완전 초기화 */
+            .dashboard-master-grid > * {
+                grid-column: auto !important;
+                grid-row: auto !important;
+                float: none !important;
+                position: static !important;
+                top: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                left: auto !important;
+                transform: none !important;
+                height: auto !important;
+                min-height: 0 !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                align-self: stretch !important;
+                box-sizing: border-box !important;
+            }
+
+            /* 기존 모바일 순서를 명확하게 재지정 */
+            #rowCause { order: 1 !important; }
+            #rowChart { order: 2 !important; }
+            #rowNews { order: 3 !important; }
+            #rowTrack { order: 4 !important; }
+            #rowQuant { order: 5 !important; }
+            #rowConsensus { order: 6 !important; }
+            #rowVote { order: 7 !important; }
+            #rowComment { order: 8 !important; }
+            #rowSignal { order: 9 !important; }
+            #rowWorld { order: 11 !important; }
+            #rowGlobalNews { order: 12 !important; }
+            #rowEarningsCalendar { order: 13 !important; }
+            #rowEconomicCalendar { order: 14 !important; }
+            #usLeadingRightStack { order: 15 !important; }
+            #rowDart { order: 16 !important; }
+
+            /* 주도업종 + 주도종목은 모바일에서만 하나의 세로 스택 */
+            #usLeadingRightStack {
+                display: flex !important;
+                flex-direction: column !important;
+                align-items: stretch !important;
+                gap: 14px !important;
+                position: static !important;
+                grid-column: auto !important;
+                grid-row: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                height: auto !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+                z-index: auto !important;
+            }
+
+            #usLeadingRightStack > .card {
+                position: static !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                min-width: 0 !important;
+                height: auto !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+            }
+
+            #rowUsLeadingSectors,
+            #rowUsLeadingStocks {
+                grid-column: auto !important;
+                grid-row: auto !important;
+                width: 100% !important;
+                max-width: 832px !important;
+                height: auto !important;
+                min-height: 0 !important;
+                box-sizing: border-box !important;
+            }
+
+            /* 증시/왜 올라갔을까 등 카드가 서로 높이를 강제로 맞추지 않도록 */
+            #rowWorld,
+            #rowGlobalNews,
+            #rowChart,
+            #rowCause,
+            #rowNews,
+            #rowTrack,
+            #rowQuant,
+            #rowConsensus,
+            #rowVote {
+                height: auto !important;
+                min-height: 0 !important;
+                align-self: stretch !important;
+            }
+        }
+
+        /* gaemiGTP 시그널: 항상 열림 */
+        #rowSignal #signalBody {
+            display: block !important;
+            height: auto !important;
+            max-height: none !important;
+            overflow: visible !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+
+        /* 미국 주도종목 클릭 가능 표시: 기존 레이아웃 크기는 유지 */
+        .us-leading-stock-item {
+            cursor: pointer;
+        }
+        .us-leading-stock-item:focus-visible {
+            outline: 2px solid var(--border-line);
+            outline-offset: -2px;
+        }
+
+
+        /* ===== STEP 23: 좌우 사이드바 완전 독립 오버레이 ===== */
+        /* 어느 사이드바를 열고 닫아도 가운데 콘텐츠의 위치/폭은 절대 변하지 않는다. */
+        body { padding-right: 0; }
+        #content-wrapper { width: 100%; margin-left: 0; margin-right: 0; }
+        #right-market-rail {
+            position: fixed; top: 0; right: 0; width: 336px; height: 100vh;
+            display: flex; flex-direction: row; z-index: 120;
+            background: var(--bg-body); border-left: 1px solid var(--border-line);
+            box-sizing: border-box;
+        }
+        #right-market-rail.collapsed { width: 44px; }
+        #right-market-rail.collapsed #right-market-panel { display: none; }
+        #right-market-panel {
+            width: 292px; min-width: 292px; height: 100%; overflow: hidden;
+            display: flex; flex-direction: column; background: var(--bg-body);
+        }
+        .right-market-head { height: 58px; display:flex; align-items:center; justify-content:space-between; padding: 0 14px; border-bottom:1px solid var(--border-line); }
+        .right-market-title { font-size:.95rem; font-weight:700; color:var(--text-title); }
+        .right-market-time { font-size:.72rem; color:var(--text-muted); margin-left:5px; font-weight:500; }
+        .right-market-tabs { display:flex; gap:3px; padding:10px 10px 6px; }
+        .right-market-tab { flex:1; border:0; background:transparent; color:var(--text-muted); padding:8px 4px; border-radius:9px; font-weight:700; cursor:pointer; font-size:.78rem; }
+        .right-market-tab.active { background:var(--bg-card); color:var(--text-title); box-shadow: inset 0 0 0 1px var(--border-line); }
+        .right-market-sort { display:flex; justify-content:space-between; align-items:center; padding:6px 13px 8px; color:var(--text-sub); font-size:.75rem; border-bottom:1px solid var(--border-line); }
+        .right-market-list { flex:1; overflow-y:auto; padding:5px 8px 18px; scrollbar-width:thin; }
+        .right-market-row { display:grid; grid-template-columns:24px 34px minmax(0,1fr) auto; gap:7px; align-items:center; min-height:61px; padding:5px 5px; border-radius:9px; cursor:pointer; }
+        .right-market-row:hover { background:var(--btn-hover); }
+        .right-market-rank { color:var(--text-muted); font-size:.78rem; text-align:center; font-weight:700; }
+        .right-market-logo { width:31px; height:31px; border-radius:9px; display:flex; align-items:center; justify-content:center; background:var(--bg-card); border:1px solid var(--border-line); color:var(--text-title); font-size:.68rem; font-weight:800; overflow:hidden; }
+        .right-market-name { color:var(--text-title); font-size:.78rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .right-market-symbol { color:var(--text-muted); font-size:.62rem; margin-top:2px; }
+        .right-market-values { text-align:right; min-width:76px; }
+        .right-market-price { color:var(--text-title); font-size:.78rem; font-weight:700; white-space:nowrap; }
+        .right-market-change { font-size:.68rem; margin-top:3px; white-space:nowrap; }
+        .right-market-change.up { color:#ef4444; }
+        .right-market-change.down { color:#38a8ff; }
+        .right-market-empty { padding:28px 15px; color:var(--text-muted); text-align:center; font-size:.78rem; line-height:1.6; }
+        #right-market-icons { width:44px; min-width:44px; border-left:1px solid var(--border-line); display:flex; flex-direction:column; align-items:center; padding-top:8px; gap:7px; background:var(--bg-body); }
+        /* 테마 버튼은 우측 시장 레일과 겹치지 않도록 우측 여백을 확보한다. */
+        #themeToggleBtn { position: relative; z-index: 13000; }
+        header { padding-right: 60px; }
+        .right-market-icon-btn { width:36px; height:42px; border:0; border-radius:9px; background:transparent; color:var(--text-sub); cursor:pointer; font-size:1.05rem; font-family:Arial, sans-serif; font-weight:600; display:flex; align-items:center; justify-content:center; transition:.15s; }
+        .right-market-icon-btn:hover, .right-market-icon-btn.active { background:var(--bg-card); color:var(--text-title); }
+        .right-market-close { font-size:1.25rem; margin-bottom:4px; }
+        @media (max-width: 1100px) {
+            /* 모바일/좁은 화면에서도 사이드바는 콘텐츠를 밀지 않고 위에 겹친다. */
+            #content-wrapper { width:100%; margin-left:0; margin-right:0; }
+            #right-market-rail {
+                width: min(320px, 100vw);
+                max-width: 100vw;
+                right: 0;
+            }
+            #right-market-rail.collapsed { width: 44px; }
+            #right-market-panel {
+                width: calc(100% - 44px);
+                min-width: 0;
+                max-width: calc(100vw - 44px);
+            }
+            #right-market-icons { flex: 0 0 44px; }
+        }
+
+        /* STEP 26: 모바일은 오른쪽 패널을 처음에는 닫아두되
+           열기/닫기 버튼만 남긴다. 패널이 열릴 때도 가운데 콘텐츠를 밀지 않고
+           화면 위에 오버레이되도록 한다. */
+        @media (max-width: 560px) {
+            body { overflow-x: hidden; }
+            /* 고정 우측 레일과 겹치지 않도록 기존 다크/화이트 전환 버튼의 가시 영역을 확보한다. */
+            header { padding-right: 60px !important; }
+            #content-wrapper {
+                width: 100% !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+            }
+            #right-market-rail {
+                width: 44px;
+                max-width: 44px;
+                right: 0;
+                background: transparent;
+                border-left: 0;
+                z-index: 120;
+            }
+            #right-market-rail.collapsed {
+                width: 44px;
+                max-width: 44px;
+            }
+            #right-market-rail:not(.collapsed) {
+                width: min(320px, 92vw);
+                max-width: 92vw;
+                background: var(--bg-body);
+                border-left: 1px solid var(--border-line);
+            }
+            #right-market-panel {
+                display: none;
+                width: calc(100% - 44px);
+                min-width: 0;
+                max-width: none;
+            }
+            #right-market-rail:not(.collapsed) #right-market-panel {
+                display: flex;
+            }
+            #right-market-icons {
+                width: 44px;
+                min-width: 44px;
+                border-left: 1px solid var(--border-line);
+                background: var(--bg-body);
+            }
+            #right-market-rail.collapsed #right-market-icons {
+                border-left: 1px solid var(--border-line);
+            }
+            #right-market-rail.collapsed .right-market-icon-btn:not(.right-market-close) {
+                display: none;
+            }
+            .right-market-close {
+                display: flex !important;
+                width: 36px;
+                height: 42px;
+            }
+        }
+
+
+        /* STEP 28: 오른쪽 열기/닫기 버튼을 사이드바 최상단에 고정한다.
+           다크/화이트 테마 버튼과 겹치지 않도록 헤더의 테마 버튼은 항상 위에 보존한다.
+           가운데 콘텐츠의 위치/폭에는 영향을 주지 않는다. */
+        .right-market-close {
+            order: -1;
+        }
+        #themeToggleBtn {
+            position: relative;
+            z-index: 13000;
+        }
+        @media (max-width: 560px) {
+            /* STEP 29: 모바일 닫힘 상태에서는 오른쪽 레일 자체가 폭을 차지하지 않는다.
+               열기 버튼만 화면 최상단 오른쪽에 떠서 표시되며, 세로 구분선도 숨긴다.
+               따라서 검색창/차트/가운데 콘텐츠가 오른쪽에서 잘리지 않는다. */
+            #right-market-rail {
+                display: flex !important;
+                position: fixed !important;
+                top: 0 !important;
+                right: 0 !important;
+                width: 0 !important;
+                max-width: none !important;
+                height: 100vh !important;
+                z-index: 9999 !important;
+                pointer-events: none;
+                background: transparent !important;
+                border-left: 0 !important;
+            }
+            #right-market-rail.collapsed {
+                width: 0 !important;
+                max-width: none !important;
+                border-left: 0 !important;
+            }
+            #right-market-rail #right-market-icons {
+                pointer-events: none;
+                position: fixed !important;
+                top: 0 !important;
+                right: 0 !important;
+                width: 44px !important;
+                min-width: 44px !important;
+                height: auto !important;
+                flex: none !important;
+                display: flex !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                padding-top: 8px !important;
+                background: transparent !important;
+                border-left: 0 !important;
+            }
+            #right-market-rail.collapsed #right-market-panel {
+                display: none !important;
+            }
+            #right-market-rail.collapsed .right-market-icon-btn:not(.right-market-close) {
+                display: none !important;
+            }
+            #right-market-rail .right-market-close {
+                display: flex !important;
+                pointer-events: auto !important;
+                visibility: visible !important;
+                opacity: 1 !important;
+                width: 36px !important;
+                height: 42px !important;
+                margin: 0 !important;
+                color: var(--text-title) !important;
+                background: var(--bg-card) !important;
+                border: 1px solid var(--border-line) !important;
+                border-radius: 9px !important;
+                font-size: 1.15rem !important;
+                line-height: 1 !important;
+                order: -1 !important;
+            }
+            #right-market-rail:not(.collapsed) {
+                width: min(320px, 92vw) !important;
+                max-width: 92vw !important;
+                pointer-events: auto;
+                background: var(--bg-body) !important;
+                border-left: 1px solid var(--border-line) !important;
+            }
+            #right-market-rail:not(.collapsed) #right-market-panel {
+                display: flex !important;
+            }
+            #right-market-rail:not(.collapsed) #right-market-icons {
+                position: absolute !important;
+                top: 0 !important;
+                right: 0 !important;
+                width: 44px !important;
+                min-width: 44px !important;
+                height: 100% !important;
+                flex: 0 0 44px !important;
+                background: var(--bg-body) !important;
+                border-left: 1px solid var(--border-line) !important;
+                pointer-events: auto !important;
+            }
+        }
+</style>
 </head>
 <body>
 
@@ -61,7 +2308,7 @@
             <div class="hero-sub">종목명 하나면 10초 만에 끝납니다</div>
             <div class="search-container">
                 <div class="search-box">
-                    <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) openStock(this.value, {source:'main-search'});" autocomplete="off">
+                    <input type="text" id="centerInput" placeholder="종목명 입력 (예: SK하이닉스, 삼성전자, NVDA, BTC)" onkeypress="if(event.keyCode==13) selectStock(this.value);" autocomplete="off">
                     
                     <div class="model-selector-wrap">
                         <div class="model-pill-btn" onclick="toggleModelDropdown('center')">
@@ -84,17 +2331,17 @@
                         </div>
                     </div>
 
-                    <button class="send-btn" onclick="openStock(document.getElementById('centerInput').value, {source:'main-search'})">
+                    <button class="send-btn" onclick="selectStock(document.getElementById('centerInput').value)">
                         <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                     </button>
                 </div>
             </div>
             <div class="popular-tags">
-                <button class="tag-btn" onclick="openStock('SK하이닉스', {source:'example'})">SK하이닉스</button>
-                <button class="tag-btn" onclick="openStock('삼성전자', {source:'example'})">삼성전자</button>
-                <button class="tag-btn" onclick="openStock('알테오젠', {source:'example'})">알테오젠</button>
-                <button class="tag-btn" onclick="openStock('엔비디아', {source:'example'})">엔비디아</button>
-                <button class="tag-btn" onclick="openStock('비트코인', {source:'example'})">비트코인</button>
+                <button class="tag-btn" onclick="selectStock('SK하이닉스')">SK하이닉스</button>
+                <button class="tag-btn" onclick="selectStock('삼성전자')">삼성전자</button>
+                <button class="tag-btn" onclick="selectStock('알테오젠')">알테오젠</button>
+                <button class="tag-btn" onclick="selectStock('엔비디아')">엔비디아</button>
+                <button class="tag-btn" onclick="selectStock('비트코인')">비트코인</button>
             </div>
         </div>
 
@@ -203,6 +2450,14 @@
                                 <div id="quantDetailList"></div>
                             </div>
 
+                        </div>
+
+                        <!-- 1행 좌측: 왜 움직였을까? — 코멘트 전용 -->
+                        <div class="card" id="rowCause" style="justify-content:flex-start;">
+                            <div class="board-header" style="margin-bottom:8px; padding-bottom:0; border-bottom:none;">
+                                <span class="board-header-title" style="font-size:0.95rem; font-weight:800; color:var(--text-title);">왜 움직였을까?</span>
+                            </div>
+                            <div id="movementReasonCard" style="font-size:0.86rem;line-height:1.65;color:var(--text-sub);word-break:keep-all;margin-top:0;"></div>
                         </div>
 
                         <!-- 5행 좌측: 트랙 분석 — 종목 뉴스 아래 -->
@@ -437,6 +2692,14 @@
                             <div id="dartList"></div>
                         </div>
 
+                        <!-- 8행: 악성 매물대 위젯 -->
+                        <div class="card" id="rowSignal">
+                            <div class="board-header">
+                                <span class="board-header-title">악성 매물대</span>
+                                <span style="font-size:0.72rem; color:var(--text-muted);">과거 거래가 집중된 저항 구간</span>
+                            </div>
+                            <div id="maliciousZoneBody" style="margin-top:10px;"></div>
+                        </div>
 </div>
 
                 </div>
@@ -447,7 +2710,7 @@
             <div class="bottom-bar-grid-wrapper">
                 <div class="search-container">
                     <div class="search-box">
-                        <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) openStock(this.value, {source:'bottom-search'});" autocomplete="off">
+                        <input type="text" id="bottomInput" placeholder="다른 종목명 입력 (예: 테슬라, 카카오, BTC)" onkeypress="if(event.keyCode==13) selectStock(this.value);" autocomplete="off">
                         
                         <div class="model-selector-wrap">
                             <div class="model-pill-btn" onclick="toggleModelDropdown('bottom')">
@@ -470,7 +2733,7 @@
                             </div>
                         </div>
 
-                        <button class="send-btn" onclick="openStock(document.getElementById('bottomInput').value, {source:'bottom-search'})">
+                        <button class="send-btn" onclick="selectStock(document.getElementById('bottomInput').value)">
                             <svg width="18" height="18" viewBox="0 0 24 24"><path d="M12 4L12 20M12 4L5 11M12 4L19 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
                         </button>
                     </div>
@@ -493,6 +2756,15 @@
 
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
         function setHtml(id, val) { const el = document.getElementById(id); if (el) el.innerHTML = (val !== undefined && val !== null) ? String(val) : ''; }
+
+        const SUPABASE_URL = "https://uaqvmsubzgzvxbdcwcad.supabase.co";
+        const SUPABASE_KEY = "sb_publishable_bcxDofsnPXgBICDDgQ8Ijw_fNjPcsRW";
+        let supabaseClient = null;
+        try {
+            if (window.supabase) {
+                supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+            }
+        } catch(e) {}
 
         function initTheme() {
             const saved = localStorage.getItem('gaemi_theme') || 'dark';
@@ -592,10 +2864,13 @@
         });
 
         function resetToHome() {
-            // 진행 중인 분석/상세 요청이 홈 화면으로 돌아온 뒤 결과를 덮어쓰지 못하게 한다.
+            // 진행 중인 종목 요청이 홈으로 돌아온 뒤 늦게 도착해 화면을 다시 덮지 못하게 한다.
             activeSearchToken++;
             if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
             if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
+            activeSearchController = null;
+            activeDetailsController = null;
+            currentInstrument = null;
             document.getElementById('main-view').style.display = 'flex';
             document.getElementById('result-scroll-view').style.display = 'none';
             document.getElementById('bottom-bar').style.display = 'none';
@@ -614,6 +2889,8 @@
             // 홈으로 돌아가면 저장된 종목 URL도 제거
             const homeUrl = new URL(window.location.href);
             homeUrl.searchParams.delete('q');
+            homeUrl.searchParams.delete('m');
+            homeUrl.searchParams.delete('s');
             window.history.replaceState({}, '', homeUrl.toString());
             const side = document.getElementById('sidebar-wrapper');
             if (side) side.classList.remove('open');
@@ -929,497 +3206,235 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             }
         }
 
-        // 브라우저 콘솔에서 현재 서버가 실제로 STEP48 HTML을 내려주는지 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP52-GOOGLE-NEWS-OPENSTOCK';
+        // 브라우저 콘솔에서 실제 배포본의 단일 종목 흐름 버전을 확인할 수 있다.
+        window.__GAEMIGTP_BUILD__ = 'STEP53-SINGLE-STOCK-FLOW';
 
-        const ANALYZE_CACHE = new Map();
-        const ANALYZE_CACHE_TTL = 30 * 1000;
+        let currentInstrument = null;
         let activeSearchToken = 0;
-
-        // 브라우저 캐시도 서버와 동일하게 '종목명/종목코드/티커'를
-        // 하나의 분석 데이터로 묶는다. 검색 입구가 달라도 같은 종목이면
-        // 같은 Core/Details 결과를 사용해야 한다.
-        function analyzeCacheKeys(query, data = null) {
-            const keys = [];
-            const add = (value) => {
-                const v = String(value ?? '').trim().replace(/\s+/g, '').toUpperCase();
-                if (v && !keys.includes(v)) keys.push(v);
-            };
-            add(query);
-            if (data && typeof data === 'object') {
-                add(data.symbol);
-                add(data.name);
-                add(data.formal_name);
-            }
-            return keys;
-        }
-
-        function setAnalyzeCache(query, data, timestamp = Date.now()) {
-            analyzeCacheKeys(query, data).forEach(key => {
-                ANALYZE_CACHE.set(key, { time: timestamp, data });
-            });
-        }
-
-        function getAnalyzeCache(query) {
-            const now = Date.now();
-            for (const key of analyzeCacheKeys(query)) {
-                const hit = ANALYZE_CACHE.get(key);
-                if (hit && (now - hit.time) < ANALYZE_CACHE_TTL) return hit;
-                if (hit) ANALYZE_CACHE.delete(key);
-            }
-            return null;
-        }
-
-        function deleteAnalyzeCache(query, data = null) {
-            analyzeCacheKeys(query, data).forEach(key => ANALYZE_CACHE.delete(key));
-        }
         let activeSearchController = null;
         let activeDetailsController = null;
         let rightMarketController = null;
         let rightMarketRequestToken = 0;
-        const FAST_CHART_CACHE = new Map();
-        const FAST_CHART_CACHE_TTL = 30 * 1000;
 
-        // =====================================================================
-        // 공통 종목 진입 계층
-        // 모든 종목 선택/검색 UI는 openStock() 하나를 거쳐 기존 doSearch()로 들어간다.
-        // 분석/뉴스/차트 엔진은 건드리지 않고 입력만 표준화한다.
-        // =====================================================================
-        function normalizeStockMarket(market, value = '') {
-            const rawMarket = String(market || '').trim().toUpperCase();
-            if (['KR', 'KOREA', 'DOMESTIC', '국내', '국내주식', '국내증시'].includes(rawMarket)) return 'KR';
-            if (['US', 'USA', 'OVERSEAS', '미국', '미국주식', '해외'].includes(rawMarket)) return 'US';
-            if (['CRYPTO', 'COIN', '암호화폐', '코인'].includes(rawMarket)) return 'CRYPTO';
+        function renderStockData(data, searchToken, displayNameOverride = '') {
+            if (!data || searchToken !== activeSearchToken) return;
 
-            const q = String(value || '').trim().replace(/\s+/g, '').toUpperCase();
-            if (/^\d{6}$/.test(q)) return 'KR';
-            if (q.endsWith('USDT') || /BTC|ETH/.test(q) || q.includes('코인') || q.includes('비트')) return 'CRYPTO';
-            if (/^[A-Z]{1,6}$/.test(q)) return 'US';
-            return '';
-        }
-
-        function buildStockEntry(input, options = {}) {
-            const isObject = input && typeof input === 'object' && !Array.isArray(input);
-            const rawQuery = String((isObject ? (input.query ?? input.symbol ?? input.name) : input) || '').trim();
-            const rawName = String((isObject ? input.name : options.name) || '').trim();
-            const rawSymbol = String((isObject ? input.symbol : options.symbol) || '').trim();
-            const rawMarket = isObject ? input.market : options.market;
-            const source = String((isObject ? input.source : options.source) || 'unknown').trim();
-            const query = rawSymbol || rawQuery || rawName;
-            const name = rawName || ((rawSymbol && rawQuery && rawSymbol !== rawQuery) ? rawQuery : '');
-            const market = normalizeStockMarket(rawMarket, rawSymbol || rawQuery || rawName);
-            return {
-                query,
-                name,
-                symbol: rawSymbol || query,
-                market,
-                source: source || 'unknown'
-            };
-        }
-
-        function openStock(input, options = {}) {
-            const entry = buildStockEntry(input, options);
-            if (!entry.query) return;
-            try { window.__GAEMIGTP_LAST_STOCK_ENTRY__ = entry; } catch (e) {}
-            doSearch(entry.query, false, entry.name, entry.market, entry.source);
-        }
-        window.openStock = openStock;
-
-        async function doSearch(query, forceServer = false, displayNameOverride = '', marketOverride = '', sourceOverride = '') {
-            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
-            let materialText = '';
-
-            // 재료/경제 이벤트 최종 통합용 변수: doSearch 함수 전체에서 하나만 사용
-
-            const cleanQ = String(query || '').trim();
-            if (!cleanQ) return;
-
-            // 새 종목을 클릭하면 이전 분석/상세 폴링 요청을 즉시 중단한다.
-            // activeSearchToken은 화면 적용 방지용이고, AbortController는 실제 HTTP 요청을 중단한다.
-            if (activeSearchController) {
-                try { activeSearchController.abort(); } catch (e) {}
+            // 차트도 동일한 analyze 응답의 candles만 사용한다.
+            if (Array.isArray(data.candles) && data.candles.length) {
+                try { initTvChart(data.candles); } catch (e) { console.warn('[CHART] render failed:', e); }
             }
-            if (activeDetailsController) {
-                try { activeDetailsController.abort(); } catch (e) {}
-            }
+
+            const isKrw = data.market === '국내주식' || data.market === '국내증시';
+const displayName = String(displayNameOverride || data.name || data.formal_name || data.symbol || '').trim();
+const displayPrice = data.price || data.price_str;
+const displayTime = data.time || data.now_str;
+
+const usShortName = (isKrw || !data.symbol)
+    ? displayName
+    : getUsShortKrName(data.symbol, displayName);
+setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
+setTxt('rPrice', displayPrice);
+setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
+
+loadCommunityData(data.symbol, displayName);
+
+// 1. 증시는 지금 위젯 렌더링 (독립 위젯으로 분리)
+if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
+    window.GaemiWidgets.worldBoard.render(data.world_board || []);
+}
+
+
+// 2. 캘린더 데이터 저장 및 렌더링
+if (data.market_calendar) {
+    globalMarketCalendar = data.market_calendar;
+
+    // 중요:
+    // 최초 화면 렌더링 시에는 API 데이터가 아직 도착하지 않아
+    // 경제 캘린더 자동 이동 플래그가 먼저 켜질 수 있습니다.
+    // 실제 데이터가 도착한 뒤 다시 한 번 자동 이동을 판단합니다.
+    window.globalMarketCalendar = globalMarketCalendar;
+    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
+        window.GaemiWidgets.economicCalendar.resetState();
+    }
+    renderMarketCalendarView();
+}
+
+// 3. 퀀트 분석 데이터 렌더링 (독립 위젯)
+if (window.GaemiWidgets && window.GaemiWidgets.quant) {
+    window.GaemiWidgets.quant.render(data.quant);
+}
+if (window.GaemiWidgets && window.GaemiWidgets.maliciousZone) {
+    window.GaemiWidgets.maliciousZone.render(data);
+}
+// 3.5 왜 움직였을까? — 독립 위젯
+if (window.GaemiWidgets && window.GaemiWidgets.whyMovement) {
+    window.GaemiWidgets.whyMovement.render(data);
+}
+
+// 3.6 트랙 분석 — 독립 위젯
+if (window.GaemiWidgets && window.GaemiWidgets.track) {
+    const mr = data && data.movement_reason;
+    const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
+        const a5 = a.key === 'market_5d' ? 1 : 0;
+        const b5 = b.key === 'market_5d' ? 1 : 0;
+        if (a5 !== b5) return a5 - b5;
+        return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
+    });
+    const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
+    const confidenceStyle = mr && mr.confidence === '높음'
+        ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
+        : mr && mr.confidence === '중간'
+            ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
+            : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
+    window.GaemiWidgets.track.render(data, mr, evidenceReasons, evidenceCount, confidenceStyle);
+}
+// 4. 종목 뉴스 렌더링 — 독립 위젯
+if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
+    window.GaemiWidgets.stockNews.load({
+        symbol: data.symbol, market: data.market,
+        name: data.name || data.formal_name, initial: data.stock_news
+    });
+}
+
+// 5. 경제뉴스 위젯 — 독립 API에서 직접 갱신
+if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
+    window.GaemiWidgets.globalNews.load({
+        market: data.market, initial: data.global_news
+    });
+}
+
+// 5. 애널리스트 컨센서스 — 독립 위젯
+if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
+    window.GaemiWidgets.consensus.render(data.consensus);
+}
+
+if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
+    window.GaemiWidgets.renderDartDisclosure(data.dart_disclosures);
+}
+
+document.getElementById('loading').style.display = 'none';
+document.getElementById('result-card-wrap').style.display = 'block';
+
+// 오른쪽 사이드바 종목 클릭 시 사용자가 보고 있던 스크롤 위치를 유지한다.
+// 자동으로 페이지 맨 위로 이동시키지 않는다.
+        }
+
+        async function selectStock(query, forceServer = false, displayNameOverride = '') {
+            const rawQuery = String(query || '').trim();
+            if (!rawQuery) return;
+
+            if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
+            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
             activeSearchController = new AbortController();
             const searchSignal = activeSearchController.signal;
-
-            // STEP 37: 우측 실시간 시장에서 종목코드로 진입하더라도
-            // 목록에서 이미 확보한 한글 종목명을 상세 화면 제목에 유지한다.
+            const searchToken = ++activeSearchToken;
             const displayNameHint = String(displayNameOverride || '').trim();
 
-            // STEP 21: 최근검색종목 메뉴에서 사용할 최소 검색 이력을 로컬에 저장한다.
-            try {
-                const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
-                // STEP 40: 최근검색종목은 검색에 사용한 코드가 아니라
-                // 화면에서 사용한 실제 표시명을 우선 저장한다.
-                // 우측 국내/해외/코인 목록에서 종목을 클릭한 경우에는
-                // displayNameOverride에 전달된 종목명을 그대로 보존한다.
-                const recentDisplayName = displayNameHint || cleanQ;
-                const recentSymbol = cleanQ.toUpperCase();
-                const recentMarket = normalizeStockMarket(marketOverride, cleanQ) || '';
-                const recentSource = String(sourceOverride || '').trim() || 'search';
-                const recentItem = {
-                    name: recentDisplayName,
-                    symbol: recentSymbol,
-                    market: recentMarket,
-                    source: recentSource,
-                    price: null,
-                    change_pct: null,
-                    currency: ''
-                };
-                const next = [recentItem, ...recent.filter(x => {
-                    const oldSymbol = String(x?.symbol || '').toUpperCase();
-                    const oldName = String(x?.name || '').toUpperCase();
-                    return oldSymbol !== recentSymbol && oldName !== recentSymbol;
-                })].slice(0, 15);
-                localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
-            } catch (e) {}
-
-            // 현재 분석 종목을 URL에 저장하여 새로고침해도 같은 종목을 유지
-            const searchUrl = new URL(window.location.href);
-            searchUrl.searchParams.set('q', cleanQ);
-            window.history.replaceState({}, '', searchUrl.toString());
-
-            document.getElementById('centerInput').value = cleanQ;
-            document.getElementById('bottomInput').value = cleanQ;
+            const center = document.getElementById('centerInput');
+            const bottom = document.getElementById('bottomInput');
+            if (center) center.value = rawQuery;
+            if (bottom) bottom.value = rawQuery;
 
             document.getElementById('main-view').style.display = 'none';
             document.getElementById('result-scroll-view').style.display = 'block';
             document.getElementById('bottom-bar').style.display = 'flex';
             document.getElementById('loading').style.display = 'flex';
             document.getElementById('result-card-wrap').style.display = 'block';
-            const fastTitle = document.getElementById('rTitle');
-            const fastPrice = document.getElementById('rPrice');
-            const fastMeta = document.getElementById('rMeta');
-            if (fastTitle) fastTitle.textContent = displayNameHint || cleanQ.toUpperCase();
-            if (fastPrice) fastPrice.textContent = '';
-            if (fastMeta) fastMeta.textContent = '';
+            const title = document.getElementById('rTitle');
+            const price = document.getElementById('rPrice');
+            const meta = document.getElementById('rMeta');
+            if (title) title.textContent = displayNameHint || rawQuery.toUpperCase();
+            if (price) price.textContent = '';
+            if (meta) meta.textContent = '실제 데이터를 불러오는 중입니다.';
 
             if (window.innerWidth <= 900) {
                 const side = document.getElementById('sidebar-wrapper');
                 if (side) side.classList.remove('open');
             }
 
-            const searchToken = ++activeSearchToken;
-
-            // 🚀 첫 화면 차트 전용 요청: 전체 분석을 기다리지 않고 즉시 시작
-            const fastChartKey = cleanQ.toUpperCase();
-            const fastChartCached = FAST_CHART_CACHE.get(fastChartKey);
-            const fastChartStartedAt = performance.now();
-            const fastChartPromise = (
-                fastChartCached && (Date.now() - fastChartCached.time) < FAST_CHART_CACHE_TTL
-            )
-                ? Promise.resolve(fastChartCached.data)
-                : fetch('/api/chart?q=' + encodeURIComponent(cleanQ), {
-                    signal: searchSignal,
-                    cache: 'no-store'
-                })
-                    .then(r => r.ok ? r.json() : null)
-                    .then(chartData => {
-                        console.log(`[gaemiGTP 초고속차트] ${cleanQ} | ${(performance.now() - fastChartStartedAt).toFixed(0)}ms`);
-                        if (chartData) {
-                            FAST_CHART_CACHE.set(fastChartKey, {
-                                time: Date.now(),
-                                data: chartData
-                            });
-                        }
-                        return chartData;
-                    })
-                    .catch(() => null);
-
+            // 서버가 종목의 canonical key를 확정한다. 프론트는 임의의 종목키를 만들지 않는다.
             try {
-                const cacheHit = getAnalyzeCache(cleanQ);
-                const cached = cacheHit;
-                let data;
-                let response = null;
-
-                if (!forceServer && cached) {
-                    data = cached.data;
-                } else {
-                    const url = '/api/analyze?q=' + encodeURIComponent(cleanQ) + '&mode=core';
-                    response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
-
-                    const contentType = response.headers.get("content-type") || "";
-                    if (contentType.includes("application/json")) {
-                        data = await response.json();
-                    } else {
-                        await response.text();
-                        throw new Error("서버 응답 오류 (" + response.status + ")");
-                    }
-
-                    if (response.ok && data && !data.error) {
-                        setAnalyzeCache(cleanQ, data);
-                    }
-                }
-
-                if (!data) {
-                    throw new Error("분석 데이터를 받지 못했습니다.");
-                }
-
-                if (data.error) {
+                const url = '/api/analyze?q=' + encodeURIComponent(rawQuery) + '&mode=core';
+                const response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
+                const contentType = response.headers.get('content-type') || '';
+                let data = contentType.includes('application/json') ? await response.json() : null;
+                if (!data) throw new Error('서버 응답을 읽지 못했습니다.');
+                if (!response.ok || data.error) {
                     const detail = data.detail ? ` · ${data.detail}` : '';
-                    throw new Error(`${data.error}${detail}`);
+                    throw new Error(`${data.error || '종목 데이터를 가져오지 못했습니다.'}${detail}`);
                 }
-
-                // 홈 이동/다른 종목 재검색 후 도착한 오래된 응답은 화면에 적용하지 않는다.
                 if (searchToken !== activeSearchToken) return;
 
-                if (data._perf) {
-                    console.log(
-                        `[gaemiGTP 성능] ${cleanQ} | 전체 ${data._perf.total_ms}ms | HTTP ${data._perf.http_call_count}회`
-                    );
-                    console.table(data._perf.slowest_http || []);
-                }
+                currentInstrument = {
+                    key: data.instrument_key || '',
+                    market: data.market_code || '',
+                    symbol: data.symbol || '',
+                    name: data.name || data.formal_name || displayNameHint || rawQuery
+                };
+                const resolvedDisplay = displayNameHint || data.name || data.formal_name || data.symbol || rawQuery;
+                if (center) center.value = resolvedDisplay;
+                if (bottom) bottom.value = resolvedDisplay;
 
-                // 🚀 차트는 core 분석 완료를 기다리지 않는다.
-                if (fastChartCached && Array.isArray(fastChartCached.data?.candles) && fastChartCached.data.candles.length) {
-                    setTimeout(() => {
-                        if (searchToken !== activeSearchToken) return;
-                        initTvChart(fastChartCached.data.candles);
-                        const last = fastChartCached.data.candles[fastChartCached.data.candles.length - 1];
-                        if (last && Number.isFinite(Number(last.close))) {
-                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
-                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
-                        }
-                    }, 0);
-                } else {
-                    fastChartPromise.then(chartData => {
-                        if (searchToken !== activeSearchToken || !chartData) return;
-                        if (chartData?._perf) {
-                            console.log(
-                                `[gaemiGTP 차트 성능] ${cleanQ} | 차트 ${chartData._perf.total_ms}ms | HTTP ${chartData._perf.http_call_count}회`
-                            );
-                            console.table(chartData._perf.slowest_http || []);
-                        }
-                        if (!Array.isArray(chartData.candles) || !chartData.candles.length) return;
-                        initTvChart(chartData.candles);
-                        const last = chartData.candles[chartData.candles.length - 1];
-                        if (last && Number.isFinite(Number(last.close))) {
-                            if (fastPrice) fastPrice.textContent = formatUsStockPrice(last.close);
-                            if (fastMeta) fastMeta.textContent = '차트 데이터 표시 · 실시간 가격 확인 중';
-                        }
-                    });
-                }
+                // URL은 입력 문자열이 아니라 canonical market/symbol로 저장한다.
+                const stateUrl = new URL(window.location.href);
+                stateUrl.searchParams.delete('q');
+                if (data.market_code) stateUrl.searchParams.set('m', data.market_code);
+                if (data.symbol) stateUrl.searchParams.set('s', data.symbol);
+                window.history.replaceState({}, '', stateUrl.toString());
 
-                // /api/chart를 별도로 호출하지 않는다. /api/analyze가 반환한
-                // 동일 candles를 바로 사용해 한 종목 클릭당 Yahoo 차트 중복 요청을 제거한다.
-                if (searchToken === activeSearchToken && Array.isArray(data.candles) && data.candles.length) {
-                    initTvChart(data.candles);
-                }
-
-if ((response && !response.ok) || data.error) {
-                    alert(data.error || '종목을 찾을 수 없습니다.');
-                    document.getElementById('loading').style.display = 'none';
-                    return;
-                }
-
-                const isKrw = data.market === '국내주식' || data.market === '국내증시';
-                const displayName = displayNameHint || data.name || data.formal_name;
-                const displayPrice = data.price || data.price_str;
-                const displayTime = data.time || data.now_str;
-
-                // 서버가 확정한 실제 symbol/market으로 최근검색 정보를 보정한다.
+                // 최근검색도 canonical symbol을 기준으로 중복 제거한다.
                 try {
                     const recent = JSON.parse(localStorage.getItem('gaemiGTP_recent_searches') || '[]');
-                    const beforeSymbol = String(cleanQ || '').trim().toUpperCase();
-                    const resolvedSymbol = String(data.symbol || cleanQ).trim().toUpperCase();
-                    const resolvedMarket = normalizeStockMarket(data.market, resolvedSymbol || displayName);
-                    const idx = recent.findIndex(x => String(x?.symbol || '').trim().toUpperCase() === beforeSymbol);
-                    if (idx >= 0) {
-                        recent[idx] = {
-                            ...recent[idx],
-                            name: displayName || recent[idx].name || resolvedSymbol,
-                            symbol: resolvedSymbol || recent[idx].symbol,
-                            market: resolvedMarket || recent[idx].market || '',
-                            source: recent[idx].source || String(sourceOverride || 'search')
-                        };
-                        localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(recent));
-                    }
+                    const recentItem = {
+                        name: displayNameHint || data.name || data.formal_name || data.symbol,
+                        symbol: data.symbol || rawQuery.toUpperCase(),
+                        market: data.market_code || '',
+                        key: data.instrument_key || '',
+                        price: data.current_price ?? null,
+                        change_pct: data.current_change_pct ?? null,
+                        currency: data.market_code === 'KR' ? 'KRW' : ''
+                    };
+                    const next = [recentItem, ...recent.filter(x => String(x?.key || '') !== String(recentItem.key))].slice(0, 15);
+                    localStorage.setItem('gaemiGTP_recent_searches', JSON.stringify(next));
                 } catch (e) {}
 
-                const usShortName = (isKrw || !data.symbol)
-                    ? displayName
-                    : getUsShortKrName(data.symbol, displayName);
-                setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
-                setTxt('rPrice', displayPrice);
-                setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
+                renderStockData(data, searchToken, displayNameHint);
 
-                loadCommunityData(data.symbol, displayName);
-
-                // 1. 증시는 지금 위젯 렌더링 (독립 위젯으로 분리)
-                if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
-                    window.GaemiWidgets.worldBoard.render(data.world_board || []);
+                if (data._details_ready === false && currentInstrument.key) {
+                    pollAnalysisDetails(currentInstrument.key, searchToken, 0);
                 }
-
-
-                // 2. 캘린더 데이터 저장 및 렌더링
-                if (data.market_calendar) {
-                    globalMarketCalendar = data.market_calendar;
-
-                    // 중요:
-                    // 최초 화면 렌더링 시에는 API 데이터가 아직 도착하지 않아
-                    // 경제 캘린더 자동 이동 플래그가 먼저 켜질 수 있습니다.
-                    // 실제 데이터가 도착한 뒤 다시 한 번 자동 이동을 판단합니다.
-                    window.globalMarketCalendar = globalMarketCalendar;
-                    if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
-                        window.GaemiWidgets.economicCalendar.resetState();
-                    }
-                    renderMarketCalendarView();
-                }
-
-                // 3. 퀀트 분석 데이터 렌더링 (독립 위젯)
-                if (window.GaemiWidgets && window.GaemiWidgets.quant) {
-                    window.GaemiWidgets.quant.render(data.quant);
-                }
-                // 3.6 트랙 분석 — 독립 위젯
-                if (window.GaemiWidgets && window.GaemiWidgets.track) {
-                    const mr = data && data.movement_reason;
-                    const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
-                        const a5 = a.key === 'market_5d' ? 1 : 0;
-                        const b5 = b.key === 'market_5d' ? 1 : 0;
-                        if (a5 !== b5) return a5 - b5;
-                        return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
-                    });
-                    const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
-                    const confidenceStyle = mr && mr.confidence === '높음'
-                        ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
-                        : mr && mr.confidence === '중간'
-                            ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
-                            : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
-                    window.GaemiWidgets.track.render(data, mr, evidenceReasons, evidenceCount, confidenceStyle);
-                }
-                // 4. 종목 뉴스 렌더링 — 독립 위젯
-                if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
-                    window.GaemiWidgets.stockNews.load({
-                        symbol: data.symbol, market: data.market,
-                        name: data.name || data.formal_name, initial: data.stock_news
-                    });
-                }
-
-                // 5. 경제뉴스 위젯 — 독립 API에서 직접 갱신
-                if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
-                    window.GaemiWidgets.globalNews.load({
-                        market: data.market, initial: data.global_news
-                    });
-                }
-
-                // 5. 애널리스트 컨센서스 — 독립 위젯
-                if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
-                    window.GaemiWidgets.consensus.render(data.consensus);
-                }
-
-                if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
-                    window.GaemiWidgets.renderDartDisclosure(data.dart_disclosures);
-                }
-
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('result-card-wrap').style.display = 'block';
-
-                // STEP 50: 첫 검색부터 전체 분석 데이터를 받아 뉴스/컨센서스/트랙 분석이 빈 상태로 남지 않게 한다.
-                if (data._details_ready === false) {
-                    pollAnalysisDetails(cleanQ, searchToken);
-                }
-
-                // 오른쪽 사이드바 종목 클릭 시 사용자가 보고 있던 스크롤 위치를 유지한다.
-                // 자동으로 페이지 맨 위로 이동시키지 않는다.
-
             } catch (err) {
                 if (err && err.name === 'AbortError') return;
-                console.error("Analysis Error:", err);
-                const msg = err && err.message ? err.message : '알 수 없는 오류';
+                console.error('Analysis Error:', err);
                 if (searchToken === activeSearchToken) {
-                    alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + msg);
+                    alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + (err?.message || '알 수 없는 오류'));
                     document.getElementById('loading').style.display = 'none';
                 }
             }
         }
 
-        async function pollAnalysisDetails(query, searchToken, attempt = 0) {
-            // optional 데이터(종목뉴스/해외뉴스/컨센서스/트랙 분석)가 준비될 시간을
-            // 기존 4.5초보다 충분히 확보한다. 준비되면 full 재분석을 다시 돌리지 않고
-            // 서버의 완성 캐시를 그대로 한 번 렌더링한다.
-            if (searchToken !== activeSearchToken || attempt >= 40) return;
-            if (activeDetailsController) {
-                try { activeDetailsController.abort(); } catch (e) {}
-            }
+        // 기존 호출부 호환용. 실제 단일 진입점은 selectStock이다.
+        async function doSearch(query, forceServer = false, displayNameOverride = '') {
+            return selectStock(query, forceServer, displayNameOverride);
+        }
+
+        window.selectStock = selectStock;
+        window.openStock = selectStock;
+        window.doSearch = doSearch;
+
+        async function pollAnalysisDetails(cacheKey, searchToken, attempt = 0) {
+            if (searchToken !== activeSearchToken || attempt >= 10 || !cacheKey) return;
+            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
             activeDetailsController = new AbortController();
             const detailsSignal = activeDetailsController.signal;
             try {
-                const r = await fetch('/api/analyze-details?q=' + encodeURIComponent(query) + '&wait=1', {cache: 'no-store', signal: detailsSignal});
+                const r = await fetch('/api/analyze-details?key=' + encodeURIComponent(cacheKey) + '&wait=1', {
+                    cache: 'no-store', signal: detailsSignal
+                });
                 if (r.status === 200) {
                     const payload = await r.json();
-                    if (payload && payload.ready && payload.data) {
-                        if (searchToken !== activeSearchToken) return;
-                        deleteAnalyzeCache(query, payload.data);
-                        // 완성된 서버 데이터를 현재 화면의 모든 분석 위젯에 반영한다.
-                        // 기존에는 track만 갱신되어 퀀트/거래대금/뉴스/컨센서스 등이
-                        // core 단계의 빈 데이터를 그대로 유지할 수 있었다.
-                        const detailData = payload.data;
-                        setAnalyzeCache(query, detailData);
-
-                        // Details가 늦게 완성되어도 현재 화면의 종목 정보 자체도
-                        // 최종 서버 데이터로 맞춘다. 새로고침/재검색에서도 동일하다.
-                        if (detailData.symbol || detailData.name || detailData.formal_name) {
-                            const detailName = detailData.name || detailData.formal_name || query;
-                            const detailIsKrw = detailData.market === '국내주식' || detailData.market === '국내증시';
-                            const detailUsName = (detailIsKrw || !detailData.symbol)
-                                ? detailName
-                                : getUsShortKrName(detailData.symbol, detailName);
-                            setHtml('rTitle', `${detailUsName} <span>(${detailData.symbol || ''})</span>`);
-                            setTxt('rPrice', detailData.price || detailData.price_str || '');
-                            setHtml('rMeta', `시장: ${detailData.market || '-'} · 출처: ${detailIsKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${detailData.time || detailData.now_str || '-'}`);
-                        }
-
-                        if (window.GaemiWidgets && window.GaemiWidgets.quant) {
-                            window.GaemiWidgets.quant.render(detailData.quant);
-                        }
-                        if (window.GaemiWidgets && window.GaemiWidgets.worldBoard) {
-                            window.GaemiWidgets.worldBoard.render(detailData.world_board || []);
-                        }
-                        if (detailData.market_calendar) {
-                            globalMarketCalendar = detailData.market_calendar;
-                            window.globalMarketCalendar = globalMarketCalendar;
-                            if (window.GaemiWidgets && window.GaemiWidgets.economicCalendar) {
-                                window.GaemiWidgets.economicCalendar.resetState();
-                            }
-                            renderMarketCalendarView();
-                        }
-
-                        if (window.GaemiWidgets && window.GaemiWidgets.track) {
-                            const mr = detailData && detailData.movement_reason;
-                            const evidenceReasons = (mr && Array.isArray(mr.reasons) ? mr.reasons : []).slice().sort((a,b) => {
-                                const a5 = a.key === 'market_5d' ? 1 : 0;
-                                const b5 = b.key === 'market_5d' ? 1 : 0;
-                                if (a5 !== b5) return a5 - b5;
-                                return Math.abs(Number(b.score || 0)) - Math.abs(Number(a.score || 0));
-                            });
-                            const evidenceCount = evidenceReasons.filter(x => Number(x.score || 0) !== 0).length;
-                            const confidenceStyle = mr && mr.confidence === '높음'
-                                ? 'background:rgba(16,185,129,0.14);color:#10b981;border:1px solid rgba(16,185,129,0.25);'
-                                : mr && mr.confidence === '중간'
-                                    ? 'background:rgba(245,158,11,0.14);color:#f59e0b;border:1px solid rgba(245,158,11,0.25);'
-                                    : 'background:rgba(148,163,184,0.12);color:var(--text-muted);border:1px solid var(--border-line);';
-                            window.GaemiWidgets.track.render(detailData, mr, evidenceReasons, evidenceCount, confidenceStyle);
-                        }
-                        if (window.GaemiWidgets && window.GaemiWidgets.stockNews) {
-                            window.GaemiWidgets.stockNews.load({
-                                symbol: detailData.symbol, market: detailData.market,
-                                name: detailData.name || detailData.formal_name, initial: detailData.stock_news
-                            });
-                        }
-                        if (window.GaemiWidgets && window.GaemiWidgets.globalNews) {
-                            window.GaemiWidgets.globalNews.load({
-                                market: detailData.market, initial: detailData.global_news
-                            });
-                        }
-                        if (window.GaemiWidgets && window.GaemiWidgets.consensus) {
-                            window.GaemiWidgets.consensus.render(detailData.consensus);
-                        }
-                        if (window.GaemiWidgets && typeof window.GaemiWidgets.renderDartDisclosure === 'function') {
-                            window.GaemiWidgets.renderDartDisclosure(detailData.dart_disclosures);
-                        }
+                    if (payload && payload.ready && payload.data && searchToken === activeSearchToken) {
+                        renderStockData(payload.data, searchToken, currentInstrument?.name || '');
                         return;
                     }
                 }
@@ -1427,7 +3442,7 @@ if ((response && !response.ok) || data.error) {
                 if (e && e.name === 'AbortError') return;
             }
             if (searchToken === activeSearchToken) {
-                setTimeout(() => pollAnalysisDetails(query, searchToken, attempt + 1), 500);
+                setTimeout(() => pollAnalysisDetails(cacheKey, searchToken, attempt + 1), 800);
             }
         }
 
@@ -1519,16 +3534,10 @@ if ((response && !response.ok) || data.error) {
         }
 
         function openUsLeadingStock(symbol, name) {
-            const cleanSymbol = String(symbol || '').trim();
+            const cleanSymbol = String(symbol || '').trim().toUpperCase();
             const cleanName = getUsShortKrName(cleanSymbol, name);
             if (!cleanSymbol) return;
-
-            openStock({
-                symbol: cleanSymbol,
-                name: cleanName,
-                market: 'US',
-                source: 'us-leading'
-            });
+            selectStock(cleanSymbol, false, cleanName);
         }
 
         async function loadSectorChart(sectorSymbol, sectorName) {
@@ -1612,10 +3621,14 @@ if ((response && !response.ok) || data.error) {
 
             // 새로고침 시 URL에 저장된 종목을 자동 복원
             const params = new URLSearchParams(window.location.search);
+            const savedMarket = params.get('m');
+            const savedSymbol = params.get('s');
             const savedQuery = params.get('q');
 
-            if (savedQuery && savedQuery.trim()) {
-                openStock({ query: savedQuery.trim(), source: 'url-restore' });
+            if (savedMarket && savedSymbol) {
+                selectStock(`${savedMarket}:${savedSymbol}`);
+            } else if (savedQuery && savedQuery.trim()) {
+                selectStock(savedQuery.trim());
             }
         });
     </script>

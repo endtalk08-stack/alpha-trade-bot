@@ -89,7 +89,7 @@
             }
         }
         const clickAttr = ev.ticker
-            ? `onclick="doSearch('${String(ev.ticker).replace(/'/g, "\\'")}')"`
+            ? `onclick="selectStock('${String(ev.ticker).replace(/'/g, "\\'")}')"`
             : '';
 
         return `

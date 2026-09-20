@@ -7326,32 +7326,7 @@ function renderSparklineSVG(points, isUp) {
         }
 
 
-        // PC에서 같은 행의 좌/우 패널 높이를 항상 1:1로 맞춘다.
-        function syncCalendarRowHeights() {
-            if (window.innerWidth <= 1200) return;
-            const pairs = [
-                ['rowTrack', 'rowEarningsCalendar'],
-                ['rowQuant', 'rowEconomicCalendar']
-            ];
-            pairs.forEach(([leftId, rightId]) => {
-                const left = document.getElementById(leftId);
-                const right = document.getElementById(rightId);
-                if (!left || !right) return;
-                left.style.height = '';
-                right.style.height = '';
-                const h = Math.max(left.getBoundingClientRect().height, right.getBoundingClientRect().height, 560);
-                left.style.height = `${Math.ceil(h)}px`;
-                right.style.height = `${Math.ceil(h)}px`;
-            });
-        }
-        let calendarHeightSyncTimer = null;
-        function scheduleCalendarHeightSync() {
-            if (calendarHeightSyncTimer) clearTimeout(calendarHeightSyncTimer);
-            calendarHeightSyncTimer = setTimeout(syncCalendarRowHeights, 60);
-        }
-        window.addEventListener('resize', scheduleCalendarHeightSync);
-        if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleCalendarHeightSync);
-        setTimeout(scheduleCalendarHeightSync, 300);
+        // 높이 강제 동기화 제거: 각 위젯은 자신의 콘텐츠 높이를 관리하고 CSS Grid의 자연스러운 정렬만 사용한다.
 
         async function loadCommunityData(symbol, displayName) {
             currentSymbol = symbol;

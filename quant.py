@@ -297,7 +297,11 @@ def calculate_quant_factors(raw_price, df, symbol="", is_krw=True):
     vol_state = "거래 급증 (수급 유입)" if vol_pct >= 150 else ("거래 보통" if vol_pct >= 70 else "거래 침체")
     vol_color = "positive" if vol_pct >= 150 else "neutral"
 
-    rank_str = get_trading_val_rank(symbol, is_krw)
+    try:
+        rank_str = get_trading_val_rank(symbol, is_krw) or ""
+    except Exception as exc:
+        print(f"[QUANT] trading-value rank fallback for {symbol}: {type(exc).__name__}: {exc}")
+        rank_str = ""
     if n_bars >= 20:
         val_20d = float((closes.tail(20) * volumes.tail(20)).mean())
         if is_krw:

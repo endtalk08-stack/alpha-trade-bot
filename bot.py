@@ -1,5 +1,6 @@
 from earnings_calendar import _classify_earnings_hour, _normalize_earnings_timestamp, _fetch_yahoo_earnings_timestamps
 from world_board import fetch_single_world_item
+from dart_disclosure import fetch_dart_disclosures
 from crypto import _fetch_crypto_candles_uncached, fetch_crypto_candles
 from overseas_market import fetch_overseas_candles
 from us_leading_sectors import fetch_us_leading_sectors
@@ -8,11 +9,21 @@ import os
 import ast
 from serialization import clean_for_json
 from chart_payload import _build_chart_payload
-from news_merge import merge_news_sources
-from macro_sources import (FRED_CACHE, FRED_CACHE_TTL, ALPHA_NEWS_CACHE, ALPHA_NEWS_CACHE_TTL, ALPHA_EARNINGS_CACHE, ALPHA_EARNINGS_CACHE_TTL, fetch_fred_macro_snapshot, fetch_alpha_vantage_news, fetch_alpha_vantage_earnings)
+from macro_sources import ALPHA_NEWS_CACHE
 
 # Shared HTTP/performance infrastructure
 from performance import HTTP_SESSION, _PERF_HISTORY, _PERF_HISTORY_MAX, _PERF_LOCAL, _PERF_REQUESTS, _PERF_REQUESTS_LOCK, _perf_record_http, _perf_run_with_context, _perf_submit, _perf_stage, _perf_store_history, _perf_history_snapshot, _timed_http_get, _perf_begin, _perf_snapshot
+from db import (
+    init_database,
+    get_db_health,
+    get_db_price_summary,
+    get_db_recent_prices,
+)
+from news_sources import (
+    translate_news_titles_to_korean,
+    fetch_finlight_stock_news,
+    fetch_finlight_economic_news,
+)
 from chart_runtime import _fetch_fast_domestic_chart, _fetch_fast_overseas_chart
 
 # 실적 캘린더 첫 화면에 보여줄 주요 예정 실적 수
@@ -20,7 +31,6 @@ EARNINGS_PREVIEW_COUNT = 4
 import re
 import io
 import gzip
-import gc
 import json
 import time
 import urllib.parse
@@ -35,31 +45,14 @@ except ImportError:
 from concurrent.futures import ThreadPoolExecutor, wait, Future, FIRST_COMPLETED
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
-import requests
 import pandas as pd
 import numpy as np
 
 
 
-# DB layer (kept behavior-equivalent; separated from the main server module)
-from db import (
-    init_database,
-    save_market_prices,
-    get_db_health,
-    get_db_price_summary,
-    get_db_recent_prices,
-    _submit_db_write,
-)
 
 # Quant/Trading-value module
-from market_index import fetch_naver_realtime_index, fetch_market_5day_returns_from_df, fetch_market_5day_returns_from_symbol, fetch_naver_index_5day_returns
-from quant import (
-    get_trading_val_rank,
-    run_real_vectorized_backtest,
-    _cached_quant_backtest,
-    calculate_quant_factors,
-)
-from numeric_utils import _safe_float
+from quant import calculate_quant_factors
 
 
 from economic_calendar import (
@@ -124,7 +117,6 @@ US_STOCK_MAP = {
     "DIA": "DIA", "SOXX": "SOXX"
 }
 from us_leading_stocks import US_SECTOR_STOCK_UNIVERSE, US_TICKER_PATTERN, fetch_us_leading_stocks
-from news_sources import (fetch_naver_news, fetch_finlight_news, translate_news_titles_to_korean, fetch_finlight_stock_news, fetch_finlight_economic_news, fetch_rss_news)
 try:
     from .right_market_us import _right_sidebar_us_rows
 except ImportError:
@@ -341,14 +333,6 @@ WORLD_BOARD_TTL = 300
 WORLD_BOARD_CACHE_LOCK = threading.Lock()
 CACHED_MARKET_CALENDAR = []
 LAST_CALENDAR_FETCH_TIME = 0
-ANALYSIS_CACHE = {}
-ANALYSIS_INFLIGHT = {}
-ANALYSIS_INFLIGHT_LOCK = threading.Lock()
-ANALYSIS_INFLIGHT_TIMEOUT = 45.0
-ANALYSIS_ENRICHING = set()
-ANALYSIS_ENRICH_CONTEXT = {}
-ANALYSIS_ENRICH_LOCK = threading.Lock()
-ANALYSIS_CORE_TTL = 180  # core→details 전환에 충분한 시간 확보
 
 # ===== External API cache / rate-limit protection =====
 
@@ -360,12 +344,6 @@ OPTIONAL_API_EXECUTOR = ThreadPoolExecutor(
     max_workers=18,
     thread_name_prefix="gaemi-optional",
 )
-ANALYSIS_ENRICH_EXECUTOR = ThreadPoolExecutor(
-    max_workers=6,
-    thread_name_prefix="gaemi-enrich",
-)
-OPTIONAL_API_SOFT_TIMEOUT = 6.0  # 첫 화면에서 뉴스/컨센서스 등 실제 데이터를 기다리는 최대 대기시간
-ANALYSIS_ENRICH_WAIT = 10.0  # 백그라운드 details 단계에서 외부 데이터가 준비될 최대 대기시간
 
 # 통합 컨센서스 결과 캐시. 컨센서스는 초단위 데이터가 아니므로
 # 매 종목 검색마다 Naver/Finnhub/Yahoo fallback 체인을 다시 타지 않는다.
@@ -2223,1208 +2201,6 @@ def fetch_all_world_board_parallel(force=False):
 
 
 
-# ===== WHY MOVED: multi-source news clustering engine =====
-from news_analysis import (NEWS_CLUSTER_STOPWORDS, NEWS_GENERIC_TOKENS, NEWS_POLARITY, _news_tokens, _news_cluster_key, _news_polarity, analyze_news_clusters, build_clustered_material_evidence)
-from dart_disclosure import fetch_dart_disclosures
-
-
-
-def analyze_global_impact(formal_name, market_name, world_board, stock_news,
-                          global_news=None, dart_disclosures=None, df=None,
-                          domestic_flow=None, market_index_name=None,
-                          consensus=None, macro_snapshot=None, market_calendar=None,
-                          symbol="", alpha_earnings=None):
-    """
-    글로벌/거시 → 미국 → 국내 → 업종 → 종목 전파 경로를 계산한다.
-    숫자 비교가 가능한 실제 데이터만 강한 근거로 사용한다.
-    확인되지 않은 경제지표 값이나 테마 동반 종목 수는 만들어내지 않는다.
-    """
-    layers = []
-
-    qqq = _find_world_item(world_board, ["QQQ"])
-    spy = _find_world_item(world_board, ["SPY"])
-    soxx = _find_world_item(world_board, ["SOXX"])
-
-    qqq_r = _movement_rate_to_float(qqq.get("rate")) if qqq else None
-    spy_r = _movement_rate_to_float(spy.get("rate")) if spy else None
-    soxx_r = _movement_rate_to_float(soxx.get("rate")) if soxx else None
-
-    us_values = [x for x in (qqq_r, spy_r) if x is not None]
-    us_avg = sum(us_values) / len(us_values) if us_values else None
-    us_score = _classify_direction(us_avg)
-    us_detail = f"미국 대표지수 평균 {us_avg:+.2f}%" if us_avg is not None else "미국 대표지수 데이터 확인 필요"
-    layers.append({"key":"us_market","label":"미국 시장","score":us_score,"detail":us_detail})
-
-    # 업종 연결: SOXX가 있고 반도체/AI 관련성이 실제 감지될 때만 강하게 인정.
-    theme_info = _build_theme_breadth(formal_name, stock_news)
-    industry_score = 0
-    industry_detail = "해당 업종 직접 지표 확인 필요"
-    if soxx_r is not None and theme_info["theme"] in ("반도체", "AI"):
-        industry_score = _classify_direction(soxx_r)
-        industry_detail = f"{theme_info['theme']} 업종 대표 ETF SOXX {soxx_r:+.2f}%"
-    elif soxx_r is not None and "반도체" in _extract_news_text(stock_news).lower():
-        industry_score = _classify_direction(soxx_r)
-        industry_detail = f"반도체 관련 뉴스 + SOXX {soxx_r:+.2f}%"
-    layers.append({"key":"industry_global","label":"미국 업종","score":industry_score,"detail":industry_detail})
-
-    # 국내 시장
-    domestic_r = None
-    if market_name in ("국내주식", "국내증시"):
-        ref = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
-        if ref:
-            domestic_r = _movement_rate_to_float(ref.get("rate"))
-    domestic_score = _classify_direction(domestic_r)
-    domestic_detail = f"{market_index_name or '국내시장'} {domestic_r:+.2f}%" if domestic_r is not None else "국내시장 데이터 확인 필요"
-    layers.append({"key":"domestic_market","label":"국내 시장","score":domestic_score,"detail":domestic_detail})
-
-    # 환율: 현재 world_board에 KRW=X가 있을 때만 사용.
-    fx = _find_world_item(world_board, ["USD/KRW", "KRW=X", "원달러", "달러/원"])
-    fx_r = _movement_rate_to_float(fx.get("rate")) if fx else None
-    fx_score = _classify_direction(fx_r)
-    fx_detail = f"원/달러 {fx_r:+.2f}%" if fx_r is not None else "원/달러 데이터 확인 필요"
-    layers.append({"key":"fx","label":"환율","score":fx_score,"detail":fx_detail})
-
-    # 거시경제: 뉴스의 단순 언급은 점수화하지 않는다.
-    macro_signals = _detect_macro_signals(stock_news, global_news)
-    macro_snapshot = macro_snapshot or {}
-    macro_parts=[]
-    for key,label in [("us10y","미국 10년물"),("us2y","미국 2년물"),("fedfunds","연방기금금리"),("cpi","CPI"),("unemployment","실업률"),("payroll","비농업고용")]:
-        item=macro_snapshot.get(key)
-        if item and item.get("observations"):
-            obs=item["observations"][0]
-            macro_parts.append(f"{label} {obs['value']:,.2f} ({obs['date']})")
-    verified_macro=_verified_macro_event_snapshot(market_calendar)
-    if verified_macro:
-        top=verified_macro[0]
-        surprise=top.get("surprise_pct")
-        macro_score=2 if surprise is not None and surprise>0.5 else (-2 if surprise is not None and surprise<-0.5 else 1)
-        macro_detail=f"{top['name']} 실제 {top['actual']:g} vs 예상 {top['expected']:g} ({surprise:+.1f}%)" if surprise is not None else f"{top['name']} 실제값과 예상값 확인"
-    else:
-        macro_score=0
-        macro_detail=("실제 FRED 관측: "+" · ".join(macro_parts[:3])) if macro_parts else "발표된 실제값·예상값을 함께 확인할 수 있는 거시 이벤트 없음"
-    layers.append({"key":"macro","label":"세계경제·거시환경","score":macro_score,"detail":macro_detail,"signals":macro_signals,"verified_events":verified_macro,"fred":macro_snapshot})
-
-    # 실적: 실제 actual/estimate가 함께 있을 때만 강한 점수.
-    earnings_score=0
-    earnings_detail="실적 실제값과 예상값을 함께 확인할 수 없음"
-    earnings_event=_find_earnings_event(formal_name,symbol,market_calendar)
-    # STEP 13: 이미 optional 단계에서 수집한 실적 데이터를 재사용한다.
-    # 함수 내부에서 Alpha Vantage EARNINGS를 다시 호출하지 않는다.
-    if market_name == "미국주식":
-        alpha_earnings = alpha_earnings if isinstance(alpha_earnings, dict) else {}
-    else:
-        alpha_earnings = {}
-    if earnings_event:
-        a=_safe_float(earnings_event.get("actual_eps")); e=_safe_float(earnings_event.get("expected_eps"))
-        if (a is None or e is None) and alpha_earnings.get("quarterly"):
-            latest=alpha_earnings["quarterly"][0]
-            a=_safe_float(latest.get("actual_eps")); e=_safe_float(latest.get("expected_eps"))
-        if a is not None and e not in (None,0):
-            surprise=(a/e-1)*100
-            earnings_score=2 if surprise>=10 else (1 if surprise>0 else (-2 if surprise<=-10 else -1))
-            earnings_detail=f"EPS 실제 ${a:.2f} vs 예상 ${e:.2f} ({surprise:+.1f}%)"
-        else:
-            earnings_detail="실적 일정은 확인됐지만 실제값·예상값 동시 확인 불가"
-    elif alpha_earnings.get("quarterly"):
-        latest=alpha_earnings["quarterly"][0]
-        a=_safe_float(latest.get("actual_eps")); e=_safe_float(latest.get("expected_eps"))
-        if a is not None and e not in (None,0):
-            surprise=(a/e-1)*100
-            earnings_score=2 if surprise>=10 else (1 if surprise>0 else (-2 if surprise<=-10 else -1))
-            earnings_detail=f"최근 EPS 실제 ${a:.2f} vs 예상 ${e:.2f} ({surprise:+.1f}%)"
-    layers.append({"key":"earnings","label":"실적","score":earnings_score,"detail":earnings_detail,"event":earnings_event,"alpha_earnings":alpha_earnings})
-
-    # 기업 이벤트/공시
-    positive_disclosures = sum(1 for x in (dart_disclosures or []) if str(x.get("tag_type","")) == "positive")
-    negative_disclosures = sum(1 for x in (dart_disclosures or []) if str(x.get("tag_type","")) == "negative")
-    event_score = 2 if positive_disclosures > 0 else (-2 if negative_disclosures > 0 else 0)
-    event_detail = (
-        f"긍정 공시 {positive_disclosures}건" if positive_disclosures else
-        (f"부정 공시 {negative_disclosures}건" if negative_disclosures else "직접 공시 이벤트 제한적")
-    )
-    layers.append({"key":"event","label":"기업 이벤트","score":event_score,"detail":event_detail})
-
-    # 글로벌→국내 전파: 같은 방향 + 관련 업종까지 확인될 때만 강하게 인정.
-    transmission_score = 0
-    transmission_parts = []
-    if us_score != 0 and domestic_score != 0 and (us_score > 0) == (domestic_score > 0):
-        transmission_score += 2
-        transmission_parts.append("미국·국내 시장 방향 일치")
-    if industry_score != 0 and domestic_score != 0 and (industry_score > 0) == (domestic_score > 0):
-        transmission_score += 2
-        transmission_parts.append("미국 업종·국내 시장 방향 일치")
-    if fx_score != 0 and domestic_score != 0:
-        transmission_score += 1
-        transmission_parts.append("환율 변화도 확인")
-    transmission_detail = " · ".join(transmission_parts) if transmission_parts else "글로벌→국내 전파 근거 제한적"
-    layers.append({"key":"transmission","label":"글로벌→국내 연결","score":transmission_score,"detail":transmission_detail})
-
-    market_information = build_market_information(global_news)
-
-    return {
-        "layers": layers,
-        "market_information": market_information,
-        "total_score": sum(int(x["score"]) for x in layers),
-        "theme": theme_info,
-        "macro_signals": macro_signals,
-        "transmission_score": transmission_score,
-        "summary": " → ".join([x["detail"] for x in layers if x.get("score",0) != 0][:3]) or "확인된 글로벌 연결 근거가 제한적입니다.",
-    }
-
-
-
-from market_information import build_market_information
-
-
-def analyze_movement_reason(raw_price, df, formal_name, market_name, world_board, stock_news, dart_disclosures, market_index_name=None, domestic_flow=None, global_news=None, consensus=None, macro_snapshot=None, market_calendar=None, symbol="", alpha_earnings=None):
-    """실제 확보된 데이터의 강도를 비교해 가장 설득력 있는 움직임 원인을 선택한다.
-
-    STEP 13: 호출자가 이미 확보한 Alpha Vantage 실적 데이터를 재사용한다.
-    분석 함수 내부에서 동일 심볼의 EARNINGS API를 다시 호출하지 않는다.
-    """
-    reasons = []
-
-    # 1. 시장
-    market_score = 0
-    market_detail = "시장 영향 확인 필요"
-    kospi = _find_world_item(world_board, ["코스피"])
-    kosdaq = _find_world_item(world_board, ["코스닥"])
-    qqq = _find_world_item(world_board, ["QQQ"])
-    spy = _find_world_item(world_board, ["SPY"])
-
-    if market_name in ("국내주식", "국내증시"):
-        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else "KOSPI"
-        ref = kospi if selected_index == "KOSPI" else kosdaq
-        if ref:
-            rate = _movement_rate_to_float(ref.get("rate"))
-            if rate is not None:
-                if rate >= 1.0: market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
-                elif rate >= 0.3: market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
-                elif rate <= -1.0: market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
-                elif rate <= -0.3: market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
-                else: market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
-    elif market_name == "미국주식":
-        ref = qqq if qqq and qqq.get("rate") != "-" else spy
-        if ref:
-            rate = _movement_rate_to_float(ref.get("rate"))
-            if rate is not None:
-                if rate >= 1.0: market_score, market_detail = 2, f"{ref.get('name')} 강세 ({rate:+.2f}%)"
-                elif rate >= 0.3: market_score, market_detail = 1, f"{ref.get('name')} 상승 ({rate:+.2f}%)"
-                elif rate <= -1.0: market_score, market_detail = -2, f"{ref.get('name')} 약세 ({rate:+.2f}%)"
-                elif rate <= -0.3: market_score, market_detail = -1, f"{ref.get('name')} 하락 ({rate:+.2f}%)"
-                else: market_detail = f"{ref.get('name')} 보합 ({rate:+.2f}%)"
-    elif market_name == "암호화폐":
-        if df is not None and len(df) >= 2:
-            try:
-                prev_close = float(df["Close"].iloc[-2])
-                current_close = float(df["Close"].iloc[-1])
-                rate = ((current_close / prev_close) - 1.0) * 100.0 if prev_close else 0.0
-                label = formal_name or symbol or "코인"
-                if rate >= 1.0: market_score, market_detail = 2, f"{label} 시장 강세 ({rate:+.2f}%)"
-                elif rate >= 0.3: market_score, market_detail = 1, f"{label} 시장 상승 ({rate:+.2f}%)"
-                elif rate <= -1.0: market_score, market_detail = -2, f"{label} 시장 약세 ({rate:+.2f}%)"
-                elif rate <= -0.3: market_score, market_detail = -1, f"{label} 시장 하락 ({rate:+.2f}%)"
-                else: market_detail = f"{label} 시장 보합 ({rate:+.2f}%)"
-            except Exception:
-                pass
-    else:
-        market_detail = "시장 공통 요인 영향 낮음"
-
-    reasons.append({"key":"market","label":"시장","score":market_score,"detail":market_detail})
-
-    # 2. 업종/테마
-    theme, theme_hits = _detect_theme(formal_name, stock_news)
-    theme_score = 0
-    theme_detail = "뚜렷한 테마 근거 없음"
-    if theme:
-        sector_rate = None
-        if theme in ("반도체", "AI"):
-            soxx = _find_world_item(world_board, ["SOXX"])
-            if soxx:
-                sector_rate = _movement_rate_to_float(soxx.get("rate"))
-        if sector_rate is not None:
-            if sector_rate >= 1.0: theme_score, theme_detail = 2, f"{theme} 업종 강세 · SOXX {sector_rate:+.2f}%"
-            elif sector_rate >= 0.3: theme_score, theme_detail = 1, f"{theme} 업종 동반 상승 · SOXX {sector_rate:+.2f}%"
-            elif sector_rate <= -1.0: theme_score, theme_detail = -2, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
-            elif sector_rate <= -0.3: theme_score, theme_detail = -1, f"{theme} 업종 약세 · SOXX {sector_rate:+.2f}%"
-            else: theme_detail = f"{theme} 테마 감지 · 업종 움직임 제한적"
-        else:
-            # 단순 키워드 감지는 약한 증거로만 취급한다.
-            theme_score = 1 if theme_hits >= 2 else 0
-            theme_detail = f"{theme} 관련 키워드 {theme_hits}건 감지"
-
-    reasons.append({"key":"theme","label":"업종·테마","score":theme_score,"detail":theme_detail,"theme_hits":theme_hits})
-
-    # 3. 기업 재료
-    # 여러 뉴스채널에서 반복되는 공통 주제를 먼저 찾고, 단일 기사만으로는 강한 재료로 인정하지 않는다.
-    clustered_material = build_clustered_material_evidence(stock_news, formal_name, symbol)
-    news_evidence = []
-    for n in clustered_material.get("evidence", []):
-        pol = _news_polarity(n)
-        news_evidence.append({
-            "title": str(n.get("title", "")),
-            "type": "positive" if pol > 0 else "negative" if pol < 0 else "neutral",
-            "keywords": _news_tokens(str(n.get("title", "")))[:5],
-            "media": str(n.get("media") or n.get("source") or "")
-        })
-
-    disclosure_positive = 0
-    disclosure_negative = 0
-    for item in (dart_disclosures or []):
-        tag_type = str(item.get("tag_type", ""))
-        if tag_type == "positive": disclosure_positive += 1
-        elif tag_type == "negative": disclosure_negative += 1
-
-    material_score = int(clustered_material.get("score", 0))
-    # 공시는 독립적인 1차 근거이므로 뉴스 클러스터가 없을 때도 보조한다.
-    if material_score == 0 and disclosure_positive > disclosure_negative:
-        material_score = 1
-    elif material_score == 0 and disclosure_negative > disclosure_positive:
-        material_score = -1
-    material_detail = clustered_material.get("detail", "반복적으로 확인되는 핵심 뉴스 재료 없음")
-    if disclosure_positive or disclosure_negative:
-        material_detail += f" · 공시 호재 {disclosure_positive}건/악재 {disclosure_negative}건"
-
-    reasons.append({"key":"material","label":"기업 재료","score":material_score,"detail":material_detail,"news_clusters":clustered_material.get("clusters",[])})
-
-    # 4. 거래량
-    flow_score = 0
-    flow_detail = "거래량 변화 제한적"
-    price_change = None
-    volume_ratio = None
-    try:
-        if df is not None and len(df) >= 6:
-            close = df["Close"].astype(float)
-            volume = df["Volume"].astype(float)
-            current_close = float(close.iloc[-1])
-            previous_close = float(close.iloc[-2])
-            current_volume = float(volume.iloc[-1])
-            avg_volume = float(volume.tail(6).iloc[:-1].mean())
-            price_change = ((current_close - previous_close) / previous_close) * 100 if previous_close else 0
-            volume_ratio = (current_volume / avg_volume) * 100 if avg_volume > 0 else 100
-            if price_change >= 1.0 and volume_ratio >= 150:
-                flow_score, flow_detail = 2, f"상승 +{price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
-            elif price_change >= 0.3 and volume_ratio >= 120:
-                flow_score, flow_detail = 1, f"상승 +{price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
-            elif price_change <= -1.0 and volume_ratio >= 150:
-                flow_score, flow_detail = -2, f"하락 {price_change:.2f}% + 거래량 {volume_ratio:.0f}%"
-            elif price_change <= -0.3 and volume_ratio >= 120:
-                flow_score, flow_detail = -1, f"하락 {price_change:.2f}% · 거래량 {volume_ratio:.0f}%"
-            else:
-                flow_detail = f"거래량 {volume_ratio:.0f}%"
-    except Exception:
-        pass
-    reasons.append({"key":"volume","label":"거래량","score":flow_score,"detail":flow_detail})
-
-    # 5. 거래대금
-    tv_score = 0
-    tv_detail = domestic_flow.get("trading_value_detail", "거래대금 데이터 확인 필요") if domestic_flow else "거래대금 데이터 확인 필요"
-    tv_ratio = None
-    try:
-        if domestic_flow and domestic_flow.get("trading_value") is not None and df is not None and len(df) >= 21:
-            tv = float(domestic_flow["trading_value"])
-            close_s = df["Close"].astype(float)
-            vol_s = df["Volume"].astype(float)
-            proxy = close_s * vol_s
-            avg_proxy = float(proxy.tail(21).iloc[:-1].mean())
-            tv_ratio = (tv / avg_proxy) if avg_proxy > 0 else 0.0
-            # 거래대금은 실제 급증 + 가격 방향이 같이 있을 때 강한 원인으로 인정.
-            if tv_ratio >= 2.0 and flow_score > 0: tv_score = 2
-            elif tv_ratio >= 1.2 and flow_score > 0: tv_score = 1
-            elif tv_ratio >= 2.0 and flow_score < 0: tv_score = -2
-            elif tv_ratio >= 1.2 and flow_score < 0: tv_score = -1
-            tv_detail += f" · 평소 대비 약 {tv_ratio*100:.0f}%" if tv_ratio > 0 else ""
-    except Exception:
-        pass
-    reasons.append({"key":"trading_value","label":"거래대금","score":tv_score,"detail":tv_detail})
-
-    # 6. 외국인 수급
-    foreign_score = 0
-    foreign_detail = domestic_flow.get("foreigner_detail", "외국인 수급 데이터 확인 필요") if domestic_flow else "외국인 수급 데이터 확인 필요"
-    if domestic_flow and domestic_flow.get("foreigner_5d") is not None:
-        try:
-            v = float(domestic_flow["foreigner_5d"])
-            latest = domestic_flow.get("foreigner_latest")
-            foreign_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
-        except Exception:
-            pass
-    reasons.append({"key":"foreign","label":"외국인 수급","score":foreign_score,"detail":foreign_detail})
-
-    # 7. 기관 수급
-    institution_score = 0
-    institution_detail = domestic_flow.get("institution_detail", "기관 수급 데이터 확인 필요") if domestic_flow else "기관 수급 데이터 확인 필요"
-    if domestic_flow and domestic_flow.get("institution_5d") is not None:
-        try:
-            v = float(domestic_flow["institution_5d"])
-            latest = domestic_flow.get("institution_latest")
-            institution_score = 2 if v > 0 and latest is not None and float(latest) > 0 else (1 if v > 0 else (-2 if v < 0 and latest is not None and float(latest) < 0 else (-1 if v < 0 else 0)))
-        except Exception:
-            pass
-    reasons.append({"key":"institution","label":"기관 수급","score":institution_score,"detail":institution_detail})
-
-    # 8. 최근 5거래일 시장 흐름
-    market5 = None
-    if market_name in ("국내주식", "국내증시") and market_index_name in ("KOSPI", "KOSDAQ"):
-        ref5 = _find_world_item(world_board, ["코스피" if market_index_name == "KOSPI" else "코스닥"])
-        market5 = fetch_naver_index_5day_returns(market_index_name, ref5)
-    elif market_name == "미국주식":
-        ref5 = _find_world_item(world_board, ["QQQ"])
-        market5 = fetch_market_5day_returns_from_symbol("QQQ", "NASDAQ", ref5)
-    elif market_name == "암호화폐":
-        market5 = fetch_market_5day_returns_from_df(df, formal_name or symbol or "Crypto")
-
-    if market5:
-        market5_score = int(market5["score"])
-        market5_detail = market5["detail"]
-        market5_points = market5["points"]
-    else:
-        market5_score = 0
-        selected_index = market_index_name if market_index_name in ("KOSPI", "KOSDAQ") else ("NASDAQ" if market_name == "미국주식" else (formal_name or symbol or "시장"))
-        market5_detail = f"{selected_index} 최근 5거래일 데이터 확인 필요"
-        market5_points = []
-
-    reasons.append({
-        "key":"market_5d","label":"시장 5일 흐름","score":market5_score,
-        "detail":market5_detail,"chart_points":market5_points,
-        "total_return":market5.get("total_return") if market5 else None,
-        "source":market5.get("source") if market5 else None,
-        "index_name":market5.get("index_name") if market5 else selected_index
-    })
-
-    # ----------------------------------------------------
-    # 핵심: "먼저 걸리는 조건"이 아니라 실제 강도를 비교한다.
-    # 상승/하락 방향을 가격 움직임과 맞춰 원인 후보를 평가한다.
-    # ----------------------------------------------------
-    move_direction = 1
-    try:
-        if price_change is not None and price_change < 0:
-            move_direction = -1
-    except Exception:
-        pass
-
-    positive_count = sum(1 for x in reasons if x["score"] > 0)
-    negative_count = sum(1 for x in reasons if x["score"] < 0)
-    evidence_count = sum(1 for x in reasons if x["score"] != 0)
-    total_score = sum(int(x["score"]) for x in reasons)
-
-    # 실제 원인 선택용 보너스.
-    candidate_scores = {}
-    for r in reasons:
-        s = int(r["score"])
-        # 현재 주가 방향과 반대인 신호는 "원인"으로 선택하지 않도록 감점.
-        directional = s * move_direction
-        candidate_scores[r["key"]] = directional
-
-    # 강한 근거가 있는 항목에만 보너스를 주되, 단순 키워드 테마는 과대평가하지 않는다.
-    if material_score > 0:
-        candidate_scores["material"] += 1 if material_score >= 2 else 0
-    if foreign_score > 0 and institution_score > 0:
-        candidate_scores["foreign"] += 1
-        candidate_scores["institution"] += 1
-    if tv_score > 0 and flow_score > 0:
-        candidate_scores["trading_value"] += 1
-    if theme_score > 0 and theme_hits >= 2:
-        candidate_scores["theme"] += 1
-
-    # 실제 상승/하락을 설명할 수 있는 양(+)의 후보만 선택.
-    positive_candidates = [(k,v) for k,v in candidate_scores.items() if v > 0]
-    if positive_candidates:
-        max_candidate = max(v for _, v in positive_candidates)
-        top_keys = [k for k,v in positive_candidates if v == max_candidate]
-    else:
-        top_keys = []
-
-    # 재료 > 양매수 수급 > 거래대금/거래량 > 테마 > 시장 순의 tie-break.
-    priority = {
-        "material": 7,
-        "foreign": 6,
-        "institution": 6,
-        "trading_value": 5,
-        "volume": 4,
-        "theme": 3,
-        "market": 2,
-        "market_5d": 1,
-    }
-    main_key = max(top_keys, key=lambda k: priority.get(k,0)) if top_keys else None
-
-    # 양매수 수급은 하나의 원인으로 묶는다.
-    if foreign_score > 0 and institution_score > 0 and main_key in ("foreign","institution"):
-        main_key = "flow_pair"
-
-    # 재료가 약하고 거래가 매우 강하면 거래대금/거래량을 우선.
-    if main_key == "material" and material_score == 1:
-        if tv_score >= 2:
-            main_key = "trading_value"
-        elif flow_score >= 2:
-            main_key = "volume"
-
-    main_label_map = {
-        "material":"기업 재료","flow_pair":"외국인·기관 수급",
-        "foreign":"외국인 수급","institution":"기관 수급",
-        "trading_value":"거래대금","volume":"거래량",
-        "theme":"업종·테마","market":"시장","market_5d":"시장 5일 흐름"
-    }
-    main_reason = main_label_map.get(main_key, "-")
-
-    # 상승/하락 방향은 전체 점수로 판단하되, 혼조이면 실제 가격 방향을 사용한다.
-    direction = "상승" if total_score >= 4 else ("하락" if total_score <= -4 else ("상승" if move_direction > 0 and raw_price is not None else "혼조"))
-    confidence = "높음" if evidence_count >= 4 else ("중간" if evidence_count >= 2 else "낮음")
-
-    if main_reason != "-":
-        if direction == "상승":
-            summary = f"{main_reason} 신호가 가장 강하게 잡혔고, 실제 움직임과 함께 확인됩니다."
-        elif direction == "하락":
-            summary = f"{main_reason} 쪽 약세 신호가 가장 강하게 잡혔고, 실제 움직임과 함께 확인됩니다."
-        else:
-            summary = f"{main_reason} 신호가 가장 눈에 띄지만 다른 근거와 엇갈리는 부분도 있습니다."
-    else:
-        summary = "현재 확보된 데이터만으로는 특정 원인을 우선순위 높게 선택하기 어렵습니다."
-
-    global_impact = analyze_global_impact(
-        formal_name=formal_name,
-        market_name=market_name,
-        world_board=world_board,
-        stock_news=stock_news,
-        global_news=global_news,
-        dart_disclosures=dart_disclosures,
-        df=df,
-        domestic_flow=domestic_flow,
-        market_index_name=market_index_name,
-        consensus=consensus,
-        macro_snapshot=macro_snapshot,
-        market_calendar=market_calendar,
-        symbol=symbol,
-        alpha_earnings=alpha_earnings
-    )
-
-    # 직접 공시/재료가 없고 글로벌 전파가 충분히 강할 때만 글로벌 원인을 보조 주원인으로 선택.
-    if global_impact["total_score"] >= 5 and global_impact.get("transmission_score", 0) >= 2 and main_key in (None, "market", "market_5d", "theme"):
-        main_key = "global_impact"
-        main_reason = "글로벌·국내 연결"
-        summary = f"{global_impact['transmission_score']}단계 연결 근거가 확인됩니다."
-
-    return {
-        "direction": direction,
-        "confidence": confidence,
-        "total_score": total_score,
-        "main_reason": main_reason,
-        "main_reason_key": main_key,
-        "global_impact": global_impact,
-        "summary": summary,
-        "reasons": reasons,
-        "news_evidence": news_evidence[:5]
-    }
-
-# ----------------------------------------------------
-# 6. 전체 통합 파이프라인
-# ----------------------------------------------------
-# STEP 13: 분석 함수 간 데이터 재사용
-# optional 단계에서 수집한 Alpha Vantage 실적 데이터를 movement 분석에
-# 그대로 전달해 동일 종목의 EARNINGS 재호출을 제거한다.
-def _safe_future_result(future, default, label, timeout=None):
-    """외부 API 하나가 실패해도 전체 /api/analyze가 500으로 끝나지 않게 한다."""
-    if future is None:
-        return default
-    try:
-        if timeout is None:
-            return future.result()
-        return future.result(timeout=max(0.0, float(timeout)))
-    except Exception as exc:
-        print(f"[OPTIONAL API] {label} failed/timeout: {type(exc).__name__}: {exc}")
-        return default
-
-
-def _collect_optional_results(futures, timeout=OPTIONAL_API_SOFT_TIMEOUT):
-    """Optional API들을 한 번에 시작하고, 전체 대기시간만 제한한다.
-
-    timeout을 넘긴 future는 취소하지 않는다. 해당 작업은 worker에서 계속 실행되어
-    각 함수의 공용 캐시를 채우고, 다음 사용자 요청은 캐시 결과를 즉시 사용한다.
-    """
-    if not futures:
-        return {}
-    deadline = time.monotonic() + max(0.0, float(timeout))
-    pending = set(f for f in futures.values() if f is not None)
-    results = {}
-    while pending:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            break
-        done, pending = wait(pending, timeout=remaining)
-        for future in done:
-            for name, candidate in futures.items():
-                if candidate is future:
-                    try:
-                        results[name] = future.result()
-                    except Exception as exc:
-                        print(f"[OPTIONAL API] {name} failed: {type(exc).__name__}: {exc}")
-                        results[name] = None
-                    break
-    for name, future in futures.items():
-        if name in results:
-            continue
-        results[name] = None
-        if future is not None and not future.done():
-            print(f"[OPTIONAL API] {name} background refresh continues")
-    return results
-
-
-def _schedule_analysis_enrichment(cache_key, base_result, context):
-    """핵심 응답 이후 선택 외부 데이터를 백그라운드에서 채워 캐시를 완성한다."""
-    with ANALYSIS_ENRICH_LOCK:
-        if cache_key in ANALYSIS_ENRICHING:
-            return
-        ANALYSIS_ENRICHING.add(cache_key)
-
-    def worker():
-        try:
-            market_name = context["market_name"]
-            symbol = context["symbol"]
-            formal_name = context["formal_name"]
-            raw_price = context["raw_price"]
-            is_krw = context["is_krw"]
-            market_index_name = context.get("market_index_name")
-            if market_index_name is None and market_name == "국내주식":
-                market_index_name = _get_cached_domestic_market_type(symbol)
-                if market_index_name is None:
-                    market_index_name = _refresh_domestic_market_type(symbol)
-            df = context["df"]
-
-            optional_futures = {
-                "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
-                "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
-                "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
-                "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
-                "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
-                "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
-                "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
-                "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
-                "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
-            }
-
-            # details 단계에서는 모든 외부 API를 무한정 기다리지 않는다.
-            # 느린 API 하나 때문에 뉴스/컨센서스/트랙 전체가 영원히 '불러오는 중'으로
-            # 남는 문제를 막기 위해 최대 10초까지만 기다리고, 준비된 결과부터 사용한다.
-            optional_results = {}
-            active_futures = {name: future for name, future in optional_futures.items() if future is not None}
-            if active_futures:
-                done, pending = wait(
-                    set(active_futures.values()),
-                    timeout=ANALYSIS_ENRICH_WAIT,
-                )
-                for name, future in active_futures.items():
-                    if future not in done:
-                        optional_results[name] = None
-                        print(f"[ANALYSIS ENRICH] {name} still running after {ANALYSIS_ENRICH_WAIT:.1f}s")
-                        continue
-                    try:
-                        optional_results[name] = future.result()
-                    except Exception as exc:
-                        print(f"[ANALYSIS ENRICH] {name} failed: {type(exc).__name__}: {exc}")
-                        optional_results[name] = None
-            for name, future in optional_futures.items():
-                if future is None:
-                    optional_results[name] = None
-
-            stock_news = merge_news_sources(optional_results.get("stock_news_rss") or [], optional_results.get("ticker_news") or [])
-            global_news = merge_news_sources(optional_results.get("global_news_rss") or [], optional_results.get("api_news") or [])
-            macro_snapshot = optional_results.get("macro_snapshot") or {}
-            consensus = optional_results.get("consensus")
-            if consensus is None:
-                consensus = base_result.get("consensus") or {
-                    "title": "애널리스트 컨센서스",
-                    "gauge_val": "-",
-                    "gauge_label": "확인 의견",
-                    "status_label": "데이터 확인 필요",
-                    "badge_text": "실제 데이터만 표시",
-                    "dots": "실제 컨센서스 데이터를 확인할 수 없습니다.",
-                    "primary_label": "평균 목표가",
-                    "primary_val": "실제 목표가 데이터 없음",
-                    "secondary_label": "현재가",
-                    "secondary_val": f"{raw_price:,.2f}" if raw_price else "-",
-                    "slider_left": f"{raw_price:,.2f}" if raw_price else "-",
-                    "slider_mid": "실제 목표가 확인 필요",
-                    "slider_right": "-",
-                    "fill_pct": 50,
-                    "list_title": "실제 애널리스트 의견",
-                    "source_tag": "실제 컨센서스 데이터 확인 필요",
-                    "items": []
-                }
-            alpha_earnings = optional_results.get("alpha_earnings") or {}
-            dart_disclosures = optional_results.get("dart_disclosures") or []
-            domestic_flow = optional_results.get("domestic_flow")
-            world_board = CACHED_WORLD_BOARD or []
-            market_calendar = CACHED_MARKET_CALENDAR or []
-
-            try:
-                movement_reason = analyze_movement_reason(
-                    raw_price=raw_price, df=df, formal_name=formal_name, market_name=market_name,
-                    world_board=world_board, stock_news=stock_news, dart_disclosures=dart_disclosures,
-                    market_index_name=market_index_name, domestic_flow=domestic_flow, global_news=global_news,
-                    consensus=consensus, macro_snapshot=macro_snapshot, market_calendar=market_calendar, symbol=symbol,
-                    alpha_earnings=alpha_earnings
-                )
-            except Exception as exc:
-                print("[ANALYSIS ENRICH][MOVEMENT] 오류:", repr(exc))
-                movement_reason = base_result.get("movement_reason")
-
-            enriched = dict(base_result)
-            enriched.update({
-                "stock_news": stock_news, "global_news": global_news, "macro_snapshot": macro_snapshot,
-                "consensus": consensus, "dart_disclosures": dart_disclosures, "domestic_flow": domestic_flow,
-                "movement_reason": movement_reason, "world_board": world_board, "market_calendar": market_calendar,
-                "_details_ready": True,
-            })
-            ANALYSIS_CACHE[cache_key] = (time.time(), enriched)
-            with ANALYSIS_ENRICH_LOCK:
-                ANALYSIS_ENRICH_CONTEXT.pop(cache_key, None)
-            print(f"[ANALYSIS ENRICH] {cache_key} details ready")
-        except Exception as exc:
-            print(f"[ANALYSIS ENRICH] {cache_key} failed: {type(exc).__name__}: {exc}")
-        finally:
-            with ANALYSIS_ENRICH_LOCK:
-                ANALYSIS_ENRICHING.discard(cache_key)
-
-    # 재검색/새로고침으로 같은 core 캐시를 다시 읽더라도
-    # 이미 시작된 enrichment 작업의 실행 맥락을 잃지 않도록 보관한다.
-    with ANALYSIS_ENRICH_LOCK:
-        ANALYSIS_ENRICH_CONTEXT[cache_key] = context
-    ANALYSIS_ENRICH_EXECUTOR.submit(worker)
-
-
-def _run_full_pipeline_impl(query, lightweight=False):
-    global ANALYSIS_CACHE, CACHED_WORLD_BOARD, CACHED_MARKET_CALENDAR
-    clean_q = str(query or '').strip().replace(" ", "").upper()
-    instrument = resolve_instrument(query)
-    if not instrument:
-        return None
-    cache_key = instrument["key"]
-    now_ts = time.time()
-
-    _perf_stage("cache_check")
-
-    if cache_key in ANALYSIS_CACHE:
-        cached_time, cached_data = ANALYSIS_CACHE[cache_key]
-        if now_ts - cached_time < ANALYSIS_CORE_TTL and (lightweight or cached_data.get("_details_ready")):
-            # STEP 4: 세계시장 보드/시장 캘린더는 별도 API가 담당한다.
-            # 분석 캐시 응답에 현재 서버 캐시가 있으면 화면 호환성을 위해
-            # 붙여주되, 캐시가 없다고 해서 외부 API를 호출하지 않는다.
-            if CACHED_WORLD_BOARD:
-                cached_data["world_board"] = CACHED_WORLD_BOARD
-            if CACHED_MARKET_CALENDAR:
-                cached_data["market_calendar"] = CACHED_MARKET_CALENDAR
-
-            # core 캐시가 아직 enrichment 전이라면 기존 작업이 끝날 때까지
-            # 기다릴 수 있도록 context가 보관되어 있는지 확인한다.
-            # 새로고침/사이드바 재진입 때 core 결과를 다시 만들면서
-            # 뉴스·컨센서스·트랙 분석이 비어 있는 상태가 반복되는 것을 막는다.
-            if lightweight and not cached_data.get("_details_ready"):
-                with ANALYSIS_ENRICH_LOCK:
-                    enriching = cache_key in ANALYSIS_ENRICHING
-                    enrich_context = ANALYSIS_ENRICH_CONTEXT.get(cache_key)
-                if (not enriching) and enrich_context:
-                    _schedule_analysis_enrichment(cache_key, cached_data, enrich_context)
-            return cached_data
-
-    market_name = "국내주식"
-    market_index_name = None
-    is_krw = True
-
-    if instrument["market"] == "INDEX":
-        symbol = instrument["symbol"]
-        formal_name = instrument.get("name") or query.strip()
-
-        # 환율/글로벌 지수 조회 실패가 전체 검색을 멈추게 하지 않는다.
-        try:
-            curr_p, price_str, df = fetch_overseas_candles(symbol)
-        except Exception as exc:
-            print(f"[GLOBAL INDEX] {symbol} fetch failed: {exc}")
-            curr_p, price_str, df = None, "-", None
-
-        if symbol in ["^KS11", "^KQ11"]:
-            market_name = "국내증시"
-            market_index_name = "KOSPI" if symbol == "^KS11" else "KOSDAQ"
-            is_krw = True
-            price_str = f"{curr_p:,.2f} pt" if curr_p else "-"
-        elif symbol == "KRW=X":
-            market_name = "외환"
-            market_index_name = None
-            is_krw = False
-            price_str = f"{curr_p:,.1f} 원" if curr_p else "-"
-        elif symbol in ["CL=F", "GC=F"]:
-            market_name = "원자재"
-            market_index_name = None
-            is_krw = False
-            price_str = f"${curr_p:,.2f}" if curr_p else "-"
-        else:
-            market_name = "글로벌증시"
-            market_index_name = None
-            is_krw = False
-            price_str = f"${curr_p:,.2f}" if curr_p else "-"
-        raw_price = curr_p
-
-    elif instrument["market"] == "CRYPTO":
-        symbol = instrument["symbol"]
-        formal_name = instrument.get("name") or clean_q
-        raw_price, price_str, df = fetch_crypto_candles(symbol)
-        market_name = "암호화폐"
-        is_krw = False
-
-    elif instrument["market"] == "US":
-        symbol = instrument["symbol"]
-        formal_name = instrument.get("name") or query.strip()
-        # 차트와 실시간 시세는 서로 의존하지 않으므로 동시에 조회한다.
-        with ThreadPoolExecutor(max_workers=2) as price_executor:
-            chart_future = _perf_submit(price_executor, fetch_overseas_candles, symbol)
-            quote_future = _perf_submit(price_executor, fetch_overseas_quote_snapshot, symbol)
-            chart_price, _, df = chart_future.result()
-            quote_snapshot = quote_future.result()
-
-        # Yahoo 차트가 일시적으로 실패한 경우 DB에 과거 OHLCV가 있으면 즉시 복구한다.
-        if df is None or getattr(df, "empty", True):
-            try:
-                db_rows = get_db_recent_prices("US", str(symbol).strip().upper(), "1d", 400)
-                if isinstance(db_rows, list) and len(db_rows) >= 15:
-                    records = []
-                    for item in reversed(db_rows):
-                        try:
-                            records.append({
-                                "Date": pd.to_datetime(item.get("timestamp")),
-                                "Open": float(item.get("open")),
-                                "High": float(item.get("high")),
-                                "Low": float(item.get("low")),
-                                "Close": float(item.get("close")),
-                                "Volume": float(item.get("volume") or 0.0),
-                            })
-                        except Exception:
-                            continue
-                    if len(records) >= 15:
-                        df = pd.DataFrame(records).drop_duplicates(subset=["Date"]).set_index("Date").sort_index()
-                        chart_price = float(df["Close"].iloc[-1])
-                        print(f"[US DB FALLBACK] {symbol}: 저장된 {len(df)}건 사용")
-            except Exception as exc:
-                print(f"[US DB FALLBACK] {symbol} failed: {type(exc).__name__}: {exc}")
-
-        if isinstance(quote_snapshot, dict) and quote_snapshot.get("price") is not None:
-            try:
-                raw_price = float(quote_snapshot.get("price"))
-            except (TypeError, ValueError):
-                raw_price = chart_price
-            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
-        else:
-            raw_price = chart_price
-            price_str = f"{raw_price:,.2f} 달러" if raw_price is not None else None
-        market_name = "미국주식"
-        is_krw = False
-    else:
-        # canonical key(KR:005930)가 들어온 경우 다시 종목명 검색을 하지 않는다.
-        # 기존 코드처럼 find_stock_code(query)에 canonical 문자열을 넣으면
-        # "KR:000660" -> 국내 종목 코드 탐색 실패 -> /api/analyze 404가 발생할 수 있다.
-        # Resolver가 이미 확정한 symbol/name을 그대로 사용한다.
-        code = str(instrument.get("symbol") or "").strip().upper()
-        name = str(instrument.get("name") or "").strip()
-        if not code:
-            return None
-        symbol = code
-        formal_name = name or code
-
-        # STEP 9: 국내주식 가격/차트 관련 외부 호출을 병렬화한다.
-        # 기존에는 거래소 구분 → 실시간 가격 → 1200일 차트가 순차 실행되어
-        # 각 HTTP 지연시간이 합산됐다. 이제 세 작업을 동시에 시작하고 가장
-        # 늦게 끝나는 작업만 기다린다. 기존 데이터/기능은 그대로 유지한다.
-        # STEP 10: KOSPI/KOSDAQ 구분은 첫 화면의 가격/차트 계산에 필수적이지 않다.
-        # 캐시가 있으면 즉시 사용하고, 없으면 core 응답을 막지 않고 백그라운드에서 갱신한다.
-        market_index_name = _get_cached_domestic_market_type(symbol)
-        if market_index_name is None and not lightweight:
-            market_index_name = _perf_submit(PRICE_DATA_EXECUTOR, _refresh_domestic_market_type, symbol).result()
-        elif market_index_name is None:
-            _perf_submit(OPTIONAL_API_EXECUTOR, _refresh_domestic_market_type, symbol)
-
-        realtime_future = _perf_submit(PRICE_DATA_EXECUTOR, get_naver_realtime_price, symbol)
-        candle_future = _perf_submit(PRICE_DATA_EXECUTOR, fetch_domestic_candles, symbol, None)
-
-        raw_price, price_str = realtime_future.result()
-        df = candle_future.result()
-
-        # 실시간 가격이 없을 때만 차트 종가를 현재가 대체값으로 사용한다.
-        # anchor_price는 기존 함수 계약상 반환 후 보정이 필요할 수 있으므로
-        # 실시간 가격을 확보한 경우에만 기존과 동일하게 차트 데이터를 맞춘다.
-        if raw_price is None and df is not None and not df.empty:
-            raw_price = float(df['Close'].iloc[-1])
-            price_str = f"{int(raw_price):,} 원"
-        elif raw_price is not None and df is not None and not df.empty:
-            last_close = float(df['Close'].iloc[-1])
-            if last_close > 0 and abs(last_close - raw_price) / raw_price > 0.3:
-                ratio = raw_price / last_close
-                df = df.copy(deep=True)
-                df['Open'] *= ratio
-                df['High'] *= ratio
-                df['Low'] *= ratio
-                df['Close'] *= ratio
-
-    _perf_stage("price_chart")
-
-    if raw_price is None or df is None:
-        return None
-
-    # ====================================================
-    # PostgreSQL 원천 OHLCV 저장
-    # STEP 2: 사용자 응답 경로에서 DB 저장을 기다리지 않는다.
-    # 분석에 사용할 df가 이후 계산 과정에서 변경될 수 있으므로
-    # 백그라운드 작업에 넘길 복사본을 만든다.
-    # ====================================================
-    try:
-        db_price_df = df.copy(deep=True)
-        if isinstance(df.attrs.get("_gaemi_raw_df"), pd.DataFrame):
-            db_price_df.attrs["_gaemi_raw_df"] = df.attrs["_gaemi_raw_df"].copy(deep=True)
-
-        _submit_db_write(
-            ("market_prices", market_name, str(symbol), "1d"),
-            save_market_prices,
-            df=db_price_df,
-            market_name=market_name,
-            symbol=symbol,
-            timeframe="1d",
-            source="alpha-trade-bot",
-        )
-    except Exception as exc:
-        print(f"[DB ASYNC] 원천 OHLCV 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
-
-    # ====================================================
-    # STEP 8: /api/analyze 경량화
-    # core 모드에서는 선택 외부 데이터를 기다리지 않는다. 완료 작업은 백그라운드에서
-    # 캐시를 채우고, /api/analyze-details가 준비 여부를 알려준다.
-    # ====================================================
-    # STEP 8 FIX: core 모드에서도 아래 공통 처리부가 참조하므로
-    # optional_results를 항상 초기화한다. 기존 코드에서는 core 모드일 때
-    # optional_results가 정의되지 않아 UnboundLocalError가 발생했다.
-    optional_results = {}
-    if lightweight:
-        stock_news = []
-        global_news = []
-        api_news = []
-        macro_snapshot = {}
-        ticker_news = []
-        # STEP 19: STEP 4 원본에서 존재하던 애널리스트 컨센서스 카드가
-        # 경량(core) 응답 단계에서 사라지지 않도록 즉시 표시용 최소 객체를 유지한다.
-        # 실제 목표가/의견 데이터는 기존 백그라운드 enrichment가 완료되면 교체한다.
-        consensus = {
-            "title": "애널리스트 컨센서스",
-            "gauge_val": "-",
-            "gauge_label": "확인 의견",
-            "status_label": "데이터 불러오는 중",
-            "badge_text": "실제 데이터만 표시",
-            "dots": "실제 컨센서스 데이터를 확인하고 있습니다.",
-            "primary_label": "평균 목표가",
-            "primary_val": "확인 중…",
-            "secondary_label": "현재가",
-            "secondary_val": price_str if 'price_str' in locals() else (f"{raw_price:,.2f}" if raw_price else "-"),
-            "slider_left": "-",
-            "slider_mid": "실제 목표가 확인 중",
-            "slider_right": "-",
-            "fill_pct": 50,
-            "list_title": "실제 애널리스트 의견",
-            "source_tag": "실제 데이터 조회 중",
-            "items": []
-        }
-        alpha_earnings = {}
-        dart_disclosures = []
-        domestic_flow = None
-        _perf_stage("optional_external_skipped")
-    else:
-        optional_futures = {
-            "stock_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_stock_news, symbol, market_name, formal_name, 20),
-            "global_news_rss": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_finlight_economic_news, market_name, 20),
-            "api_news": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol if market_name == "미국주식" else "", "economy_macro"),
-            "macro_snapshot": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_fred_macro_snapshot),
-            "consensus": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_market_consensus_unified, symbol, market_name, raw_price, formal_name),
-            "alpha_earnings": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_earnings, symbol) if market_name == "미국주식" and symbol else None),
-            "dart_disclosures": _perf_submit(OPTIONAL_API_EXECUTOR, fetch_dart_disclosures, symbol, is_krw, 5),
-            "domestic_flow": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_naver_domestic_flow_metrics, symbol) if is_krw and market_name == "국내주식" else None),
-            "ticker_news": (_perf_submit(OPTIONAL_API_EXECUTOR, fetch_alpha_vantage_news, symbol, "") if market_name == "미국주식" and symbol else None),
-        }
-        optional_results = _collect_optional_results(optional_futures)
-        _perf_stage("optional_external")
-        stock_news = merge_news_sources(optional_results.get("stock_news_rss") or [], optional_results.get("ticker_news") or [])
-        global_news = merge_news_sources(optional_results.get("global_news_rss") or [], optional_results.get("api_news") or [])
-        macro_snapshot = optional_results.get("macro_snapshot") or {}
-        ticker_news = optional_results.get("ticker_news") or []
-        consensus = optional_results.get("consensus")
-        alpha_earnings = optional_results.get("alpha_earnings") or {}
-        dart_disclosures = optional_results.get("dart_disclosures") or []
-        domestic_flow = optional_results.get("domestic_flow")
-
-
-    # STEP 20: core 모드에서 만든 즉시 표시용 기본값을 공통 처리부가
-    # 다시 None/빈 값으로 덮어쓰지 않도록 한다.
-    # full 모드에서는 기존처럼 optional_results의 실제 데이터를 사용한다.
-    stock_news_rss = optional_results.get("stock_news_rss") or []
-    global_news_rss = optional_results.get("global_news_rss") or []
-    api_news = optional_results.get("api_news") or []
-    macro_snapshot = optional_results.get("macro_snapshot") or {}
-    ticker_news = optional_results.get("ticker_news") or []
-
-    # 종목 재료와 거시/시장 뉴스를 섞지 않는다.
-    stock_news = merge_news_sources(stock_news_rss, ticker_news)
-    global_news = merge_news_sources(global_news_rss, api_news)
-
-    # 미국주식은 영어 원문 제목 대신 한국어 제목을 표시한다.
-    # 원문 링크/언론사/발행일은 그대로 유지한다.
-    if market_name == "미국주식":
-        stock_news = translate_news_titles_to_korean(stock_news[:20], market_name)
-        global_news = translate_news_titles_to_korean(global_news[:20], market_name)
-
-    if not lightweight:
-        consensus = optional_results.get("consensus")
-        alpha_earnings = optional_results.get("alpha_earnings") or {}
-        dart_disclosures = optional_results.get("dart_disclosures") or []
-        domestic_flow = optional_results.get("domestic_flow")
-
-    # ====================================================
-    # STEP 4: 세계시장 보드 / 시장 캘린더를 분석 API에서 분리
-    # ====================================================
-    # /api/analyze가 최초 호출될 때 10개 세계시장 + 실적/경제 캘린더를
-    # 기다리지 않는다. 이미 별도 API가 채워둔 서버 캐시가 있다면 사용하고,
-    # 없으면 빈 배열로 분석을 진행한다. 화면에서는 별도 API가 병렬로 로딩한다.
-    world_board = CACHED_WORLD_BOARD or []
-    market_calendar = CACHED_MARKET_CALENDAR or []
-
-    quant = calculate_quant_factors(raw_price, df, symbol=symbol, is_krw=is_krw)
-    _perf_stage("quant")
-
-    try:
-        # 퀀트 결과도 응답을 막지 않도록 백그라운드 저장한다.
-        db_quant_df = df.copy(deep=True)
-        db_quant_payload = dict(quant) if isinstance(quant, dict) else quant
-
-        _submit_db_write(
-            ("quant_results", market_name, str(symbol), "1d"),
-                    market_name=market_name,
-            symbol=symbol,
-            raw_price=raw_price,
-            df=db_quant_df,
-            quant=db_quant_payload,
-            timeframe="1d",
-        )
-    except Exception as exc:
-        print(f"[DB ASYNC] 퀀트 결과 작업 등록 예외 - 기존 분석 계속: {type(exc).__name__}: {exc}")
-
-    _perf_stage("movement_reason_start")
-    try:
-        movement_reason = analyze_movement_reason(
-        raw_price=raw_price,
-        df=df,
-        formal_name=formal_name,
-        market_name=market_name,
-        world_board=world_board,
-        stock_news=stock_news,
-        dart_disclosures=dart_disclosures,
-        market_index_name=market_index_name,
-        domestic_flow=domestic_flow,
-        global_news=global_news,
-        consensus=consensus,
-        macro_snapshot=macro_snapshot,
-        market_calendar=market_calendar,
-        symbol=symbol,
-        alpha_earnings=alpha_earnings
-        )
-    except Exception as exc:
-        print("[MOVEMENT] 분석 엔진 오류:", repr(exc))
-        movement_reason = {
-            "direction": "상승",
-            "confidence": "낮음",
-            "total_score": 0,
-            "main_reason": "-",
-            "main_reason_key": None,
-            "global_impact": {"layers": [], "total_score": 0, "transmission_score": 0, "summary": "분석 근거 부족"},
-            "summary": "일부 외부 데이터가 없어 원인을 확정하기 어렵습니다.",
-            "reasons": [],
-            "news_evidence": []
-        }
-
-    _perf_stage("movement_reason")
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S KST")
-
-    df['MA20'] = df['Close'].rolling(20).mean()
-    df['MA60'] = df['Close'].rolling(60).mean()
-    df['STD60'] = df['Close'].rolling(60).std()
-    df['BB_UP'] = df['MA60'] + (df['STD60'] * 2)
-    df['BB_DN'] = df['MA60'] - (df['STD60'] * 2)
-
-    df = df.sort_index()
-    df = df[~df.index.duplicated(keep='last')]
-
-    _perf_stage("chart_build_start")
-    candles = []
-    ma20_line = []
-    ma60_line = []
-    bb_up_line = []
-    bb_dn_line = []
-
-    for date_idx, row in df.tail(65).iterrows():
-        t_str = pd.to_datetime(date_idx).strftime("%Y-%m-%d") if hasattr(date_idx, 'strftime') else str(date_idx)[:10]
-        o = float(row['Open'])
-        h = float(row['High'])
-        l = float(row['Low'])
-        c = float(row['Close'])
-        if not (np.isnan(o) or np.isnan(h) or np.isnan(l) or np.isnan(c)):
-            volume_value = 0.0
-            try:
-                if 'Volume' in row.index and pd.notna(row['Volume']):
-                    volume_value = max(0.0, float(row['Volume']))
-                elif 'volume' in row.index and pd.notna(row['volume']):
-                    volume_value = max(0.0, float(row['volume']))
-            except Exception:
-                volume_value = 0.0
-            candles.append({
-                "time": t_str,
-                "open": o, "high": h,
-                "low": l, "close": c,
-                "volume": volume_value
-            })
-        if 'MA20' in row and not np.isnan(row['MA20']):
-            ma20_line.append({"time": t_str, "value": float(row['MA20'])})
-        if 'MA60' in row and not np.isnan(row['MA60']):
-            ma60_line.append({"time": t_str, "value": float(row['MA60'])})
-        if 'BB_UP' in row and not np.isnan(row['BB_UP']):
-            bb_up_line.append({"time": t_str, "value": float(row['BB_UP'])})
-        if 'BB_DN' in row and not np.isnan(row['BB_DN']):
-            bb_dn_line.append({"time": t_str, "value": float(row['BB_DN'])})
-
-    _perf_stage("chart_build")
-
-    # 코멘트용 현재가/등락률은 가능하면 동일한 실시간 Snapshot을 사용한다.
-    current_change_pct = None
-    current_session = None
-    current_previous_close = None
-    current_price_source = None
-    if market_name == "미국주식":
-        try:
-            if 'quote_snapshot' in locals() and quote_snapshot:
-                current_change_pct = quote_snapshot.get("change_pct")
-                current_session = quote_snapshot.get("market_state")
-                current_previous_close = quote_snapshot.get("previous_close")
-                current_price_source = quote_snapshot.get("price_source")
-        except Exception:
-            pass
-
-    # 국내/암호화폐/기존 데이터는 차트의 직전 종가를 이용해 보조적으로 계산한다.
-    if current_change_pct is None and df is not None and len(df) >= 2 and raw_price is not None:
-        try:
-            prev_for_pct = float(df["Close"].iloc[-2])
-            if prev_for_pct:
-                current_change_pct = ((float(raw_price) - prev_for_pct) / prev_for_pct) * 100.0
-                current_previous_close = prev_for_pct
-                current_price_source = "calculated"
-        except Exception:
-            pass
-
-    _perf_stage("result_build")
-
-    result_data = {
-        "name": formal_name,
-        "formal_name": formal_name,
-        "symbol": symbol,
-        "market": market_name,
-        "market_code": instrument.get("market"),
-        "instrument_key": cache_key,
-        "market_index_name": market_index_name,
-        "price": price_str,
-        "current_price": raw_price,
-        "current_change_pct": current_change_pct,
-        "current_previous_close": current_previous_close,
-        "current_session": current_session,
-        "current_price_source": current_price_source,
-        "price_str": price_str,
-        "time": now_str,
-        "now_str": now_str,
-        "quant": quant,
-        "movement_reason": movement_reason,
-        "consensus": consensus,
-        "stock_news": stock_news,
-        "global_news": global_news,
-        "macro_snapshot": macro_snapshot,
-        "world_board": world_board,
-        "market_calendar": market_calendar,
-        "dart_disclosures": dart_disclosures,
-        "candles": candles,
-        "ma20_line": ma20_line,
-        "ma60_line": ma60_line,
-        "bb_up_line": bb_up_line,
-        "bb_dn_line": bb_dn_line,
-        "malicious_zones": _build_malicious_zones(df, raw_price)
-    }
-
-    result_data["_details_ready"] = not lightweight
-    ANALYSIS_CACHE[cache_key] = (now_ts, result_data)
-
-    if lightweight:
-        try:
-            enrich_df = df.copy(deep=True)
-            _schedule_analysis_enrichment(
-                cache_key,
-                result_data,
-                {
-                    "market_name": market_name, "symbol": symbol, "formal_name": formal_name,
-                    "raw_price": raw_price, "is_krw": is_krw, "market_index_name": market_index_name,
-                    "df": enrich_df,
-                },
-            )
-        except Exception as exc:
-            print(f"[ANALYSIS ENRICH] scheduling failed: {type(exc).__name__}: {exc}")
-
-    return result_data
-
-def run_full_pipeline_legacy(query, lightweight=False):
-    """LEGACY: 예전 통합 분석 파이프라인. 활성 라우트에서는 사용하지 않는다."""
-    instrument = resolve_instrument(query)
-    if not instrument:
-        return None
-    inflight_key = f'{instrument["key"]}:{"core" if lightweight else "full"}'
-
-    # 빠른 cache hit는 내부 구현에 맡긴다. 여기서는 동시 실행만 합친다.
-    owner = False
-    event = None
-    with ANALYSIS_INFLIGHT_LOCK:
-        event = ANALYSIS_INFLIGHT.get(inflight_key)
-        if event is None:
-            event = threading.Event()
-            ANALYSIS_INFLIGHT[inflight_key] = event
-            owner = True
-
-    if not owner:
-        # 먼저 실행 중인 같은 종목/같은 모드가 끝나길 기다린다.
-        event.wait(timeout=ANALYSIS_INFLIGHT_TIMEOUT)
-        cached = ANALYSIS_CACHE.get(instrument["key"])
-        if cached:
-            cached_data = cached[1]
-            if lightweight or cached_data.get("_details_ready"):
-                return cached_data
-        # 기존 작업이 실패/시간초과했으면 현재 요청이 한 번 더 시도한다.
-        with ANALYSIS_INFLIGHT_LOCK:
-            current = ANALYSIS_INFLIGHT.get(inflight_key)
-            if current is event and event.is_set():
-                ANALYSIS_INFLIGHT.pop(inflight_key, None)
-                event = threading.Event()
-                ANALYSIS_INFLIGHT[inflight_key] = event
-                owner = True
-        if not owner:
-            return None
-
-    try:
-        result = _run_full_pipeline_impl(query, lightweight=lightweight)
-        if result is None:
-            # 외부 제공처의 순간 timeout/빈 응답에 한해 1회만 재시도한다.
-            time.sleep(0.25)
-            result = _run_full_pipeline_impl(query, lightweight=lightweight)
-        return result
-    finally:
-        with ANALYSIS_INFLIGHT_LOCK:
-            current = ANALYSIS_INFLIGHT.get(inflight_key)
-            if current is event:
-                ANALYSIS_INFLIGHT.pop(inflight_key, None)
-                event.set()
-
-
 # ====================================================
 # STEP 56: 독립 위젯 데이터 계층
 # ====================================================
@@ -3434,6 +2210,9 @@ STOCK_CORE_CONTEXT_CACHE = {}
 STOCK_CORE_CONTEXT_TTL = 60
 STOCK_CORE_CONTEXT_MAX = 64
 STOCK_CORE_CONTEXT_LOCK = threading.Lock()
+STOCK_CORE_INFLIGHT = {}
+STOCK_CORE_INFLIGHT_LOCK = threading.Lock()
+STOCK_CORE_INFLIGHT_TIMEOUT = 30.0
 
 
 def _format_core_price(market_code, market_name, price):
@@ -3521,31 +2300,51 @@ def _load_us_df_from_db(symbol):
 
 
 def _load_stock_core_context(query='', market_hint=None, symbol_hint=None, name_hint=None):
+    """선택된 종목의 공통 Core를 한 번만 취득하고 모든 위젯이 공유한다."""
     instrument = resolve_instrument(query, market_hint=market_hint, symbol_hint=symbol_hint, name_hint=name_hint)
     if not instrument:
         return None
     key = instrument['key']
     now = time.time()
+
+    # 1) 짧은 공통 Core 캐시 확인
     with STOCK_CORE_CONTEXT_LOCK:
         cached = STOCK_CORE_CONTEXT_CACHE.get(key)
         if cached and now - cached['time'] < STOCK_CORE_CONTEXT_TTL:
             return cached['context']
 
-    market_code = instrument['market']
-    symbol = instrument['symbol']
-    formal_name = instrument.get('name') or symbol
-    market_name = instrument.get('market_name') or '국내주식'
-    market_index_name = instrument.get('market_index_name')
-    raw_price = None
-    price_str = '-'
-    df = None
-    current_session = None
-    current_price_source = None
-    current_previous_close = None
+    # 2) 같은 종목의 Core를 이미 가져오는 중이면 결과를 기다린다.
+    owner = False
+    event = None
+    with STOCK_CORE_INFLIGHT_LOCK:
+        event = STOCK_CORE_INFLIGHT.get(key)
+        if event is None:
+            event = threading.Event()
+            STOCK_CORE_INFLIGHT[key] = event
+            owner = True
+
+    if not owner:
+        if event.wait(timeout=STOCK_CORE_INFLIGHT_TIMEOUT):
+            with STOCK_CORE_CONTEXT_LOCK:
+                cached = STOCK_CORE_CONTEXT_CACHE.get(key)
+                if cached and time.time() - cached['time'] < STOCK_CORE_CONTEXT_TTL:
+                    return cached['context']
+        return None
 
     try:
+        market_code = instrument['market']
+        symbol = instrument['symbol']
+        formal_name = instrument.get('name') or symbol
+        market_name = instrument.get('market_name') or '국내주식'
+        market_index_name = instrument.get('market_index_name')
+        raw_price = None
+        price_str = '-'
+        df = None
+        current_session = None
+        current_price_source = None
+        current_previous_close = None
+
         if market_code == 'KR':
-            # 거래소 구분은 표시용이므로 캐시된 값만 사용하고, 없으면 백그라운드 갱신한다.
             market_index_name = _get_cached_domestic_market_type(symbol) or market_index_name
             if market_index_name is None:
                 _perf_submit(OPTIONAL_API_EXECUTOR, _refresh_domestic_market_type, symbol)
@@ -3559,6 +2358,7 @@ def _load_stock_core_context(query='', market_hint=None, symbol_hint=None, name_
                 raw_price = float(df['Close'].iloc[-1])
                 price_str = _format_core_price('KR', market_name, raw_price)
             current_price_source = 'Naver/KRX'
+
         elif market_code == 'US':
             with ThreadPoolExecutor(max_workers=2) as ex:
                 f_chart = ex.submit(fetch_overseas_candles, symbol)
@@ -3579,10 +2379,12 @@ def _load_stock_core_context(query='', market_hint=None, symbol_hint=None, name_
                 current_price_source = 'Yahoo chart'
             price_str = _format_core_price('US', market_name, raw_price)
             market_name = '미국주식'
+
         elif market_code == 'CRYPTO':
             raw_price, price_str, df = fetch_crypto_candles(symbol)
             market_name = '암호화폐'
             current_price_source = 'Binance'
+
         elif market_code == 'INDEX':
             raw_price, price_str, df = fetch_overseas_candles(symbol)
             _, market_name, market_index_name = _global_index_metadata(symbol)
@@ -3590,48 +2392,57 @@ def _load_stock_core_context(query='', market_hint=None, symbol_hint=None, name_
             current_price_source = 'Yahoo'
         else:
             return None
+
+        if raw_price is None and df is not None and not df.empty:
+            raw_price = float(df['Close'].iloc[-1])
+            price_str = _format_core_price(market_code, market_name, raw_price)
+
+        if raw_price is None or df is None or getattr(df, 'empty', True):
+            return None
+
+        change_pct = None
+        if current_previous_close is not None:
+            try:
+                prev = float(current_previous_close)
+                if prev:
+                    change_pct = ((float(raw_price) - prev) / prev) * 100.0
+            except Exception:
+                change_pct = None
+        if change_pct is None:
+            change_pct = _calc_core_change_pct(raw_price, df)
+
+        context = {
+            'instrument': dict(instrument),
+            'market_code': market_code,
+            'market': market_name,
+            'market_index_name': market_index_name,
+            'symbol': symbol,
+            'name': formal_name,
+            'current_price': raw_price,
+            'price': price_str,
+            'current_change_pct': change_pct,
+            'current_previous_close': current_previous_close,
+            'current_session': current_session,
+            'current_price_source': current_price_source,
+            'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S KST'),
+            'candles': _build_core_candles(df),
+            '_df': df.copy(deep=True),
+        }
+        with STOCK_CORE_CONTEXT_LOCK:
+            STOCK_CORE_CONTEXT_CACHE[key] = {'time': time.time(), 'context': context}
+            if len(STOCK_CORE_CONTEXT_CACHE) > STOCK_CORE_CONTEXT_MAX:
+                oldest_key = min(STOCK_CORE_CONTEXT_CACHE, key=lambda k: STOCK_CORE_CONTEXT[k]['time'])
+                STOCK_CORE_CONTEXT_CACHE.pop(oldest_key, None)
+        return context
     except Exception as exc:
         print(f'[STOCK CORE] {key} fetch failed: {type(exc).__name__}: {exc}')
         return None
-
-    if raw_price is None or df is None or getattr(df, 'empty', True):
-        return None
-
-    change_pct = None
-    if current_previous_close:
-        try:
-            prev = float(current_previous_close)
-            if prev:
-                change_pct = ((float(raw_price) - prev) / prev) * 100.0
-        except Exception:
-            change_pct = None
-    if change_pct is None:
-        change_pct = _calc_core_change_pct(raw_price, df)
-
-    context = {
-        'instrument': dict(instrument),
-        'market_code': market_code,
-        'market': market_name,
-        'market_index_name': market_index_name,
-        'symbol': symbol,
-        'name': formal_name,
-        'current_price': raw_price,
-        'price': price_str,
-        'current_change_pct': change_pct,
-        'current_previous_close': current_previous_close,
-        'current_session': current_session,
-        'current_price_source': current_price_source,
-        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S KST'),
-        'candles': _build_core_candles(df),
-        '_df': df.copy(deep=True),
-    }
-    with STOCK_CORE_CONTEXT_LOCK:
-        STOCK_CORE_CONTEXT_CACHE[key] = {'time': now, 'context': context}
-        if len(STOCK_CORE_CONTEXT_CACHE) > STOCK_CORE_CONTEXT_MAX:
-            oldest_key = min(STOCK_CORE_CONTEXT_CACHE, key=lambda k: STOCK_CORE_CONTEXT[k]['time'])
-            STOCK_CORE_CONTEXT_CACHE.pop(oldest_key, None)
-    return context
-
+    finally:
+        with STOCK_CORE_INFLIGHT_LOCK:
+            current = STOCK_CORE_INFLIGHT.get(key)
+            if current is event:
+                STOCK_CORE_INFLIGHT.pop(key, None)
+                event.set()
 
 def run_independent_stock_core(query='', lightweight=False, market_hint=None, symbol_hint=None, name_hint=None):
     context = _load_stock_core_context(query, market_hint, symbol_hint, name_hint)
@@ -3670,56 +2481,16 @@ def _get_widget_core_from_params(params):
 
 
 def _load_track_context(ins):
-    """트랙 전용 최소 원천 데이터 로더. Core 캐시가 없거나 핵심 quote가 실패해도
-    차트/일봉 데이터만으로 트랙 위젯을 계산할 수 있게 한다.
-    """
+    """트랙은 공유 Core만 사용한다. 자체적으로 차트/원천 데이터를 다시 조회하지 않는다."""
     if not ins:
         return None
     try:
-        context = _load_stock_core_context(
+        return _load_stock_core_context(
             ins['key'], market_hint=ins['market'], symbol_hint=ins['symbol'], name_hint=ins.get('name')
         )
-        if context:
-            return context
     except Exception as exc:
         print(f"[TRACK CORE] {ins.get('key')} shared core failed: {type(exc).__name__}: {exc}")
-
-    try:
-        payload = run_fast_chart_pipeline(ins['symbol'])
-        candles = (payload or {}).get('candles') or []
-        if len(candles) < 2:
-            return None
-        rows = []
-        for row in candles:
-            rows.append({
-                'Date': pd.to_datetime(row.get('time')),
-                'Open': float(row.get('open')),
-                'High': float(row.get('high')),
-                'Low': float(row.get('low')),
-                'Close': float(row.get('close')),
-                'Volume': float(row.get('volume') or 0),
-            })
-        df = pd.DataFrame(rows).set_index('Date').sort_index()
-        current = float(df['Close'].iloc[-1])
-        previous = float(df['Close'].iloc[-2]) if len(df) >= 2 else None
-        change = ((current - previous) / previous * 100.0) if previous else None
-        market_name = ins.get('market_name') or '국내주식'
-        return {
-            'instrument': dict(ins),
-            'market_code': ins['market'],
-            'market': market_name,
-            'symbol': ins['symbol'],
-            'name': ins.get('name') or ins['symbol'],
-            'current_price': current,
-            'price': _format_core_price(ins['market'], market_name, current),
-            'current_change_pct': change,
-            'candles': candles,
-            '_df': df,
-        }
-    except Exception as exc:
-        print(f"[TRACK FAST] {ins.get('key')} fallback failed: {type(exc).__name__}: {exc}")
         return None
-
 
 def build_track_widget_data(context):
     df = context.get('_df')
@@ -4199,7 +2970,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="/widgets/dart_disclosure.js"></script>
     <script src="/widgets/chart.js"></script>
     <script src="/widgets/stock_news.js"></script>
@@ -4950,54 +3720,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .quant-row-status { font-size: 0.7rem; font-weight: 700; }
         .quant-row-right { text-align: right; flex-shrink: 0; }
         .quant-row-val { font-weight: 800; color: var(--text-title); }
-        .movement-evidence-summary { margin: 2px 0 14px; }
-        .movement-evidence-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:7px; }
-        .movement-evidence-label { font-size:0.72rem; font-weight:700; color:var(--text-main); }
-        .movement-evidence-count { font-size:0.72rem; font-weight:800; color:var(--text-muted); }
-        .movement-evidence-track { width:100%; height:7px; display:flex; gap:4px; }
-        .movement-evidence-seg { flex:1; height:7px; border-radius:4px; background:rgba(148,163,184,0.15); }
-        .movement-evidence-seg.active { background:#10b981; }
-        .movement-evidence-seg.active.negative { background:#ef4444; }
-        .movement-reason-row { padding:10px 0; border-bottom:1px solid var(--border-line); }
-        .movement-reason-row:last-child { border-bottom:none; }
-        .movement-reason-top { display:flex; justify-content:space-between; align-items:center; gap:12px; }
-        .movement-reason-title { display:flex; align-items:center; gap:7px; min-width:0; }
-        .movement-reason-icon { width:18px; height:18px; flex:0 0 18px; color:var(--text-muted); }
-        .movement-reason-name { font-size:0.82rem; font-weight:800; color:var(--text-title); }
-        .movement-reason-status { font-size:0.66rem; font-weight:800; padding:2px 7px; border-radius:9px; white-space:nowrap; }
-        .movement-reason-detail { margin:6px 0 7px 25px; font-size:0.72rem; line-height:1.45; color:var(--text-sub); word-break:keep-all; }
-        .movement-reason-meter { margin-left:25px; display:flex; align-items:center; gap:8px; }
-        .movement-reason-meter-track { flex:1; height:5px; border-radius:4px; background:rgba(148,163,184,0.12); overflow:hidden; }
-        .movement-reason-meter-fill { height:100%; border-radius:4px; }
-        .movement-reason-meter-value { width:52px; text-align:right; font-size:0.64rem; font-weight:800; color:var(--text-muted); }
         
-        .movement-relative-chart { margin: 4px 0 14px; padding:10px 10px 9px; border:1px solid var(--border-line); border-radius:9px; background:var(--bg-subcard); }
-        .movement-relative-head { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
-        .movement-relative-title { font-size:0.76rem; font-weight:800; color:var(--text-title); }
-        .movement-relative-diff { font-size:0.68rem; font-weight:800; color:var(--text-muted); }
-        .movement-relative-chartbox { position:relative; height:92px; overflow:hidden; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
-        .movement-relative-gridline { position:absolute; left:0; right:0; height:1px; background:var(--border-line); opacity:.55; }
-        .movement-relative-svg { width:100%; height:100%; display:block; }
-        .movement-relative-legend { display:flex; gap:14px; align-items:center; margin-top:7px; font-size:0.62rem; color:var(--text-sub); }
-        .movement-relative-dot { width:7px; height:7px; border-radius:50%; display:inline-block; margin-right:4px; }
-        .movement-relative-note { margin-top:5px; font-size:0.62rem; line-height:1.35; color:var(--text-muted); word-break:keep-all; }
 
-.movement-mini-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin-top:2px; }
-        .movement-mini-card { min-width:0; background:var(--bg-subcard); border:1px solid var(--border-line); border-radius:9px; padding:9px 8px 8px; }
-        .movement-mini-head { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-bottom:7px; }
-        .movement-mini-head .movement-reason-title { gap:5px; }
-        .movement-mini-head .movement-reason-name { font-size:0.76rem; }
-        .movement-mini-head .movement-reason-icon { width:15px; height:15px; flex-basis:15px; }
-        .movement-mini-head .movement-reason-status { font-size:0.58rem; padding:2px 5px; }
-        .movement-mini-chart { height:58px; display:flex; align-items:flex-end; padding:6px 3px 4px; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
-        .movement-mini-bars { width:100%; height:100%; display:flex; align-items:flex-end; gap:4px; }
-        .movement-mini-bar { flex:1; min-height:8%; border-radius:2px 2px 0 0; }
-        .movement-mini-value { display:flex; align-items:baseline; gap:2px; margin-top:7px; font-size:0.8rem; font-weight:800; color:var(--text-title); }
-        .movement-mini-unit { font-size:0.62rem; font-weight:700; color:var(--text-muted); }
-        .movement-mini-detail { min-height:30px; margin-top:3px; font-size:0.62rem; line-height:1.35; color:var(--text-sub); word-break:keep-all; }
-        .movement-mini-card .movement-reason-meter { margin:7px 0 0; }
-        .movement-mini-card .movement-reason-meter-value { width:24px; font-size:0.58rem; }
-        .movement-market5-card { overflow:hidden; }
         .market5-line-chart { position:relative; height:58px; margin:5px 0 4px; border-top:1px solid var(--border-line); border-bottom:1px solid var(--border-line); }
         .market5-line-chart svg { width:100%; height:100%; display:block; }
         .market5-zero { position:absolute; left:0; right:0; height:1px; background:rgba(148,163,184,0.18); }
@@ -5007,10 +3731,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         .market5-bar-label { font-size:.46rem; color:var(--text-muted); margin-top:2px; white-space:nowrap; }
 
         @media (max-width: 980px) {
-            .movement-mini-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
         }
         @media (max-width: 560px) {
-            .movement-mini-grid { grid-template-columns:1fr; }
         }
 
 
@@ -6940,15 +5662,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
         function setTxt(id, val) { const el = document.getElementById(id); if (el) el.innerText = (val !== undefined && val !== null) ? String(val) : ''; }
         function setHtml(id, val) { const el = document.getElementById(id); if (el) el.innerHTML = (val !== undefined && val !== null) ? String(val) : ''; }
 
-        const SUPABASE_URL = "https://uaqvmsubzgzvxbdcwcad.supabase.co";
-        const SUPABASE_KEY = "sb_publishable_bcxDofsnPXgBICDDgQ8Ijw_fNjPcsRW";
-        let supabaseClient = null;
-        try {
-            if (window.supabase) {
-                supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-            }
-        } catch(e) {}
-
         function initTheme() {
             const saved = localStorage.getItem('gaemi_theme') || 'dark';
             if (saved === 'light') {
@@ -7044,9 +5757,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             pendingStockSelection = null;
             activeSearchToken++;
             if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
-            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
             activeSearchController = null;
-            activeDetailsController = null;
             currentInstrument = null;
             document.getElementById('main-view').style.display = 'flex';
             document.getElementById('result-scroll-view').style.display = 'none';
@@ -7352,46 +6063,12 @@ function renderSparklineSVG(points, isUp) {
         window.addEventListener('resize', scheduleCalendarHeightSync);
         if (document.fonts && document.fonts.ready) document.fonts.ready.then(scheduleCalendarHeightSync);
         setTimeout(scheduleCalendarHeightSync, 300);
-
-        async function loadCommunityData(symbol, displayName) {
-            currentSymbol = symbol;
-            const targetName = displayName || symbol;
-if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
-
-            if (window.GaemiWidgets?.comment) window.GaemiWidgets.comment.load(symbol);
-        }
-
-        // STEP 48: 프론트 공통 수급 파싱 함수
-        // doSearch 내부 const로 선언하면 다른 렌더링 경로/구버전 스크립트와
-        // 충돌할 때 ReferenceError가 발생할 수 있으므로 전역 함수로 고정한다.
-        function getDomesticFlowValue(movementReason, key) {
-            try {
-                const reasons = movementReason && Array.isArray(movementReason.reasons)
-                    ? movementReason.reasons
-                    : [];
-                const r = reasons.find(x => x && x.key === key);
-                if (!r) return null;
-                const text = String(r.detail || '');
-                const m = text.match(/(순매수|순매도)\s+([0-9,]+)주/);
-                if (!m) return null;
-                const n = Number(String(m[2]).replace(/,/g, ''));
-                if (!Number.isFinite(n)) return null;
-                return m[1] === '순매도' ? -n : n;
-            } catch (e) {
-                console.warn('[FLOW PARSER] failed:', e);
-                return null;
-            }
-        }
-
         // 브라우저 콘솔에서 실제 배포본의 단일 종목 흐름 버전을 확인할 수 있다.
-        window.__GAEMIGTP_BUILD__ = 'STEP56-WIDGET-INDEPENDENT';
+        window.__GAEMIGTP_BUILD__ = 'STEP58-CORE-SINGLEFLIGHT-WIDGET-INDEPENDENT';
 
         let currentInstrument = null;
         let activeSearchToken = 0;
         let activeSearchController = null;
-        let activeDetailsController = null;
-        let rightMarketController = null;
-        let rightMarketRequestToken = 0;
 
         // STEP 54: 오른쪽 사이드바 연속 선택 안정화.
         // 이전 fetch를 브라우저에서 abort해도 이미 Render에서 시작된 Python/외부 API 작업은
@@ -7457,23 +6134,31 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             const symbol = data.symbol || '';
             const name = data.name || data.formal_name || displayName || '';
 
-            // 모든 독립 위젯은 같은 순간에 '출발'만 시키고, 결과는 각자 자기 카드에 반영한다.
-            try { if (window.GaemiWidgets?.quant?.load) window.GaemiWidgets.quant.load({ market, symbol, name }); }
-            catch (e) { console.warn('[QUANT] dispatch failed:', e); }
-            try { if (window.GaemiWidgets?.vote?.load) window.GaemiWidgets.vote.load(symbol); }
-            catch (e) { console.warn('[VOTE] dispatch failed:', e); }
-            try { if (window.GaemiWidgets?.comment?.load) window.GaemiWidgets.comment.load(symbol); }
-            catch (e) { console.warn('[COMMENT] dispatch failed:', e); }
-            try { if (window.GaemiWidgets?.track?.load) window.GaemiWidgets.track.load({ market, symbol, name }); }
-            catch (e) { console.warn('[TRACK] dispatch failed:', e); }
-            try { if (window.GaemiWidgets?.stockNews?.load) window.GaemiWidgets.stockNews.load({ symbol, market: data.market, name, initial: [] }); }
-            catch (e) { console.warn('[STOCK NEWS] dispatch failed:', e); }
-            try { if (window.GaemiWidgets?.globalNews?.load) window.GaemiWidgets.globalNews.load({ market: data.market, marketCode: market, initial: [] }); }
-            catch (e) { console.warn('[GLOBAL NEWS] dispatch failed:', e); }
-            try { if (window.GaemiWidgets?.consensus?.load) window.GaemiWidgets.consensus.load({ market, symbol, name, price: data.current_price }); }
-            catch (e) { console.warn('[CONSENSUS] dispatch failed:', e); }
-            try { if (window.GaemiWidgets?.dart?.load) window.GaemiWidgets.dart.load({ market, symbol, name }); }
-            catch (e) { console.warn('[DART] dispatch failed:', e); }
+            // 핵심 화면이 한 번 그려진 뒤 각 위젯을 독립적으로 출발시킨다.
+            // 하나의 위젯이 늦거나 실패해도 다른 위젯의 렌더링을 막지 않는다.
+            const dispatch = () => {
+                try { if (window.GaemiWidgets?.quant?.load) window.GaemiWidgets.quant.load({ market, symbol, name }); }
+                catch (e) { console.warn('[QUANT] dispatch failed:', e); }
+                try { if (window.GaemiWidgets?.vote?.load) window.GaemiWidgets.vote.load(symbol); }
+                catch (e) { console.warn('[VOTE] dispatch failed:', e); }
+                try { if (window.GaemiWidgets?.comment?.load) window.GaemiWidgets.comment.load(symbol); }
+                catch (e) { console.warn('[COMMENT] dispatch failed:', e); }
+                try { if (window.GaemiWidgets?.track?.load) window.GaemiWidgets.track.load({ market, symbol, name }); }
+                catch (e) { console.warn('[TRACK] dispatch failed:', e); }
+                try { if (window.GaemiWidgets?.stockNews?.load) window.GaemiWidgets.stockNews.load({ symbol, market: data.market, name, initial: [] }); }
+                catch (e) { console.warn('[STOCK NEWS] dispatch failed:', e); }
+                try { if (window.GaemiWidgets?.globalNews?.load) window.GaemiWidgets.globalNews.load({ market: data.market, marketCode: market, initial: [] }); }
+                catch (e) { console.warn('[GLOBAL NEWS] dispatch failed:', e); }
+                try { if (window.GaemiWidgets?.consensus?.load) window.GaemiWidgets.consensus.load({ market, symbol, name, price: data.current_price }); }
+                catch (e) { console.warn('[CONSENSUS] dispatch failed:', e); }
+                try { if (window.GaemiWidgets?.dart?.load) window.GaemiWidgets.dart.load({ market, symbol, name }); }
+                catch (e) { console.warn('[DART] dispatch failed:', e); }
+            };
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(dispatch);
+            } else {
+                setTimeout(dispatch, 0);
+            }
         }
 
         function renderStockData(data, searchToken, displayNameOverride = '') {
@@ -7487,7 +6172,6 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             if (!rawQuery) return;
 
             if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
-            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
             activeSearchController = new AbortController();
             const searchSignal = activeSearchController.signal;
             const searchToken = ++activeSearchToken;
@@ -7545,6 +6229,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                     symbol: data.symbol || '',
                     name: data.name || data.formal_name || displayNameHint || rawQuery
                 };
+                currentSymbol = currentInstrument.symbol;
                 const resolvedDisplay = displayNameHint || data.name || data.formal_name || data.symbol || rawQuery;
                 if (center) center.value = resolvedDisplay;
                 if (bottom) bottom.value = resolvedDisplay;
@@ -7601,7 +6286,6 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                 displayNameOverride: String(isObject ? (query.name || query.displayName || displayNameOverride) : displayNameOverride || '').trim()
             };
 
-            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
 
             const center = document.getElementById('centerInput');
             const bottom = document.getElementById('bottomInput');

@@ -100,7 +100,7 @@
                     boundaryGap: true,
                     axisLine: { lineStyle: { color: theme.border } },
                     axisTick: { show: false },
-                    axisLabel: { color: theme.text, fontSize: 10, hideOverlap: true },
+                    axisLabel: { show: false },
                     splitLine: { show: false }
                 },
                 {
@@ -221,7 +221,7 @@
                 textStyle: { color: theme.text }
             },
             xAxis: [
-                { axisLine: { lineStyle: { color: theme.border } }, axisLabel: { color: theme.text } },
+                { axisLine: { lineStyle: { color: theme.border } }, axisLabel: { show: false } },
                 { axisLine: { lineStyle: { color: theme.border } }, axisLabel: { color: theme.text } }
             ],
             yAxis: [

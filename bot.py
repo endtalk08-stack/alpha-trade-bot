@@ -4281,12 +4281,37 @@ HTML_PAGE = r"""<!DOCTYPE html>
             justify-content: space-between;
         }
 
-        .price-title { font-size: 1.25rem; font-weight: 700; color: var(--text-title); word-break: keep-all; }
-        .price-title span { color: var(--text-muted); font-size: 0.85rem; font-weight: 400; margin-left: 4px; }
-        .price-val { font-size: 2.1rem; font-weight: 800; color: var(--text-title); margin: 6px 0; }
-        .price-meta { color: var(--text-muted); font-size: 0.78rem; line-height: 1.4; word-break: break-all; }
+        .price-summary-head {
+            min-height: 34px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            width: 100%;
+        }
+        .price-title { font-size: 1.05rem; line-height: 1.2; font-weight: 700; color: var(--text-title); word-break: keep-all; white-space: nowrap; }
+        .price-title span { color: var(--text-muted); font-size: 0.72rem; font-weight: 400; margin-left: 4px; }
+        .price-live-line {
+            display: inline-flex;
+            align-items: baseline;
+            justify-content: flex-end;
+            gap: 9px;
+            min-width: 0;
+            white-space: nowrap;
+            flex: 0 0 auto;
+        }
+        .price-val { font-size: 1.12rem; line-height: 1.2; font-weight: 750; color: var(--text-title); margin: 0; font-variant-numeric: tabular-nums; }
+        .price-change { font-size: 0.92rem; line-height: 1.2; font-weight: 700; color: var(--text-sub); font-variant-numeric: tabular-nums; min-width: 0; }
+        .price-meta { color: var(--text-muted); font-size: 0.70rem; line-height: 1.3; min-height: 18px; margin-top: 2px; word-break: break-all; }
 
-        .chart-box-wrap { width: 100%; height: 300px; margin-top: 10px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
+        .chart-box-wrap { width: 100%; height: 300px; margin-top: 8px; position: relative; background: var(--bg-card); border-radius: 8px; overflow: hidden; }
+        @media (max-width: 680px) {
+            .price-summary-head { gap: 8px; }
+            .price-title { font-size: 0.96rem; }
+            .price-title span { font-size: 0.68rem; }
+            .price-val { font-size: 1.00rem; }
+            .price-change { font-size: 0.82rem; }
+        }
 
         .board-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-line); }
         .board-header-title { font-size: 0.95rem; font-weight: 800; color: var(--text-title); }
@@ -6196,11 +6221,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
                         
                         <!-- 1행 좌측: 메인 차트 (832px) -->
                         <div class="card" id="rowChart">
-                            <div>
+                            <div class="price-summary-head">
                                 <div class="price-title" id="rTitle"></div>
-                                <div class="price-val" id="rPrice"></div>
-                                <div class="price-meta" id="rMeta"></div>
-</div>
+                                <div class="price-live-line">
+                                    <span class="price-val" id="rPrice"></span>
+                                    <span class="price-change" id="rChange"></span>
+                                </div>
+                            </div>
+                            <div class="price-meta" id="rMeta"></div>
                             <div class="chart-box-wrap" id="tvChart"></div>
                         </div>
 
@@ -7077,6 +7105,15 @@ const usShortName = (isKrw || !data.symbol)
     : getUsShortKrName(data.symbol, displayName);
 setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
 setTxt('rPrice', displayPrice);
+const rawChangePct = data.current_change_pct ?? data.change_pct ?? data.changePercent ?? data.rate ?? null;
+let changeText = '';
+if (rawChangePct !== null && rawChangePct !== undefined && rawChangePct !== '') {
+    const n = Number(String(rawChangePct).replace(/[%+,]/g, ''));
+    if (Number.isFinite(n)) {
+        changeText = `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
+    }
+}
+setTxt('rChange', changeText);
 setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
 
 loadCommunityData(data.symbol, displayName);

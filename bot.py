@@ -3669,6 +3669,58 @@ def _get_widget_core_from_params(params):
     return _load_stock_core_context(ins['key'], market_hint=ins['market'], symbol_hint=ins['symbol'], name_hint=ins.get('name'))
 
 
+def _load_track_context(ins):
+    """트랙 전용 최소 원천 데이터 로더. Core 캐시가 없거나 핵심 quote가 실패해도
+    차트/일봉 데이터만으로 트랙 위젯을 계산할 수 있게 한다.
+    """
+    if not ins:
+        return None
+    try:
+        context = _load_stock_core_context(
+            ins['key'], market_hint=ins['market'], symbol_hint=ins['symbol'], name_hint=ins.get('name')
+        )
+        if context:
+            return context
+    except Exception as exc:
+        print(f"[TRACK CORE] {ins.get('key')} shared core failed: {type(exc).__name__}: {exc}")
+
+    try:
+        payload = run_fast_chart_pipeline(ins['symbol'])
+        candles = (payload or {}).get('candles') or []
+        if len(candles) < 2:
+            return None
+        rows = []
+        for row in candles:
+            rows.append({
+                'Date': pd.to_datetime(row.get('time')),
+                'Open': float(row.get('open')),
+                'High': float(row.get('high')),
+                'Low': float(row.get('low')),
+                'Close': float(row.get('close')),
+                'Volume': float(row.get('volume') or 0),
+            })
+        df = pd.DataFrame(rows).set_index('Date').sort_index()
+        current = float(df['Close'].iloc[-1])
+        previous = float(df['Close'].iloc[-2]) if len(df) >= 2 else None
+        change = ((current - previous) / previous * 100.0) if previous else None
+        market_name = ins.get('market_name') or '국내주식'
+        return {
+            'instrument': dict(ins),
+            'market_code': ins['market'],
+            'market': market_name,
+            'symbol': ins['symbol'],
+            'name': ins.get('name') or ins['symbol'],
+            'current_price': current,
+            'price': _format_core_price(ins['market'], market_name, current),
+            'current_change_pct': change,
+            'candles': candles,
+            '_df': df,
+        }
+    except Exception as exc:
+        print(f"[TRACK FAST] {ins.get('key')} fallback failed: {type(exc).__name__}: {exc}")
+        return None
+
+
 def build_track_widget_data(context):
     df = context.get('_df')
     candles = context.get('candles') or []
@@ -6988,8 +7040,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
         });
 
         function resetToHome() {
-            // 진행 중인 종목 요청/예약 렌더가 홈으로 돌아온 뒤 늦게 도착해 화면을 다시 덮지 못하게 한다.
-            if (typeof cancelScheduledStockRenders === 'function') cancelScheduledStockRenders();
+            // 홈으로 돌아오면 현재 종목 상태를 먼저 무효화한다.
             pendingStockSelection = null;
             activeSearchToken++;
             if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
@@ -7357,110 +7408,10 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         // - 글로벌 위젯(세계시장/경제일정)은 종목 전환 때 재렌더링하지 않는다.
         // - details 응답은 전체 화면을 다시 그리지 않고 해당 카드만 갱신한다.
         // ============================================================
-        let stockRenderTimerHandles = new Set();
-
         function isCurrentStockRender(searchToken) {
             return searchToken === activeSearchToken && !pendingStockSelection;
         }
 
-        function scheduleStockRender(searchToken, fn, delay = 0) {
-            const handle = setTimeout(() => {
-                stockRenderTimerHandles.delete(handle);
-                if (!isCurrentStockRender(searchToken)) return;
-                requestAnimationFrame(() => {
-                    if (!isCurrentStockRender(searchToken)) return;
-                    try { fn(); } catch (e) { console.warn('[STOCK RENDER] stage failed:', e); }
-                });
-            }, delay);
-            stockRenderTimerHandles.add(handle);
-            return handle;
-        }
-
-        function cancelScheduledStockRenders() {
-            stockRenderTimerHandles.forEach(handle => clearTimeout(handle));
-            stockRenderTimerHandles.clear();
-        }
-
-        function renderStockCore(data, searchToken, displayNameOverride = '') {
-            if (!isCurrentStockRender(searchToken) || !data) return;
-
-            // 1) 핵심 화면: 차트는 이미 생성된 ECharts 인스턴스에 데이터만 교체한다.
-            if (Array.isArray(data.candles) && data.candles.length) {
-                try { initTvChart(data.candles); } catch (e) { console.warn('[CHART] render failed:', e); }
-            }
-
-            const isKrw = data.market === '국내주식' || data.market === '국내증시';
-            const displayName = String(displayNameOverride || data.name || data.formal_name || data.symbol || '').trim();
-            const displayPrice = data.price || data.price_str;
-            const displayTime = data.time || data.now_str;
-            const usShortName = (isKrw || !data.symbol)
-                ? displayName
-                : getUsShortKrName(data.symbol, displayName);
-
-            setHtml('rTitle', `${usShortName} <span>(${data.symbol})</span>`);
-            setTxt('rPrice', displayPrice);
-
-            const rawChangePct = data.current_change_pct ?? data.change_pct ?? data.changePercent ?? data.rate ?? null;
-            let changeText = '';
-            if (rawChangePct !== null && rawChangePct !== undefined && rawChangePct !== '') {
-                const n = Number(String(rawChangePct).replace(/[%+,]/g, ''));
-                if (Number.isFinite(n)) changeText = `${n > 0 ? '+' : ''}${n.toFixed(2)}%`;
-            }
-            setTxt('rChange', changeText);
-            setHtml('rMeta', `시장: ${data.market} · 출처: ${isKrw ? 'Naver/KRX' : 'Yahoo/Binance'} · 시각: ${displayTime}`);
-
-
-            const loading = document.getElementById('loading');
-            const result = document.getElementById('result-card-wrap');
-            if (loading) loading.style.display = 'none';
-            if (result) result.style.display = 'block';
-        }
-
-        // STEP 56: 위젯 완전 독립 렌더링
-        // - core는 종목명/가격/차트만 담당한다.
-        // - 퀀트/트랙/종목뉴스/경제뉴스/컨센서스는 각자 자신의 API를 호출한다.
-        // - 한 위젯의 실패/지연은 다른 위젯의 렌더링을 막지 않는다.
-        // - 왜 움직였을까/악성 매물대는 더 이상 사용하지 않는다.
-        let widgetLoadControllers = new Map();
-        let widgetLoadTokens = new Map();
-
-        function isCurrentWidgetRequest(widgetName, searchToken, token) {
-            return isCurrentStockRender(searchToken) && widgetLoadTokens.get(widgetName) === token;
-        }
-
-        function abortWidgetRequest(widgetName) {
-            const controller = widgetLoadControllers.get(widgetName);
-            if (controller) {
-                try { controller.abort(); } catch (_) {}
-            }
-            widgetLoadControllers.delete(widgetName);
-        }
-
-        async function loadIndependentWidget(widgetName, url, onData, searchToken) {
-            if (!isCurrentStockRender(searchToken)) return;
-            abortWidgetRequest(widgetName);
-            const controller = new AbortController();
-            const token = (widgetLoadTokens.get(widgetName) || 0) + 1;
-            widgetLoadTokens.set(widgetName, token);
-            widgetLoadControllers.set(widgetName, controller);
-            try {
-                const response = await fetch(url, { cache: 'no-store', signal: controller.signal });
-                const payload = await response.json().catch(() => null);
-                if (!isCurrentWidgetRequest(widgetName, searchToken, token)) return;
-                if (!response.ok || !payload || payload.ok === false) {
-                    throw new Error((payload && (payload.error || payload.detail)) || `${widgetName} 데이터 오류`);
-                }
-                onData(payload.data || {});
-            } catch (error) {
-                if (error && error.name === 'AbortError') return;
-                if (!isCurrentWidgetRequest(widgetName, searchToken, token)) return;
-                console.warn(`[${widgetName}] load failed:`, error);
-                try { onData(null); } catch (_) {}
-            } finally {
-                if (widgetLoadControllers.get(widgetName) === controller) widgetLoadControllers.delete(widgetName);
-            }
-        }
-
         function renderStockCore(data, searchToken, displayNameOverride = '') {
             if (!isCurrentStockRender(searchToken) || !data) return;
 
@@ -7495,61 +7446,38 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             if (result) result.style.display = 'block';
         }
 
+        // STEP 57: 위젯 완전 독립 실행
+        // - 고정 delay로 위젯을 순차 호출하지 않는다.
+        // - core가 종목을 확정하면 각 위젯은 즉시 자기 API를 호출한다.
+        // - 각 위젯이 자기 controller/token으로 이전 요청을 폐기한다.
+        // - 한 위젯의 응답 속도/실패는 다른 위젯의 실행을 막지 않는다.
         function startIndependentWidgets(data, searchToken, displayName = '') {
             if (!isCurrentStockRender(searchToken) || !data) return;
-            const qs = (params) => new URLSearchParams(params).toString();
             const market = data.market_code || '';
             const symbol = data.symbol || '';
             const name = data.name || data.formal_name || displayName || '';
 
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets?.quant?.load) {
-                    window.GaemiWidgets.quant.load({ market, symbol, name });
-                }
-            }, 0);
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
-            }, 6);
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets?.comment) window.GaemiWidgets.comment.load(symbol);
-            }, 7);
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets?.track?.load) {
-                    window.GaemiWidgets.track.load({ market, symbol, name });
-                }
-            }, 8);
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets?.stockNews?.load) {
-                    window.GaemiWidgets.stockNews.load({symbol, market: data.market, name, initial: []});
-                }
-            }, 16);
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets?.globalNews?.load) {
-                    window.GaemiWidgets.globalNews.load({market: data.market, marketCode: market, initial: []});
-                }
-            }, 24);
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets?.consensus?.load) {
-                    window.GaemiWidgets.consensus.load({market, symbol, name, price: data.current_price});
-                }
-            }, 32);
-
-            scheduleStockRender(searchToken, () => {
-                if (window.GaemiWidgets?.dart?.load) {
-                    window.GaemiWidgets.dart.load({market, symbol, name});
-                }
-            }, 40);
+            // 모든 독립 위젯은 같은 순간에 '출발'만 시키고, 결과는 각자 자기 카드에 반영한다.
+            try { if (window.GaemiWidgets?.quant?.load) window.GaemiWidgets.quant.load({ market, symbol, name }); }
+            catch (e) { console.warn('[QUANT] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.vote?.load) window.GaemiWidgets.vote.load(symbol); }
+            catch (e) { console.warn('[VOTE] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.comment?.load) window.GaemiWidgets.comment.load(symbol); }
+            catch (e) { console.warn('[COMMENT] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.track?.load) window.GaemiWidgets.track.load({ market, symbol, name }); }
+            catch (e) { console.warn('[TRACK] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.stockNews?.load) window.GaemiWidgets.stockNews.load({ symbol, market: data.market, name, initial: [] }); }
+            catch (e) { console.warn('[STOCK NEWS] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.globalNews?.load) window.GaemiWidgets.globalNews.load({ market: data.market, marketCode: market, initial: [] }); }
+            catch (e) { console.warn('[GLOBAL NEWS] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.consensus?.load) window.GaemiWidgets.consensus.load({ market, symbol, name, price: data.current_price }); }
+            catch (e) { console.warn('[CONSENSUS] dispatch failed:', e); }
+            try { if (window.GaemiWidgets?.dart?.load) window.GaemiWidgets.dart.load({ market, symbol, name }); }
+            catch (e) { console.warn('[DART] dispatch failed:', e); }
         }
 
         function renderStockData(data, searchToken, displayNameOverride = '') {
             if (!isCurrentStockRender(searchToken) || !data) return;
-            cancelScheduledStockRenders();
             renderStockCore(data, searchToken, displayNameOverride);
             startIndependentWidgets(data, searchToken, displayNameOverride);
         }
@@ -7664,8 +7592,6 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
                 ? String(query.key || query.symbol || '').trim()
                 : String(query || '').trim();
             if (!rawQuery) return;
-
-            if (typeof cancelScheduledStockRenders === 'function') cancelScheduledStockRenders();
 
             pendingStockSelection = {
                 query: rawQuery,
@@ -8250,14 +8176,21 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/widget/track":
             try:
-                context = _get_widget_core_from_params(params)
+                ins = _widget_instrument_from_params(params)
+                context = _load_track_context(ins)
                 if not context:
-                    self._json(404, {"ok": False, "error": "종목 핵심 데이터를 찾을 수 없습니다."})
+                    self._json(200, {"ok": True, "data": {
+                        "price_str": "-", "current_change_pct": None, "candles": [],
+                        "evidence": [], "evidence_count": 0, "status": "원천 데이터 확인 필요"
+                    }})
                     return
                 self._json(200, {"ok": True, "data": build_track_widget_data(context)})
             except Exception as exc:
                 print(f"API ERROR /api/widget/track: {type(exc).__name__}: {exc}")
-                self._json(500, {"ok": False, "error": "트랙 데이터를 계산하지 못했습니다."})
+                self._json(200, {"ok": True, "data": {
+                    "price_str": "-", "current_change_pct": None, "candles": [],
+                    "evidence": [], "evidence_count": 0, "status": "원천 데이터 확인 필요"
+                }})
             return
 
         if parsed.path == "/api/widget/consensus":

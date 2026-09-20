@@ -2865,6 +2865,7 @@
 
         function resetToHome() {
             // 진행 중인 종목 요청이 홈으로 돌아온 뒤 늦게 도착해 화면을 다시 덮지 못하게 한다.
+            pendingStockSelection = null;
             activeSearchToken++;
             if (activeSearchController) { try { activeSearchController.abort(); } catch (e) {} }
             if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
@@ -3216,7 +3217,15 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         let rightMarketController = null;
         let rightMarketRequestToken = 0;
 
+        // STEP 54: 오른쪽 사이드바 연속 선택 안정화.
+        // 이전 fetch를 브라우저에서 abort해도 이미 Render에서 시작된 Python/외부 API 작업은
+        // 즉시 취소되지 않으므로, 빠른 종목 전환은 서버 작업을 동시에 쌓게 만든다.
+        // 최신 선택만 남기고 실제 분석은 한 번에 하나만 실행한다.
+        let stockSelectionRunning = false;
+        let pendingStockSelection = null;
+
         function renderStockData(data, searchToken, displayNameOverride = '') {
+            if (pendingStockSelection) return;
             if (!data || searchToken !== activeSearchToken) return;
 
             // 차트도 동일한 analyze 응답의 candles만 사용한다.
@@ -3319,7 +3328,7 @@ document.getElementById('result-card-wrap').style.display = 'block';
 // 자동으로 페이지 맨 위로 이동시키지 않는다.
         }
 
-        async function selectStock(query, forceServer = false, displayNameOverride = '') {
+        async function _runSelectedStock(query, forceServer = false, displayNameOverride = '') {
             const rawQuery = String(query || '').trim();
             if (!rawQuery) return;
 
@@ -3355,7 +3364,15 @@ document.getElementById('result-card-wrap').style.display = 'block';
             // 서버가 종목의 canonical key를 확정한다. 프론트는 임의의 종목키를 만들지 않는다.
             try {
                 const url = '/api/analyze?q=' + encodeURIComponent(rawQuery) + '&mode=core';
-                const response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
+                const timeoutId = setTimeout(() => {
+                    try { activeSearchController?.abort(); } catch (e) {}
+                }, 15000);
+                let response;
+                try {
+                    response = await fetch(url, { signal: searchSignal, cache: 'no-store' });
+                } finally {
+                    clearTimeout(timeoutId);
+                }
                 const contentType = response.headers.get('content-type') || '';
                 let data = contentType.includes('application/json') ? await response.json() : null;
                 if (!data) throw new Error('서버 응답을 읽지 못했습니다.');
@@ -3410,6 +3427,43 @@ document.getElementById('result-card-wrap').style.display = 'block';
                     alert('데이터를 처리하는 중 오류가 발생했습니다.\n' + (err?.message || '알 수 없는 오류'));
                     document.getElementById('loading').style.display = 'none';
                 }
+            }
+        }
+
+        // STEP 54: 실제 브라우저 종목 선택 진입점.
+        // 현재 분석이 끝나기 전에 새 종목을 누르면 최신 선택만 대기열에 남긴다.
+        async function selectStock(query, forceServer = false, displayNameOverride = '') {
+            const rawQuery = String(query || '').trim();
+            if (!rawQuery) return;
+
+            pendingStockSelection = {
+                query: rawQuery,
+                forceServer: !!forceServer,
+                displayNameOverride: String(displayNameOverride || '').trim()
+            };
+
+            if (activeDetailsController) { try { activeDetailsController.abort(); } catch (e) {} }
+
+            const center = document.getElementById('centerInput');
+            const bottom = document.getElementById('bottomInput');
+            if (center) center.value = pendingStockSelection.displayNameOverride || rawQuery;
+            if (bottom) bottom.value = pendingStockSelection.displayNameOverride || rawQuery;
+
+            if (stockSelectionRunning) return;
+
+            stockSelectionRunning = true;
+            try {
+                while (pendingStockSelection) {
+                    const job = pendingStockSelection;
+                    pendingStockSelection = null;
+                    try {
+                        await _runSelectedStock(job.query, job.forceServer, job.displayNameOverride);
+                    } catch (e) {
+                        console.error('[STOCK SELECT QUEUE] run failed:', e);
+                    }
+                }
+            } finally {
+                stockSelectionRunning = false;
             }
         }
 

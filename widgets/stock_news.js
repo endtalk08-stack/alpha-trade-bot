@@ -9,47 +9,6 @@
     let controller = null;
     let hasRenderedOnce = false;
 
-    function esc(value) {
-        return String(value ?? '').replace(/[&<>"']/g, ch => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[ch]));
-    }
-
-    function renderKeyNews(items) {
-        const section = document.getElementById('keyNewsSection');
-        const root = document.getElementById('keyNewsList');
-        if (!section || !root) return;
-        const rows = Array.isArray(items) ? items.slice(0, 2) : [];
-        if (!rows.length) {
-            section.style.display = 'none';
-            root.innerHTML = '';
-            return;
-        }
-        section.style.display = '';
-        root.innerHTML = `
-            <div class="key-news-grid">
-                ${rows.map(n => {
-                    const label = String(n.sentiment_label || '중립');
-                    const labelStyle = label === '호재'
-                        ? 'background:rgba(16,185,129,.13);color:#10b981;border:1px solid rgba(16,185,129,.24);'
-                        : label === '악재'
-                            ? 'background:rgba(239,68,68,.13);color:#ef4444;border:1px solid rgba(239,68,68,.24);'
-                            : label === '시장'
-                                ? 'background:rgba(59,130,246,.13);color:#60a5fa;border:1px solid rgba(59,130,246,.24);'
-                                : 'background:rgba(148,163,184,.10);color:var(--text-muted);border:1px solid var(--border-line);';
-                    return `
-                        <a href="${esc(n.link || '#')}" target="_blank" rel="noopener noreferrer" class="key-news-card">
-                            <div style="display:flex;align-items:center;gap:7px;margin-bottom:9px;">
-                                <span style="${labelStyle}font-size:.68rem;font-weight:800;padding:3px 7px;border-radius:6px;">${esc(label)}</span>
-                                <span style="font-size:.68rem;color:var(--text-muted);">${esc(n.media || n.source || '')}</span>
-                            </div>
-                            <div style="font-size:.91rem;font-weight:800;line-height:1.45;color:var(--text-title);word-break:keep-all;">${esc(n.title || '-')}</div>
-                            <div style="font-size:.68rem;color:var(--text-muted);margin-top:9px;">${esc(n.pubDate || '')}</div>
-                        </a>`;
-                }).join('')}
-            </div>`;
-    }
-
     function render(items) {
         const root = document.getElementById('stockNewsList');
         if (!root) return;
@@ -87,7 +46,6 @@
         const ctx = context || {};
         const root = document.getElementById('stockNewsList');
         if (!hasRenderedOnce && root && !root.innerHTML.trim()) {
-            renderKeyNews([]);
             render([]);
         }
         if (root) { root.setAttribute('aria-busy', 'true'); root.style.opacity = '0.55'; }
@@ -104,7 +62,6 @@
             const payload = await response.json().catch(() => null);
             if (token !== requestToken) return;
             if (!response.ok || !payload || payload.ok === false) throw new Error((payload && payload.error) || '뉴스 데이터 오류');
-            renderKeyNews(payload.key_news || []);
             render(payload.data || []);
             hasRenderedOnce = true;
             if (root) { root.removeAttribute('aria-busy'); root.style.opacity = '1'; }

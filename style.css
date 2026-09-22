@@ -2224,28 +2224,3 @@
                 pointer-events: auto !important;
             }
         }
-
-/* 주요뉴스: 뉴스 10개 중 상위 2개를 카드형으로 강조 */
-.key-news-grid {
-    display:grid;
-    grid-template-columns:repeat(2,minmax(0,1fr));
-    gap:10px;
-}
-.key-news-card {
-    display:block;
-    min-width:0;
-    padding:14px 15px;
-    border:1px solid var(--border-line);
-    border-radius:10px;
-    background:var(--bg-card);
-    text-decoration:none;
-    box-sizing:border-box;
-    transition:border-color .15s ease, transform .15s ease;
-}
-.key-news-card:hover {
-    border-color:var(--text-muted);
-    transform:translateY(-1px);
-}
-@media (max-width: 640px) {
-    .key-news-grid { grid-template-columns:1fr; }
-}

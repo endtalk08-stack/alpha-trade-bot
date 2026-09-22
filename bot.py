@@ -124,7 +124,7 @@ US_STOCK_MAP = {
     "DIA": "DIA", "SOXX": "SOXX"
 }
 from us_leading_stocks import US_SECTOR_STOCK_UNIVERSE, US_TICKER_PATTERN, fetch_us_leading_stocks
-from news_sources import (fetch_naver_news, fetch_finlight_news, translate_news_titles_to_korean, fetch_finlight_stock_news, fetch_finlight_economic_news, fetch_google_stock_news, fetch_google_economic_news, fetch_rss_news, fetch_standard_stock_news)
+from news_sources import (fetch_naver_news, fetch_finlight_news, translate_news_titles_to_korean, fetch_finlight_stock_news, fetch_finlight_economic_news, fetch_google_stock_news, fetch_google_economic_news, fetch_rss_news)
 try:
     from .right_market_us import _right_sidebar_us_rows
 except ImportError:
@@ -2225,6 +2225,7 @@ def fetch_all_world_board_parallel(force=False):
 
 # ===== WHY MOVED: multi-source news clustering engine =====
 from news_analysis import (NEWS_CLUSTER_STOPWORDS, NEWS_GENERIC_TOKENS, NEWS_POLARITY, _news_tokens, _news_cluster_key, _news_polarity, analyze_news_clusters, build_clustered_material_evidence)
+from news_standard import normalize_news_list
 from dart_disclosure import fetch_dart_disclosures
 
 
@@ -8217,65 +8218,6 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._json(500, {"ok": False, "error": "세계시장 데이터를 가져오지 못했습니다."})
             return
 
-        if parsed.path == "/api/news":
-            try:
-                symbol = str(params.get("symbol", [""])[0]).strip().upper()
-                market_name = str(params.get("market", [""])[0]).strip()
-                formal_name = str(params.get("name", [""])[0]).strip()
-                limit = int(params.get("limit", ["10"])[0])
-                limit = max(1, min(limit, 20))
-
-                rows = fetch_standard_stock_news(
-                    symbol=symbol,
-                    market_name=market_name,
-                    formal_name=formal_name,
-                    limit=limit,
-                )
-
-                if market_name == "미국주식":
-                    rows = translate_news_titles_to_korean(rows, market_name)
-
-                self._json(200, {
-                    "ok": True,
-                    "data": rows,
-                    "count": len(rows),
-                })
-            except Exception as exc:
-                print(f"API ERROR /api/news: {type(exc).__name__}: {exc}")
-                self._json(500, {"ok": False, "error": "뉴스 데이터를 가져오지 못했습니다."})
-            return
-
-        if parsed.path == "/api/news-detail":
-            try:
-                news_id = str(params.get("id", [""])[0]).strip()
-                symbol = str(params.get("symbol", [""])[0]).strip().upper()
-                market_name = str(params.get("market", [""])[0]).strip()
-                formal_name = str(params.get("name", [""])[0]).strip()
-                limit = int(params.get("limit", ["20"])[0])
-                limit = max(1, min(limit, 20))
-
-                if not news_id:
-                    self._json(400, {"ok": False, "error": "뉴스 id가 필요합니다."})
-                    return
-
-                rows = fetch_standard_stock_news(
-                    symbol=symbol,
-                    market_name=market_name,
-                    formal_name=formal_name,
-                    limit=limit,
-                )
-
-                row = next((x for x in rows if x.get("id") == news_id), None)
-                if row is None:
-                    self._json(404, {"ok": False, "error": "해당 뉴스 데이터를 찾을 수 없습니다."})
-                    return
-
-                self._json(200, {"ok": True, "data": row})
-            except Exception as exc:
-                print(f"API ERROR /api/news-detail: {type(exc).__name__}: {exc}")
-                self._json(500, {"ok": False, "error": "뉴스 상세 데이터를 가져오지 못했습니다."})
-            return
-
         if parsed.path == "/api/stock-news":
             try:
                 symbol = str(params.get("symbol", [""])[0]).strip().upper()
@@ -8289,6 +8231,22 @@ class WebHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"API ERROR /api/stock-news: {type(exc).__name__}: {exc}")
                 self._json(500, {"ok": False, "error": "종목 뉴스를 가져오지 못했습니다."})
+            return
+
+        if parsed.path == "/api/news-standard":
+            try:
+                symbol = str(params.get("symbol", [""])[0]).strip().upper()
+                market_name = str(params.get("market", [""])[0]).strip()
+                formal_name = str(params.get("name", [""])[0]).strip()
+                limit = int(params.get("limit", ["10"])[0])
+                rows = fetch_google_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
+                if market_name == "미국주식":
+                    rows = translate_news_titles_to_korean(rows, market_name)
+                data = normalize_news_list(rows, symbol=symbol, market=market_name, stock_name=formal_name)
+                self._json(200, {"ok": True, "data": data})
+            except Exception as exc:
+                print(f"API ERROR /api/news-standard: {type(exc).__name__}: {exc}")
+                self._json(500, {"ok": False, "error": "표준 뉴스 데이터를 만들지 못했습니다."})
             return
 
         if parsed.path == "/api/global-news":

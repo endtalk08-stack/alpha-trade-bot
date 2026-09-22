@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import hashlib
 import html
 import urllib.parse
 import time
@@ -599,120 +598,6 @@ def fetch_google_news_only(query_keyword, limit=10, cache_tag='google'):
         return list(cached) if isinstance(cached, list) else []
     result = _fetch_google_news_only_uncached(clean_k, lim)
     return _cache_set(NEWS_CACHE, key, list(result or []))
-
-
-def _news_stable_id(item):
-    """원문 URL/제목/시간을 이용해 뉴스에 안정적인 식별자를 부여한다."""
-    raw = "|".join([
-        str(item.get("link") or "").strip(),
-        str(item.get("title") or "").strip(),
-        str(item.get("pubDate") or "").strip(),
-        str(item.get("media") or item.get("source") or "").strip(),
-    ])
-    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _extract_news_keywords(item, max_keywords=5):
-    """기존 뉴스 분석 키워드 체계를 재사용해 원문에 실제 등장한 핵심 키워드만 뽑는다."""
-    text = " ".join([
-        str(item.get("title") or ""),
-        str(item.get("description") or item.get("summary") or ""),
-    ]).lower()
-
-    candidates = [
-        "실적", "수주", "계약", "투자", "증설", "생산", "공장", "hbm", "ai",
-        "데이터센터", "반도체", "메모리", "인수", "합병", "지분", "자사주",
-        "배당", "관세", "규제", "제재", "금리", "연준", "인플레이션",
-        "고용", "환율", "유가", "공급망", "특허", "기술", "협력",
-        "파트너십", "업황", "전망", "컨센서스"
-    ]
-    found = []
-    for kw in candidates:
-        if kw.lower() in text and kw not in found:
-            found.append(kw)
-    return found[:max_keywords]
-
-
-def build_standard_news_record(item, symbol="", market_name="", formal_name=""):
-    """기존 공급원 데이터를 gaemiGTP 표준 뉴스 객체로 변환한다.
-
-    이 단계에서는 기사 본문을 추정하지 않는다.
-    description/summary가 공급원에서 실제로 제공된 경우에만 전달한다.
-    """
-    item = dict(item or {})
-    title = html.unescape(str(item.get("title") or "")).strip()
-    media = str(item.get("media") or item.get("source") or "출처").strip()
-    pub_date = str(item.get("pubDate") or item.get("published_at") or "").strip()
-    link = str(item.get("link") or item.get("original_url") or "#").strip()
-    description = html.unescape(
-        str(item.get("description") or item.get("summary") or "")
-    ).strip()
-
-    polarity = _news_polarity({
-        "title": title,
-        "description": description,
-        "summary": description,
-    })
-
-    sentiment = {
-        1: "호재",
-        -1: "악재",
-        0: "정보",
-    }[polarity]
-
-    keywords = _extract_news_keywords(item)
-
-    # 현재 단계에서는 기사에서 직접 확인되지 않은 관련종목을 임의 생성하지 않는다.
-    related_stocks = []
-    if symbol and (
-        symbol.lower() in title.lower()
-        or (formal_name and formal_name.lower() in title.lower())
-    ):
-        related_stocks.append(symbol)
-
-    return {
-        "id": _news_stable_id(item),
-        "symbol": str(symbol or "").strip().upper(),
-        "market": str(market_name or "").strip(),
-        "title": title,
-        "source": media,
-        "published_at": pub_date,
-        "original_url": link,
-        "description": description,
-        "sentiment": sentiment,
-        "sentiment_score": polarity,
-        "keywords": [f"#{x}" for x in keywords],
-        "related_stocks": related_stocks,
-        "related_issues": [f"#{x}" for x in keywords],
-    }
-
-
-def fetch_standard_stock_news(symbol="", market_name="", formal_name="", limit=10):
-    """선택 종목 뉴스를 표준 News 객체로 반환한다.
-
-    기존 Google News 수집기를 우선 재사용하고, 빈 결과일 때만 기존 Naver fallback을 사용한다.
-    """
-    raw = fetch_google_stock_news(
-        symbol=symbol,
-        market_name=market_name,
-        formal_name=formal_name,
-        limit=limit,
-    )
-    if not raw:
-        query = formal_name or symbol
-        raw = fetch_naver_news(query, limit=limit) if query else []
-
-    rows = [
-        build_standard_news_record(
-            item,
-            symbol=symbol,
-            market_name=market_name,
-            formal_name=formal_name,
-        )
-        for item in (raw or [])
-    ]
-    return [row for row in rows if row.get("title")]
-
 
 
 def fetch_google_stock_news(symbol='', market_name='', formal_name='', limit=10):

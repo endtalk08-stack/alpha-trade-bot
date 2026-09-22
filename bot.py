@@ -2224,7 +2224,7 @@ def fetch_all_world_board_parallel(force=False):
 
 
 # ===== WHY MOVED: multi-source news clustering engine =====
-from news_analysis import (NEWS_CLUSTER_STOPWORDS, NEWS_GENERIC_TOKENS, NEWS_POLARITY, _news_tokens, _news_cluster_key, _news_polarity, analyze_news_clusters, build_clustered_material_evidence)
+from news_analysis import (NEWS_CLUSTER_STOPWORDS, NEWS_GENERIC_TOKENS, NEWS_POLARITY, _news_tokens, _news_cluster_key, _news_polarity, analyze_news_clusters, build_clustered_material_evidence, select_key_news)
 from dart_disclosure import fetch_dart_disclosures
 
 
@@ -6776,8 +6776,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
                                 </div>
                             </div>
 
-                        <!-- 3행 좌측: 종목 뉴스 (832px) -->
+                        <!-- 3행 좌측: 주요뉴스 + 종목 뉴스 (832px) -->
                         <div class="card" id="rowNews">
+                            <div id="keyNewsSection" style="margin-bottom:18px;">
+                                <div class="board-header-title" style="margin-bottom:12px;">🔥 오늘 주요뉴스 <span style="font-size:0.72rem;color:var(--text-muted);font-weight:500;">(최대 2개)</span></div>
+                                <div id="keyNewsList"></div>
+                            </div>
                             <div class="board-header-title" style="margin-bottom:12px;">종목 뉴스</div>
                             <div id="stockNewsList" style="flex:1;"></div>
                         </div>
@@ -8226,7 +8230,8 @@ class WebHandler(BaseHTTPRequestHandler):
                 rows = fetch_google_stock_news(symbol, market_name, formal_name, max(1, min(limit, 20)))
                 if market_name == "미국주식":
                     rows = translate_news_titles_to_korean(rows, market_name)
-                self._json(200, {"ok": True, "data": rows})
+                key_news = select_key_news(rows, limit=2)
+                self._json(200, {"ok": True, "data": rows, "key_news": key_news})
             except Exception as exc:
                 print(f"API ERROR /api/stock-news: {type(exc).__name__}: {exc}")
                 self._json(500, {"ok": False, "error": "종목 뉴스를 가져오지 못했습니다."})

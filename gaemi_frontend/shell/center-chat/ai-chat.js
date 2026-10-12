@@ -85,6 +85,76 @@
       row?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
+    // A lightweight, on-demand SVG line chart inside the existing chat thread.
+    // This intentionally does not mount or reuse the alpha-bot chart widget.
+    async function showRequestedPriceChart(question, sessionId, signal) {
+      const stock = (window.GaemiGTPCenterChatSearch?.resolveStockMention?.(question)
+        || (question.includes('삼성전자') ? '삼성전자' : '')
+        || ctx.getSession()?.stock || '삼성전자').trim();
+      const response = await fetch('/api/chart?q=' + encodeURIComponent(stock), {signal, cache: 'no-store'});
+      if (!response.ok) throw new Error('시세를 가져오지 못했어.');
+      const data = await response.json();
+      const raw = data.candles || data.chart?.candles || data.chart_data?.candles || data.data?.candles || [];
+      const candles = raw.filter((v) => Number.isFinite(Number(v.close)) && Number(v.close) > 0).slice(-65);
+      if (!candles.length) throw new Error('표시할 가격 데이터가 없어.');
+      if (signal.aborted || ctx.getSession()?.id !== sessionId) return;
+      const answer = stock + ' 주가 추이 (일봉 · 최근 ' + candles.length + '개)';
+      const row = ctx.appendChatMessage('assistant', answer, 'answer', sessionId);
+      if (!row) return;
+      row.textContent = '';
+      const card = document.createElement('div');
+      card.style.cssText = 'width:min(100%,640px);padding:16px;border:1px solid #7775;border-radius:14px;background:var(--chart-bg,transparent);box-sizing:border-box';
+      const title = document.createElement('div');
+      title.textContent = answer;
+      title.style.cssText = 'font-weight:700;font-size:15px;margin-bottom:12px';
+      card.appendChild(title);
+      const closes = candles.map((v) => Number(v.close));
+      const low = Math.min(...closes), high = Math.max(...closes);
+      const spread = Math.max(high - low, Math.abs(high) * 0.005, 1);
+      const min = low - spread * 0.12, max = high + spread * 0.12;
+      const width = 600, height = 240, left = 12, right = 10, top = 15, bottom = 34;
+      const plotW = width - left - right, plotH = height - top - bottom;
+      const y = (v) => top + (max - v) / (max - min) * plotH;
+      const x = (i) => left + i / Math.max(1, candles.length - 1) * plotW;
+      const svgNS = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(svgNS, 'svg');
+      svg.setAttribute('viewBox', '0 0 600 240');
+      svg.setAttribute('role', 'img');
+      svg.setAttribute('aria-label', stock + ' 최근 일봉 종가 추이');
+      svg.style.cssText = 'display:block;width:100%;height:auto;overflow:visible';
+      const line = (x1,y1,x2,y2,color,w=1) => {
+        const p = document.createElementNS(svgNS,'line');
+        for(const [k,v] of Object.entries({x1,y1,x2,y2})) p.setAttribute(k,String(v));
+        p.setAttribute('stroke',color);p.setAttribute('stroke-width',String(w));svg.appendChild(p);
+      };
+      const label = (content, tx, ty, anchor='start') => {
+        const t=document.createElementNS(svgNS,'text');t.textContent=content;
+        t.setAttribute('x',String(tx));t.setAttribute('y',String(ty));
+        t.setAttribute('text-anchor',anchor);t.setAttribute('font-size','12');
+        t.setAttribute('fill','currentColor');svg.appendChild(t);
+      };
+      for (let i=0;i<=3;i++) {
+        const v=min+(max-min)*i/3, yy=y(v);
+        line(left,yy,width-right,yy,'#9994');
+        label(Math.round(v).toLocaleString('ko-KR'),width-right,yy-5,'end');
+      }
+      const path=document.createElementNS(svgNS,'path');
+      const d=candles.map((v,i)=>(i?'L':'M')+x(i).toFixed(2)+' '+y(closes[i]).toFixed(2)).join(' ');
+      path.setAttribute('d',d);path.setAttribute('stroke','#f97316');
+      path.setAttribute('stroke-width','2.5');path.setAttribute('stroke-linejoin','round');
+      path.setAttribute('stroke-linecap','round');path.setAttribute('fill','none');svg.appendChild(path);
+      const dot=document.createElementNS(svgNS,'circle');
+      dot.setAttribute('cx',String(x(candles.length-1)));dot.setAttribute('cy',String(y(closes[closes.length-1])));
+      dot.setAttribute('r','4');dot.setAttribute('fill','#f97316');svg.appendChild(dot);
+      label(String(candles[0].time||''),left,height-9);
+      label(String(candles[candles.length-1].time||''),width-right,height-9,'end');
+      card.appendChild(svg);
+      const foot=document.createElement('div');foot.style.cssText='font-size:12px;opacity:.75;margin-top:8px';
+      foot.textContent='마지막 종가 '+closes[closes.length-1].toLocaleString('ko-KR')+'원 · 알파봇 API 제공 · 지연 시세 가능';
+      card.appendChild(foot);row.appendChild(card);
+      row.scrollIntoView({behavior:'smooth',block:'nearest'});
+    }
+
     async function requestChatAnswer(question, sessionId, history) {
       const controller = new AbortController();
       ctx.setActiveQuestionController(controller);
@@ -129,6 +199,14 @@
         // server-side result instead of collecting the same data twice.
         if (ctx.getPendingAnalysis()?.stock === stock) await ctx.getPendingAnalysis().promise;
         if (controller.signal.aborted || ctx.getSession()?.id !== sessionId) return;
+        if (/(차트|주가\\s*그래프|가격\\s*그래프).*(보여|그려|띄워|나와|줘)|(?:보여|그려|띄워).*(차트|그래프)/i.test(question)) {
+          try {
+            await showRequestedPriceChart(question, sessionId, controller.signal);
+          } catch (chartError) {
+            if (!controller.signal.aborted) appendChatError(chartError.message || '차트를 표시하지 못했어.', sessionId);
+          }
+          return;
+        }
         const response = await fetch(ctx.backendUrl + '/api/ai-test/chat', {
           method: 'POST',
           credentials: 'same-origin',

@@ -20,7 +20,7 @@ window.GaemiGTPDisclosures.hydrateDartDetails = async function (items, limit = n
           receipt_no: String(item.receipt_no || ''),
           report: String(item.report || item.title || '')
         });
-        const response = await fetch(`/disclosures/dart/detail?${params.toString()}`);
+        const response = await fetch(`${location.pathname.startsWith("/gaemi") ? "/gaemi-api" : ""}/disclosures/dart/detail?${params.toString()}`);
         if (!response.ok) continue;
         const payload = await response.json();
         const detail = payload && payload.ok && payload.detail ? payload.detail : null;

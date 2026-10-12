@@ -36,7 +36,6 @@
     dia: ['DIA','DIA'], vix: ['VIX','VIX'], forex: ['원/달러','USD/KRW'],
     oil: ['WTI 유가','WTI 유가'], gold: ['금','금']
   });
-  let marketRequestId = 0;
   function renderMarketCard(id) {
     const title = MARKETS[id][0];
     return `<article class="central-widget-card central-widget-card--kospi" data-central-widget-id="${escapeHtml(id)}">
@@ -85,27 +84,21 @@
     } else {line.setAttribute('points','');fill.setAttribute('points','');}
     if(status)status.textContent=String(item.market_status || item.traded_at || '최근 시세');
   }
-  async function fillMarketWidgets() {
-    const request=++marketRequestId;
-    try {
-      const response=await fetch('/api/world-board',{cache:'no-store'});
-      if(!response.ok)throw Error('market response '+response.status);
-      const result=await response.json();
-      if(request!==marketRequestId)return;
-      const rows=Array.isArray(result.data)?result.data:[];
-      for(const [id, config] of Object.entries(MARKETS)) {
-        if(activeIds.includes(id))updateMarketCard(id,rows.find(v=>v.name===config[1]));
-      }
-    }catch(_){
-      if(request!==marketRequestId)return;
-      for(const id of Object.keys(MARKETS)) {
+  function fillMarketWidgets() {
+    const market=window.GaemiGTPMarketData;
+    if(!market)return;
+    const snapshot=market.snapshot();
+    for(const [id,config] of Object.entries(MARKETS)){
+      if(!activeIds.includes(id))continue;
+      const item=market.find(config[1]);
+      if(item)updateMarketCard(id,item);
+      else{
         const card=Array.from(body()?.querySelectorAll('[data-central-widget-id]')||[]).find(v=>v.dataset.centralWidgetId===id);
         const status=card?.querySelector('[data-market-status]');
-        if(status)status.textContent='연결 확인 필요';
+        if(status)status.textContent=snapshot.error?'연결 확인 필요':'조회 중';
       }
     }
   }
-
   function render() {
     const dock = root();
     const bodyEl = body();
@@ -130,7 +123,7 @@
       </article>`;
     }).join('');
     dock.dataset.count = String(activeIds.length);
-    if (activeIds.some(id => MARKETS[id])) void fillMarketWidgets();
+    if (activeIds.some(id => MARKETS[id])) { fillMarketWidgets(); void window.GaemiGTPMarketData?.refresh?.(); }
     document.querySelectorAll('[data-central-widget-mount]').forEach(node => {
       window.GaemiGTPAnalysisWidgets?.mount?.(node.dataset.centralWidgetMount, node);
     });
@@ -157,6 +150,7 @@
       if (button) remove(button.dataset.centralWidgetRemove);
     });
   }
+  window.addEventListener('gaemi-market-data-change',fillMarketWidgets);
   document.addEventListener('DOMContentLoaded', initialize);
   window.GaemiGTPWidgetDock = { initialize, add, remove, getActiveIds: () => [...activeIds], isActive: id => activeIds.includes(id) };
 }());

@@ -85,7 +85,17 @@
       row?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
-    // A lightweight, on-demand SVG line chart inside the existing chat thread.
+    function isChartDisplayRequest(text) {
+      const normalized = String(text || '').replace(/\\s+/g, ' ').trim();
+      const chartNoun = /(차트|그래프|주가\\s*추이|가격\\s*추이|캔들|봉차트)/i;
+      if (!chartNoun.test(normalized)) return false;
+      // Analysis questions should still go through AI, not the chart-only renderer.
+      if (/(분석|해석|설명|어때|전망|판단|매수|매도|지지|저항|패턴|의미|왜|원인)/.test(normalized)) return false;
+      // A chart noun alone (with or without a stock name) is a display request.
+      return true;
+    }
+
+        // A lightweight, on-demand SVG line chart inside the existing chat thread.
     // This intentionally does not mount or reuse the alpha-bot chart widget.
     async function showRequestedPriceChart(question, sessionId, signal) {
       const stock = (window.GaemiGTPCenterChatSearch?.resolveStockMention?.(question)
@@ -193,7 +203,7 @@
         // server-side result instead of collecting the same data twice.
         if (ctx.getPendingAnalysis()?.stock === stock) await ctx.getPendingAnalysis().promise;
         if (controller.signal.aborted || ctx.getSession()?.id !== sessionId) return;
-        if (/(차트|주가\\s*그래프|가격\\s*그래프).*(보여|그려|띄워|나와|줘)|(?:보여|그려|띄워).*(차트|그래프)/i.test(question)) {
+        if (isChartDisplayRequest(question)) {
           try {
             await showRequestedPriceChart(question, sessionId, controller.signal);
           } catch (chartError) {

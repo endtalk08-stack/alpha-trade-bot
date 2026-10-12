@@ -171,6 +171,7 @@
         model_daily_limit: '오늘은 더 답변하기 어려워.',
         total_daily_limit: '오늘은 더 답변하기 어려워.',
         private_access_required: '로그인이 필요해.',
+        admin_test_disabled_or_unauthorized: 'AI 테스트 로그인이 필요해. 비밀번호를 확인해 줘.',
         ai_test_not_configured: '아직 답변을 준비하지 못했어.'
       };
       // 기존 중앙 채팅 로딩 스타일을 그대로 사용한다. 별도 AI 아이콘은 표시하지 않는다.
@@ -210,13 +211,30 @@
           }
           return;
         }
-        const response = await fetch(ctx.backendUrl + '/api/ai-test/chat', {
-          method: 'POST',
-          credentials: 'same-origin',
-          signal: controller.signal,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ role: 'compare', stock, question, history })
+        const requestBody = JSON.stringify({ role: 'compare', stock, question, history });
+        const sendAI = () => fetch(ctx.backendUrl + '/api/ai-test/chat', {
+          method: 'POST', credentials: 'same-origin', signal: controller.signal,
+          headers: { 'Content-Type': 'application/json' }, body: requestBody
         });
+        let response = await sendAI();
+        if (response.status === 403 && !controller.signal.aborted) {
+          // Test preview only: password never stored in JS, localStorage or query strings.
+          const statusResponse = await fetch(ctx.backendUrl + '/api/ai-session/status', {
+            credentials: 'same-origin', signal: controller.signal
+          });
+          const loginStatus = statusResponse.ok ? await statusResponse.json() : {};
+          if (loginStatus.configured && !loginStatus.authenticated) {
+            const password = window.prompt('AI 채팅 테스트 비밀번호를 입력해 주세요.');
+            if (password !== null && password !== '') {
+              const loginResponse = await fetch(ctx.backendUrl + '/api/ai-session/login', {
+                method: 'POST', credentials: 'same-origin', signal: controller.signal,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password })
+              });
+              if (loginResponse.ok) response = await sendAI();
+            }
+          }
+        }
         const result = await response.json();
         if (controller.signal.aborted || ctx.getSession()?.id !== sessionId) return;
         if (!response.ok || !result.ok || !result.answer) {

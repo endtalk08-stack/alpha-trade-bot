@@ -44,7 +44,11 @@
       <div class="central-widget-card__kospi-title">${escapeHtml(title)}</div>
       <div class="central-widget-card__kospi-body" aria-label="${escapeHtml(title)} 시세">
         <svg class="central-widget-card__sparkline" viewBox="0 0 72 28" preserveAspectRatio="none" aria-hidden="true">
-          <polygon data-market-sparkline-fill points=""></polygon>
+          <defs><linearGradient id="market-sparkline-gradient-${escapeHtml(id)}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="currentColor" stop-opacity="0.28"></stop>
+            <stop offset="100%" stop-color="currentColor" stop-opacity="0"></stop>
+          </linearGradient></defs>
+          <polygon data-market-sparkline-fill points="" style="fill:url(#market-sparkline-gradient-${escapeHtml(id)});stroke:none"></polygon>
           <polyline data-market-sparkline points="" fill="none"></polyline>
         </svg>
         <div class="central-widget-card__kospi-copy">
@@ -77,7 +81,7 @@
       const pts=values.map((v,i)=>(1+i*70/(values.length-1)).toFixed(1)+','+(25-(v-min)/spread*22).toFixed(1)).join(' ');
       line.setAttribute('points',pts);
       fill.setAttribute('points','1,27 '+pts+' 71,27');
-      fill.setAttribute('fill',up?'#ff4d6728':'#3b82f628');
+      fill.style.fill='url(#market-sparkline-gradient-'+id+')';
     } else {line.setAttribute('points','');fill.setAttribute('points','');}
     if(status)status.textContent=String(item.market_status || item.traded_at || '최근 시세');
   }

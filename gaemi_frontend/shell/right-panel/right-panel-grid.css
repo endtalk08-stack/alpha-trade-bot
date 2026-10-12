@@ -1,0 +1,46 @@
+/* Right Panel Dashboard Grid — layout skeleton only.
+   Scope: #rightPanelGrid only.
+   News/disclosures remain outside this grid.
+   No widget/data/chat/API behavior belongs in this file. */
+
+#rightPanelGrid {
+  --right-panel-grid-columns: 12;
+  --right-panel-grid-gap: 10px;
+
+  /* Standard vertical sizes from the dashboard grid plan. */
+  --right-panel-height-s: 240px;
+  --right-panel-height-m: 320px;
+  --right-panel-height-l: 400px;
+  --right-panel-height-xl: 480px;
+  --right-panel-height-xxl: 560px;
+
+  width: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: repeat(var(--right-panel-grid-columns), minmax(0, 1fr));
+  grid-auto-flow: row;
+  grid-auto-rows: minmax(0, auto);
+  gap: var(--right-panel-grid-gap);
+  align-content: start;
+}
+
+/* Width rules for future dashboard widgets. */
+#rightPanelGrid > [data-grid-span="3"] { grid-column: span 3; }
+#rightPanelGrid > [data-grid-span="4"] { grid-column: span 4; }
+#rightPanelGrid > [data-grid-span="6"] { grid-column: span 6; }
+#rightPanelGrid > [data-grid-span="8"] { grid-column: span 8; }
+#rightPanelGrid > [data-grid-span="12"] { grid-column: 1 / -1; }
+
+/* Standard height rules. Nothing uses these until a dashboard widget opts in. */
+#rightPanelGrid > [data-grid-height="s"] { height: var(--right-panel-height-s); }
+#rightPanelGrid > [data-grid-height="m"] { height: var(--right-panel-height-m); }
+#rightPanelGrid > [data-grid-height="l"] { height: var(--right-panel-height-l); }
+#rightPanelGrid > [data-grid-height="xl"] { height: var(--right-panel-height-xl); }
+#rightPanelGrid > [data-grid-height="xxl"] { height: var(--right-panel-height-xxl); }
+
+#rightPanelGrid > [data-grid-span],
+#rightPanelGrid > [data-grid-height] {
+  min-width: 0;
+  box-sizing: border-box;
+}

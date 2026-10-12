@@ -1,0 +1,80 @@
+@import url('./right-panel-grid.css');
+
+/* Right Panel Shell — fixed three-column panel. */
+#gaemiWorkspace { --right-panel-width: calc((100vw - 58px) / 4); }
+
+#gaemiWorkspace #rightPanel {
+  order: 3;
+  flex: 0 0 var(--right-panel-width);
+  width: var(--right-panel-width);
+  min-width: 240px;
+  max-width: none;
+  height: 100%;
+  border-left: 0 !important;
+  background: var(--gtp-bg);
+}
+
+/* 고정 폭 패널의 세로 구분선. 드래그 손잡이가 아니다. */
+#gaemiWorkspace #rightPanelResizer {
+  order: 2;
+  position: relative;
+  flex: 0 0 10px;
+  width: 10px;
+  height: 100%;
+  cursor: default;
+  background: transparent;
+  z-index: 20;
+  pointer-events: none;
+}
+#gaemiWorkspace #rightPanelResizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--gtp-border);
+}
+html.dark #gaemiWorkspace #rightPanelResizer::after { background: var(--gtp-border); }
+
+body.right-panel-closed #rightPanel,
+body.right-panel-closed #rightPanelResizer,
+body:not(.right-panel-open) #rightPanel,
+body:not(.right-panel-open) #rightPanelResizer { display: none !important; }
+
+@media (min-width: 1024px) {
+  #gaemiWorkspace #rightPanel { min-width: 240px; }
+  body.right-panel-open:not(.right-panel-maximized) #gaemiWorkspace #rightPanel { border-left: 0; }
+  body.right-panel-open:not(.right-panel-maximized) #gaemiWorkspace #mainContent {
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 300px !important;
+    max-width: none !important;
+  }
+  body.right-panel-maximized #gaemiWorkspace #mainContent { display: none !important; }
+  body.right-panel-maximized #gaemiWorkspace #rightPanelResizer { display: none !important; }
+  body.right-panel-maximized #gaemiWorkspace #rightPanel {
+    flex: 1 1 auto !important;
+    width: auto !important;
+    max-width: none !important;
+    min-width: 0 !important;
+  }
+}
+
+@media (max-width: 1023px) {
+  #gaemiWorkspace #rightPanel {
+    flex-basis: min(var(--right-panel-width), 100vw);
+    width: min(var(--right-panel-width), 100vw);
+    min-width: 240px;
+  }
+  body.right-panel-open #gaemiWorkspace #mainContent { display: none !important; }
+  body.right-panel-open #gaemiWorkspace #rightPanelResizer { display: none !important; }
+  body.right-panel-open #gaemiWorkspace #rightPanel {
+    flex: 0 0 100dvw !important;
+    width: 100dvw !important;
+    max-width: 100dvw !important;
+    min-width: 0 !important;
+  }
+  #rightPanel [data-panel-maximize] { display: none !important; }
+}

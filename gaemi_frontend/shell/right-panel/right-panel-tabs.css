@@ -1,0 +1,175 @@
+/* Right Panel Tabs — v7.5
+   상단 탭만 담당한다. 위젯/데이터 스타일은 각 페이지/위젯에서 담당한다.
+*/
+
+.right-panel-header {
+  min-width: 0;
+  height: var(--gtp-header-height) !important;
+  min-height: var(--gtp-header-height) !important;
+  padding-inline: var(--gtp-header-padding-x) !important;
+  overflow: visible;
+  position: relative;
+  z-index: 100;
+  border-bottom: 1px solid var(--gtp-border) !important;
+  background: var(--gtp-bg) !important;
+}
+.right-panel-tabs { display: flex; align-items: center; gap: 3px; min-width: 0; height: 100%; overflow-x: visible; scrollbar-width: none; padding: 0 2px; }
+.right-panel-tabs::-webkit-scrollbar { display: none; }
+
+.right-panel-header .icon-hit {
+  width: var(--gtp-header-control-size) !important;
+  height: var(--gtp-header-control-size) !important;
+  min-width: var(--gtp-header-control-size) !important;
+  min-height: var(--gtp-header-control-size) !important;
+}
+
+.right-panel-header .icon-hit svg {
+  width: var(--gtp-header-icon-size) !important;
+  height: var(--gtp-header-icon-size) !important;
+}
+.right-panel-tab { height: 32px; max-width: 150px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 0; padding: 0 9px; border: 0; border-radius: 9px; background: transparent; color: var(--gtp-faint); cursor: pointer; transition: background .15s ease, color .15s ease, border-color .15s ease; font: inherit; }
+.right-panel-tab:hover { color: var(--gtp-text-2); background: var(--gtp-hover); }
+.right-panel-tab.is-active { color: var(--gtp-text); background: var(--gtp-surface-3); border-color: transparent; }
+.right-panel-tab__icon { width: 13px; height: 13px; flex: 0 0 auto; color: var(--gtp-muted); }
+.right-panel-tab.is-active .right-panel-tab__icon { color: var(--gtp-text-2); }
+.right-panel-tab__label { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--gtp-type-item); font-weight: var(--gtp-weight-title); line-height: 1; letter-spacing: -0.02em; }
+.right-panel-tab__close { width: 17px; height: 17px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; color: var(--gtp-faint); flex: 0 0 auto; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.right-panel-tab__close:hover { color: var(--gtp-text-2); background: var(--gtp-hover); }
+.right-panel-tab__close svg { width: 10px; height: 10px; pointer-events: none; }
+.right-panel-tab-add-wrap { position: relative; margin-left: auto; flex: 0 0 auto; }
+.right-panel-workspace-menu-wrap { position: relative; flex: 0 0 auto; }
+.right-panel-tab-add { width: var(--gtp-header-control-size); height: var(--gtp-header-control-size); margin-left: 0; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--gtp-faint); cursor: pointer; transition: background .15s ease, color .15s ease; }
+.right-panel-tab-add:hover { color: var(--gtp-text); background: var(--gtp-active); }
+.right-panel-tab-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; width: 176px; padding: 6px; border: 1px solid var(--gtp-border-strong); border-radius: 12px; background: var(--gtp-surface-2); box-shadow: var(--gtp-shadow); font-family: var(--gtp-font-family); }
+.right-panel-workspace-menu { left: 0; right: auto; width: 176px; }
+.right-panel-tab-menu[hidden] { display: none !important; }
+.right-panel-tab-menu__section { padding: 6px 8px 4px; color: var(--gtp-faint); font-size: var(--gtp-type-fine); font-weight: var(--gtp-weight-title); }
+.right-panel-tab-menu__item { width: 100%; min-height: 42px; display: flex; align-items: center; padding: 0 12px; border: 0; border-radius: 8px; background: transparent; color: var(--gtp-text-2); font: inherit; font-size: var(--gtp-type-title); font-weight: var(--gtp-weight-title); letter-spacing: -0.015em; text-align: left; cursor: pointer; }
+.right-panel-tab-menu__item:hover { background: var(--gtp-surface-3); color: var(--gtp-text); }
+.right-panel-tab-menu__item svg { width: 14px; height: 14px; flex: 0 0 auto; }
+.right-panel-tab-menu__item--delete { justify-content: space-between; }
+.right-panel-tab-menu__empty { padding: 7px 8px; color: var(--gtp-faint); font-size: var(--gtp-type-fine); font-weight: var(--gtp-weight-meta); }
+.right-panel-tab-add svg { width: var(--gtp-header-icon-size); height: var(--gtp-header-icon-size); }
+.right-panel-tab-view { width: 100%; height: 100%; min-height: 0; }
+.right-panel-tab-view[hidden] { display: none !important; }
+.right-panel-tab-placeholder { min-height: 100%; box-sizing: border-box; padding: 40px 24px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.right-panel-tab-placeholder__icon { width: 44px; height: 44px; margin-bottom: 12px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--gtp-border); border-radius: 14px; background: var(--gtp-surface-2); color: var(--gtp-faint); }
+.right-panel-tab-placeholder__icon svg { width: 20px; height: 20px; }
+.right-panel-tab-placeholder__title { margin-bottom: 6px; color: var(--gtp-text-2); font-size: var(--gtp-type-item); font-weight: var(--gtp-weight-title); }
+.right-panel-tab-placeholder__text { max-width: 300px; color: var(--gtp-faint); font-size: 11px; line-height: 1.6; font-weight: 600; }
+@media (max-width: 480px) {
+  .right-panel-tab { max-width: 120px; padding: 0 8px; }
+  .right-panel-tab__label { max-width: 90px; }
+  .right-panel-tab-placeholder { padding: 32px 18px; }
+}
+
+
+.right-panel-related-news {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 10px 22px;
+  box-sizing: border-box;
+}
+.right-panel-related-news__heading {
+  margin: 0 0 14px;
+  color: var(--gtp-text);
+  font-size: var(--gtp-type-title);
+  font-weight: var(--gtp-weight-title);
+  line-height: 1.4;
+}
+.right-panel-related-news__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.right-panel-related-news__item {
+  padding: 11px 10px;
+}
+.right-panel-related-news__title {
+  color: var(--gtp-text-2);
+  font-size: var(--gtp-type-title);
+  font-weight: var(--gtp-weight-title);
+  line-height: 1.45;
+}
+.right-panel-related-news__description {
+  margin-top: 5px;
+  color: var(--gtp-muted);
+  font-size: var(--gtp-type-meta);
+  font-weight: var(--gtp-weight-body);
+  line-height: 1.55;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.right-panel-related-news__meta {
+  margin-top: 6px;
+  color: var(--gtp-faint);
+  font-size: var(--gtp-type-fine);
+  font-weight: var(--gtp-weight-meta);
+  line-height: 1.4;
+}
+.right-panel-related-news__empty {
+  color: var(--gtp-faint);
+  font-size: var(--gtp-type-meta);
+}
+@media (max-width: 480px) {
+  .right-panel-related-news { padding: 10px 8px 20px; }
+  .right-panel-related-news__item { padding: 10px 9px; }
+}
+
+.right-panel-related-news__item {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.right-panel-related-news__item {
+  border-radius: 9px;
+  transition: background-color 160ms ease;
+}
+.right-panel-related-news__item:hover,
+.right-panel-related-news__item:focus-visible {
+  background: var(--gtp-surface-2);
+}
+
+.right-panel-related-news__item:focus-visible {
+  outline: 1px solid var(--gtp-border-strong);
+  outline-offset: -1px;
+}
+
+
+/* 공시 패널 전용: 클릭 기능 없이 공시 한 건의 영역만 hover로 구분한다. */
+.right-panel-disclosures__item {
+  cursor: default;
+}
+.right-panel-disclosures__line {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 7px;
+  color: var(--gtp-faint);
+  font-size: var(--gtp-type-meta);
+  font-weight: var(--gtp-weight-meta);
+  line-height: 1.4;
+  font-family: inherit;
+}
+.right-panel-disclosures__line:first-child {
+  margin-top: 0;
+}
+.right-panel-disclosures__title {
+  color: var(--gtp-faint);
+  font-size: var(--gtp-type-meta);
+  font-weight: var(--gtp-weight-title);
+}
+.right-panel-disclosures__line > span:last-child:not(:first-child) {
+  margin-left: auto;
+  text-align: right;
+}

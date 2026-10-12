@@ -7977,8 +7977,19 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
+    def do_POST(self):
+        if self.path.startswith("/gaemi-api/"):
+            from gaemi_gateway import serve
+            serve(self, "POST")
+            return
+        self._json(404, {"ok": False, "error": "not_found"})
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/gaemi-api" or parsed.path.startswith("/gaemi-api/"):
+            from gaemi_gateway import serve
+            serve(self, "GET")
+            return
         params = urllib.parse.parse_qs(parsed.query)
 
         # Isolated gaemiGTP layout preview; original alpha-bot routes remain unchanged.

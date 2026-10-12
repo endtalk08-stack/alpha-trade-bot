@@ -145,7 +145,13 @@ def _fetch_query(query, display=20, start=1):
         cached = _CACHE.get(cache_key)
         if cached and now - cached[0] <= _CACHE_TTL:
             return list(cached[1])
-    rows = naver_news.search_news(query, display=display, start=start)
+    if naver_news.is_configured():
+        rows = naver_news.search_news(query, display=display, start=start)
+    else:
+        # Reuse the alpha-bot Google News RSS source when no NAVER key is configured.
+        # Keep the existing shared news scoring and rendering unchanged.
+        from news_sources import fetch_google_news_only
+        rows = fetch_google_news_only(query, limit=min(int(display), 20))
     if not isinstance(rows, list):
         rows = []
     with _CACHE_LOCK:

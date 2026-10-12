@@ -5,6 +5,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from backend.services.ai_test import ai_test_bp, remember_chat_analysis
+from backend.services.ai_session import ai_session_bp
 from backend.services.private_access import install_private_access
 
 from backend.services.engine import analyze_stock, fetch_dart_disclosure_detail, fetch_dart_executive_shareholdings, fetch_us_official_filings, get_live_calendar_data, start_calendar_warmup
@@ -14,6 +15,7 @@ FRONTEND_DIR = BASE_DIR / "gaemi_frontend"
 
 app = Flask(__name__, static_folder=str(FRONTEND_DIR), static_url_path="")
 app.register_blueprint(ai_test_bp)
+app.register_blueprint(ai_session_bp)
 CORS(app)
 install_private_access(app, FRONTEND_DIR)
 start_calendar_warmup()

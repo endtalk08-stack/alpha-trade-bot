@@ -1,0 +1,130 @@
+/* gaemiGTP Theme Tokens — v7.12
+   Shared visual contract for all newly separated UI modules.
+   Existing app styles may continue to use their own selectors; new shell/page/widget
+   code should use these variables instead of hard-coded theme colors.
+*/
+:root {
+  --gtp-bg: #f8fafc;
+  --gtp-surface: #ffffff;
+  --gtp-surface-2: #f1f5f9;
+  --gtp-surface-3: #eef2f7;
+  --gtp-text: #0f172a;
+  --gtp-text-2: #334155;
+  --gtp-muted: #64748b;
+  --gtp-faint: #94a3b8;
+  --gtp-border: #e2e8f0;
+  --gtp-border-strong: #cbd5e1;
+  --gtp-hover: #f1f5f9;
+  --gtp-active: #eef2f7;
+  --gtp-rail-bg: #ffffff;
+  --gtp-panel-bg: #ffffff;
+  --gtp-overlay: rgba(15, 23, 42, .38);
+  --gtp-shadow: 0 14px 32px rgba(15, 23, 42, .08);
+  --gtp-radius-sm: 8px;
+  --gtp-radius-md: 12px;
+  --gtp-radius-lg: 16px;
+
+  /* Shared typography scale */
+  --gtp-font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --gtp-type-brand: 15px;
+  --gtp-type-title: 14px;
+  --gtp-type-body: 16px;
+  --gtp-type-item: 13px;
+  --gtp-type-meta: 12px;
+  --gtp-type-fine: 11px;
+  --gtp-weight-brand: 700;
+  --gtp-weight-title: 650;
+  --gtp-weight-body: 500;
+  --gtp-weight-meta: 500;
+
+  /* Shared top-header geometry */
+  --gtp-header-height: 64px;
+  --gtp-header-padding-x: 12px;
+  --gtp-header-control-size: 44px;
+  --gtp-header-icon-size: 16px;
+}
+
+.dark {
+  --gtp-bg: #0f1013;
+  --gtp-surface: #18191d;
+  --gtp-surface-2: #202228;
+  --gtp-surface-3: #23252b;
+  --gtp-text: #e4e4e7;
+  --gtp-text-2: #c4c4cc;
+  --gtp-muted: #a1a1aa;
+  --gtp-faint: #71717a;
+  --gtp-border: #27272a;
+  --gtp-border-strong: #3f3f46;
+  --gtp-hover: #202228;
+  --gtp-active: #202228;
+  --gtp-rail-bg: #0f1013;
+  --gtp-panel-bg: #121316;
+  --gtp-overlay: rgba(0, 0, 0, .62);
+  --gtp-shadow: 0 18px 40px rgba(0, 0, 0, .28);
+}
+
+html, body {
+  background: var(--gtp-bg);
+  color: var(--gtp-text);
+  font-family: var(--gtp-font-family);
+}
+
+/* New architecture modules: one shared theme contract. */
+#leftNavRail,
+#leftMarketSidebar.market-sidebar,
+#leftContextSidebar.context-sidebar,
+.gaemi-workspace,
+#rightPanel,
+.right-panel-header,
+.central-widget-dock,
+.right-panel-tab-view,
+.right-panel-dashboard {
+  color: var(--gtp-text);
+}
+
+.theme-surface { background: var(--gtp-surface); }
+.theme-surface-2 { background: var(--gtp-surface-2); }
+.theme-border { border-color: var(--gtp-border); }
+.theme-text { color: var(--gtp-text); }
+.theme-muted { color: var(--gtp-muted); }
+.theme-faint { color: var(--gtp-faint); }
+
+
+/* Dark text tone contract.
+   Main app text uses softened neutral tones instead of pure white.
+   New code should prefer the theme tokens/classes below. */
+.dark .gtp-dark-text { color: var(--gtp-text) !important; }
+.dark .gtp-dark-hover-text:hover { color: var(--gtp-text) !important; }
+.theme-text-2 { color: var(--gtp-text-2); }
+
+/* Compatibility bridge for existing Tailwind dark:text-white utilities
+   inside the three primary app surfaces. */
+.dark #leftSidebarHome [class~="dark:text-white"],
+.dark #leftMarketSidebar [class~="dark:text-white"],
+.dark #leftContextSidebar [class~="dark:text-white"],
+.dark #leftPluginSidebar [class~="dark:text-white"],
+.dark #mainContent [class~="dark:text-white"],
+.dark #rightPanel [class~="dark:text-white"] {
+  color: var(--gtp-text) !important;
+}
+
+.dark #leftSidebarHome [class~="dark:hover:text-white"]:hover,
+.dark #leftMarketSidebar [class~="dark:hover:text-white"]:hover,
+.dark #leftContextSidebar [class~="dark:hover:text-white"]:hover,
+.dark #leftPluginSidebar [class~="dark:hover:text-white"]:hover,
+.dark #mainContent [class~="dark:hover:text-white"]:hover,
+.dark #rightPanel [class~="dark:hover:text-white"]:hover {
+  color: var(--gtp-text) !important;
+}
+
+
+@media (max-width: 640px) {
+  :root {
+    --gtp-type-brand: 14px;
+    --gtp-type-title: 13px;
+    --gtp-type-body: 14px;
+    --gtp-type-item: 13px;
+    --gtp-type-meta: 11px;
+    --gtp-type-fine: 10.5px;
+  }
+}

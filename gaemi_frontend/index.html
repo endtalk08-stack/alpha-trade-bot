@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <!-- Development access check. Public mode keeps the existing GitHub Pages UI unchanged. -->
+  <style>html.gaemi-private-preview-check body{visibility:hidden!important}</style>
+  <script>
+  (function () {
+    const preview = 'https://gaemi-gtp.onrender.com';
+    const hostname = window.location.hostname;
+    if (hostname === 'gaemi-gtp.onrender.com' || hostname === 'localhost' || hostname === '127.0.0.1') return;
+    document.documentElement.classList.add('gaemi-private-preview-check');
+    fetch(preview + '/dev-access/status', {cache:'no-store'})
+      .then(response => { if (!response.ok) throw new Error('status_unavailable'); return response.json(); })
+      .then(status => {
+        if (status.private) {
+          window.location.replace(preview + '/');
+        } else {
+          document.documentElement.classList.remove('gaemi-private-preview-check');
+        }
+      })
+      .catch(() => { window.location.replace(preview + '/'); });
+  }());
+  </script>
+  <title>gaemiGTP</title>
+  
+  <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script>tailwind.config = { darkMode: 'class' }</script>
+  <script>try { const t = localStorage.getItem('gaemiGTP_theme_v1'); if (t !== 'light') document.documentElement.classList.add('dark'); else document.documentElement.classList.remove('dark'); document.documentElement.dataset.theme = (t === 'light' ? 'light' : 'dark'); } catch (_) { document.documentElement.classList.add('dark'); }</script>
+  <link rel="stylesheet" href="theme/theme.css?v=20261005-header-system-v1">
+  <link rel="stylesheet" href="css/app.css?v=20261009-home-prompts-type-v1">
+  <link rel="stylesheet" href="css/chat-tools.css?v=20261009-low-high-range-v1">
+  <link rel="stylesheet" href="css/stock-calculator.css?v=20261005-v4">
+  <link rel="stylesheet" href="css/memo-pad.css?v=20261005-v2">
+  <link rel="stylesheet" href="css/sketch-pad.css?v=20261005-v1">
+  <link rel="stylesheet" href="shell/left-sidebar-home/left-sidebar-home.css?v=20261012-sidebar-recent-v1">
+  <link rel="stylesheet" href="shell/left-context-sidebar/context-sidebar.css?v=20261005-header-system-v1">
+  <link rel="stylesheet" href="shell/left-market-sidebar/market-sidebar.css?v=20261005-header-system-v1">
+  <link rel="stylesheet" href="shell/left-earnings-calendar-sidebar/earnings-calendar-sidebar.css?v=20261008-right-panel-v1">
+  <link rel="stylesheet" href="shell/left-plugin-sidebar/plugin-sidebar.css?v=20261005-header-system-v1">
+  <link rel="stylesheet" href="shell/right-panel/right-panel.css?v=20261005-border-system-v1">
+  <link rel="stylesheet" href="shell/right-panel/right-panel-tabs.css?v=20261005-news-density-v1">
+  <link rel="stylesheet" href="pages/dashboard/dashboard.css?v=20260927-v86-scroll">
+  <link rel="stylesheet" href="shell/center-chat/widget-dock/widget-dock.css?v=20261003-kospi-gradient-v1" />
+  <link rel="stylesheet" href="widgets/analysis-section/analysis-section.css?v=20260926-v2" />
+</head>
+<body class="bg-[#f8fafc] dark:bg-[#121316] text-[#1e293b] gtp-dark-text flex h-[100dvh] w-screen overflow-hidden select-none left-home-closed left-market-closed left-context-closed left-plugin-closed right-panel-closed">
+
+  <!-- 모바일 배경 오버레이 -->
+  <div id="sidebarBackdrop" onclick="closeAllSidebars()" class="fixed inset-0 bg-black/60 z-40 hidden backdrop-blur-sm transition-opacity duration-300"></div>
+
+
+  <!-- 왼쪽 사이드바 첫 메뉴: 저장된 프로젝트/선택 항목을 한곳에서 확인하는 홈 -->
+  <aside id="leftSidebarHome" class="left-sidebar-home" aria-label="gaemiGTP 사이드바 홈" aria-hidden="true">
+    <header class="left-sidebar-home__header">
+      <button type="button" class="left-sidebar-home__brand-menu" onclick="toggleLeftSidebarHomeMenu()" aria-expanded="false" aria-controls="leftSidebarHomeMenu" data-left-sidebar-home-menu-toggle aria-label="gaemiGTP 메뉴" title="gaemiGTP 메뉴">
+        <span class="left-sidebar-home__title">gaemiGTP</span>
+        <i data-lucide="chevron-down" aria-hidden="true"></i>
+      </button>
+      <div class="left-sidebar-home__actions">
+        <button type="button" class="left-sidebar-home__icon-button" onclick="focusSidebarStockSearch()" aria-label="종목 검색" title="종목 검색">
+          <i data-lucide="search" aria-hidden="true"></i>
+        </button>
+        <button type="button" class="left-sidebar-home__icon-button" onclick="closeLeftSidebarHome()" aria-label="사이드바 닫기" title="사이드바 닫기">
+          <i data-lucide="x" aria-hidden="true"></i>
+        </button>
+      </div>
+    </header>
+
+    <div id="leftSidebarHomeMenu" class="left-sidebar-home__dropdown hidden" role="menu" aria-label="사이드바 메뉴">
+      <button type="button" role="menuitem" onclick="showLeftSidebarHomeSection()"><span>메인</span></button>
+      <button type="button" role="menuitem" onclick="openLeftSidebarSection('market')"><span>실시간</span></button>
+      <button type="button" role="menuitem" onclick="openLeftSidebarSection('context')"><span>관심종목</span></button>
+      <button type="button" role="menuitem" onclick="openLeftSidebarSection('plugin')"><span>플러그인</span></button>
+    </div>
+
+    <div id="leftSidebarHomeDefault" class="left-sidebar-home__body">
+      <div class="left-sidebar-home__sections">
+        <section class="left-sidebar-home__section" aria-labelledby="leftSidebarProjectsTitle">
+          <div class="left-sidebar-home__section-head">
+            <h2 id="leftSidebarProjectsTitle" class="left-sidebar-home__section-title"><i data-lucide="folder-kanban" aria-hidden="true"></i><span>프로젝트</span></h2>
+            <button type="button" class="left-sidebar-home__section-menu" aria-label="프로젝트 관리 메뉴" title="프로젝트 관리 메뉴" data-left-home-section-menu="projects">
+              <i data-lucide="ellipsis" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div class="left-sidebar-home__empty">프로젝트가 여기에 표시됩니다</div>
+        </section>
+
+        <section class="left-sidebar-home__section" aria-labelledby="leftSidebarPluginsTitle">
+          <div class="left-sidebar-home__section-head">
+            <h2 id="leftSidebarPluginsTitle" class="left-sidebar-home__section-title"><i data-lucide="blocks" aria-hidden="true"></i><span>플러그인</span></h2>
+            <button type="button" class="left-sidebar-home__section-menu" aria-label="플러그인 접기" title="플러그인 접기" aria-expanded="true" aria-controls="leftSidebarPluginsBody" data-left-home-section-toggle="plugins">
+              <i data-lucide="chevron-down" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div id="leftSidebarPluginsBody" class="left-sidebar-home__section-body">
+            <ul id="leftSidebarHomePluginList" class="left-sidebar-home__items" aria-label="추가한 플러그인"></ul>
+            <div id="leftSidebarHomePluginEmpty" class="left-sidebar-home__empty">추가된 플러그인이 없습니다</div>
+          </div>
+        </section>
+
+        <section class="left-sidebar-home__section" aria-labelledby="leftSidebarStocksTitle">
+          <div class="left-sidebar-home__section-head">
+            <h2 id="leftSidebarStocksTitle" class="left-sidebar-home__section-title"><i data-lucide="star" aria-hidden="true"></i><span>관심종목</span></h2>
+            <button type="button" class="left-sidebar-home__section-menu" aria-label="관심종목 접기" title="관심종목 접기" aria-expanded="true" aria-controls="leftSidebarStocksBody" data-left-home-section-toggle="watchlist">
+              <i data-lucide="chevron-down" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div id="leftSidebarStocksBody" class="left-sidebar-home__section-body">
+            <div class="left-sidebar-home__empty">관심종목이 여기에 표시됩니다</div>
+          </div>
+        </section>
+
+        <section class="left-sidebar-home__section" aria-labelledby="leftSidebarRecentTitle">
+          <div class="left-sidebar-home__section-head">
+            <h2 id="leftSidebarRecentTitle" class="left-sidebar-home__section-title"><i data-lucide="history" aria-hidden="true"></i><span>최근</span></h2>
+            <button type="button" class="left-sidebar-home__section-menu" aria-label="최근 접기" title="최근 접기" aria-expanded="true" aria-controls="leftSidebarRecentBody" data-left-home-section-toggle="recent">
+              <i data-lucide="chevron-down" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div id="leftSidebarRecentBody" class="left-sidebar-home__section-body">
+            <ul id="leftSidebarHomeRecentList" class="left-sidebar-home__items" aria-label="최근 검색한 종목과 질문"></ul>
+            <div id="leftSidebarHomeRecentEmpty" class="left-sidebar-home__empty">최근 검색 기록이 없습니다</div>
+          </div>
+        </section>
+      </div>
+    </div>
+    <div id="leftSidebarHomeSectionContent" class="left-sidebar-home__section-content hidden" aria-live="polite"></div>
+  </aside>
+
+  <!-- 왼쪽 시장정보 패널 -->
+  <aside id="leftMarketSidebar" data-shell="left-market-sidebar" class="market-sidebar bg-[#f8fafc] dark:bg-[#16171b] border-r border-[#e2e8f0] dark:border-[#27272a] flex flex-col shrink-0 h-full overflow-hidden" aria-label="시장 순위" aria-hidden="true">
+    <div class="market-sidebar-header">
+      <div class="flex items-center justify-between gap-3 w-full">
+        <div class="flex items-center gap-2 min-w-0 whitespace-nowrap">
+          <div class="market-sidebar-title">시장 순위</div>
+          <div class="market-sidebar-subtitle">/ 원천 데이터 준비 중</div>
+        </div>
+        <button type="button" onclick="toggleLeftSidebar()" class="market-sidebar-close" aria-label="시장정보 닫기" title="시장정보 닫기">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+    </div>
+
+    <div class="market-sidebar-controls">
+      <div class="market-sidebar-rank-tabs" role="tablist" aria-label="순위 종류">
+        <button type="button" class="market-sidebar-rank-tab is-active" data-market-rank="popularity" role="tab" aria-selected="true">인기순위</button>
+        <button type="button" class="market-sidebar-rank-tab" data-market-rank="trading_value" role="tab" aria-selected="false">거래대금</button>
+        <button type="button" class="market-sidebar-rank-tab" data-market-rank="gainers" role="tab" aria-selected="false">상승률</button>
+        <button type="button" class="market-sidebar-rank-tab" data-market-rank="losers" role="tab" aria-selected="false">하락률</button>
+      </div>
+      <div class="market-sidebar-region" role="tablist" aria-label="시장 범위">
+        <button type="button" class="market-sidebar-region-button is-active" data-market-region="all" role="tab" aria-selected="true">전체</button>
+        <button type="button" class="market-sidebar-region-button" data-market-region="KR" role="tab" aria-selected="false">국내</button>
+        <button type="button" class="market-sidebar-region-button" data-market-region="global" role="tab" aria-selected="false">해외</button>
+        <button type="button" class="market-sidebar-region-button" data-market-region="crypto" role="tab" aria-selected="false">코인</button>
+      </div>
+    </div>
+
+    <div class="market-sidebar-content" aria-live="polite">
+      <div class="market-sidebar-empty-state">
+        <div class="market-sidebar-empty-icon"><i data-lucide="bar-chart-3" class="w-5 h-5"></i></div>
+        <div id="marketSidebarSelection" class="market-sidebar-empty-title">전체 인기순위</div>
+        <p id="marketSidebarEmptyCopy" class="market-sidebar-empty-copy">원천 데이터가 수집되면 최대 20개 종목을 표시합니다.</p>
+      </div>
+    </div>
+
+    <div class="market-sidebar-status">
+      <span class="market-sidebar-status-dot" aria-hidden="true"></span>
+      <span>DB 준비 완료 · 수집기 연결 전</span>
+    </div>
+  </aside>
+
+  <!-- 왼쪽 실적 캘린더: 실제 일정 데이터 연결 전의 화면 자리 -->
+  <aside id="leftEarningsCalendarSidebar" class="earnings-calendar-sidebar" aria-label="실적 캘린더" aria-hidden="true">
+    <header class="earnings-calendar-sidebar__header">
+      <div>
+        <div class="earnings-calendar-sidebar__title">실적 캘린더</div>
+      </div>
+      <button type="button" class="earnings-calendar-sidebar__close" onclick="showLeftSidebarHomeSection('home')" aria-label="실적 캘린더 닫기" title="실적 캘린더 닫기">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </header>
+    <div class="earnings-calendar-sidebar__body">
+      <div class="earnings-calendar-sidebar__mode-tabs" role="tablist" aria-label="실적 캘린더 보기">
+        <button type="button" class="is-active" data-calendar-mode="all" role="tab" aria-selected="true">전체</button>
+        <button type="button" data-calendar-mode="week" role="tab" aria-selected="false">주별</button>
+        <button type="button" data-calendar-mode="month" role="tab" aria-selected="false">월별</button>
+        <button type="button" data-calendar-mode="custom" role="tab" aria-selected="false"><i data-lucide="calendar-days" aria-hidden="true"></i> 사용자 지정</button>
+      </div>
+      <div class="earnings-calendar-sidebar__date-nav">
+        <button type="button" aria-label="이전 날짜"><i data-lucide="chevron-left" aria-hidden="true"></i></button>
+        <strong id="earningsCalendarDate">2026.10.08</strong>
+        <button type="button" aria-label="다음 날짜"><i data-lucide="chevron-right" aria-hidden="true"></i></button>
+        <button type="button" class="earnings-calendar-sidebar__today">오늘</button>
+      </div>
+      <div class="earnings-calendar-sidebar__importance" role="tablist" aria-label="중요도 필터">
+        <button type="button" class="is-active" data-calendar-importance="all" role="tab" aria-selected="true">전체</button>
+        <button type="button" data-calendar-importance="high" role="tab" aria-selected="false">★★★</button>
+        <button type="button" data-calendar-importance="medium" role="tab" aria-selected="false">★★</button>
+        <button type="button" data-calendar-importance="low" role="tab" aria-selected="false">★</button>
+      </div>
+    </div>
+    <div class="earnings-calendar-sidebar__list" aria-live="polite">
+      <div id="earningsCalendarDayLabel" class="earnings-calendar-sidebar__day-label">10월 8일 목요일</div>
+      <div class="earnings-calendar-sidebar__empty">
+        <div class="earnings-calendar-sidebar__empty-icon"><i data-lucide="calendar-clock" class="w-5 h-5"></i></div>
+        <strong>실적 일정 데이터 준비 중</strong>
+        <p>발표일, 예상치, 실제 발표값과 발표 후 주가 흐름을 이곳에 표시합니다.</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 왼쪽 컨텍스트 사이드바: 관심종목 / 최근 본 종목용 구조 자리 -->
+  <aside id="leftContextSidebar" class="context-sidebar" aria-label="관심종목 및 최근 본 종목" aria-hidden="true">
+    <div class="context-sidebar-header">
+      <div>
+        <div class="context-sidebar-title">내 종목</div>
+      </div>
+      <button type="button" class="context-sidebar-close" onclick="closeLeftContextSidebar()" aria-label="내 종목 닫기" title="내 종목 닫기">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+    <div id="leftContextContent" class="context-sidebar-body" aria-label="내 종목 콘텐츠"></div>
+  </aside>
+
+  <!-- 왼쪽 플러그인 사이드바: 위젯 추가 전용 구조 -->
+  <aside id="leftPluginSidebar" class="plugin-sidebar" aria-label="플러그인" aria-hidden="true">
+    <div class="plugin-sidebar-header">
+      <div class="plugin-sidebar-title">플러그인</div>
+      <button type="button" class="plugin-sidebar-close" onclick="closeLeftPluginSidebar()" aria-label="플러그인 닫기" title="플러그인 닫기">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+    <div id="leftPluginContent" class="plugin-sidebar-body" aria-label="위젯 목록"></div>
+  </aside>
+
+  <div id="leftPanelResizer" class="left-panel-resizer" role="separator" aria-label="왼쪽 사이드바 너비 조절" title="드래그하여 사이드바 크기 조절"></div>
+
+  <div id="gaemiWorkspace" class="gaemi-workspace min-w-0 flex-1 flex h-full overflow-hidden relative">
+  <main id="mainContent" class="gaemi-main-content relative flex-1 flex flex-col h-full bg-[#f8fafc] dark:bg-[#0f1013] overflow-hidden min-w-0">
+
+  <!-- 메인 히어로 첫 화면 -->
+  <div id="mainHeroView" class="absolute inset-0 z-30 bg-[#f8fafc] dark:bg-[#0f1013] text-[#0f172a] gtp-dark-text flex flex-col justify-between overflow-hidden">
+    <header class="gaemi-app-header relative z-50 flex items-center justify-between shrink-0">
+      <div class="flex items-center gap-3">
+        <button type="button" data-left-sidebar-toggle data-left-sidebar-top="hero" class="icon-hit text-[#64748b] dark:text-[#a1a1aa] hover:text-[#0f172a] gtp-dark-hover-text rounded-full cursor-pointer" aria-label="왼쪽 메뉴 열기"><i data-lucide="panel-left" class="w-5 h-5"></i></button>
+        <span class="gaemi-app-header__brand cursor-pointer" onclick="resetToHome()">gaemiGTP</span>
+      </div>
+      <div class="flex items-center gap-1">
+        <button type="button" onclick="toggleTheme()" class="theme-toggle icon-hit relative z-[70] pointer-events-auto flex items-center justify-center rounded-full text-[#64748b] dark:text-[#a1a1aa] hover:bg-[#f1f5f9] dark:hover:bg-[#282a30] hover:text-[#0f172a] gtp-dark-hover-text transition cursor-pointer" aria-label="라이트/다크 모드 전환" title="라이트/다크 모드 전환"><i data-theme-icon data-lucide="sun" class="w-4 h-4"></i></button>
+        <button type="button" onclick="toggleRightPanel()" data-panel-header-toggle data-panel-top="hero" class="icon-hit relative z-[70] text-[#64748b] dark:text-[#a1a1aa] hover:bg-[#f1f5f9] dark:hover:bg-[#282a30] hover:text-[#0f172a] gtp-dark-hover-text transition cursor-pointer rounded-full" aria-label="패널 열기/닫기" title="패널 열기/닫기"><i data-panel-toggle-icon="closed" data-lucide="panel-right" class="w-4 h-4"></i><i data-panel-toggle-icon="open" data-lucide="x" class="w-4 h-4 hidden"></i></button>
+      </div>
+    </header>
+
+    <div class="gaemi-home-center">
+      <h1 class="gaemi-home-heading">시장이 움직인 순간</h1>
+
+      <div class="gaemi-home-search">
+        <form class="gaemi-home-composer" onsubmit="event.preventDefault(); handleHeroSearch();">
+          <div class="gaemi-home-composer__field">
+            <input
+              id="heroStockInput"
+              type="text"
+              autocomplete="off"
+              placeholder="종목명을 입력하세요"
+              aria-label="관심 종목명 입력"
+            >
+          </div>
+
+          <div class="gaemi-home-composer__toolbar">
+            <div class="gaemi-home-toolbar__left">
+              <button type="button" class="gaemi-home-more" onclick="showLeftSidebarHomeSection('home')" aria-label="기능 더보기" title="기능 더보기">
+                <i data-lucide="plus" aria-hidden="true"></i>
+              </button>
+            </div>
+
+            <nav class="gaemi-home-toolbar__center" aria-label="홈 바로가기">
+              <button type="button" class="gaemi-home-tool" onclick="openLeftSidebarSection('plugin')">
+                <i data-lucide="blocks" aria-hidden="true"></i><span>플러그인</span>
+              </button>
+              <button type="button" class="gaemi-home-tool" onclick="openLeftSidebarSection('context')">
+                <i data-lucide="star" aria-hidden="true"></i><span>관심종목</span>
+              </button>
+              <button type="button" class="gaemi-home-tool" onclick="openLeftSidebarSection('market')">
+                <i data-lucide="activity" aria-hidden="true"></i><span>실시간</span>
+              </button>
+              <button type="button" class="gaemi-home-tool" onclick="showLeftSidebarHomeSection('home')">
+                <i data-lucide="folder-kanban" aria-hidden="true"></i><span>프로젝트</span>
+              </button>
+            </nav>
+
+            <div class="gaemi-home-toolbar__right">
+              <button type="button" onclick="toggleModeDropdown('hero')" id="heroModeBtn" class="gaemi-home-mode" aria-label="분석 모드 선택">
+                <span id="heroModeLabel">gaemi</span>
+                <i data-lucide="chevron-down" class="gaemi-home-mode__chevron" aria-hidden="true"></i>
+              </button>
+              <button type="submit" class="gaemi-home-submit" aria-label="종목 분석 시작">
+                <i data-lucide="arrow-up" aria-hidden="true"></i>
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <div id="heroModeMenu" class="gaemi-home-mode-menu hidden animate-fade">
+          <button type="button" onclick="selectAppMode('gaemi')">
+            <span><strong>gaemi</strong><small>정보를 확인하세요</small></span>
+            <span id="chk-hero-gaemi" class="gaemi-home-mode-menu__check">✓</span>
+          </button>
+          <button type="button" onclick="selectAppMode('info')">
+            <span><strong>info</strong><small>도움을 받으세요</small></span>
+            <span id="chk-hero-info" class="gaemi-home-mode-menu__check hidden">✓</span>
+          </button>
+          <button type="button" onclick="selectAppMode('pro')">
+            <span><strong>pro</strong><small>실력을 키우세요</small></span>
+            <span id="chk-hero-pro" class="gaemi-home-mode-menu__check hidden">✓</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="gaemi-home-prompts" aria-label="종목 기능 예시">
+        <button type="button" onclick="window.GaemiGTPCenterChatSearch?.submitChatInput?.(this.textContent, { enterAnalysis: true })">삼성전자 52주 최고가 몇 % 남았어?</button>
+        <button type="button" onclick="window.GaemiGTPCenterChatSearch?.submitChatInput?.(this.textContent, { enterAnalysis: true })">SK하이닉스 20일 큰손 평균단가 알려줘</button>
+        <button type="button" onclick="window.GaemiGTPCenterChatSearch?.submitChatInput?.(this.textContent, { enterAnalysis: true })">엔비디아 이슈 발생 이후 몇 % 움직였어?</button>
+        <button type="button" onclick="window.GaemiGTPCenterChatSearch?.submitChatInput?.(this.textContent, { enterAnalysis: true })">현대차 장기추세 알려줘</button>
+        <button type="button" onclick="window.GaemiGTPCenterChatSearch?.submitChatInput?.(this.textContent, { enterAnalysis: true })">알파벳 신고가까지 몇 % 남았어?</button>
+      </div>
+    </div>
+    <div class="gaemi-home-spacer" aria-hidden="true"></div>
+  </div>
+
+    <header class="gaemi-app-header gaemi-chat-top flex items-center justify-between shrink-0 z-10">
+      <div class="flex items-center gap-3">
+        <button type="button" data-left-sidebar-toggle data-left-sidebar-top="workspace" class="icon-hit text-[#64748b] dark:text-[#a1a1aa] hover:text-[#0f172a] gtp-dark-hover-text rounded-full cursor-pointer" aria-label="왼쪽 사이드바 열기"><i data-lucide="panel-left" class="w-5 h-5"></i></button>
+        <button type="button" onclick="resetToHome()" class="gaemi-app-header__brand cursor-pointer hover:opacity-80 transition" aria-label="메인으로 이동">gaemiGTP</button>
+      </div>
+      <div class="flex items-center gap-1">
+        <button type="button" onclick="toggleTheme()" class="theme-toggle icon-hit relative z-[70] flex items-center justify-center rounded-full text-[#64748b] dark:text-[#a1a1aa] hover:bg-[#f1f5f9] dark:hover:bg-[#282a30] hover:text-[#0f172a] gtp-dark-hover-text transition cursor-pointer" aria-label="라이트/다크 모드 전환" title="라이트/다크 모드 전환"><i data-theme-icon data-lucide="sun" class="w-4 h-4"></i></button>
+        <button type="button" onclick="toggleRightPanel()" data-panel-header-toggle data-panel-top="workspace" class="icon-hit text-[#64748b] dark:text-[#a1a1aa] hover:text-[#0f172a] gtp-dark-hover-text rounded-full cursor-pointer" aria-label="패널 열기/닫기" title="패널 열기/닫기"><i data-panel-toggle-icon="closed" data-lucide="panel-right" class="w-4 h-4"></i><i data-panel-toggle-icon="open" data-lucide="x" class="w-4 h-4 hidden"></i></button>
+      </div>
+    </header>
+
+    <section id="centralWidgetDock" class="central-widget-dock" aria-label="중앙 위젯">
+      <div id="centralWidgetDockBody" class="central-widget-dock__body"></div>
+    </section>
+
+    <div id="chatArea" class="gaemi-chat-body flex-1 overflow-y-auto p-4 md:p-6 flex flex-col gap-6 max-w-3xl mx-auto w-full"></div>
+
+    <div class="gaemi-chat-bottom shrink-0 p-3 sm:p-4 pb-5 sm:pb-6 bg-white/95 dark:bg-[#16171b]/95 backdrop-blur border-t border-[#e2e8f0] dark:border-[#27272a] z-20">
+      <div class="max-w-3xl mx-auto relative">
+        <form class="relative flex items-center w-full" onsubmit="event.preventDefault(); handleBottomSearch();">
+          <button id="stockToolsTrigger" type="button" class="stock-tools-trigger" aria-label="기능 메뉴 열기" aria-expanded="false" aria-controls="stockToolsMenu" title="기능">+</button>
+          <input 
+            id="bottomStockInput" 
+            type="text" 
+            placeholder="종목명 또는 질문 입력" 
+            class="stock-tools-enabled w-full bg-white dark:bg-[#1e1f24] border border-[#cbd5e1] dark:border-[#282a30] hover:border-[#94a3b8] dark:hover:border-[#3a3d46] focus:border-[#0f172a] dark:focus:border-[#4a4e5a] rounded-full px-5 sm:px-6 py-3.5 sm:py-4 text-sm sm:text-base text-[#0f172a] gtp-dark-text placeholder-[#94a3b8] dark:placeholder-[#71717a] focus:outline-none pr-44 shadow-md transition"
+          >
+          <div class="absolute right-2 sm:right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+            <button type="button" onclick="toggleModeDropdown('bottom')" id="bottomModeBtn" class="flex items-center gap-1 text-xs font-bold text-[#64748b] dark:text-[#a1a1aa] hover:text-[#0f172a] gtp-dark-hover-text px-2 py-1.5 rounded-lg hover:bg-[#f1f5f9] dark:hover:bg-[#282a30] transition cursor-pointer">
+              <span id="bottomModeLabel">gaemi</span> <span class="text-[10px]">▲</span>
+            </button>
+            <button type="submit" class="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#0f172a] dark:bg-[#2a2b30] hover:bg-[#334155] dark:hover:bg-white text-white dark:text-[#a1a1aa] dark:hover:text-black flex items-center justify-center transition cursor-pointer shadow">
+              <span class="text-sm sm:text-base font-black">↑</span>
+            </button>
+          </div>
+        </form>
+
+        <div id="stockToolsMenu" class="stock-tools-menu" hidden aria-label="채팅 기능">
+          <button id="stockCalculatorMenuItem" type="button" class="stock-tools-menu__item">
+            <span class="stock-tools-menu__title">주식 계산기</span>
+            <span class="stock-tools-menu__desc">평단 · 물타기 · 수익률 · 본전 · 목표가</span>
+          </button>
+          <button id="memoPadMenuItem" type="button" class="stock-tools-menu__item">
+            <span class="stock-tools-menu__title">메모장</span>
+            <span class="stock-tools-menu__desc">채팅 중 바로 메모하고 저장</span>
+          </button>
+          <button id="sketchPadMenuItem" type="button" class="stock-tools-menu__item">
+            <span class="stock-tools-menu__title">스케치</span>
+            <span class="stock-tools-menu__desc">손으로 그리고 이미지 저장</span>
+          </button>
+        </div>
+
+        <!-- 하단 개미/인포/프로 드롭다운 -->
+        <div id="bottomModeMenu" class="absolute right-14 bottom-16 bg-white dark:bg-[#1e1f24] border border-[#cbd5e1] dark:border-[#2e3038] rounded-2xl p-2 w-48 shadow-2xl text-left hidden z-50 animate-fade">
+          <button type="button" onclick="selectAppMode('gaemi')" class="w-full flex items-center p-2.5 rounded-xl text-left hover:bg-[#f1f5f9] dark:hover:bg-[#282a30] transition">
+            <div class="text-left flex-1">
+              <div class="font-bold text-sm text-[#0f172a] gtp-dark-text text-left">gaemi</div>
+              <div class="text-[11px] text-[#64748b] dark:text-[#71717a] text-left">정보를 확인하세요</div>
+            </div>
+            <span id="chk-bottom-gaemi" class="text-sky-500 font-bold ml-auto">✓</span>
+          </button>
+          <button type="button" onclick="selectAppMode('info')" class="w-full flex items-center p-2.5 rounded-xl text-left hover:bg-[#f1f5f9] dark:hover:bg-[#282a30] transition">
+            <div class="text-left flex-1">
+              <div class="font-bold text-sm text-[#0f172a] gtp-dark-text text-left">info</div>
+              <div class="text-[11px] text-[#64748b] dark:text-[#71717a] text-left">도움을 받으세요</div>
+            </div>
+            <span id="chk-bottom-info" class="text-sky-500 font-bold ml-auto hidden">✓</span>
+          </button>
+          <button type="button" onclick="selectAppMode('pro')" class="w-full flex items-center p-2.5 rounded-xl text-left hover:bg-[#f1f5f9] dark:hover:bg-[#282a30] transition">
+            <div class="text-left flex-1">
+              <div class="font-bold text-sm text-[#0f172a] gtp-dark-text text-left">pro</div>
+              <div class="text-[11px] text-[#64748b] dark:text-[#71717a] text-left">실력을 키우세요</div>
+            </div>
+            <span id="chk-bottom-pro" class="text-sky-500 font-bold ml-auto hidden">✓</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+    <div id="rightPanelResizer" class="panel-resizer" role="presentation" aria-hidden="true"></div>
+
+    <aside id="rightPanel" class="right-panel bg-[#f8fafc] dark:bg-[#16171b] border-l border-[#e2e8f0] dark:border-[#27272a] flex flex-col shrink-0 overflow-hidden" aria-label="패널">
+      <div class="right-panel-header h-16 px-2 flex items-center justify-between border-b border-[#e2e8f0] dark:border-[#27272a] bg-[#f8fafc] dark:bg-[#0f1013] shrink-0 select-none">
+        <div id="rightPanelTabs" class="right-panel-tabs flex-1 min-w-0" role="tablist" aria-label="패널 탭"></div>
+        <div class="flex items-center gap-1 shrink-0 ml-2">
+          <button type="button" onclick="toggleRightPanelMaximize()" data-panel-maximize class="icon-hit rounded-lg text-[#64748b] dark:text-[#a1a1aa] hover:bg-[#eef2f7] dark:hover:bg-[#202228] hover:text-[#0f172a] gtp-dark-hover-text transition" aria-label="패널 최대화" title="패널 최대화">
+            <i data-panel-maximize-icon="maximize" data-lucide="maximize-2" class="w-4 h-4"></i>
+            <i data-panel-maximize-icon="restore" data-lucide="minimize-2" class="w-4 h-4 hidden"></i>
+          </button>
+          <button type="button" onclick="toggleRightPanel()" class="icon-hit rounded-lg text-[#64748b] dark:text-[#a1a1aa] hover:bg-[#eef2f7] dark:hover:bg-[#202228] hover:text-white transition" aria-label="패널 닫기" title="패널 닫기">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+      <div id="rightPanelContent" class="flex-1 min-h-0 overflow-auto bg-[#f8fafc] dark:bg-[#0f1013]">
+        <section id="rightPanelTabView-dashboard" class="right-panel-tab-view" data-tab-view="dashboard" role="tabpanel" aria-label="대시보드">
+          <section id="rightPanelDashboard" aria-label="대시보드"></section>
+        </section>
+      </div>
+    </aside>
+  </div>
+<!-- 외부 기사 링크 확인 팝업 -->
+  <div id="externalLinkModal" class="external-link-modal" aria-hidden="true">
+    <div class="external-link-dialog" role="dialog" aria-modal="true" aria-labelledby="externalLinkTitle">
+      <div class="external-link-header">
+        <div id="externalLinkTitle" class="external-link-label">외부 사이트</div>
+        <button id="externalLinkClose" class="external-link-close" type="button" aria-label="닫기">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+      <div class="external-link-article">
+        <div id="externalLinkArticleTitle" class="external-link-article-title">기사 제목</div>
+        <div id="externalLinkArticleMeta" class="external-link-article-meta">출처 · 날짜</div>
+        <div id="externalLinkArticleDescription" class="external-link-article-description"></div>
+      </div>
+      <div id="externalLinkUrl" class="external-link-url"></div>
+      <div class="external-link-actions">
+        <button id="externalLinkCopy" class="external-link-btn" type="button">링크 복사</button>
+        <button id="externalLinkOpen" class="external-link-btn primary" type="button">링크 열기</button>
+      </div>
+    </div>
+  </div>
+
+
+  <script src="shell/workspace-state.js?v=20261006-app-split-v1"></script>
+  <script src="shell/workspace-shell-state.js?v=20261006-app-split-v1"></script>
+  <script src="shell/workspace-initializer.js?v=20261007-app-split-v1"></script>
+  <script src="shell/right-panel/right-panel.js?v=20260927-step7-workarea3"></script>
+  <script src="shell/left-panel/left-panel-resizer.js?v=20260927-left-fixed"></script>
+  <script src="shell/left-context-sidebar/context-sidebar.js?v=20260927-sidebar-home"></script>
+  <script src="shell/left-market-sidebar/market-sidebar.js?v=20261006-app-split-v1"></script>
+  <script src="shell/left-earnings-calendar-sidebar/earnings-calendar-sidebar.js?v=20261008-v1"></script>
+  <script src="pages/watchlist/watchlist.js?v=20261005-type-v1"></script>
+  <script src="shell/right-panel/right-panel-tabs.js?v=20261012-stock-sync-v1"></script>
+  <script src="widgets/catalog/catalog.js?v=20261010-news-cleanup-v1"></script>
+  <script src="widgets/analysis-data/analysis-data.js?v=20260926-v1"></script>
+  <script src="widgets/analysis-section/analysis-section.js?v=20261006-news-cancel-v1"></script>
+  <script src="shell/left-plugin-sidebar/plugin-sidebar.js?v=20261003-chat-entry-v2"></script>
+  <script src="shell/center-chat/widget-dock/widget-dock.js?v=20261003-kospi-gradient-v1"></script>
+  <script src="shell/left-sidebar-home/left-sidebar-home.js?v=20261012-sidebar-recent-v1"></script>
+  <script src="theme/theme.js?v=20260924-v712"></script>
+  <script src="pages/dashboard/dashboard.js?v=20260925-v85-full"></script>
+  <script src="js/disclosures.js?v=20260930-chat-split-v1"></script>
+  <script src="js/related-stocks.js?v=20260930-chat-split-v1"></script>
+  <script src="js/analysis-api.js?v=20261001-storyboard-v1"></script>
+  <script src="js/analysis-status.js?v=20261005-text-tone-v1"></script>
+  <script src="js/external-link-modal.js?v=20260930-chat-split-v1"></script>
+  <script src="js/first-reply-actions.js?v=20261005-text-tone-v1"></script>
+  <script src="js/daily-fortune.js?v=20261006-app-split-v1"></script>
+  <script src="js/source-lists.js?v=20261010-news-cleanup-v1"></script>
+  <script src="js/why-flow.js?v=20261009-low-high-range-v1"></script>
+  <script src="js/materials-flow.js?v=20261006-loading-cleanup-v1"></script>
+  <script src="js/chat-tools.js?v=20261005-v2"></script>
+  <script src="js/stock-calculator.js?v=20261005-v5"></script>
+  <script src="js/memo-pad.js?v=20261005-v2"></script>
+  <script src="js/sketch-pad.js?v=20261005-v1"></script>
+  <script src="shell/center-chat/search-controls.js?v=20261012-question-routing-v2"></script>
+  <script src="shell/center-chat/ai-chat.js?v=20261012-model3-qwen-v1"></script>
+  <script src="shell/center-chat/analysis-flow.js?v=20261012-stock-request-v2"></script>
+  <script src="js/app.js?v=20261012-stock-delegation-v3"></script>
+</body>
+</html>

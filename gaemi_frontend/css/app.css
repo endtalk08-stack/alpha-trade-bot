@@ -1,0 +1,937 @@
+    .theme-toggle {
+      border: none !important;
+      background: transparent !important;
+      box-shadow: none !important;
+    }
+    .theme-toggle:hover {
+      background: rgba(148, 163, 184, 0.12) !important;
+      border: none !important;
+    }
+    .icon-hit {
+      width: 44px !important;
+      height: 44px !important;
+      min-width: 44px !important;
+      min-height: 44px !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+    }
+    .icon-hit svg { pointer-events: none; }
+
+    .analysis-state {
+      width: 100%;
+      border-radius: 24px;
+      padding: 28px 20px;
+      text-align: center;
+      background: rgba(255,255,255,.78);
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 8px 28px rgba(15,23,42,.05);
+    }
+    .dark .analysis-state {
+      background: rgba(30,31,36,.82);
+      border-color: #27272a;
+      box-shadow: 0 8px 28px rgba(0,0,0,.14);
+    }
+
+    body {
+      font-family: var(--gtp-font-family);
+      letter-spacing: -0.015em;
+      -webkit-font-smoothing: antialiased;
+      word-break: keep-all;
+    }
+    #chatArea p { line-height: 1.65; letter-spacing: -0.02em; }
+
+    .gtp-chat-copy {
+      color: var(--gtp-text-2);
+      font-size: var(--gtp-type-body);
+      font-weight: var(--gtp-weight-body);
+      line-height: 1.65;
+      letter-spacing: -0.018em;
+    }
+    .gtp-chat-user {
+      font-size: var(--gtp-type-item);
+      font-weight: 650;
+      line-height: 1.45;
+    }
+    .gtp-chat-section-title {
+      color: var(--gtp-text);
+      font-size: var(--gtp-type-title);
+      font-weight: var(--gtp-weight-title);
+      line-height: 1.45;
+      letter-spacing: -0.02em;
+    }
+
+    /* 출처: 토스처럼 작고 단순하게 표시하고, 열었을 때도 카드가 겹쳐 보이지 않게 한다. */
+    .source-toggle-wrap { margin-top: 14px; }
+    .source-toggle-btn {
+      display: inline-flex; align-items: center; gap: 4px;
+      height: 28px; min-width: 0; padding: 0;
+      border: 0; background: transparent;
+      color: #94a3b8; font-size: .78rem; font-weight: 700;
+      cursor: pointer;
+    }
+    .source-toggle-btn:hover { color: #0f172a; }
+    .dark .source-toggle-btn { color: var(--gtp-muted); }
+    .dark .source-toggle-btn:hover { color: var(--gtp-text); }
+    .source-toggle-icon { width: 14px; height: 14px; flex: 0 0 auto; }
+    .source-list-panel {
+      display: none; margin-top: 8px;
+      padding: 2px 0 0;
+    }
+    .source-list-panel.is-open { display: block; }
+    .source-list-group { margin-top: 12px; }
+    .source-list-group:first-child { margin-top: 0; }
+    .source-list-group-title {
+      margin: 0 0 2px; color: #71717a;
+      font-size: .72rem; font-weight: 700;
+    }
+    .dark .source-list-group-title { color: #71717a; }
+    .source-list-card {
+      background: transparent; border: 0; border-radius: 0;
+      padding: 0; box-shadow: none;
+    }
+    .dark .source-list-card {
+      background: transparent; border-color: transparent; box-shadow: none;
+    }
+    .source-list-row {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%; min-height: 52px; padding: 9px 0;
+      text-decoration: none; border-bottom: 0;
+    }
+    .source-list-row:last-child { border-bottom: 0; }
+    .source-list-main { min-width: 0; flex: 1; }
+    .source-list-title {
+      color: #0f172a; font-size: var(--gtp-type-item); font-weight: var(--gtp-weight-title);
+      line-height: 1.4; display: -webkit-box;
+      -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+    }
+    .dark .source-list-title { color: var(--gtp-text-2); }
+    .source-list-meta { margin-top: 3px; color: var(--gtp-faint); font-size: var(--gtp-type-fine); font-weight: var(--gtp-weight-meta); }
+    .source-list-arrow { flex: 0 0 auto; width: 16px; height: 16px; color: #71717a; }
+
+    ::-webkit-scrollbar { display: none; width: 0px; }
+    html, body, #chatArea, aside { scrollbar-width: none; -ms-overflow-style: none; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-fade { animation: fadeIn 0.25s ease-out forwards; }
+
+    @keyframes popBounce {
+      0% { transform: scale(0.6); opacity: 0; }
+      50% { transform: scale(1.15); opacity: 1; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+    .animate-pop { animation: popBounce 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
+
+    .typing-cursor::after {
+      content: '▋';
+      display: inline-block;
+      vertical-align: baseline;
+      margin-left: 4px;
+      color: #71717a;
+      animation: blink 0.8s infinite;
+    }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* 외부 기사 링크 확인 팝업 */
+    .external-link-modal {
+      position: fixed; inset: 0; z-index: 9999;
+      display: none; align-items: center; justify-content: center;
+      padding: 20px;
+      background: rgba(0,0,0,.62);
+      backdrop-filter: blur(5px);
+      -webkit-backdrop-filter: blur(5px);
+    }
+    .external-link-modal.is-open { display: flex; }
+    .external-link-dialog {
+      width: min(494px, calc(100vw - 40px));
+      max-height: min(720px, calc(100dvh - 40px));
+      overflow: auto;
+      border-radius: 18px;
+      --gtp-overlay-text: #e4e4e7;
+      --gtp-overlay-text-2: #c4c4cc;
+      background: #202124;
+      border: 1px solid #303134;
+      box-shadow: 0 24px 70px rgba(0,0,0,.42);
+      color: var(--gtp-overlay-text);
+    }
+    .external-link-header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding: 17px 18px 10px;
+    }
+    .external-link-label { font-size: 18px; font-weight: 500; }
+    .external-link-close {
+      width: 34px; height: 34px; display:flex; align-items:center; justify-content:center;
+      border:0; background:transparent; color:var(--gtp-overlay-text-2); cursor:pointer; border-radius:50%;
+    }
+    .external-link-close:hover { background: rgba(255,255,255,.08); }
+    .external-link-article {
+      padding: 4px 18px 13px;
+    }
+    .external-link-article-title {
+      font-size: 16px; line-height: 1.45; font-weight: 750; color:var(--gtp-overlay-text);
+    }
+    .external-link-article-meta {
+      margin-top: 6px; font-size: 12px; color:#9ca3af; font-weight:600;
+    }
+    .external-link-article-description {
+      margin-top: 8px;
+      color: var(--gtp-overlay-text-2);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    html:not(.dark) .external-link-article-description {
+      color: var(--gtp-overlay-text-2);
+    }
+    .external-link-warning {
+      margin: 0 18px 14px;
+      padding: 13px 14px;
+      border-radius: 12px;
+      background: #292a2d;
+      color: var(--gtp-overlay-text-2);
+      font-size: 13px; line-height: 1.55;
+    }
+    .external-link-warning a { color:#a1a1aa; text-decoration: underline; }
+    .external-link-url {
+      margin: 0 18px;
+      padding: 12px 0 2px;
+      color:#b4b4bb;
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-all;
+    }
+    .external-link-actions {
+      display:flex; justify-content:flex-end; gap:10px;
+      padding: 12px 18px 18px;
+    }
+    .external-link-btn {
+      height: 40px; padding: 0 16px; border-radius: 20px;
+      font-size: 14px; font-weight: 700; cursor:pointer;
+      border:1px solid #44454a; background:transparent; color:var(--gtp-overlay-text);
+    }
+    .external-link-btn.primary { background:#f4f4f5; color:#18181b; border-color:#f4f4f5; }
+    .external-link-btn:hover { filter: brightness(1.05); }
+    @media (max-width: 520px) {
+      .external-link-dialog { width: calc(100vw - 28px); border-radius: 16px; }
+      .external-link-header { padding-left:16px; padding-right:16px; }
+      .external-link-article { padding-left:16px; padding-right:16px; }
+      .external-link-warning { margin-left:16px; margin-right:16px; }
+      .external-link-url { margin-left:16px; margin-right:16px; }
+      .external-link-actions { padding-left:16px; padding-right:16px; }
+    }
+
+
+
+/* ================================================================
+   Workspace v2: 외부 왼쪽 시장정보 + 내부 본문/패널
+   - 시장정보는 바깥 영역으로 고정
+   - 본문과 패널만 같은 Workspace에서 2열로 재배치
+   - 패널의 좌/우 dock은 Workspace 범위를 절대 벗어나지 않음
+   ================================================================ */
+/* Desktop shell: one active left sidebar, the center chat, and the right panel
+   are sibling flex areas.  The panel controller owns --right-panel-width. */
+:root {
+  --left-sidebar-width: 320px;
+}
+
+.gaemi-workspace {
+  --right-panel-width: 360px;
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  isolation: isolate;
+}
+
+#leftMarketSidebar.market-sidebar {
+  width: var(--left-sidebar-width);
+  flex: 0 0 var(--left-sidebar-width);
+  transition: width .25s ease, flex-basis .25s ease;
+  min-width: 0;
+  position: relative;
+  z-index: 40;
+}
+
+/* 왼쪽 활성 사이드바와 중앙 채팅 사이의 투명한 드래그 영역.
+   사이드바가 닫혀 있거나 모바일일 때는 레이아웃 공간을 차지하지 않는다. */
+#leftPanelResizer {
+  display: none;
+  flex: 0 0 5px;
+  width: 5px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 42;
+}
+
+/* Desktop: the left sidebar remains fixed to the left of the Workspace. */
+@media (min-width: 1024px) {
+  body:not(.right-panel-maximized).left-market-open #leftMarketSidebar.market-sidebar,
+  body:not(.right-panel-maximized).left-context-open #leftContextSidebar.context-sidebar,
+  body:not(.right-panel-maximized).left-plugin-open #leftPluginSidebar.plugin-sidebar,
+  body:not(.right-panel-maximized).left-home-open #leftSidebarHome.left-sidebar-home {
+    border-right: 2px solid #d7dce4;
+  }
+
+  html.dark body:not(.right-panel-maximized).left-market-open #leftMarketSidebar.market-sidebar,
+  html.dark body:not(.right-panel-maximized).left-context-open #leftContextSidebar.context-sidebar,
+  html.dark body:not(.right-panel-maximized).left-plugin-open #leftPluginSidebar.plugin-sidebar,
+  html.dark body:not(.right-panel-maximized).left-home-open #leftSidebarHome.left-sidebar-home {
+    border-right-color: #303136;
+  }
+}
+
+@media (min-width: 1024px) {
+  body.left-market-open #leftPanelResizer,
+  body.left-context-open #leftPanelResizer,
+  body.left-plugin-open #leftPanelResizer,
+  body.left-home-open #leftPanelResizer {
+    display: block;
+  }
+
+  body.right-panel-maximized #leftPanelResizer {
+    display: none;
+  }
+}
+
+body.left-market-closed #leftMarketSidebar.market-sidebar {
+  width: 0;
+  flex-basis: 0;
+  border-right-width: 0;
+  overflow: hidden;
+}
+
+/* 새로고침 직후에는 사이드바/패널을 닫힌 상태로 먼저 그린다.
+   JS 초기화 전의 레이아웃 플래시나 클릭 영역 겹침을 방지한다. */
+body.left-market-closed #leftMarketSidebar.market-sidebar {
+  pointer-events: none;
+}
+/* 새로고침 직후 홈 화면에서는 분석용 왼쪽 토글을 아예 렌더링 영역에서 제거한다.
+   JS 초기화 전에도 두 버튼의 클릭 영역이 겹치지 않도록 하는 안전장치. */
+#gaemiWorkspace [data-left-sidebar-toggle][data-left-sidebar-top="workspace"] {
+  display: none !important;
+  pointer-events: none !important;
+}
+body.analysis-mode #gaemiWorkspace [data-left-sidebar-toggle][data-left-sidebar-top="workspace"] {
+  display: inline-flex !important;
+  pointer-events: auto !important;
+}
+#mainHeroView [data-left-sidebar-toggle][data-left-sidebar-top="hero"] {
+  pointer-events: auto;
+}
+
+#gaemiWorkspace #mainContent {
+  order: 1;
+  /* The chat is the flexible middle column in all left/right open states. */
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 홈과 분석 화면은 같은 상단 기준선을 사용한다. 화면 상태가 바뀌어도
+   브랜드와 양쪽 패널 제어 버튼의 위치가 달라지지 않도록 공통값을 둔다. */
+.gaemi-app-header {
+  height: var(--gtp-header-height);
+  min-height: var(--gtp-header-height);
+  padding-inline: var(--gtp-header-padding-x);
+  background: var(--gtp-bg);
+  border-bottom: 1px solid var(--gtp-border);
+}
+
+.gaemi-app-header__brand {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #0f172a;
+  font-family: var(--gtp-font-family);
+  font-size: var(--gtp-type-brand);
+  font-weight: var(--gtp-weight-brand);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.dark .gaemi-app-header__brand {
+  color: var(--gtp-text);
+}
+
+.gaemi-app-header .icon-hit {
+  width: var(--gtp-header-control-size) !important;
+  height: var(--gtp-header-control-size) !important;
+  min-width: var(--gtp-header-control-size) !important;
+  min-height: var(--gtp-header-control-size) !important;
+}
+
+.gaemi-app-header .icon-hit svg {
+  width: var(--gtp-header-icon-size) !important;
+  height: var(--gtp-header-icon-size) !important;
+}
+
+/* Analysis chat: top, scrollable body, and bottom input share one quiet
+   vertical rhythm. The message and input content stay on the same 768px axis. */
+
+#mainContent > #chatArea.gaemi-chat-body {
+  width: 100%;
+  max-width: 48rem;
+  margin-inline: auto;
+  padding: 20px 16px 28px;
+}
+
+#mainContent > .gaemi-chat-bottom {
+  padding: 12px 16px 16px;
+  background: transparent;
+  border-top-color: transparent;
+  backdrop-filter: none;
+}
+
+#mainContent > .gaemi-chat-bottom > div {
+  width: 100%;
+  max-width: 48rem;
+  margin-inline: auto;
+}
+
+@media (min-width: 640px) {
+  #mainContent > #chatArea.gaemi-chat-body {
+    padding: 24px 24px 32px;
+  }
+
+  #mainContent > .gaemi-chat-bottom {
+    padding: 12px 24px 16px;
+  }
+}
+
+
+
+/* Home: stock-name entry in a two-tier composer, matching the main chat visual rhythm. */
+.gaemi-home-center {
+  width: min(44rem, calc(100% - 32px));
+  margin: auto;
+  padding-bottom: 4vh;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 18px;
+}
+
+.gaemi-home-heading {
+  margin: 0 0 2px;
+  color: var(--gtp-text);
+  font-family: var(--gtp-font-family);
+  font-size: 26px;
+  font-weight: 650;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+  text-align: center;
+}
+
+.gaemi-home-search {
+  position: relative;
+  width: 100%;
+}
+
+.gaemi-home-composer {
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--gtp-border-strong);
+  border-radius: 24px;
+  background: var(--gtp-surface-2);
+  box-shadow: var(--gtp-shadow);
+  transition: border-color .16s ease;
+}
+
+.gaemi-home-composer:focus-within {
+  border-color: var(--gtp-muted);
+}
+
+.gaemi-home-composer__field {
+  min-height: 78px;
+  padding: 18px 18px 14px;
+  display: flex;
+  align-items: flex-start;
+}
+
+.gaemi-home-composer input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--gtp-text);
+  font-family: var(--gtp-font-family);
+  font-size: var(--gtp-type-body);
+  font-weight: var(--gtp-weight-body);
+  line-height: 1.5;
+}
+
+.gaemi-home-composer input::placeholder {
+  color: var(--gtp-muted);
+  opacity: 1;
+}
+
+.gaemi-home-composer__toolbar {
+  min-height: 52px;
+  padding: 7px 8px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--gtp-border);
+  background: var(--gtp-surface-3);
+}
+
+.gaemi-home-toolbar__left,
+.gaemi-home-toolbar__center,
+.gaemi-home-toolbar__right {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gaemi-home-toolbar__left,
+.gaemi-home-toolbar__right {
+  flex: 0 0 auto;
+}
+
+.gaemi-home-toolbar__center {
+  justify-content: center;
+  gap: 6px;
+}
+
+.gaemi-home-more,
+.gaemi-home-tool,
+.gaemi-home-mode,
+.gaemi-home-submit,
+.gaemi-home-prompts button,
+.gaemi-home-mode-menu button {
+  font-family: var(--gtp-font-family);
+}
+
+.gaemi-home-more,
+.gaemi-home-tool,
+.gaemi-home-mode,
+.gaemi-home-submit {
+  border: 0;
+  cursor: pointer;
+}
+
+.gaemi-home-more {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--gtp-text-2);
+}
+
+.gaemi-home-more svg {
+  width: 17px;
+  height: 17px;
+}
+
+.gaemi-home-tool {
+  height: 36px;
+  min-width: 0;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--gtp-text-2);
+  font-size: var(--gtp-type-item);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.gaemi-home-tool svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  stroke-width: 2;
+}
+
+.gaemi-home-more:hover,
+.gaemi-home-tool:hover,
+.gaemi-home-mode:hover {
+  background: var(--gtp-hover);
+  color: var(--gtp-text);
+}
+
+.gaemi-home-mode {
+  height: 34px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--gtp-muted);
+  font-size: var(--gtp-type-meta);
+  font-weight: 600;
+}
+
+.gaemi-home-mode__chevron {
+  width: 13px;
+  height: 13px;
+}
+
+.gaemi-home-submit {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--gtp-text);
+  color: var(--gtp-bg);
+}
+
+.gaemi-home-submit svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+}
+
+.gaemi-home-mode-menu {
+  position: absolute;
+  right: 46px;
+  bottom: 52px;
+  z-index: 55;
+  width: 192px;
+  padding: 6px;
+  border: 1px solid var(--gtp-border-strong);
+  border-radius: 14px;
+  background: var(--gtp-surface);
+  box-shadow: var(--gtp-shadow);
+}
+
+.gaemi-home-mode-menu button {
+  width: 100%;
+  min-height: 48px;
+  padding: 7px 9px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--gtp-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.gaemi-home-mode-menu button:hover {
+  background: var(--gtp-hover);
+}
+
+.gaemi-home-mode-menu button > span:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.gaemi-home-mode-menu strong {
+  font-size: var(--gtp-type-item);
+  font-weight: 650;
+}
+
+.gaemi-home-mode-menu small {
+  color: var(--gtp-muted);
+  font-size: var(--gtp-type-fine);
+  font-weight: var(--gtp-weight-meta);
+}
+
+.gaemi-home-mode-menu__check {
+  flex: 0 0 auto;
+  color: var(--gtp-muted);
+  font-size: var(--gtp-type-item);
+  font-weight: 650;
+}
+
+.gaemi-home-prompts {
+  width: 100%;
+  padding: 0 8px;
+  display: grid;
+  gap: 2px;
+}
+
+.gaemi-home-prompts button {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--gtp-text-2);
+  font-size: var(--gtp-type-item);
+  font-weight: 600;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gaemi-home-prompts button:hover {
+  background: var(--gtp-surface-2);
+  color: var(--gtp-text);
+}
+
+/* Home examples: a single, quiet entrance. Odd/even rows alternate direction,
+   then stay fixed so the home screen does not keep moving. */
+.gaemi-home-prompts button:nth-child(odd) {
+  animation: gaemiHomePromptFromLeft .6s ease-out both;
+}
+
+.gaemi-home-prompts button:nth-child(even) {
+  animation: gaemiHomePromptFromRight .6s ease-out both;
+}
+
+.gaemi-home-prompts button:nth-child(2) { animation-delay: .14s; }
+.gaemi-home-prompts button:nth-child(3) { animation-delay: .28s; }
+.gaemi-home-prompts button:nth-child(4) { animation-delay: .42s; }
+.gaemi-home-prompts button:nth-child(5) { animation-delay: .56s; }
+
+@keyframes gaemiHomePromptFromLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes gaemiHomePromptFromRight {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gaemi-home-prompts button {
+    animation: none;
+  }
+}
+
+.gaemi-home-spacer {
+  height: 24px;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 640px) {
+  .gaemi-home-center {
+    width: calc(100% - 32px);
+    padding-bottom: 2vh;
+    gap: 14px;
+  }
+
+  .gaemi-home-heading {
+    font-size: 22px;
+  }
+
+  .gaemi-home-composer {
+    border-radius: 22px;
+  }
+
+  .gaemi-home-composer__field {
+    min-height: 70px;
+    padding: 16px 16px 12px;
+  }
+
+  .gaemi-home-composer__toolbar {
+    min-height: 50px;
+    padding: 6px;
+    gap: 4px;
+  }
+
+  .gaemi-home-toolbar__center {
+    gap: 2px;
+  }
+
+  .gaemi-home-tool {
+    padding: 0 6px;
+    gap: 5px;
+  }
+
+  .gaemi-home-prompts {
+    padding-inline: 2px;
+  }
+
+  .gaemi-home-prompts button {
+    min-height: 40px;
+    font-size: var(--gtp-type-body);
+  }
+}
+
+@media (max-width: 420px) {
+  .gaemi-home-tool {
+    padding-inline: 4px;
+    gap: 3px;
+    font-size: var(--gtp-type-meta);
+  }
+
+  .gaemi-home-tool svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .gaemi-home-mode {
+    display: none;
+  }
+
+  .gaemi-home-mode-menu {
+    right: 8px;
+  }
+}
+
+
+/* 홈 화면은 별도 고정 레이어가 아니라 Workspace 안의 본문 뷰로 동작한다.
+   따라서 시장정보 사이드바가 열리거나 패널 폭이 바뀌어도 본문과 함께 자연스럽게 줄어든다. */
+#gaemiWorkspace #mainContent #mainHeroView {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  right: auto !important;
+  z-index: 30;
+}
+
+[data-panel-header-toggle][aria-hidden="true"] {
+  display: none !important;
+}
+
+/* 패널은 항상 본문 오른쪽에 고정한다. */
+body.panel-resizing, body.panel-resizing * { cursor: col-resize !important; }
+body.panel-resizing * { user-select: none !important; }
+body.left-panel-resizing, body.left-panel-resizing * { cursor: col-resize !important; }
+body.left-panel-resizing * { user-select: none !important; }
+
+
+@media (max-width: 1023px) {
+  #leftMarketSidebar.market-sidebar {
+    width: min(300px, 82vw);
+    flex-basis: min(300px, 82vw);
+  }
+  body.left-market-closed #leftMarketSidebar.market-sidebar {
+    width: 0;
+    flex-basis: 0;
+  }
+  body.right-panel-open #leftMarketSidebar.market-sidebar {
+    display: none !important;
+  }
+}
+
+
+
+/* ================================================================
+   LEFT CONTEXT SIDEBAR — layout bridge
+   ================================================================ */
+body.left-context-open #sidebarBackdrop {
+  display: none;
+}
+body.left-context-open #gaemiWorkspace {
+  min-width: 0;
+}
+@media (max-width: 1023px) {
+  body.left-context-open #leftMarketSidebar.market-sidebar {
+    display: none !important;
+  }
+  body.left-context-open #sidebarBackdrop {
+    display: block;
+  }
+}
+
+
+/* 관련 기사 출처 칩 — 다른 출처 버튼과 같은 작고 둥근 형태 */
+.news-source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  margin-top: 4px;
+  padding: 0 10px 0 6px;
+  border: 1px solid #d4d4d8;
+  border-radius: 999px;
+  background: #f4f4f5;
+  color: #52525b;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.news-source-chip:hover {
+  border-color: #a1a1aa;
+  background: #e4e4e7;
+  color: #18181b;
+}
+.dark .news-source-chip {
+  border-color: #303136;
+  background: #202124;
+  color: var(--gtp-text-2);
+}
+.dark .news-source-chip:hover {
+  border-color: #52525b;
+  background: #27272a;
+  color: var(--gtp-text);
+}
+.news-source-chip__badges { display: inline-flex; align-items: center; }
+.news-source-chip__badge {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-left: -3px;
+  border: 2px solid #f4f4f5;
+  border-radius: 50%;
+  background: #d4d4d8;
+  color: #3f3f46;
+  font-size: 8px;
+  font-weight: 800;
+}
+.news-source-chip__badge:first-child { margin-left: 0; }
+.dark .news-source-chip__badge {
+  border-color: #202124;
+  background: #3f3f46;
+  color: var(--gtp-text);
+}
+.news-source-chip__label { white-space: nowrap; }
+
+
+/* Stock analysis loading: shared central-chat flow for desktop and mobile. */
+.analysis-loading-sequence {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 8px 0 0;
+  text-align: left;
+}
+.analysis-loading-message {
+  display: none;
+  font-size: var(--gtp-type-body);
+  font-weight: 500;
+  letter-spacing: -.02em;
+}
+.analysis-loading-message.is-visible { display: inline-block; }
+.analysis-loading-message.is-shimmer {
+  color: transparent;
+  background: linear-gradient(90deg, var(--gtp-muted) 0%, var(--gtp-muted) 34%, var(--gtp-text) 50%, var(--gtp-muted) 66%, var(--gtp-muted) 100%);
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: gaemiLoadingShimmer 1.45s linear infinite;
+}
+@keyframes gaemiLoadingShimmer {
+  from { background-position: 120% 0; }
+  to { background-position: -120% 0; }
+}

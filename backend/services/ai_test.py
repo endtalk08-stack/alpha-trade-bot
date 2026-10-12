@@ -480,7 +480,8 @@ def ai_test_chat():
     from .private_access import _authorized as dev_session_authorized, private_enabled
     admin_test = _authorized()
     private_chat = not admin_test and private_enabled() and dev_session_authorized()
-    if not admin_test and not private_chat:
+    from .ai_session import authorized as ai_session_authorized
+    if not admin_test and not private_chat and not ai_session_authorized():
         return jsonify({"ok": False, "error": "admin_test_disabled_or_unauthorized"}), 403
     limits_for_request = _provider_info
 

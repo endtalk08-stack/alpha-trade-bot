@@ -98,16 +98,12 @@
       const candles = raw.filter((v) => Number.isFinite(Number(v.close)) && Number(v.close) > 0).slice(-65);
       if (!candles.length) throw new Error('표시할 가격 데이터가 없어.');
       if (signal.aborted || ctx.getSession()?.id !== sessionId) return;
-      const answer = stock + ' 주가 추이 (일봉 · 최근 ' + candles.length + '개)';
+      const answer = stock + ' 차트';
       const row = ctx.appendChatMessage('assistant', answer, 'answer', sessionId);
       if (!row) return;
       row.textContent = '';
       const card = document.createElement('div');
-      card.style.cssText = 'width:min(100%,640px);padding:16px;border:1px solid #7775;border-radius:14px;background:var(--chart-bg,transparent);box-sizing:border-box';
-      const title = document.createElement('div');
-      title.textContent = answer;
-      title.style.cssText = 'font-weight:700;font-size:15px;margin-bottom:12px';
-      card.appendChild(title);
+      card.style.cssText = 'width:min(100%,640px);padding:12px 8px;border:0;border-radius:0;background:transparent;box-sizing:border-box';
       const closes = candles.map((v) => Number(v.close));
       const low = Math.min(...closes), high = Math.max(...closes);
       const spread = Math.max(high - low, Math.abs(high) * 0.005, 1);
@@ -135,23 +131,21 @@
       };
       for (let i=0;i<=3;i++) {
         const v=min+(max-min)*i/3, yy=y(v);
-        line(left,yy,width-right,yy,'#9994');
+        line(left,yy,width-right,yy,'#7b87932b');
         label(Math.round(v).toLocaleString('ko-KR'),width-right,yy-5,'end');
       }
       const path=document.createElementNS(svgNS,'path');
       const d=candles.map((v,i)=>(i?'L':'M')+x(i).toFixed(2)+' '+y(closes[i]).toFixed(2)).join(' ');
-      path.setAttribute('d',d);path.setAttribute('stroke','#f97316');
+      path.setAttribute('d',d);path.setAttribute('stroke','#8b9cb8');
       path.setAttribute('stroke-width','2.5');path.setAttribute('stroke-linejoin','round');
       path.setAttribute('stroke-linecap','round');path.setAttribute('fill','none');svg.appendChild(path);
       const dot=document.createElementNS(svgNS,'circle');
       dot.setAttribute('cx',String(x(candles.length-1)));dot.setAttribute('cy',String(y(closes[closes.length-1])));
-      dot.setAttribute('r','4');dot.setAttribute('fill','#f97316');svg.appendChild(dot);
+      dot.setAttribute('r','3');dot.setAttribute('fill','#8b9cb8');svg.appendChild(dot);
       label(String(candles[0].time||''),left,height-9);
       label(String(candles[candles.length-1].time||''),width-right,height-9,'end');
       card.appendChild(svg);
-      const foot=document.createElement('div');foot.style.cssText='font-size:12px;opacity:.75;margin-top:8px';
-      foot.textContent='마지막 종가 '+closes[closes.length-1].toLocaleString('ko-KR')+'원 · 알파봇 API 제공 · 지연 시세 가능';
-      card.appendChild(foot);row.appendChild(card);
+      row.appendChild(card);
       row.scrollIntoView({behavior:'smooth',block:'nearest'});
     }
 

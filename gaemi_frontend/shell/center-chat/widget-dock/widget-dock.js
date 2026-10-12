@@ -29,6 +29,38 @@
   function saveState() {
     try { localStorage.setItem(STATE_KEY, JSON.stringify(activeIds)); } catch (_) {}
   }
+  // Existing market data API, independent of chart and AI requests.
+  // Keep the existing widget card layout; update only its data text.
+  let marketRequestId = 0;
+  async function fillKospiWidget() {
+    const node = body()?.querySelector('[data-kospi-market-live]');
+    if (!node) return;
+    const id = ++marketRequestId;
+    try {
+      const response = await fetch('/api/world-board', {cache: 'no-store'});
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const result = await response.json();
+      const list = Array.isArray(result.data) ? result.data : [];
+      const item = list.find(entry => entry.name === '코스피');
+      if (id !== marketRequestId || !node.isConnected) return;
+      if (!item || !item.price || item.price === '-') {
+        node.textContent = '현재 코스피 시세를 확인할 수 없습니다.';
+        return;
+      }
+      node.replaceChildren();
+      const price = document.createElement('strong');
+      price.textContent = String(item.price);
+      price.style.cssText = 'font-size:15px;font-weight:700;display:inline-block;margin-right:6px';
+      const change = document.createElement('span');
+      change.textContent = String(item.rate || '-');
+      change.style.cssText = 'font-size:12px;font-weight:600;color:' + (item.up ? '#d66b6b' : '#5e9cd0');
+      node.append(price, change);
+      node.title = item.traded_at ? '기준 시각: ' + String(item.traded_at) : '코스피 시세';
+    } catch (_) {
+      if (id === marketRequestId && node.isConnected) node.textContent = '시세 연결을 확인할 수 없습니다.';
+    }
+  }
+
   function render() {
     const dock = root();
     const bodyEl = body();
@@ -38,12 +70,12 @@
       if (id === 'kospi' || id === 'night-futures') {
         const title = id === 'kospi' ? '코스피' : '코스피200 야간선물';
         const detail = id === 'kospi'
-          ? '키움 원천 데이터 연결 후 시세·등락률·장중 흐름을 표시합니다.'
+          ? '시세를 불러오는 중…'
           : '야간선물 원천 데이터 연결 후 시세·등락률·흐름을 표시합니다.';
         return `<article class="central-widget-card central-widget-card--kospi" data-central-widget-id="${escapeHtml(id)}">
           <button type="button" class="central-widget-card__close central-widget-card__close--overlay" data-central-widget-remove="${escapeHtml(id)}" aria-label="${escapeHtml(title)} 위젯 삭제" title="위젯 삭제"><i data-lucide="x" class="w-3 h-3"></i></button>
           <div class="central-widget-card__kospi-title">${escapeHtml(title)}</div>
-          <div class="central-widget-card__market-empty">${escapeHtml(detail)}</div>
+          <div class="central-widget-card__market-empty" ${id === 'kospi' ? 'data-kospi-market-live aria-live="polite"' : ''}>${escapeHtml(detail)}</div>
         </article>`;
       }
       return `<article class="central-widget-card" data-central-widget-id="${escapeHtml(id)}">
@@ -55,6 +87,7 @@
       </article>`;
     }).join('');
     dock.dataset.count = String(activeIds.length);
+    if (activeIds.includes('kospi')) void fillKospiWidget();
     document.querySelectorAll('[data-central-widget-mount]').forEach(node => {
       window.GaemiGTPAnalysisWidgets?.mount?.(node.dataset.centralWidgetMount, node);
     });

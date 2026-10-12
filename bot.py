@@ -6467,6 +6467,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 pointer-events: auto !important;
             }
         }
+/* TEST: remove the 44px vertical icon rail; retain market board behind header toggle. */
+        #right-market-icons { display: none !important; }
+        #right-market-rail.collapsed { display: none !important; }
+        #right-market-rail:not(.collapsed) { width: 292px !important; display: flex !important; }
+        #right-market-panel { width: 100% !important; min-width: 0 !important; }
+        header { padding-right: 12px !important; }
 </style>
 </head>
 <body>
@@ -6496,9 +6502,12 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 <div class="logo-top" id="headerLogo" onclick="resetToHome()">gaemiGTP</div>
             </div>
 
+            <div style="display:flex;align-items:center;gap:8px;">
+                <button class="gemini-menu-icon" id="rightMarketHeaderToggle" onclick="toggleRightMarket()" title="실시간 순위 열기" aria-label="실시간 순위 열기">☷</button>
             <button class="gemini-menu-icon" id="themeToggleBtn" onclick="toggleTheme()" title="화면 테마 변경">
                 <span id="themeIconArea"></span>
             </button>
+            </div>
         </header>
 
         <div id="main-view">
@@ -7806,6 +7815,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         <section id="right-market-panel">
             <div class="right-market-head">
                 <div><span class="right-market-title">실시간</span><span class="right-market-time" id="rightMarketTime">오늘 --:-- 기준</span></div>
+                <button type="button" onclick="toggleRightMarket()" title="실시간 순위 닫기" aria-label="실시간 순위 닫기" style="border:0;background:transparent;color:var(--text-title);font-size:22px;cursor:pointer;padding:4px 8px;">×</button>
             </div>
             <div class="right-market-tabs">
                 <button class="right-market-tab active" data-market="kr" onclick="switchRightMarket('kr')">국내</button>

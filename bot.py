@@ -6467,19 +6467,28 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 pointer-events: auto !important;
             }
         }
-/* TEST: remove the 44px vertical icon rail; retain market board behind header toggle. */
+/* TEST: move market board into sidebar dropdown, no vertical icon rail. */
         #right-market-icons { display: none !important; }
+        #right-market-rail { display: none !important; }
         #right-market-rail.collapsed { display: none !important; }
-        #right-market-rail:not(.collapsed) { width: 292px !important; display: flex !important; }
+        #right-market-rail:not(.collapsed) { display: none !important; }
         #right-market-panel { width: 100% !important; min-width: 0 !important; }
         header { padding-right: 12px !important; }
+        #sidebar-wrapper { width: min(340px, 100vw) !important; }
+        .market-dropdown-brand { font: inherit; font-size:1.15rem; font-weight:700; color:var(--text-title); background:none; border:0; cursor:pointer; text-align:left; }
+        .left-market-dropdown[hidden] { display:none !important; }
+        .left-market-dropdown { display:flex; flex-direction:column; flex:1; min-height:0; border-top:1px solid var(--border-line); }
+        .left-market-dropdown #right-market-panel { display:flex !important; position:static !important; height:100% !important; width:100% !important; min-width:0 !important; }
+        .left-market-dropdown .right-market-list { overflow-y:auto; min-height:0; }
+        #sidebar-wrapper:has(.left-market-dropdown:not([hidden])) .sidebar-scroll-area { display:none; }
+        #sidebar-wrapper:has(.left-market-dropdown:not([hidden])) .gemini-new-btn { display:none; }
 </style>
 </head>
 <body>
 
     <div id="sidebar-wrapper">
         <div class="side-top-action">
-            <span style="font-weight:700; font-size:1.15rem; color:var(--text-title); cursor:pointer;" onclick="resetToHome()">gaemiGTP</span>
+            <button type="button" class="market-dropdown-brand" onclick="toggleMarketDropdown()" aria-expanded="false" aria-controls="leftMarketDropdown" title="실시간 순위 열기">gaemiGTP <span id="leftMarketArrow">⌄</span></button>
             <button class="gemini-menu-icon" onclick="toggleSidebar()" title="사이드 패널 닫기">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M4 19V5C4 4.45 4.19583 3.97917 4.5875 3.5875C4.97917 3.19583 5.45 3 6 3H18C18.55 3 19.0208 3.19583 19.4125 3.5875C19.8042 3.97917 20 4.45 20 5V19C20 19.55 19.8042 20.0208 19.4125 20.4125C19.0208 20.8042 18.55 21 18 21H6C5.45 21 4.97917 20.8042 4.5875 20.4125C4.19583 20.0208 4 19.55 4 19ZM9 19H18V5H9V19ZM6 5V19V5Z"/></svg>
             </button>
@@ -6490,6 +6499,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             <span>새 종목</span>
         </button>
 
+        <div id="leftMarketDropdown" class="left-market-dropdown" hidden></div>
         <div class="sidebar-scroll-area"></div>
     </div>
 
@@ -6503,7 +6513,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             </div>
 
             <div style="display:flex;align-items:center;gap:8px;">
-                <button class="gemini-menu-icon" id="rightMarketHeaderToggle" onclick="toggleRightMarket()" title="실시간 순위 열기" aria-label="실시간 순위 열기">☷</button>
+                <button class="gemini-menu-icon" id="rightMarketHeaderToggle" onclick="toggleMarketDropdown()" title="실시간 순위 열기" aria-label="실시간 순위 열기">☷</button>
             <button class="gemini-menu-icon" id="themeToggleBtn" onclick="toggleTheme()" title="화면 테마 변경">
                 <span id="themeIconArea"></span>
             </button>
@@ -7815,7 +7825,7 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
         <section id="right-market-panel">
             <div class="right-market-head">
                 <div><span class="right-market-title">실시간</span><span class="right-market-time" id="rightMarketTime">오늘 --:-- 기준</span></div>
-                <button type="button" onclick="toggleRightMarket()" title="실시간 순위 닫기" aria-label="실시간 순위 닫기" style="border:0;background:transparent;color:var(--text-title);font-size:22px;cursor:pointer;padding:4px 8px;">×</button>
+                <button type="button" onclick="toggleMarketDropdown()" title="실시간 순위 닫기" aria-label="실시간 순위 닫기" style="border:0;background:transparent;color:var(--text-title);font-size:22px;cursor:pointer;padding:4px 8px;">×</button>
             </div>
             <div class="right-market-tabs">
                 <button class="right-market-tab active" data-market="kr" onclick="switchRightMarket('kr')">국내</button>
@@ -7833,7 +7843,25 @@ if (window.GaemiWidgets?.vote) window.GaemiWidgets.vote.load(symbol);
             <button class="right-market-icon-btn" data-right-menu="leaders" onclick="selectRightMenu('leaders')" title="실시간 상단">▥</button>
         </nav>
     </aside>
-
+    <script>
+      function toggleMarketDropdown() {
+        const sidebar = document.getElementById('sidebar-wrapper');
+        const target = document.getElementById('leftMarketDropdown');
+        const brand = document.querySelector('.market-dropdown-brand');
+        const arrow = document.getElementById('leftMarketArrow');
+        if (!sidebar || !target) return;
+        if (!sidebar.classList.contains('open')) sidebar.classList.add('open');
+        const open = target.hasAttribute('hidden');
+        target.toggleAttribute('hidden', !open);
+        if (brand) brand.setAttribute('aria-expanded', String(open));
+        if (arrow) arrow.textContent = open ? '⌃' : '⌄';
+      }
+      document.addEventListener('DOMContentLoaded', function () {
+        const panel = document.getElementById('right-market-panel');
+        const dropdown = document.getElementById('leftMarketDropdown');
+        if (panel && dropdown) dropdown.appendChild(panel);
+      });
+    </script>
 </body>
 </html>
 """

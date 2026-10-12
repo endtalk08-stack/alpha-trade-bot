@@ -5,3 +5,10 @@ matplotlib
 mplfinance
 python-telegram-bot
 psycopg[binary]>=3.2,<4
+
+flask
+flask-cors
+gunicorn
+yfinance
+google-generativeai
+upstash-redis

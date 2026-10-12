@@ -7981,6 +7981,29 @@ class WebHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         params = urllib.parse.parse_qs(parsed.query)
 
+        # Isolated gaemiGTP layout preview; original alpha-bot routes remain unchanged.
+        if parsed.path == "/gaemi" or parsed.path.startswith("/gaemi/"):
+            import mimetypes
+            preview_root = os.path.realpath(os.path.join(os.path.dirname(__file__), "gaemi_frontend"))
+            relative_path = urllib.parse.unquote(parsed.path[len("/gaemi/"):]) if parsed.path.startswith("/gaemi/") else ""
+            file_path = os.path.realpath(os.path.join(preview_root, relative_path or "index.html"))
+            if os.path.commonpath([preview_root, file_path]) != preview_root:
+                self._json(403, {"error": "Forbidden"})
+                return
+            if os.path.isdir(file_path):
+                file_path = os.path.join(file_path, "index.html")
+            try:
+                with open(file_path, "rb") as preview_file:
+                    payload = preview_file.read()
+            except OSError:
+                self._json(404, {"error": "Preview file not found"})
+                return
+            content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+            if content_type.startswith("text/") or content_type in ("application/javascript", "application/json"):
+                content_type += "; charset=utf-8"
+            self._write_bytes_response(200, payload, content_type, compress=True, cache_control="no-cache")
+            return
+
         if parsed.path == "/health":
             self._json(200, {"ok": True, "telegram_configured": bool(TELEGRAM_TOKEN)})
             return

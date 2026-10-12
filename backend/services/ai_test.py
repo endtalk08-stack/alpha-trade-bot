@@ -581,8 +581,8 @@ def ai_test_chat():
                 return jsonify({"ok": True, "stock": stock, "answer": answer, "model": "calculation"})
 
         if private_chat:
-            if not _settings_ready():
-                return jsonify({"ok": False, "error": "ai_test_not_configured"}), 503
+            if not os.getenv("GROQ_API_KEY", "").strip():
+                return jsonify({"ok": False, "error": "groq_api_key_missing"}), 503
 
         history = body.get("history") or []
         dialogue = []

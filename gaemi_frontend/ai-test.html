@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>gaemiGTP · Groq AI 관리자 테스트</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #101317; color: #f3f5f7; }
+    main { width: min(740px, calc(100% - 36px)); margin: 30px auto 70px; }
+    h1 { font-size: 1.35rem; margin-bottom: 6px; }
+    .muted { color: #aeb7c1; font-size: .92rem; line-height: 1.6; }
+    section { margin-top: 18px; padding: 20px; background: #1c2229; border: 1px solid #35404b; border-radius: 14px; }
+    label { display: block; margin: 14px 0 6px; font-size: .92rem; font-weight: 600; }
+    input, select, textarea { width: 100%; box-sizing: border-box; border: 1px solid #52606f; background: #0f151c; color: #f3f5f7; border-radius: 9px; padding: 12px; font-size: 1rem; }
+    textarea { min-height: 105px; resize: vertical; }
+    button { background: #3984ef; color: white; border: 0; border-radius: 9px; padding: 11px 17px; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .55; cursor: wait; }
+    button.alt { background: #3f4c5a; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+    #answer { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; margin: 8px 0; }
+    #feedback { color: #ffd49b; min-height: 1.5em; margin-top: 12px; }
+    #quota, #limitEvents, #dailyUsage, #providerRemaining, #recentCalls, #sourceInfo { white-space: pre-line; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+    @media (max-width: 600px) { main { margin-top: 16px; } section { padding: 16px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>gaemiGTP AI · 관리자 테스트</h1>
+  <p class="muted">기존 채팅·뉴스·공시 화면과 독립된 관리자 테스트 페이지입니다. 이 페이지는 자체 호출 횟수 제한 없이 Groq 무료 플랜의 실제 요청·토큰 한도를 따릅니다. 조직 한도 참고값은 모델별 분당 30회·하루 1,000회·분당 8,000토큰·하루 200,000토큰이며, 프로젝트 설정과 실제 잔여량은 Groq 콘솔에서 확인하세요.</p>
+  <section>
+    <label for="token">관리자 테스트 비밀번호 (AI_TEST_TOKEN)</label>
+    <input id="token" type="password" autocomplete="off" placeholder="Render 환경변수에 지정한 비밀번호">
+    <div class="actions"><button id="statusBtn" type="button" class="alt">인증·Groq 한도 확인</button></div>
+    <p id="quota" class="muted"></p>
+    <p id="limitEvents" class="muted"></p>
+    <label for="stock">종목명</label>
+    <input id="stock" value="삼성전자" maxlength="50">
+    <label for="role">AI 모델</label>
+    <select id="role">
+      <option value="news">GPT-OSS 20B - 1모델</option>
+      <option value="deep">GPT-OSS 120B - 2모델</option>
+      <option value="compare">Qwen3.8 27B - 3모델</option>
+    </select>
+    <label for="question">질문</label>
+    <textarea id="question" maxlength="800">삼성전자 최근 뉴스와 공시에서 확인되는 핵심 재료를 3가지 이내로 설명해 줘. 부족한 데이터도 알려 줘.</textarea>
+    <div class="actions"><button id="askBtn" type="button">AI 분석 요청</button></div>
+    <p id="feedback" role="status" aria-live="polite"></p>
+  </section>
+  <section>
+    <strong>AI 답변</strong>
+    <p id="answer">아직 AI를 호출하지 않았습니다.</p>
+    <p id="sourceInfo" class="muted"></p>
+  </section>
+  <section>
+    <strong>모델별 오늘 토큰 사용량</strong>
+    <p id="dailyUsage" class="muted">관리자 인증 후 조회할 수 있습니다.</p>
+    <strong>Groq 응답 기준 잔여 한도 (마지막 호출 시점)</strong>
+    <p id="providerRemaining" class="muted">아직 Groq 응답을 받지 않았습니다.</p>
+    <strong>최근 호출 기록 · 최대 20건</strong>
+    <p id="recentCalls" class="muted">관리자 인증 후 조회할 수 있습니다.</p>
+  </section>
+  <p class="muted">비밀번호는 이 페이지에서 저장되지 않습니다. API 키(GROQ_API_KEY)를 여기에 입력하거나 채팅에 붙여넣지 마세요. 실제 매매 신호가 아닌 분석 기능 평가용입니다.</p>
+</main>
+<script>
+(function () {
+  const token = document.getElementById("token");
+  const statusBtn = document.getElementById("statusBtn");
+  const askBtn = document.getElementById("askBtn");
+  const quota = document.getElementById("quota");
+  const limitEvents = document.getElementById("limitEvents");
+  const dailyUsage = document.getElementById("dailyUsage");
+  const providerRemaining = document.getElementById("providerRemaining");
+  const recentCalls = document.getElementById("recentCalls");
+  const feedback = document.getElementById("feedback");
+  const answer = document.getElementById("answer");
+  const sourceInfo = document.getElementById("sourceInfo");
+  const errors = {
+    admin_test_disabled_or_unauthorized: "접근 불가: Render의 AI_TEST_ENABLED, AI_TEST_TOKEN, GROQ_API_KEY 설정 및 비밀번호를 확인하세요.",
+    model_daily_limit: "선택한 모델의 오늘 테스트 횟수를 모두 사용했습니다.",
+    total_daily_limit: "전체 AI 하루 테스트 횟수를 모두 사용했습니다.",
+    minute_limit: "분당 최대 2회입니다. 잠시 후 다시 시도하세요.",
+    groq_rate_limit: "Groq 무료 요금제 자체 제한에 걸렸습니다.",
+    groq_request_failed: "Groq 요청이 실패했습니다. 모델/계정 설정을 확인하세요.",
+    stock_data_unavailable: "기존 서버에서 해당 종목의 분석 데이터를 확인하지 못했습니다.",
+    invalid_input: "종목명과 질문을 확인하세요.",
+    ai_test_failed: "AI 테스트 요청에 실패했습니다."
+  };
+  const limitLabels = {
+    requests_per_minute: "분당 요청",
+    requests_per_day: "하루 요청",
+    tokens_per_minute: "분당 토큰",
+    tokens_per_day: "하루 토큰",
+    unknown: "원인 미확인"
+  };
+  const modelNames = {
+    "openai/gpt-oss-20b": "GPT-OSS 20B - 1모델",
+    "openai/gpt-oss-120b": "GPT-OSS 120B - 2모델",
+    "qwen/qwen3.8-27b": "Qwen3.8 27B - 3모델"
+  };
+  function modelName(modelId) {
+    return modelNames[modelId] || modelId || "미확인";
+  }
+  const callStatusLabels = {
+    success: "성공", rate_limit: "Groq 제한", provider_error: "Groq 오류", request_error: "요청 실패"
+  };
+  function tokenLabel(value) {
+    return Number.isInteger(value) && value >= 0 ? value.toLocaleString("ko-KR") : "미확인";
+  }
+  function showQuota(info) {
+    if (!info || !info.models) return;
+    if (info.limit_source === "groq") {
+      const lines = ["한도 관리: Groq (gaemiGTP 자체 테스트 횟수 제한 없음)"];
+      for (const item of Object.values(info.models)) {
+        const ref = item.reference_limits || {};
+        lines.push(modelName(item.model_id) + ": 분당 " + ref.requests_per_minute + "회 / 하루 "
+          + ref.requests_per_day + "회 / 분당 " + ref.tokens_per_minute
+          + "토큰 / 하루 " + ref.tokens_per_day + "토큰");
+      }
+      quota.textContent = lines.join("\n") + "\n" + (info.note || "");
+      const events = info.recent_rate_limits || [];
+      limitEvents.textContent = "최근 Groq 제한 기록 (최대 20건)\n"
+        + (events.length ? events.map(event =>
+          event.timestamp_kst + " · " + modelName(event.model_id)
+          + " · " + (limitLabels[event.limit_type] || limitLabels.unknown)
+          + (event.retry_after ? " · 재시도 안내: " + event.retry_after : "")
+        ).join("\n") : "아직 기록이 없습니다.");
+      const daily = info.daily_usage || {};
+      const observed = info.provider_remaining || {};
+      const remainingLines = [];
+      const summary = ["한국시간 " + (info.date_kst || "날짜 확인 불가") + " · 이 서버의 관리자 테스트 기준"];
+      for (const [role, item] of Object.entries(info.models)) {
+        const values = daily[role] || {};
+        const ref = item.reference_limits || {};
+        const observedAll = Number(values.successful_calls || 0) === Number(values.metered_calls || 0);
+        const estimatedLeft = observedAll && Number.isInteger(ref.tokens_per_day)
+          && Number.isInteger(values.total_tokens)
+          ? tokenLabel(Math.max(0, ref.tokens_per_day - values.total_tokens)) + "토큰"
+          : "미확인 (토큰 기록 누락)";
+        summary.push(modelName(item.model_id) + ": 입력 " + tokenLabel(values.prompt_tokens)
+          + " / 출력 " + tokenLabel(values.completion_tokens)
+          + " / 합계 " + tokenLabel(values.total_tokens)
+          + "토큰 · 오늘 예상 잔여 " + estimatedLeft
+          + " · 성공 " + (values.successful_calls || 0)
+          + "건 (토큰 확인 " + (values.metered_calls || 0)
+          + "건) · 실패 " + (values.failed_calls || 0) + "건");
+        const live = observed[role];
+        const dailyRequests = live?.requests_per_day || {};
+        const minuteTokens = live?.tokens_per_minute || {};
+        const requestLeft = Number.isInteger(dailyRequests.remaining)
+          ? tokenLabel(dailyRequests.remaining) + "회" : "미확인";
+        const minuteLeft = Number.isInteger(minuteTokens.remaining)
+          ? tokenLabel(minuteTokens.remaining) + "개" : "미확인";
+        remainingLines.push(modelName(item.model_id) + ": " + (live?.observed_at_kst || "응답 없음")
+          + "\n  하루 남은 요청 " + requestLeft
+          + " / 분당 남은 토큰 " + minuteLeft);
+      }
+      dailyUsage.textContent = summary.join("\n");
+      providerRemaining.textContent = remainingLines.join("\n")
+        + "\nGroq 응답 헤더에는 하루 남은 토큰이 제공되지 않습니다. 분당 잔여 토큰은 시간이 지나면 변할 수 있습니다.";
+      const calls = info.recent_calls || [];
+      recentCalls.textContent = (calls.length ? calls.map(item =>
+        item.timestamp_kst + " · " + modelName(item.model_id)
+        + " · " + (callStatusLabels[item.status] || item.status)
+        + (item.limit_type ? " (" + (limitLabels[item.limit_type] || limitLabels.unknown) + ")" : "")
+        + (item.http_status ? " · HTTP " + item.http_status : "")
+        + "\n  입력 " + tokenLabel(item.prompt_tokens)
+        + " / 출력 " + tokenLabel(item.completion_tokens)
+        + " / 합계 " + tokenLabel(item.total_tokens) + "토큰"
+      ).join("\n") : "아직 기록이 없습니다.")
+        + "\n" + (info.history_warning || "");
+      return;
+    }
+    const lines = ["기준일 (한국시간): " + info.date_kst,
+      "전체: " + info.total.used + " / " + info.total.limit];
+    for (const item of Object.values(info.models)) {
+      lines.push(modelName(item.model_id) + ": " + item.used + " / " + item.limit);
+    }
+    quota.textContent = lines.join("\n") + "\n" + (info.reset_warning || "");
+  }
+  async function requestApi(path, payload) {
+    const headers = { "Authorization": "Bearer " + token.value };
+    if (payload) headers["Content-Type"] = "application/json";
+    const response = await fetch(path, {
+      method: payload ? "POST" : "GET",
+      headers,
+      body: payload ? JSON.stringify(payload) : undefined,
+      cache: "no-store"
+    });
+    const data = await response.json();
+    if (data.limits) showQuota(data.limits);
+    else if (data.ok && data.models) showQuota(data);
+    if (!response.ok || !data.ok) {
+      let message = errors[data.error] || ("요청 실패 (" + response.status + ")");
+      if (data.error === "groq_rate_limit") {
+        message += " · 모델: " + modelName(data.model)
+          + " · 제한: " + (limitLabels[data.rate_limit_type] || limitLabels.unknown);
+        if (data.retry_after) message += " · 재시도 안내: " + data.retry_after;
+      }
+      throw new Error(message);
+    }
+    return data;
+  }
+  statusBtn.addEventListener("click", async function () {
+    feedback.textContent = "확인 중...";
+    statusBtn.disabled = true;
+    try {
+      await requestApi("/api/ai-test/status");
+      feedback.textContent = "인증 성공! AI 테스트 준비 완료.";
+    } catch (error) {
+      feedback.textContent = error.message;
+    } finally {
+      statusBtn.disabled = false;
+    }
+  });
+  askBtn.addEventListener("click", async function () {
+    if (!window.confirm("선택한 모델에 Groq 무료 한도 내에서 요청합니다. 계속할까요?")) return;
+    feedback.textContent = "기존 뉴스·공시·시세 조회 및 AI 분석 중...";
+    askBtn.disabled = true;
+    answer.textContent = "분석 중...";
+    sourceInfo.textContent = "";
+    try {
+      const result = await requestApi("/api/ai-test/chat", {
+        stock: document.getElementById("stock").value,
+        question: document.getElementById("question").value,
+        role: document.getElementById("role").value
+      });
+      answer.textContent = result.answer;
+      const usage = result.usage || {};
+      sourceInfo.textContent = "사용 모델: " + modelName(result.model)
+        + " · 뉴스 " + result.source_counts.news
+        + "건 · 공시 " + result.source_counts.disclosures
+        + "건 · 핵심 이슈 " + result.source_counts.issue_briefs + "건"
+        + "\n실제 사용 토큰: 입력 " + tokenLabel(usage.prompt_tokens)
+        + " / 출력 " + tokenLabel(usage.completion_tokens)
+        + " / 합계 " + tokenLabel(usage.total_tokens);
+      feedback.textContent = "분석 완료";
+    } catch (error) {
+      answer.textContent = "AI 답변이 없습니다.";
+      feedback.textContent = error.message;
+    } finally {
+      askBtn.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>

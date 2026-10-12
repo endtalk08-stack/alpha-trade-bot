@@ -12,7 +12,7 @@ def _client():
     global _app
     if _app is None:
         from gaemi_app import app
-        _app = Client(app, Response)
+        _app = Client(app, Response, use_cookies=False)
     return _app
 
 def serve(handler, method="GET"):

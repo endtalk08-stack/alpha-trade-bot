@@ -1,0 +1,143 @@
+/* Central Widget Dock — display/remove shell only. Additions come from Plugin sidebar. */
+.central-widget-dock {
+  flex-shrink: 0;
+  background: transparent;
+}
+
+.central-widget-dock__body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+  padding: 10px 12px;
+}
+.central-widget-dock__body:empty { display: none; }
+
+.central-widget-card {
+  min-height: 86px;
+  padding: 10px 11px;
+  border: 1px solid var(--gtp-border-strong);
+  border-radius: 12px;
+  background: var(--gtp-surface);
+}
+.central-widget-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.central-widget-card__name {
+  min-width: 0;
+  color: var(--gtp-text);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.central-widget-card__close {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--gtp-faint);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.central-widget-card__close:hover { background: var(--gtp-hover); color: var(--gtp-text); }
+.central-widget-card__desc {
+  margin-top: 12px;
+  color: var(--gtp-faint);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .central-widget-dock__body { grid-template-columns: 1fr 1fr; }
+}
+
+/* Market widgets — source data will be attached here. */
+.central-widget-card--kospi {
+  position: relative;
+  min-height: 86px;
+  height: 86px;
+  padding: 10px 11px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.central-widget-card__close--overlay {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+.central-widget-card__kospi-title {
+  padding-right: 22px;
+  color: var(--gtp-text);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+}
+.central-widget-card__market-empty {
+  margin-top: 12px;
+  padding-right: 8px;
+  color: var(--gtp-faint);
+  font-size: 9px;
+  line-height: 1.45;
+}
+.central-widget-card__kospi-body {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  min-height: 0;
+}
+.central-widget-card__sparkline {
+  width: 58px;
+  height: 28px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  color: var(--gtp-text);
+}
+.central-widget-card__kospi-copy {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 0;
+}
+.central-widget-card__kospi-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 5px;
+  min-width: 0;
+  color: var(--gtp-text);
+  font-size: 11px;
+  line-height: 14px;
+  white-space: nowrap;
+}
+.central-widget-card__kospi-row > span {
+  color: var(--gtp-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+.central-widget-card__kospi-market {
+  justify-content: flex-end;
+  gap: 8px;
+}
+.central-widget-card__kospi-reason {
+  justify-content: flex-end;
+}
+.central-widget-card__kospi-reason > span {
+  color: var(--gtp-faint);
+}
+
+.central-widget-card__kospi-change--up { color: #ff4d67 !important; }
+.central-widget-card__kospi-change--down { color: #3b82f6 !important; }
+.central-widget-card__sparkline polygon {
+  fill: url(#kospiSparklineGradient);
+  stroke: none;
+}
+.central-widget-card__sparkline--up { color: #ff4d67; }
+.central-widget-card__sparkline--down { color: #3b82f6; }

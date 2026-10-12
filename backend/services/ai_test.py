@@ -426,6 +426,29 @@ def _previous_day_reply(question, metrics):
     return f"전 거래일({date_text}) 기준 " + ", ".join(facts) + "."
 
 
+def _gemini_answer(question, context, max_completion_tokens=650, style_prompt=None):
+    """Use the existing test server GEMINI_API_KEY for authenticated chat."""
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    payload = {
+        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT + ("\n\n" + style_prompt if style_prompt else "")}]},
+        "contents": [{"role": "user", "parts": [{"text": "참고 데이터(JSON):\n" + json.dumps(context, ensure_ascii=False) + "\n\n질문: " + question}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_completion_tokens},
+    }
+    req = urllib.request.Request(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=23) as response:
+        result = json.loads(response.read().decode("utf-8"))
+        provider_headers = response.headers
+    answer = "".join(p.get("text", "") for c in result.get("candidates", []) for p in c.get("content", {}).get("parts", []) if isinstance(p, dict))
+    if not answer.strip():
+        raise ValueError("empty_gemini_response")
+    return answer.strip()[:4000], result.get("usageMetadata"), provider_headers
+
+
 def _groq_answer(model_id, question, context, max_completion_tokens=650, style_prompt=None):
     payload = {
         "model": model_id,
@@ -581,8 +604,8 @@ def ai_test_chat():
                 return jsonify({"ok": True, "stock": stock, "answer": answer, "model": "calculation"})
 
         if private_chat:
-            if not os.getenv("GROQ_API_KEY", "").strip():
-                return jsonify({"ok": False, "error": "groq_api_key_missing"}), 503
+            if not (os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("GROQ_API_KEY", "").strip()):
+                return jsonify({"ok": False, "error": "ai_provider_key_missing"}), 503
 
         history = body.get("history") or []
         dialogue = []
@@ -596,10 +619,15 @@ def ai_test_chat():
         if dialogue:
             prompt = "이전 대화:\n" + "\n".join(dialogue) + "\n\n현재 질문: " + question
         provider_called = True
-        answer, usage, provider_headers = _groq_answer(
-            MODELS[role]["id"], prompt, context,
-            style_prompt="반말로 짧고 명확하게 답해. 근거에 없는 숫자는 말하지 마." if private_chat else None,
-        )
+        if private_chat and os.getenv("GEMINI_API_KEY", "").strip():
+            answer, usage, provider_headers = _gemini_answer(
+                prompt, context, style_prompt="반말로 짧고 명확하게 답해. 근거에 없는 숫자는 말하지 마."
+            )
+        else:
+            answer, usage, provider_headers = _groq_answer(
+                MODELS[role]["id"], prompt, context,
+                style_prompt="반말로 짧고 명확하게 답해. 근거에 없는 숫자는 말하지 마." if private_chat else None,
+            )
         if admin_test:
             _remember_groq_remaining(role, provider_headers)
             _record_groq_call(role, "success", usage=usage)

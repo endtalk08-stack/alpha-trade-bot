@@ -2227,39 +2227,12 @@
         }
 
 
-/* Economic calendar typography: one consistent size/weight and soft gray text.
-   Scoped to economic events only; earnings calendar and other widgets are untouched. */
-.calendar-widget-list .cal-eco-item .cal-time-col,
-.calendar-widget-list .cal-eco-item .cal-event-status,
-.calendar-widget-list .cal-eco-item .cal-event-title,
-.calendar-widget-list .cal-eco-item .cal-event-subtitle,
-.calendar-widget-list .cal-eco-item .cal-event-meta {
-    font-size: 0.82rem !important;
-    font-weight: 400 !important;
-    line-height: 1.35 !important;
-    color: #AEB4BA !important;
-    letter-spacing: normal !important;
-}
-.calendar-widget-list .cal-eco-item .cal-event-title,
-.calendar-widget-list .cal-eco-item .cal-event-subtitle,
-.calendar-widget-list .cal-eco-item .cal-event-meta {
-    margin: 0 !important;
-    padding: 0 !important;
-}
-.calendar-widget-list .cal-eco-item .cal-event-subtitle {
-    display: block !important;
-    white-space: normal !important;
-}
-.calendar-widget-list .cal-eco-item .cal-stars {
-    font-size: 0.82rem !important;
-    font-weight: 400 !important;
-    line-height: 1.35 !important;
-}
-
-
 /* Economic calendar only: same readable typography for every label and value. */
 #rowEconomicCalendar .calendar-widget-title,
 #rowEconomicCalendar .cal-current-date,
+#rowEconomicCalendar .cal-arrow-btn,
+#rowEconomicCalendar .cal-today-btn,
+#rowEconomicCalendar .cal-page-btn,
 #rowEconomicCalendar .calendar-star-btn,
 #rowEconomicCalendar .calendar-widget-subtitle,
 #rowEconomicCalendar .cal-page-txt,

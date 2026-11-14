@@ -75,6 +75,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "gaemigtp_bot").strip()
 DART_API_KEY = os.environ.get("DART_API_KEY", "").strip()
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
+EARNINGS_API_KEY = os.environ.get("EARNINGS_API_KEY", "").strip()
 FRED_API_KEY = os.environ.get("FRED_API_KEY", "").strip()
 TRADING_ECONOMICS_API_KEY = os.environ.get("TRADING_ECONOMICS_API_KEY", "").strip()
 ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
@@ -1106,97 +1107,115 @@ def fetch_real_market_calendar_live():
     return CACHED_MARKET_CALENDAR or []
 
 
-# ForexFactory weekly export: one upstream source, one request per server hour.
-# The lock also prevents concurrent site visitors from issuing duplicate downloads.
+# Economic calendar: Earnings API (US only). Memory-only cache, no database.
+# Free tier returns daily-updated economic values; one 15-date batch per 24 hours
+# keeps the maximum normal usage below the published 1,000 requests/month quota.
 ECONOMIC_CALENDAR_FETCH_LOCK = threading.Lock()
 ECONOMIC_CALENDAR_LAST_ATTEMPT = 0.0
 ECONOMIC_CALENDAR_LAST_GOOD = []
-ECONOMIC_CALENDAR_SOURCE_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-ECONOMIC_CALENDAR_FETCH_INTERVAL = 3600
+ECONOMIC_CALENDAR_FETCH_INTERVAL = 24 * 3600
+ECONOMIC_CALENDAR_SOURCE_URL = "https://api.earningsapi.com/v2/calendar/economic"
 
 
 def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
-    """기존 ForexFactory 무료 주간 JSON만 사용한다.
+    """미국 경제일정은 Earnings API 하나에서만 수집한다.
 
-    무료 데이터는 이번 주만 포함하므로 요청 기간 전체를 보장하지 않는다.
-    외부 공급처 요청은 서버 전체에서 최대 1시간에 한 번만 수행한다.
-    실패 시에는 마지막 성공한 이번 주 데이터만 재사용한다.
+    ET 기준 과거 3일 ~ 미래 11일(15일)을 하루에 한 번 조회한다.
+    Free는 actual/consensus/previous 갱신이 하루 한 번이다.
+    실패해도 메모리의 마지막 성공 데이터만 유지하며 DB는 사용하지 않는다.
     """
     global ECONOMIC_CALENDAR_LAST_ATTEMPT, ECONOMIC_CALENDAR_LAST_GOOD
 
-    def current_week_rows(rows):
-        # ForexFactory의 주간 파일은 미국 동부시간 일요일~토요일 범위다.
-        # 주가 바뀐 뒤 지난주 데이터를 이번 주 일정처럼 보여주지 않는다.
-        try:
-            eastern = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone.utc
-        except Exception:
-            eastern = timezone.utc
-        now_et = datetime.now(eastern)
-        week_start = (now_et - timedelta(days=(now_et.weekday() + 1) % 7)).date()
-        week_end = week_start + timedelta(days=7)
-        return [
-            ev for ev in rows
-            if isinstance(ev, dict)
-            and ev.get("ts") is not None
-            and week_start <= datetime.fromtimestamp(float(ev["ts"]), timezone.utc).astimezone(eastern).date() < week_end
-        ]
+    if not EARNINGS_API_KEY:
+        print("[CALENDAR][ECO] EARNINGS_API_KEY 환경변수가 설정되지 않았습니다.")
+        return list(ECONOMIC_CALENDAR_LAST_GOOD)
 
     with ECONOMIC_CALENDAR_FETCH_LOCK:
         now = time.monotonic()
         if ECONOMIC_CALENDAR_LAST_ATTEMPT and now - ECONOMIC_CALENDAR_LAST_ATTEMPT < ECONOMIC_CALENDAR_FETCH_INTERVAL:
-            return list(current_week_rows(ECONOMIC_CALENDAR_LAST_GOOD))
-
-        # 기록을 요청 전에 갱신해 429/타임아웃에서도 재시도 폭주를 방지한다.
+            return list(ECONOMIC_CALENDAR_LAST_GOOD)
         ECONOMIC_CALENDAR_LAST_ATTEMPT = now
-        try:
-            response = HTTP_SESSION.get(ECONOMIC_CALENDAR_SOURCE_URL, timeout=8.0)
-            if not response.ok:
-                print(f"[CALENDAR][ECO] ForexFactory HTTP {response.status_code}; 1시간 후 재시도")
-                return list(current_week_rows(ECONOMIC_CALENDAR_LAST_GOOD))
 
-            payload = response.json()
-            if not isinstance(payload, list):
-                print("[CALENDAR][ECO] ForexFactory 응답 형식 오류; 이전 정상 데이터 사용")
-                return list(current_week_rows(ECONOMIC_CALENDAR_LAST_GOOD))
+        eastern = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone(timedelta(hours=-5))
+        today_et = datetime.now(eastern).date()
+        received = []
+        success_days = 0
 
-            events = []
-            for item in payload:
-                if not isinstance(item, dict):
+        # Date-specific endpoint: the API cannot return a multi-day range in one call.
+        # 15 requests per daily refresh, normally 450 requests in a 30-day month.
+        for day_offset in range(-3, 12):
+            day = today_et + timedelta(days=day_offset)
+            try:
+                response = HTTP_SESSION.get(
+                    ECONOMIC_CALENDAR_SOURCE_URL,
+                    params={"date": day.isoformat(), "country": "US", "apikey": EARNINGS_API_KEY},
+                    timeout=7.0,
+                )
+                if not response.ok:
+                    print(f"[CALENDAR][ECO] Earnings API HTTP {response.status_code} (date={day})")
+                    if response.status_code in (401, 403, 429):
+                        break
                     continue
-                if str(item.get("country", "")).strip().upper() != "USD":
-                    continue
-                dt = _parse_calendar_timestamp(item.get("date"))
-                title = str(item.get("title") or "").strip()
-                if dt is None or not title:
-                    continue
-                stars, star_str = _impact_to_stars(item.get("impact"))
-                title_ko = ECO_TITLE_KO_MAP.get(title, title)
-                prefix = COUNTRY_PREFIX_MAP.get("USD", "미 ")
-                events.append(_calendar_event_common(
-                    dt, f"{prefix}{title_ko}", "USD", stars, star_str, "eco",
-                    str(item.get("actual") or "").strip() or (
-                        "발표완료" if dt <= datetime.now(timezone.utc) else "발표대기"
-                    ),
-                    str(item.get("forecast") or "").strip() or "-",
-                    str(item.get("previous") or "").strip() or "-",
-                    extra={"source": "ForexFactory"},
-                ))
 
+                payload = response.json()
+                if not isinstance(payload, list):
+                    print(f"[CALENDAR][ECO] Earnings API 응답 형식 오류 (date={day})")
+                    continue
+                success_days += 1
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("country") or "").strip().upper() not in {"UNITED STATES", "US", "USA"}:
+                        continue
+                    name = str(item.get("eventName") or "").strip()
+                    raw_date = str(item.get("date") or day.isoformat()).strip()
+                    if not name:
+                        continue
+                    try:
+                        event_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
+                    except ValueError:
+                        continue
+
+                    raw_time = item.get("time")
+                    time_text = str(raw_time or "").strip()
+                    unknown_time = not time_text
+                    if unknown_time:
+                        hours, minutes = 0, 0
+                    else:
+                        try:
+                            hours, minutes = (int(part) for part in time_text.split(":")[:2])
+                            if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+                                continue
+                        except (ValueError, TypeError):
+                            continue
+                    dt_et = datetime(
+                        event_date.year, event_date.month, event_date.day,
+                        hours, minutes, tzinfo=eastern
+                    )
+                    dt_utc = dt_et.astimezone(timezone.utc)
+
+                    # The provider does not supply an impact rating.
+                    # Mark it as unspecified (one star), never invent importance.
+                    received.append(_calendar_event_common(
+                        dt_utc, name, "US", 1, "★☆☆", "eco",
+                        str(item.get("actual")) if item.get("actual") is not None else "발표대기",
+                        str(item.get("consensus")) if item.get("consensus") is not None else "-",
+                        str(item.get("previous")) if item.get("previous") is not None else "-",
+                        extra={"source": "EarningsAPI", **({"time": "미정"} if unknown_time else {})},
+                    ))
+            except Exception as exc:
+                print(f"[CALENDAR][ECO] Earnings API 수집 실패 (date={day}): {type(exc).__name__}: {exc}")
+
+        if success_days:
             unique = {
                 (ev["date_key"], ev["time"], ev["name"]): ev
-                for ev in events
+                for ev in received
             }
-            good = current_week_rows(sorted(unique.values(), key=lambda ev: ev["ts"]))
-            if good:
-                ECONOMIC_CALENDAR_LAST_GOOD = good
-                print(f"[CALENDAR][ECO] ForexFactory 단일 공급처 정상 수집: {len(good)}건")
-                return list(good)
-
-            print("[CALENDAR][ECO] ForexFactory 유효한 미국 일정 0건; 이전 정상 데이터 사용")
-        except Exception as exc:
-            print("[CALENDAR][ECO] ForexFactory 요청 실패:", repr(exc))
-
-        return list(current_week_rows(ECONOMIC_CALENDAR_LAST_GOOD))
+            ECONOMIC_CALENDAR_LAST_GOOD = sorted(unique.values(), key=lambda ev: ev["ts"])
+            print(f"[CALENDAR][ECO] Earnings API 수집 완료: 조회성공 {success_days}/15일, 미국 일정 {len(ECONOMIC_CALENDAR_LAST_GOOD)}건")
+        else:
+            print("[CALENDAR][ECO] Earnings API 정상 응답 없음; 메모리 이전 데이터 유지")
+        return list(ECONOMIC_CALENDAR_LAST_GOOD)
 
 
 # ----------------------------------------------------

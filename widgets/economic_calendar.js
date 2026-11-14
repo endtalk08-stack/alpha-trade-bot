@@ -84,43 +84,89 @@
         catch (_) { return false; }
     }
 
-    // 화면 표시 전용 한글 지표명 매핑. API 원문과 알림 식별키는 변경하지 않는다.
+    // 화면 표시 전용 한글 지표명. API 원문과 알림 식별키는 유지한다.
     const ECONOMIC_NAME_KO = new Map([
-        ['nopa crush report publication', '미국 대두 압착 보고서'],
-        ['u.s. nopa member soybean crush', '미국 대두 압착량'],
-        ['us nopa member soybean crush', '미국 대두 압착량'],
-        ['u.s. advance retail and food services sales ex autos and gas mom sa', '미국 소매판매 (자동차·주유소 제외, 전월 대비)'],
-        ['u.s. advance retail and food services sales ex autos mom sa', '미국 소매판매 (자동차 제외, 전월 대비)'],
-        ['u.s. consumer price index (cpi) yoy', '미국 소비자물가지수(CPI, 전년 대비)'],
-        ['u.s. consumer price index (cpi) mom', '미국 소비자물가지수(CPI, 전월 대비)'],
-        ['u.s. core consumer price index yoy', '미국 근원 소비자물가지수(전년 대비)'],
-        ['u.s. core consumer price index mom', '미국 근원 소비자물가지수(전월 대비)'],
-        ['u.s. producer price index (ppi) mom', '미국 생산자물가지수(PPI, 전월 대비)'],
-        ['u.s. producer price index (ppi) yoy', '미국 생산자물가지수(PPI, 전년 대비)'],
-        ['u.s. nonfarm payrolls', '미국 비농업 고용자 수'],
-        ['u.s. unemployment rate', '미국 실업률'],
-        ['u.s. initial jobless claims', '미국 신규 실업수당 청구건수'],
-        ['u.s. gross domestic product (gdp) qoq', '미국 국내총생산(GDP, 전분기 대비)'],
-        ['u.s. fed interest rate decision', '미국 연방준비제도 기준금리 결정'],
+        ['nopa crush report publication', { title: '미국 대두 압착 보고서' }],
+        ['u.s. nopa member soybean crush', { title: '미국 대두 압착량' }],
+        ['us nopa member soybean crush', { title: '미국 대두 압착량' }],
+        ['u.s. advance retail and food services sales ex autos and gas mom sa', { title: '미국 소매판매', subtitle: '자동차·주유소 제외 · 전월 대비 · 계절조정' }],
+        ['u.s. advance retail and food services sales ex autos mom sa', { title: '미국 소매판매', subtitle: '자동차 제외 · 전월 대비 · 계절조정' }],
+        ['u.s. consumer price index (cpi) yoy', { title: '미국 소비자물가지수(CPI)', subtitle: '전년 대비' }],
+        ['u.s. consumer price index (cpi) mom', { title: '미국 소비자물가지수(CPI)', subtitle: '전월 대비' }],
+        ['u.s. core consumer price index yoy', { title: '미국 근원 소비자물가지수', subtitle: '전년 대비' }],
+        ['u.s. core consumer price index mom', { title: '미국 근원 소비자물가지수', subtitle: '전월 대비' }],
+        ['u.s. producer price index (ppi) mom', { title: '미국 생산자물가지수(PPI)', subtitle: '전월 대비' }],
+        ['u.s. producer price index (ppi) yoy', { title: '미국 생산자물가지수(PPI)', subtitle: '전년 대비' }],
+        ['u.s. nonfarm payrolls', { title: '미국 비농업 고용자 수' }],
+        ['u.s. unemployment rate', { title: '미국 실업률' }],
+        ['u.s. initial jobless claims', { title: '미국 신규 실업수당 청구건수' }],
+        ['u.s. gross domestic product (gdp) qoq', { title: '미국 국내총생산(GDP)', subtitle: '전분기 대비' }],
+        ['u.s. fed interest rate decision', { title: '미국 기준금리 결정' }],
     ]);
 
-    function economicNameKo(raw) {
+    const ECONOMIC_TERM_KO = [
+        [/advance retail and food services sales/gi, '소매판매'],
+        [/retail sales/gi, '소매판매'],
+        [/initial jobless claims|initial claims/gi, '신규 실업수당 청구건수'],
+        [/continuing jobless claims|continuing claims/gi, '계속 실업수당 청구건수'],
+        [/nonfarm payrolls|non-farm payrolls/gi, '비농업 고용자 수'],
+        [/unemployment rate/gi, '실업률'],
+        [/consumer price index|\\bCPI\\b/gi, '소비자물가지수(CPI)'],
+        [/core consumer price index|core CPI/gi, '근원 소비자물가지수(CPI)'],
+        [/producer price index|\\bPPI\\b/gi, '생산자물가지수(PPI)'],
+        [/personal consumption expenditures|\\bPCE\\b/gi, '개인소비지출(PCE) 물가지수'],
+        [/gross domestic product|\\bGDP\\b/gi, '국내총생산(GDP)'],
+        [/federal funds rate|fed interest rate decision/gi, '연방준비제도 기준금리 결정'],
+        [/ISM manufacturing PMI/gi, 'ISM 제조업 구매관리자지수'],
+        [/ISM services PMI|ISM non-manufacturing PMI/gi, 'ISM 서비스업 구매관리자지수'],
+        [/consumer confidence/gi, '소비자신뢰지수'],
+        [/crude oil inventories/gi, '원유재고'],
+        [/housing starts/gi, '주택착공건수'],
+        [/building permits/gi, '건축허가건수'],
+        [/existing home sales/gi, '기존주택판매'],
+        [/new home sales/gi, '신규주택판매'],
+        [/trade balance/gi, '무역수지'],
+        [/durable goods orders/gi, '내구재 주문'],
+        [/industrial production/gi, '산업생산'],
+        [/capacity utilization/gi, '설비가동률'],
+        [/factory orders/gi, '공장주문'],
+        [/business inventories/gi, '기업재고'],
+        [/personal income/gi, '개인소득'],
+        [/personal spending/gi, '개인소비지출'],
+        [/weekly jobless claims/gi, '주간 실업수당 청구건수'],
+        [/JOLTS job openings/gi, 'JOLTS 구인 건수'],
+        [/consumer sentiment/gi, '소비자심리지수'],
+        [/philly fed manufacturing index/gi, '필라델피아 연은 제조업지수'],
+        [/empire state manufacturing index/gi, '뉴욕 연은 제조업지수'],
+        [/beige book/gi, '연준 베이지북'],
+        [/fomc minutes/gi, 'FOMC 의사록'],
+        [/fomc statement/gi, 'FOMC 성명서'],
+        [/fomc press conference/gi, 'FOMC 기자회견'],
+        [/nopa crush report publication/gi, '대두 압착 보고서 발표'],
+        [/soybean crush/gi, '대두 압착량'],
+    ];
+
+    function economicNameDisplay(raw) {
         const original = String(raw || '경제지표').trim();
-        const normalized = original.toLowerCase().replace(/\s+/g, ' ').trim();
-        if (ECONOMIC_NAME_KO.has(normalized)) return ECONOMIC_NAME_KO.get(normalized);
-        // 공급처가 바뀌어도 원문에 공통 약어가 포함된 경우만 안전하게 변환한다.
-        const short = normalized.replace(/^(u\.s\.|us|united states)\s+/, '');
-        if (ECONOMIC_NAME_KO.has(short)) return ECONOMIC_NAME_KO.get(short);
-        let name = original
-            .replace(/^(?:U\.S\.|US|United States)\s+/i, '미국 ')
-            .replace(/\bEx Autos and Gas\b/gi, '(자동차·주유소 제외)')
-            .replace(/\bEx Autos\b/gi, '(자동차 제외)')
-            .replace(/\bMoM\b/gi, '전월 대비')
-            .replace(/\bYoY\b/gi, '전년 대비')
-            .replace(/\bQoQ\b/gi, '전분기 대비')
-            .replace(/\bSA\b/g, '계절조정');
-        // 매핑되지 않은 지표는 잘못 번역하지 않고 원문을 남긴다.
-        return name;
+        const normalized = original.toLowerCase().replace(/\\s+/g, ' ').trim();
+        const exact = ECONOMIC_NAME_KO.get(normalized);
+        if (exact) return exact;
+
+        let translated = original
+            .replace(/^(?:U\\.S\\.|US|United States)\\s+/i, '')
+            .replace(/\\bEx Autos and Gas\\b/gi, '자동차·주유소 제외')
+            .replace(/\\bEx Autos\\b/gi, '자동차 제외')
+            .replace(/\\bMoM\\b/gi, '전월 대비')
+            .replace(/\\bYoY\\b/gi, '전년 대비')
+            .replace(/\\bQoQ\\b/gi, '전분기 대비')
+            .replace(/\\bSA\\b/g, '계절조정');
+
+        for (const [pattern, korean] of ECONOMIC_TERM_KO) {
+            translated = translated.replace(pattern, korean);
+        }
+        translated = translated.replace(/\\s+/g, ' ').replace(/\\s*([(),])/g, '$1').trim();
+        if (!/[가-힣]/.test(translated)) translated = '미국 ' + translated;
+        return { title: translated };
     }
 
     function escapeEconomicText(value) {
@@ -141,7 +187,9 @@
             meta.push(exp.startsWith('예상') ? exp : `예상 ${exp}`);
         }
         if (ev.prev && ev.prev !== '-') meta.push(`이전 ${ev.prev}`);
-        const name = escapeEconomicText(economicNameKo(ev.name));
+        const displayName = economicNameDisplay(ev.name);
+        const name = escapeEconomicText(displayName.title);
+        const subtitle = displayName.subtitle ? escapeEconomicText(displayName.subtitle) : '';
         return `
             <div class="cal-card-item cal-eco-item">
                 <div class="cal-time-col">${time}</div>
@@ -151,6 +199,7 @@
                         <span class="cal-event-status">${status}</span>
                     </div>
                     <div class="cal-event-title">${name}</div>
+                    ${subtitle ? '<div class="cal-event-subtitle">' + subtitle + '</div>' : ''}
                     ${meta.length ? `<div class="cal-event-meta">${meta.join('  ·  ')}</div>` : ''}
                 </div>
                 <button class="cal-alarm-btn ${active ? 'active' : ''}"

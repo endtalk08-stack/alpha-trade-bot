@@ -73,17 +73,6 @@
         return Math.round((new Date(Date.UTC(yy, mm - 1, dd)) - today) / 86400000);
     }
 
-    function eventKey(ev) {
-        if (typeof window.getCalendarEventKey === 'function') return window.getCalendarEventKey(ev);
-        return [ev.type || '', ev.date_key || '', ev.time || '', ev.ticker || '', ev.name || ''].join('|');
-    }
-
-    function alarmActive(key) {
-        if (typeof window.getCalendarAlarms === 'function') return !!window.getCalendarAlarms()[key];
-        try { return !!JSON.parse(localStorage.getItem('calendar_alarm_events_v1') || '{}')[key]; }
-        catch (_) { return false; }
-    }
-
     // 화면 표시 전용 한글 지표명. API 원문과 알림 식별키는 유지한다.
     const ECONOMIC_NAME_KO = new Map([
         ['nopa crush report publication', { title: '미국 대두 압착 보고서' }],
@@ -204,8 +193,6 @@
     }
 
     function renderEvent(ev) {
-        const key = eventKey(ev);
-        const active = alarmActive(key);
         const stars = ev.star_str || (ev.stars === 3 ? '★★★' : ev.stars === 2 ? '★★☆' : '★☆☆');
         const time = ev.time || '--:--';
         const status = (ev.val === '발표완료' || ev.actual || ev.status === '발표완료') ? '발표완료' : '발표대기';
@@ -230,15 +217,6 @@
                     ${subtitle ? '<div class="cal-event-subtitle">' + subtitle + '</div>' : ''}
                     ${meta.length ? `<div class="cal-event-meta">${meta.join('  ·  ')}</div>` : ''}
                 </div>
-                <button class="cal-alarm-btn ${active ? 'active' : ''}"
-                        onclick="event.stopPropagation(); toggleCalendarAlarmByKey('${encodeURIComponent(key)}')"
-                        title="${active ? '알람 해제' : '10분 전 알람 설정'}"
-                        aria-label="${active ? '알람 해제' : '10분 전 알람 설정'}">
-                    <svg class="cal-alarm-icon" viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path>
-                        <path d="M10 21h4"></path>
-                    </svg>
-                </button>
             </div>`;
     }
 

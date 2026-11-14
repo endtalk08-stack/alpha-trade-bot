@@ -151,7 +151,11 @@
             container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.76rem;text-align:center;padding:18px 8px;">이 날짜에 예정된 경제 일정이 없습니다.</div>';
         } else {
             const start = (page - 1) * ITEMS_PER_PAGE;
-            container.innerHTML = filtered.slice(start, start + ITEMS_PER_PAGE).map(renderEvent).join('');
+            const shown = filtered.slice(start, start + ITEMS_PER_PAGE);
+            container.innerHTML = shown.map(renderEvent).join('');
+            if (shown.some(ev => ev.source === 'XOOMAR')) {
+                container.innerHTML += '<div style="padding:6px 10px;font-size:10px;color:var(--text-muted);text-align:right;">Data: <a href="https://xoomar.com/markets/api/calendar" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">XOOMAR</a></div>';
+            }
         }
         if (typeof window.scheduleCalendarHeightSync === 'function') window.scheduleCalendarHeightSync();
     }

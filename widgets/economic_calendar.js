@@ -84,6 +84,51 @@
         catch (_) { return false; }
     }
 
+    // 화면 표시 전용 한글 지표명 매핑. API 원문과 알림 식별키는 변경하지 않는다.
+    const ECONOMIC_NAME_KO = new Map([
+        ['nopa crush report publication', '미국 대두 압착 보고서'],
+        ['u.s. nopa member soybean crush', '미국 대두 압착량'],
+        ['us nopa member soybean crush', '미국 대두 압착량'],
+        ['u.s. advance retail and food services sales ex autos and gas mom sa', '미국 소매판매 (자동차·주유소 제외, 전월 대비)'],
+        ['u.s. advance retail and food services sales ex autos mom sa', '미국 소매판매 (자동차 제외, 전월 대비)'],
+        ['u.s. consumer price index (cpi) yoy', '미국 소비자물가지수(CPI, 전년 대비)'],
+        ['u.s. consumer price index (cpi) mom', '미국 소비자물가지수(CPI, 전월 대비)'],
+        ['u.s. core consumer price index yoy', '미국 근원 소비자물가지수(전년 대비)'],
+        ['u.s. core consumer price index mom', '미국 근원 소비자물가지수(전월 대비)'],
+        ['u.s. producer price index (ppi) mom', '미국 생산자물가지수(PPI, 전월 대비)'],
+        ['u.s. producer price index (ppi) yoy', '미국 생산자물가지수(PPI, 전년 대비)'],
+        ['u.s. nonfarm payrolls', '미국 비농업 고용자 수'],
+        ['u.s. unemployment rate', '미국 실업률'],
+        ['u.s. initial jobless claims', '미국 신규 실업수당 청구건수'],
+        ['u.s. gross domestic product (gdp) qoq', '미국 국내총생산(GDP, 전분기 대비)'],
+        ['u.s. fed interest rate decision', '미국 연방준비제도 기준금리 결정'],
+    ]);
+
+    function economicNameKo(raw) {
+        const original = String(raw || '경제지표').trim();
+        const normalized = original.toLowerCase().replace(/\\s+/g, ' ').trim();
+        if (ECONOMIC_NAME_KO.has(normalized)) return ECONOMIC_NAME_KO.get(normalized);
+        // 공급처가 바뀌어도 원문에 공통 약어가 포함된 경우만 안전하게 변환한다.
+        const short = normalized.replace(/^(u\\.s\\.|us|united states)\\s+/, '');
+        if (ECONOMIC_NAME_KO.has(short)) return ECONOMIC_NAME_KO.get(short);
+        let name = original
+            .replace(/^(?:U\\.S\\.|US|United States)\\s+/i, '미국 ')
+            .replace(/\\bEx Autos and Gas\\b/gi, '(자동차·주유소 제외)')
+            .replace(/\\bEx Autos\\b/gi, '(자동차 제외)')
+            .replace(/\\bMoM\\b/gi, '전월 대비')
+            .replace(/\\bYoY\\b/gi, '전년 대비')
+            .replace(/\\bQoQ\\b/gi, '전분기 대비')
+            .replace(/\\bSA\\b/g, '계절조정');
+        // 매핑되지 않은 지표는 잘못 번역하지 않고 원문을 남긴다.
+        return name;
+    }
+
+    function escapeEconomicText(value) {
+        return String(value).replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]));
+    }
+
     function renderEvent(ev) {
         const key = eventKey(ev);
         const active = alarmActive(key);
@@ -96,7 +141,7 @@
             meta.push(exp.startsWith('예상') ? exp : `예상 ${exp}`);
         }
         if (ev.prev && ev.prev !== '-') meta.push(`이전 ${ev.prev}`);
-        const name = String(ev.name || '경제지표');
+        const name = escapeEconomicText(economicNameKo(ev.name));
         return `
             <div class="cal-card-item cal-eco-item">
                 <div class="cal-time-col">${time}</div>

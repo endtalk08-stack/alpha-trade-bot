@@ -6282,16 +6282,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
         #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-title,
         #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-subtitle,
         #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-meta {
-            font-size: 14px !important;
+            font-size: 13px !important;
             font-weight: 400 !important;
             line-height: 1.35 !important;
             letter-spacing: normal !important;
         }
 
-        /* Time, event details and alarm each occupy a fixed, consistent column. */
+        /* Time and event details use only two columns; no alarm reservation. */
         #rowEconomicCalendar .calendar-widget-list .cal-eco-item {
             display: grid !important;
-            grid-template-columns: 48px minmax(0, 1fr) 26px !important;
+            grid-template-columns: 48px minmax(0, 1fr) !important;
             grid-template-rows: auto !important;
             column-gap: 8px !important;
             align-items: start !important;
@@ -6369,14 +6369,6 @@ HTML_PAGE = r"""<!DOCTYPE html>
             margin: 0 !important;
             padding: 0 !important;
         }
-        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-alarm-btn {
-            grid-column: 3 !important;
-            grid-row: 1 !important;
-            justify-self: end !important;
-            align-self: center !important;
-            margin: 0 !important;
-        }
-
 </style>
 </head>
 <body>

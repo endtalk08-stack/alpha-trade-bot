@@ -272,8 +272,18 @@
             const payload = await response.json().catch(() => null);
             if (token !== loadToken) return;
             if (!response.ok || !payload || payload.ok === false) throw new Error((payload && payload.error) || '시장 캘린더 데이터 오류');
+            const hadEconomicSnapshot = data().some(isEconomic);
+            const previousOffset = offset;
             window.globalMarketCalendar = Array.isArray(payload.data) ? payload.data : [];
-            offset = 0; page = 1; autoJumped = false;
+            if (hadEconomicSnapshot) {
+                // 데이터가 갱신되어도 사용자가 보고 있던 날짜를 임의로 바꾸지 않는다.
+                offset = previousOffset;
+                autoJumped = true;
+            } else {
+                offset = 0;
+                page = 1;
+                autoJumped = false;
+            }
             render();
         } catch (error) {
             if (error && error.name === 'AbortError') return;

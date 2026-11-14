@@ -1360,7 +1360,54 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
             print("[CALENDAR][ECO] Trading Economics 실패:", repr(exc))
 
     # --------------------------------------------------------
-    # 3~4. ForexFactory fallback
+    # 3. Public US economic calendar fallback (no API key)
+    # --------------------------------------------------------
+    try:
+        res = HTTP_SESSION.get(
+            "https://xoomar.com/api/markets/calendar",
+            params={"importance": "high"},
+            timeout=7.0,
+        )
+        if res.ok:
+            payload = res.json()
+            rows = payload.get("data", []) if isinstance(payload, dict) else []
+            xoomar_events = []
+            for it in rows:
+                if not isinstance(it, dict):
+                    continue
+                dt = _parse_calendar_timestamp(it.get("scheduledAt"))
+                title = str(it.get("eventName") or "").strip()
+                if dt is None or not title:
+                    continue
+                if dt < datetime.now(timezone.utc) - timedelta(days=days_back):
+                    continue
+                if dt > datetime.now(timezone.utc) + timedelta(days=days_forward):
+                    continue
+                translated = ECO_TITLE_KO_MAP.get(title, title)
+                xoomar_events.append(_calendar_event_common(
+                    dt, f"미 {translated}", "US", 3, "★★★", "eco",
+                    str(it["actual"]) if it.get("actual") is not None else "",
+                    str(it["forecast"]) if it.get("forecast") is not None else "-",
+                    str(it["previous"]) if it.get("previous") is not None else "-",
+                    extra={
+                        "source": "XOOMAR",
+                        "unit": it.get("unit") or "",
+                        "period": it.get("periodLabel") or "",
+                        "publisher": it.get("source") or "",
+                    },
+                ))
+            xoomar_out = _dedupe_and_sort(xoomar_events)
+            if xoomar_out:
+                print(f"[CALENDAR][ECO] XOOMAR fallback 성공: {len(xoomar_out)}건")
+                return _cache_set(ALPHA_NEWS_CACHE, cache_key, xoomar_out)
+            print("[CALENDAR][ECO] XOOMAR 데이터 0건")
+        else:
+            print(f"[CALENDAR][ECO] XOOMAR HTTP {res.status_code}")
+    except Exception as exc:
+        print("[CALENDAR][ECO] XOOMAR 실패:", repr(exc))
+
+    # --------------------------------------------------------
+    # 4~5. ForexFactory fallback
     # 이번 주 + 다음 주를 각각 요청하여 일요일/주말에도
     # 경제 일정 데이터가 끊기지 않도록 한다.
     # --------------------------------------------------------

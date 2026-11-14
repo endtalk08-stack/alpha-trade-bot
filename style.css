@@ -2255,3 +2255,41 @@
     font-weight: 400 !important;
     line-height: 1.35 !important;
 }
+
+
+/* Economic calendar only: same readable typography for every label and value. */
+#rowEconomicCalendar .calendar-widget-title,
+#rowEconomicCalendar .cal-current-date,
+#rowEconomicCalendar .calendar-star-btn,
+#rowEconomicCalendar .calendar-widget-subtitle,
+#rowEconomicCalendar .cal-page-txt,
+#rowEconomicCalendar .cal-time-col,
+#rowEconomicCalendar .cal-event-status,
+#rowEconomicCalendar .cal-event-title,
+#rowEconomicCalendar .cal-event-subtitle,
+#rowEconomicCalendar .cal-event-meta {
+    font-size: 0.82rem !important;
+    font-weight: 400 !important;
+    line-height: 1.35 !important;
+    color: #AEB4BA !important;
+    letter-spacing: normal !important;
+}
+#rowEconomicCalendar .cal-eco-item .cal-event-title,
+#rowEconomicCalendar .cal-eco-item .cal-event-subtitle,
+#rowEconomicCalendar .cal-eco-item .cal-event-meta {
+    margin: 0 !important;
+    padding: 0 !important;
+}
+#rowEconomicCalendar .cal-eco-item .cal-event-subtitle {
+    display: block !important;
+    white-space: normal !important;
+}
+#rowEconomicCalendar .cal-eco-item .cal-stars,
+#rowEconomicCalendar .calendar-star-btn {
+    font-weight: 400 !important;
+}
+#rowEconomicCalendar .cal-eco-item .cal-stars {
+    font-size: 0.82rem !important;
+    line-height: 1.35 !important;
+    color: #B69A64 !important;
+}

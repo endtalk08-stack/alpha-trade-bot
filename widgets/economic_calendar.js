@@ -106,19 +106,19 @@
 
     function economicNameKo(raw) {
         const original = String(raw || '경제지표').trim();
-        const normalized = original.toLowerCase().replace(/\\s+/g, ' ').trim();
+        const normalized = original.toLowerCase().replace(/\s+/g, ' ').trim();
         if (ECONOMIC_NAME_KO.has(normalized)) return ECONOMIC_NAME_KO.get(normalized);
         // 공급처가 바뀌어도 원문에 공통 약어가 포함된 경우만 안전하게 변환한다.
-        const short = normalized.replace(/^(u\\.s\\.|us|united states)\\s+/, '');
+        const short = normalized.replace(/^(u\.s\.|us|united states)\s+/, '');
         if (ECONOMIC_NAME_KO.has(short)) return ECONOMIC_NAME_KO.get(short);
         let name = original
-            .replace(/^(?:U\\.S\\.|US|United States)\\s+/i, '미국 ')
-            .replace(/\\bEx Autos and Gas\\b/gi, '(자동차·주유소 제외)')
-            .replace(/\\bEx Autos\\b/gi, '(자동차 제외)')
-            .replace(/\\bMoM\\b/gi, '전월 대비')
-            .replace(/\\bYoY\\b/gi, '전년 대비')
-            .replace(/\\bQoQ\\b/gi, '전분기 대비')
-            .replace(/\\bSA\\b/g, '계절조정');
+            .replace(/^(?:U\.S\.|US|United States)\s+/i, '미국 ')
+            .replace(/\bEx Autos and Gas\b/gi, '(자동차·주유소 제외)')
+            .replace(/\bEx Autos\b/gi, '(자동차 제외)')
+            .replace(/\bMoM\b/gi, '전월 대비')
+            .replace(/\bYoY\b/gi, '전년 대비')
+            .replace(/\bQoQ\b/gi, '전분기 대비')
+            .replace(/\bSA\b/g, '계절조정');
         // 매핑되지 않은 지표는 잘못 번역하지 않고 원문을 남긴다.
         return name;
     }

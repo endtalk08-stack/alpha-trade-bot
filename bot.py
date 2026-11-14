@@ -1245,9 +1245,8 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 
 
 def fetch_real_economic_calendar_live():
-    """경제캘린더 전용 응답. 실적 수집기와 분리해 불필요한 대기를 없앤다."""
-    rows = fetch_economic_calendar_history_future()
-    return _filter_kr_us_economic_events(rows)
+    """경제캘린더 전용 응답. EarningsAPI에서 이미 미국 일정만 수집하므로 그대로 반환한다."""
+    return fetch_economic_calendar_history_future()
 
 
 # ----------------------------------------------------

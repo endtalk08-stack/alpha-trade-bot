@@ -6274,6 +6274,109 @@ HTML_PAGE = r"""<!DOCTYPE html>
                 pointer-events: auto !important;
             }
         }
+
+        /* Economic calendar: apply typography and alignment in the HTML's live inline stylesheet. */
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-time-col,
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-stars,
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-status,
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-title,
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-subtitle,
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-meta {
+            font-size: 14px !important;
+            font-weight: 400 !important;
+            line-height: 1.35 !important;
+            letter-spacing: normal !important;
+        }
+
+        /* Time, event details and alarm each occupy a fixed, consistent column. */
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item {
+            display: grid !important;
+            grid-template-columns: 48px minmax(0, 1fr) 26px !important;
+            grid-template-rows: auto !important;
+            column-gap: 8px !important;
+            align-items: start !important;
+            box-sizing: border-box !important;
+        }
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-time-col {
+            grid-column: 1 !important;
+            grid-row: 1 !important;
+            width: 48px !important;
+            min-width: 48px !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            text-align: left !important;
+            align-self: start !important;
+        }
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-detail-col {
+            grid-column: 2 !important;
+            grid-row: 1 !important;
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            justify-content: flex-start !important;
+            gap: 2px !important;
+            min-width: 0 !important;
+            width: 100% !important;
+            overflow: hidden !important;
+        }
+
+        /* Force the same reading order even when an event has a subtitle. */
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-topline {
+            order: 1 !important;
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            justify-content: flex-start !important;
+            gap: 7px !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+        }
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-stars {
+            order: 1 !important;
+            flex: 0 0 auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-status {
+            order: 2 !important;
+            flex: 0 0 auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-title {
+            order: 2 !important;
+            display: block !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-subtitle {
+            order: 3 !important;
+            display: block !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-event-meta {
+            order: 4 !important;
+            display: block !important;
+            width: 100% !important;
+            min-width: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        #rowEconomicCalendar .calendar-widget-list .cal-eco-item .cal-alarm-btn {
+            grid-column: 3 !important;
+            grid-row: 1 !important;
+            justify-self: end !important;
+            align-self: center !important;
+            margin: 0 !important;
+        }
+
 </style>
 </head>
 <body>

@@ -2035,7 +2035,8 @@
         .right-market-tab { flex:1; border:0; background:transparent; color:var(--text-muted); padding:8px 4px; border-radius:9px; font-weight:700; cursor:pointer; font-size:.78rem; }
         .right-market-tab.active { background:var(--bg-card); color:var(--text-title); box-shadow: inset 0 0 0 1px var(--border-line); }
         .right-market-sort { display:flex; justify-content:space-between; align-items:center; padding:6px 13px 8px; color:var(--text-sub); font-size:.75rem; border-bottom:1px solid var(--border-line); }
-        .right-market-list { flex:1; overflow-y:auto; padding:5px 8px 18px; scrollbar-width:thin; }
+        .right-market-list { flex:1; overflow-y:auto; padding:5px 8px 18px; scrollbar-width:none; -ms-overflow-style:none; }
+        .right-market-list::-webkit-scrollbar { display:none; }
         .right-market-row { display:grid; grid-template-columns:24px 34px minmax(0,1fr) auto; gap:7px; align-items:center; min-height:61px; padding:5px 5px; border-radius:9px; cursor:pointer; }
         .right-market-row:hover { background:var(--btn-hover); }
         .right-market-rank { color:var(--text-muted); font-size:.78rem; text-align:center; font-weight:700; }

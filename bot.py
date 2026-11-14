@@ -1244,6 +1244,12 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
         return list(ECONOMIC_CALENDAR_LAST_GOOD)
 
 
+def fetch_real_economic_calendar_live():
+    """경제캘린더 전용 응답. 실적 수집기와 분리해 불필요한 대기를 없앤다."""
+    rows = fetch_economic_calendar_history_future()
+    return _filter_kr_us_economic_events(rows)
+
+
 # ----------------------------------------------------
 # 4. 크롤러 및 유틸리티 함수
 # ----------------------------------------------------
@@ -8074,7 +8080,9 @@ class WebHandler(BaseHTTPRequestHandler):
                 if force:
                     global LAST_CALENDAR_FETCH_TIME
                     LAST_CALENDAR_FETCH_TIME = 0
-                rows = fetch_real_market_calendar_live()
+                # 경제캘린더 요청에서 Finnhub/Yahoo 실적 수집을 기다리지 않는다.
+                # 실적캘린더는 /api/earnings-calendar가 별도로 담당한다.
+                rows = fetch_real_economic_calendar_live()
                 self._json(200, {"ok": True, "data": rows})
             except Exception as exc:
                 print(f"API ERROR /api/market-calendar: {type(exc).__name__}: {exc}")

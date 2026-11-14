@@ -1106,342 +1106,97 @@ def fetch_real_market_calendar_live():
     return CACHED_MARKET_CALENDAR or []
 
 
+# ForexFactory weekly export: one upstream source, one request per server hour.
+# The lock also prevents concurrent site visitors from issuing duplicate downloads.
+ECONOMIC_CALENDAR_FETCH_LOCK = threading.Lock()
+ECONOMIC_CALENDAR_LAST_ATTEMPT = 0.0
+ECONOMIC_CALENDAR_LAST_GOOD = []
+ECONOMIC_CALENDAR_SOURCE_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+ECONOMIC_CALENDAR_FETCH_INTERVAL = 3600
+
+
 def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
-    """경제 캘린더를 과거/현재/미래까지 안정적으로 수집한다.
+    """기존 ForexFactory 무료 주간 JSON만 사용한다.
 
-    우선순위
-    1) Finnhub (키가 있을 때)
-    2) Trading Economics (키가 있을 때)
-    3) ForexFactory 이번 주
-    4) ForexFactory 다음 주
-
-    중요:
-    - 빈 결과는 캐시하지 않는다.
-    - 한 소스가 실패해도 다른 소스로 계속 시도한다.
-    - 오늘 일정이 없을 때의 '가장 최근 발표일 이동'은 프론트에서 처리한다.
+    무료 데이터는 이번 주만 포함하므로 요청 기간 전체를 보장하지 않는다.
+    외부 공급처 요청은 서버 전체에서 최대 1시간에 한 번만 수행한다.
+    실패 시에는 마지막 성공한 이번 주 데이터만 재사용한다.
     """
-    now_kst = datetime.now(timezone(timedelta(hours=9)))
-    from_d = (now_kst - timedelta(days=days_back)).strftime("%Y-%m-%d")
-    to_d = (now_kst + timedelta(days=days_forward)).strftime("%Y-%m-%d")
-    cache_key = f"eco:{from_d}:{to_d}"
+    global ECONOMIC_CALENDAR_LAST_ATTEMPT, ECONOMIC_CALENDAR_LAST_GOOD
 
-    cached = _cache_get(ALPHA_NEWS_CACHE, cache_key, 1800)
-    if cached:
-        cached = _filter_kr_us_economic_events(cached)
-        if cached:
-            return cached
-
-    events = []
-
-    def _dedupe_and_sort(items):
-        unique = {}
-        for ev in items:
-            key = (
-                ev.get("type"),
-                ev.get("date_key"),
-                ev.get("time"),
-                ev.get("name"),
-                ev.get("country", ""),
-            )
-            unique[key] = ev
-        return sorted(unique.values(), key=lambda x: x.get("ts", 0))
-
-    # --------------------------------------------------------
-    # 1. Finnhub
-    # --------------------------------------------------------
-    if FINNHUB_API_KEY:
+    def current_week_rows(rows):
+        # ForexFactory의 주간 파일은 미국 동부시간 일요일~토요일 범위다.
+        # 주가 바뀐 뒤 지난주 데이터를 이번 주 일정처럼 보여주지 않는다.
         try:
-            url = "https://finnhub.io/api/v1/calendar/economic"
-            res = HTTP_SESSION.get(
-                url,
-                params={"from": from_d, "to": to_d, "token": FINNHUB_API_KEY},
-                timeout=6.0,
-            )
-            if res.ok:
-                payload = res.json()
-                rows = payload.get("economicCalendar", []) if isinstance(payload, dict) else []
+            eastern = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone.utc
+        except Exception:
+            eastern = timezone.utc
+        now_et = datetime.now(eastern)
+        week_start = (now_et - timedelta(days=(now_et.weekday() + 1) % 7)).date()
+        week_end = week_start + timedelta(days=7)
+        return [
+            ev for ev in rows
+            if isinstance(ev, dict)
+            and ev.get("ts") is not None
+            and week_start <= datetime.fromtimestamp(float(ev["ts"]), timezone.utc).astimezone(eastern).date() < week_end
+        ]
 
-                for it in rows:
-                    dt = _parse_calendar_timestamp(
-                        it.get("time") or it.get("timestamp") or it.get("date")
-                    )
+    with ECONOMIC_CALENDAR_FETCH_LOCK:
+        now = time.monotonic()
+        if ECONOMIC_CALENDAR_LAST_ATTEMPT and now - ECONOMIC_CALENDAR_LAST_ATTEMPT < ECONOMIC_CALENDAR_FETCH_INTERVAL:
+            return list(current_week_rows(ECONOMIC_CALENDAR_LAST_GOOD))
 
-                    if dt is None:
-                        raw_date = str(it.get("date") or "").strip()
-                        if raw_date:
-                            try:
-                                dt = datetime.strptime(
-                                    raw_date[:10], "%Y-%m-%d"
-                                ).replace(tzinfo=timezone.utc)
-                            except Exception:
-                                continue
-
-                    if dt is None:
-                        continue
-
-                    stars, star_str = _impact_to_stars(
-                        it.get("impact") or it.get("importance")
-                    )
-                    country = str(it.get("country") or "").strip()
-                    raw_title = str(
-                        it.get("event") or it.get("title") or ""
-                    ).strip()
-
-                    if not raw_title:
-                        continue
-
-                    prefix = COUNTRY_PREFIX_MAP.get(country, "")
-                    title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
-                    full_name = f"{prefix}{title_ko}" if prefix else title_ko
-
-                    actual = str(it.get("actual") or "").strip()
-                    estimate = str(
-                        it.get("estimate") or it.get("forecast") or ""
-                    ).strip()
-                    previous = str(
-                        it.get("prev") or it.get("previous") or ""
-                    ).strip()
-
-                    if not actual:
-                        actual = (
-                            "발표완료"
-                            if dt <= datetime.now(timezone.utc)
-                            else "발표대기"
-                        )
-
-                    events.append(
-                        _calendar_event_common(
-                            dt,
-                            full_name,
-                            country,
-                            stars,
-                            star_str,
-                            "eco",
-                            actual,
-                            estimate,
-                            previous,
-                            extra={
-                                "unit": it.get("unit") or "",
-                                "source": "Finnhub",
-                            },
-                        )
-                    )
-
-                finnhub_out = _filter_kr_us_economic_events(_dedupe_and_sort(events))
-                if finnhub_out:
-                    print(f"[CALENDAR][ECO] Finnhub 성공: {len(finnhub_out)}건")
-                    return _cache_set(
-                        ALPHA_NEWS_CACHE, cache_key, finnhub_out
-                    )
-
-            else:
-                print(
-                    f"[CALENDAR][ECO] Finnhub HTTP {res.status_code}"
-                )
-
-        except Exception as exc:
-            print("[CALENDAR][ECO] Finnhub 실패:", repr(exc))
-
-    # --------------------------------------------------------
-    # 2. Trading Economics (선택형)
-    # --------------------------------------------------------
-    if TRADING_ECONOMICS_API_KEY:
+        # 기록을 요청 전에 갱신해 429/타임아웃에서도 재시도 폭주를 방지한다.
+        ECONOMIC_CALENDAR_LAST_ATTEMPT = now
         try:
-            url = (
-                "https://api.tradingeconomics.com/"
-                f"calendar/country/united%20states/{from_d}/{to_d}"
-            )
-            res = HTTP_SESSION.get(
-                url,
-                params={
-                    "c": TRADING_ECONOMICS_API_KEY,
-                    "f": "json",
-                },
-                timeout=7.0,
-            )
+            response = HTTP_SESSION.get(ECONOMIC_CALENDAR_SOURCE_URL, timeout=8.0)
+            if not response.ok:
+                print(f"[CALENDAR][ECO] ForexFactory HTTP {response.status_code}; 1시간 후 재시도")
+                return list(current_week_rows(ECONOMIC_CALENDAR_LAST_GOOD))
 
-            if res.ok:
-                rows = res.json()
-                if isinstance(rows, list):
-                    for it in rows:
-                        dt = _parse_calendar_timestamp(
-                            it.get("Date") or it.get("date")
-                        )
-                        if dt is None:
-                            continue
-
-                        stars, star_str = _impact_to_stars(
-                            it.get("Importance") or it.get("importance")
-                        )
-
-                        raw_title = str(
-                            it.get("Event")
-                            or it.get("Category")
-                            or it.get("event")
-                            or ""
-                        ).strip()
-
-                        if not raw_title:
-                            continue
-
-                        country = str(
-                            it.get("Country") or "USD"
-                        ).strip()
-
-                        prefix = COUNTRY_PREFIX_MAP.get(
-                            "USD" if country.lower() == "united states" else country,
-                            "미 " if country.lower() == "united states" else "",
-                        )
-
-                        title_ko = ECO_TITLE_KO_MAP.get(
-                            raw_title,
-                            raw_title,
-                        )
-
-                        full_name = f"{prefix}{title_ko}" if prefix else title_ko
-
-                        actual = str(
-                            it.get("Actual") or it.get("actual") or ""
-                        ).strip()
-
-                        forecast = str(
-                            it.get("Forecast")
-                            or it.get("TEForecast")
-                            or it.get("forecast")
-                            or ""
-                        ).strip()
-
-                        previous = str(
-                            it.get("Previous")
-                            or it.get("previous")
-                            or ""
-                        ).strip()
-
-                        if not actual:
-                            actual = (
-                                "발표완료"
-                                if dt <= datetime.now(timezone.utc)
-                                else "발표대기"
-                            )
-
-                        events.append(
-                            _calendar_event_common(
-                                dt,
-                                full_name,
-                                country,
-                                stars,
-                                star_str,
-                                "eco",
-                                actual,
-                                forecast,
-                                previous,
-                                extra={
-                                    "unit": it.get("Unit") or "",
-                                    "source": "TradingEconomics",
-                                },
-                            )
-                        )
-
-                    te_out = _filter_kr_us_economic_events(_dedupe_and_sort(events))
-                    if te_out:
-                        print(
-                            f"[CALENDAR][ECO] Trading Economics 성공: {len(te_out)}건"
-                        )
-                        return _cache_set(
-                            ALPHA_NEWS_CACHE, cache_key, te_out
-                        )
-
-            else:
-                print(
-                    f"[CALENDAR][ECO] Trading Economics HTTP {res.status_code}"
-                )
-
-        except Exception as exc:
-            print("[CALENDAR][ECO] Trading Economics 실패:", repr(exc))
-
-    # --------------------------------------------------------
-    # 3~4. ForexFactory fallback
-    # 이번 주 + 다음 주를 각각 요청하여 일요일/주말에도
-    # 경제 일정 데이터가 끊기지 않도록 한다.
-    # --------------------------------------------------------
-    ff_urls = [
-        "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
-        "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
-    ]
-
-    for url in ff_urls:
-        try:
-            res = HTTP_SESSION.get(url, timeout=5.0)
-            if not res.ok:
-                print(
-                    f"[CALENDAR][ECO] ForexFactory HTTP "
-                    f"{res.status_code}: {url}"
-                )
-                continue
-
-            payload = res.json()
+            payload = response.json()
             if not isinstance(payload, list):
-                continue
+                print("[CALENDAR][ECO] ForexFactory 응답 형식 오류; 이전 정상 데이터 사용")
+                return list(current_week_rows(ECONOMIC_CALENDAR_LAST_GOOD))
 
-            for it in payload:
-                dt = _parse_calendar_timestamp(it.get("date", ""))
-                if dt is None:
+            events = []
+            for item in payload:
+                if not isinstance(item, dict):
                     continue
-
-                # 요청한 기간 밖이면 제외
-                if dt < datetime.now(timezone.utc) - timedelta(days=days_back):
+                if str(item.get("country", "")).strip().upper() != "USD":
                     continue
-                if dt > datetime.now(timezone.utc) + timedelta(days=days_forward):
+                dt = _parse_calendar_timestamp(item.get("date"))
+                title = str(item.get("title") or "").strip()
+                if dt is None or not title:
                     continue
+                stars, star_str = _impact_to_stars(item.get("impact"))
+                title_ko = ECO_TITLE_KO_MAP.get(title, title)
+                prefix = COUNTRY_PREFIX_MAP.get("USD", "미 ")
+                events.append(_calendar_event_common(
+                    dt, f"{prefix}{title_ko}", "USD", stars, star_str, "eco",
+                    str(item.get("actual") or "").strip() or (
+                        "발표완료" if dt <= datetime.now(timezone.utc) else "발표대기"
+                    ),
+                    str(item.get("forecast") or "").strip() or "-",
+                    str(item.get("previous") or "").strip() or "-",
+                    extra={"source": "ForexFactory"},
+                ))
 
-                stars, star_str = _impact_to_stars(it.get("impact"))
-                country = str(it.get("country", "")).strip()
-                prefix = COUNTRY_PREFIX_MAP.get(country, "")
+            unique = {
+                (ev["date_key"], ev["time"], ev["name"]): ev
+                for ev in events
+            }
+            good = current_week_rows(sorted(unique.values(), key=lambda ev: ev["ts"]))
+            if good:
+                ECONOMIC_CALENDAR_LAST_GOOD = good
+                print(f"[CALENDAR][ECO] ForexFactory 단일 공급처 정상 수집: {len(good)}건")
+                return list(good)
 
-                raw_title = str(it.get("title", "")).strip()
-                if not raw_title:
-                    continue
-
-                title_ko = ECO_TITLE_KO_MAP.get(raw_title, raw_title)
-                full_name = f"{prefix}{title_ko}" if prefix else title_ko
-
-                actual_raw = str(it.get("actual", "")).strip()
-                actual = actual_raw or (
-                    "발표완료"
-                    if dt <= datetime.now(timezone.utc)
-                    else "발표대기"
-                )
-
-                events.append(
-                    _calendar_event_common(
-                        dt,
-                        full_name,
-                        country,
-                        stars,
-                        star_str,
-                        "eco",
-                        actual,
-                        str(it.get("forecast", "")).strip() or "-",
-                        str(it.get("previous", "")).strip() or "-",
-                        extra={"source": "ForexFactory"},
-                    )
-                )
-
+            print("[CALENDAR][ECO] ForexFactory 유효한 미국 일정 0건; 이전 정상 데이터 사용")
         except Exception as exc:
-            print(
-                f"[CALENDAR][ECO] ForexFactory 실패 "
-                f"({url}): {repr(exc)}"
-            )
+            print("[CALENDAR][ECO] ForexFactory 요청 실패:", repr(exc))
 
-    out = _filter_kr_us_economic_events(_dedupe_and_sort(events))
-
-    # 절대 빈 결과를 30분 캐시하지 않는다.
-    if out:
-        print(f"[CALENDAR][ECO] ForexFactory fallback 성공: {len(out)}건")
-        return _cache_set(ALPHA_NEWS_CACHE, cache_key, out)
-
-    print("[CALENDAR][ECO] 모든 경제 일정 소스에서 데이터가 없습니다.")
-    return []
+        return list(current_week_rows(ECONOMIC_CALENDAR_LAST_GOOD))
 
 
 # ----------------------------------------------------

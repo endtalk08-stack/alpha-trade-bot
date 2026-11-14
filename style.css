@@ -2241,7 +2241,7 @@
 #rowEconomicCalendar .cal-event-title,
 #rowEconomicCalendar .cal-event-subtitle,
 #rowEconomicCalendar .cal-event-meta {
-    font-size: 0.82rem !important;
+    font-size: 14px !important;
     font-weight: 400 !important;
     line-height: 1.35 !important;
     color: #AEB4BA !important;
@@ -2262,7 +2262,7 @@
     font-weight: 400 !important;
 }
 #rowEconomicCalendar .cal-eco-item .cal-stars {
-    font-size: 0.82rem !important;
+    font-size: 14px !important;
     line-height: 1.35 !important;
     color: #B69A64 !important;
 }

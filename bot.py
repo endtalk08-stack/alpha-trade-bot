@@ -1107,31 +1107,28 @@ def fetch_real_market_calendar_live():
     return CACHED_MARKET_CALENDAR or []
 
 
-# Economic calendar: Earnings API (US only). Memory-only cache, no database.
-# 15 date-specific requests are fetched concurrently; incomplete batches never replace
-# the last complete snapshot, preventing the visible date/list from jumping backwards.
+# Economic calendar: EarningsAPI (US only). Temporary in-process cache only.
+# 한 번의 수집은 15개 날짜 요청으로 구성하며, 실패해도 같은 실행 중 24시간 재시도하지 않는다.
+# 429/기타 오류가 발생하면 추가 날짜 요청을 중단해 호출량 소진을 막는다.
 ECONOMIC_CALENDAR_FETCH_LOCK = threading.Lock()
 ECONOMIC_CALENDAR_LAST_ATTEMPT = 0.0
 ECONOMIC_CALENDAR_LAST_GOOD = []
-ECONOMIC_CALENDAR_LAST_COMPLETE = False
 ECONOMIC_CALENDAR_FETCH_INTERVAL = 24 * 3600
-ECONOMIC_CALENDAR_RETRY_INTERVAL = 10 * 60
 ECONOMIC_CALENDAR_SOURCE_URL = "https://api.earningsapi.com/v2/calendar/economic"
 ECONOMIC_CALENDAR_EXECUTOR = ThreadPoolExecutor(
-    max_workers=15,
+    max_workers=3,
     thread_name_prefix="economic-calendar",
 )
 
 
 def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
-    """미국 경제일정은 Earnings API 하나에서만 수집한다.
+    """EarningsAPI 한 곳에서 미국 경제일정만 하루 한 번 수집한다.
 
-    미국 동부시간 기준 과거 3일~미래 11일(15일)을 하루 한 번 수집한다.
-    15개 날짜 요청은 병렬 실행해 첫 화면 대기시간을 줄인다.
-    15일 전체 요청이 정상 응답한 경우에만 메모리 스냅샷을 교체한다.
+    15일 날짜별 조회를 최대 3개씩 처리한다.
+    한 날짜라도 실패하면 남은 날짜 요청을 중단하고 기존 정상 데이터를 보존한다.
+    실패 여부와 관계없이 다음 수집은 24시간 뒤에만 허용한다.
     """
     global ECONOMIC_CALENDAR_LAST_ATTEMPT, ECONOMIC_CALENDAR_LAST_GOOD
-    global ECONOMIC_CALENDAR_LAST_COMPLETE
 
     if not EARNINGS_API_KEY:
         print("[CALENDAR][ECO] EARNINGS_API_KEY 환경변수가 설정되지 않았습니다.")
@@ -1139,13 +1136,13 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
 
     with ECONOMIC_CALENDAR_FETCH_LOCK:
         now = time.monotonic()
-        interval = (
-            ECONOMIC_CALENDAR_FETCH_INTERVAL
-            if ECONOMIC_CALENDAR_LAST_COMPLETE
-            else ECONOMIC_CALENDAR_RETRY_INTERVAL
-        )
-        if ECONOMIC_CALENDAR_LAST_ATTEMPT and now - ECONOMIC_CALENDAR_LAST_ATTEMPT < interval:
+        if (
+            ECONOMIC_CALENDAR_LAST_ATTEMPT
+            and now - ECONOMIC_CALENDAR_LAST_ATTEMPT < ECONOMIC_CALENDAR_FETCH_INTERVAL
+        ):
             return list(ECONOMIC_CALENDAR_LAST_GOOD)
+
+        # 실패해도 attempt 시각을 기록한다. 같은 실행 중 자동 재시도하지 않는다.
         ECONOMIC_CALENDAR_LAST_ATTEMPT = now
 
         eastern = ZoneInfo("America/New_York") if ZoneInfo is not None else timezone(timedelta(hours=-5))
@@ -1172,77 +1169,86 @@ def fetch_economic_calendar_history_future(days_back=180, days_forward=90):
             except Exception as exc:
                 return day, False, f"{type(exc).__name__}: {exc}", None
 
-        results = list(ECONOMIC_CALENDAR_EXECUTOR.map(fetch_one_day, days))
-        success_days = sum(1 for _, ok, _, _ in results if ok)
         received = []
+        success_days = 0
+        failed = False
 
-        for day, ok, error, payload in results:
-            if not ok:
-                print(f"[CALENDAR][ECO] Earnings API 요청 실패 (date={day}): {error}")
-                continue
+        # 한 번에 최대 3개만 요청한다. 실패가 확인되면 다음 묶음은 보내지 않는다.
+        for offset in range(0, len(days), 3):
+            batch = days[offset:offset + 3]
+            batch_results = list(ECONOMIC_CALENDAR_EXECUTOR.map(fetch_one_day, batch))
 
-            for item in payload:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("country") or "").strip().upper() not in {"UNITED STATES", "US", "USA"}:
-                    continue
-
-                name = str(item.get("eventName") or "").strip()
-                raw_date = str(item.get("date") or day.isoformat()).strip()
-                if not name:
-                    continue
-                try:
-                    event_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
-                except ValueError:
+            for day, ok, error, payload in batch_results:
+                if not ok:
+                    print(f"[CALENDAR][ECO] Earnings API 요청 실패 (date={day}): {error}")
+                    failed = True
                     continue
 
-                raw_time = item.get("time")
-                time_text = str(raw_time or "").strip()
-                unknown_time = not time_text
-                if unknown_time:
-                    hours, minutes = 0, 0
-                else:
-                    try:
-                        hours, minutes = (int(part) for part in time_text.split(":")[:2])
-                        if not (0 <= hours <= 23 and 0 <= minutes <= 59):
-                            continue
-                    except (ValueError, TypeError):
+                success_days += 1
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("country") or "").strip().upper() not in {"UNITED STATES", "US", "USA"}:
                         continue
 
-                dt_et = datetime(
-                    event_date.year, event_date.month, event_date.day,
-                    hours, minutes, tzinfo=eastern
-                )
-                dt_utc = dt_et.astimezone(timezone.utc)
-                received.append(_calendar_event_common(
-                    dt_utc, name, "US", 1, "★☆☆", "eco",
-                    str(item.get("actual")) if item.get("actual") is not None else "발표대기",
-                    str(item.get("consensus")) if item.get("consensus") is not None else "-",
-                    str(item.get("previous")) if item.get("previous") is not None else "-",
-                    extra={"source": "EarningsAPI", **({"time": "미정"} if unknown_time else {})},
-                ))
+                    name = str(item.get("eventName") or "").strip()
+                    raw_date = str(item.get("date") or day.isoformat()).strip()
+                    if not name:
+                        continue
+                    try:
+                        event_date = datetime.strptime(raw_date[:10], "%Y-%m-%d").date()
+                    except ValueError:
+                        continue
 
-        if success_days == len(days):
+                    raw_time = item.get("time")
+                    time_text = str(raw_time or "").strip()
+                    unknown_time = not time_text
+                    if unknown_time:
+                        hours, minutes = 0, 0
+                    else:
+                        try:
+                            hours, minutes = (int(part) for part in time_text.split(":")[:2])
+                            if not (0 <= hours <= 23 and 0 <= minutes <= 59):
+                                continue
+                        except (ValueError, TypeError):
+                            continue
+
+                    dt_et = datetime(
+                        event_date.year, event_date.month, event_date.day,
+                        hours, minutes, tzinfo=eastern
+                    )
+                    dt_utc = dt_et.astimezone(timezone.utc)
+                    received.append(_calendar_event_common(
+                        dt_utc, name, "US", 1, "★☆☆", "eco",
+                        str(item.get("actual")) if item.get("actual") is not None else "발표대기",
+                        str(item.get("consensus")) if item.get("consensus") is not None else "-",
+                        str(item.get("previous")) if item.get("previous") is not None else "-",
+                        extra={"source": "EarningsAPI", **({"time": "미정"} if unknown_time else {})},
+                    ))
+
+            if failed:
+                break
+
+        if not failed and success_days == len(days) and received:
             unique = {
                 (ev["date_key"], ev["time"], ev["name"]): ev
                 for ev in received
             }
             ECONOMIC_CALENDAR_LAST_GOOD = sorted(unique.values(), key=lambda ev: ev["ts"])
-            ECONOMIC_CALENDAR_LAST_COMPLETE = True
             print(
-                f"[CALENDAR][ECO] Earnings API 수집 완료: "
+                f"[CALENDAR][ECO] EarningsAPI 수집 완료: "
                 f"조회성공 {success_days}/{len(days)}일, "
                 f"미국 일정 {len(ECONOMIC_CALENDAR_LAST_GOOD)}건"
             )
+        elif not failed and success_days == len(days):
+            print("[CALENDAR][ECO] 15일 조회는 성공했지만 일정이 0건이므로 기존 데이터 유지")
         else:
-            ECONOMIC_CALENDAR_LAST_COMPLETE = False
             print(
-                f"[CALENDAR][ECO] 부분 응답 {success_days}/{len(days)}일; "
-                "기존 정상 스냅샷 유지, 10분 후 재시도"
+                f"[CALENDAR][ECO] 수집 중단: 조회성공 {success_days}/{len(days)}일; "
+                "기존 정상 데이터 유지, 24시간 동안 추가 요청 안 함"
             )
 
         return list(ECONOMIC_CALENDAR_LAST_GOOD)
-
 
 def fetch_real_economic_calendar_live():
     """경제캘린더 전용 응답. 실적 수집기와 분리해 불필요한 대기를 없앤다."""
@@ -8171,13 +8177,8 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/market-calendar":
             try:
-                force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
-                if force:
-                    global LAST_CALENDAR_FETCH_TIME, ECONOMIC_CALENDAR_LAST_ATTEMPT, ECONOMIC_CALENDAR_LAST_COMPLETE
-                    LAST_CALENDAR_FETCH_TIME = 0
-                    ECONOMIC_CALENDAR_LAST_ATTEMPT = 0
-                    ECONOMIC_CALENDAR_LAST_COMPLETE = False
-                # 경제캘린더 요청에서 Finnhub/Yahoo 실적 수집을 기다리지 않는다.
+                # force 파라미터로 일일 수집 제한을 초기화하지 않는다.
+                # 실적캘린더는 /api/earnings-calendar가 별도로 담당한다.
                 # 실적캘린더는 /api/earnings-calendar가 별도로 담당한다.
                 rows = fetch_real_economic_calendar_live()
                 self._json(200, {"ok": True, "data": rows})

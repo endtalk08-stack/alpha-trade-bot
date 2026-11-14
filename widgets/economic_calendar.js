@@ -102,6 +102,8 @@
         ['u.s. initial jobless claims', { title: '미국 신규 실업수당 청구건수' }],
         ['u.s. gross domestic product (gdp) qoq', { title: '미국 국내총생산(GDP)', subtitle: '전분기 대비' }],
         ['u.s. fed interest rate decision', { title: '미국 기준금리 결정' }],
+        ['michael barr public remarks', { title: '미 연준 바 이사 공개 발언' }],
+        ['u.s. new york fed empire state current general business conditions sa', { title: '뉴욕 연은 엠파이어스테이트 경기지수', subtitle: '현재 일반경기 · 계절조정' }],
     ]);
 
     const ECONOMIC_TERM_KO = [
@@ -155,6 +157,11 @@
         [/JOLTS job openings/gi, 'JOLTS 구인 건수'],
         [/consumer sentiment/gi, '소비자심리지수'],
         [/philly fed manufacturing index/gi, '필라델피아 연은 제조업지수'],
+        [/new york fed/gi, '뉴욕 연은'],
+        [/empire state/gi, '엠파이어스테이트'],
+        [/current general business conditions/gi, '현재 일반경기'],
+        [/public remarks/gi, '공개 발언'],
+        [/michael barr/gi, '미 연준 바 이사'],
         [/empire state manufacturing index/gi, '뉴욕 연은 제조업지수'],
         [/beige book/gi, '연준 베이지북'],
         [/fomc minutes/gi, 'FOMC 의사록'],

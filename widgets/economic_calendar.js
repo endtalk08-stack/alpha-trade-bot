@@ -111,11 +111,11 @@
         [/continuing jobless claims|continuing claims/gi, '계속 실업수당 청구건수'],
         [/nonfarm payrolls|non-farm payrolls/gi, '비농업 고용자 수'],
         [/unemployment rate/gi, '실업률'],
-        [/consumer price index|\\bCPI\\b/gi, '소비자물가지수(CPI)'],
+        [/consumer price index|\bCPI\b/gi, '소비자물가지수(CPI)'],
         [/core consumer price index|core CPI/gi, '근원 소비자물가지수(CPI)'],
-        [/producer price index|\\bPPI\\b/gi, '생산자물가지수(PPI)'],
-        [/personal consumption expenditures|\\bPCE\\b/gi, '개인소비지출(PCE) 물가지수'],
-        [/gross domestic product|\\bGDP\\b/gi, '국내총생산(GDP)'],
+        [/producer price index|\bPPI\b/gi, '생산자물가지수(PPI)'],
+        [/personal consumption expenditures|\bPCE\b/gi, '개인소비지출(PCE) 물가지수'],
+        [/gross domestic product|\bGDP\b/gi, '국내총생산(GDP)'],
         [/federal funds rate|fed interest rate decision/gi, '연방준비제도 기준금리 결정'],
         [/ISM manufacturing PMI/gi, 'ISM 제조업 구매관리자지수'],
         [/ISM services PMI|ISM non-manufacturing PMI/gi, 'ISM 서비스업 구매관리자지수'],
@@ -148,23 +148,23 @@
 
     function economicNameDisplay(raw) {
         const original = String(raw || '경제지표').trim();
-        const normalized = original.toLowerCase().replace(/\\s+/g, ' ').trim();
+        const normalized = original.toLowerCase().replace(/\s+/g, ' ').trim();
         const exact = ECONOMIC_NAME_KO.get(normalized);
         if (exact) return exact;
 
         let translated = original
-            .replace(/^(?:U\\.S\\.|US|United States)\\s+/i, '')
-            .replace(/\\bEx Autos and Gas\\b/gi, '자동차·주유소 제외')
-            .replace(/\\bEx Autos\\b/gi, '자동차 제외')
-            .replace(/\\bMoM\\b/gi, '전월 대비')
-            .replace(/\\bYoY\\b/gi, '전년 대비')
-            .replace(/\\bQoQ\\b/gi, '전분기 대비')
-            .replace(/\\bSA\\b/g, '계절조정');
+            .replace(/^(?:U\.S\.|US|United States)\s+/i, '')
+            .replace(/\bEx Autos and Gas\b/gi, '자동차·주유소 제외')
+            .replace(/\bEx Autos\b/gi, '자동차 제외')
+            .replace(/\bMoM\b/gi, '전월 대비')
+            .replace(/\bYoY\b/gi, '전년 대비')
+            .replace(/\bQoQ\b/gi, '전분기 대비')
+            .replace(/\bSA\b/g, '계절조정');
 
         for (const [pattern, korean] of ECONOMIC_TERM_KO) {
             translated = translated.replace(pattern, korean);
         }
-        translated = translated.replace(/\\s+/g, ' ').replace(/\\s*([(),])/g, '$1').trim();
+        translated = translated.replace(/\s+/g, ' ').replace(/\s*([(),])/g, '$1').trim();
         if (!/[가-힣]/.test(translated)) translated = '미국 ' + translated;
         return { title: translated };
     }

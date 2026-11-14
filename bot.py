@@ -8078,8 +8078,10 @@ class WebHandler(BaseHTTPRequestHandler):
             try:
                 force = str(params.get("force", ["0"])[0]).strip().lower() in {"1", "true", "yes"}
                 if force:
-                    global LAST_CALENDAR_FETCH_TIME
+                    global LAST_CALENDAR_FETCH_TIME, ECONOMIC_CALENDAR_LAST_ATTEMPT, ECONOMIC_CALENDAR_LAST_COMPLETE
                     LAST_CALENDAR_FETCH_TIME = 0
+                    ECONOMIC_CALENDAR_LAST_ATTEMPT = 0
+                    ECONOMIC_CALENDAR_LAST_COMPLETE = False
                 # 경제캘린더 요청에서 Finnhub/Yahoo 실적 수집을 기다리지 않는다.
                 # 실적캘린더는 /api/earnings-calendar가 별도로 담당한다.
                 rows = fetch_real_economic_calendar_live()
